@@ -1,172 +1,270 @@
 ---
 title: Architecture
-description: How NativeLink's scheduler, CAS, action cache, and worker fleet fit together — and why each piece exists.
+description: The four roles, who actually writes to the action cache, and which parts of the system hold state you can lose.
 ---
 
-NativeLink is four pieces glued together by the
-[Remote Execution API](https://github.com/bazelbuild/remote-apis). Each
-piece scales independently and can be deployed standalone, but most
-real clusters run them together.
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
 
-## The four roles
+**Who this is for:** anyone deciding how to deploy NativeLink, or trying to
+predict which component's failure costs them what. **What you'll have at the
+end:** the four roles, the path an action takes on a miss and on a hit, and
+an accurate answer to "what do I have to back up". **Time:** fifteen minutes.
+
+NativeLink implements the
+[Remote Execution API](https://github.com/bazelbuild/remote-apis), and that
+API describes four roles: a content-addressable store, an action cache, a
+scheduler, and workers. It is worth being precise about what "four roles"
+means here, because it is the source of the most common deployment mistake.
+
+**Four roles is the shape of the protocol, not the shape of the program.**
+One `nativelink` binary exists. Which roles it plays is decided by the
+config file you hand it; there are no per-role images and no build features.
+A single-developer setup runs all four in one process; a large cluster runs
+several deployments of the same image with different configs. See
+[the architecture deep dive](/explanations/architecture-deep-dive) for what
+that binary actually does at startup.
+
+## The four roles [#the-four-roles]
 
 <Mermaid>{`sequenceDiagram
     participant client as Client (Bazel / Buck2 / Siso)
     participant sched as Scheduler
     participant worker as Worker
     participant cas as CAS + AC
-    client->>cas: lookup ActionResult(action_hash)
+    client->>cas: GetActionResult(action digest)
     cas-->>client: cache miss
+    client->>cas: upload missing inputs
     client->>sched: Execute(action)
-    sched->>worker: dispatch action
-    worker->>cas: fetch action inputs
-    worker->>worker: run command in sandbox
-    worker->>cas: upload action outputs
-    worker->>sched: action complete (output digests)
-    sched->>cas: store ActionResult
+    sched->>worker: assign action
+    worker->>cas: fetch inputs
+    worker->>worker: run command
+    worker->>cas: upload outputs
+    worker->>cas: UpdateActionResult
+    worker->>sched: operation finished
     sched->>client: ActionResult
     client->>cas: fetch output blobs
 `}</Mermaid>
 
-### CAS — Content-Addressable Storage
+### CAS: content-addressable storage [#cas]
 
-Every build artifact NativeLink touches lives in the CAS, keyed by its
-SHA-256. Source files, intermediate object files, compiled binaries,
-log output — all of it. Two identical files anywhere in your org
-collapse into one stored blob.
+Every byte NativeLink touches lives in the CAS, keyed by a digest of its
+content. Source files, object files, binaries, stdout, all of it. Two
+identical files anywhere in your organisation collapse into one stored blob,
+because they hash to the same key.
 
-The CAS is the heart of the system. It is the only role you absolutely
-have to persist; lose it and you lose every cached artifact.
+The digest function is **SHA-256 or BLAKE3**, negotiated per request rather
+than fixed at build time. Blobs stored under different digest functions do
+not share a namespace: switching the function is equivalent to starting with
+an empty cache.
 
-### AC — Action Cache
+The CAS is the only role holding data you would miss. Lose it and every
+cached artifact is gone. It is also not one thing: a production CAS is a
+*stack* of stores composed in config. [The store model](/explanations/store-model)
+is the page for that.
 
-The Action Cache is a smaller, simpler store. It maps
-`hash(Action) → ActionResult` — given the recipe and ingredients
-(`Action`), what did the oven produce (`ActionResult`)? Action hashes
-include the command, the tool versions, every input file's digest, and
-the platform spec — so an AC hit means "this exact computation has
-been done before."
+### AC: action cache [#ac]
 
-Losing the AC is harmless: clients re-execute, workers re-fill the
-cache, life moves on.
+The action cache maps `action digest → ActionResult`. The action digest
+covers the command line, every input file's digest, the environment
+variables, and the platform properties, so an AC hit means *this exact
+computation has been performed before, and here is where its outputs are*.
 
-### Scheduler
+The AC does not hold the outputs. It holds digests pointing into the CAS,
+which is why an AC entry whose CAS blobs have been evicted is a real failure
+mode rather than a theoretical one; see
+[correctness and hermeticity](/explanations/correctness-hermeticity).
 
-The Scheduler is the dispatcher. It receives `Execute` RPCs from
-clients, finds a worker that can run the action (platform match, queue
-depth, custom routing rules), and forwards the work. It tracks
-in-flight actions and reports back to the client.
+Losing the AC is survivable: clients re-execute, workers refill it.
 
-Schedulers are stateless. Run them behind a load balancer; restart at
-will.
+### Scheduler [#scheduler]
 
-### Workers
+The scheduler receives `Execute` RPCs, decides which queued action goes next,
+finds a worker whose platform properties satisfy the action's, and assigns
+the work. It also merges duplicate requests, so two developers building the
+same commit wait on one execution rather than two.
 
-Workers are where the actual work happens. A worker fetches the
-action's inputs from CAS, executes the command in a sandbox, uploads
-the outputs back to CAS, and reports the result digests to the
-scheduler.
+In configuration "the scheduler" can be a stack rather than a single
+component: a `cache_lookup` scheduler can be placed in front of the real
+scheduler to answer `Execute` from the action cache, so an action that hits
+the cache never appears in queue depth. None of the shipped example configs
+do this, because Bazel already calls `GetActionResult` before it calls
+`Execute`. [Scheduler internals](/explanations/scheduler-internals) covers
+the merge rule, the ordering rule and the retry rule.
 
-Workers are stateless and disposable. Autoscaling them is the cheapest
-way to make builds faster.
+### Workers [#workers]
 
-## End-to-end: one cached build
+A worker fetches the action's inputs from the CAS, materialises them into a
+directory, runs the command, uploads the outputs, and reports back.
 
-Walking through what happens when a developer runs `bazel build //app`:
+Workers hold no durable state; a worker that dies mid-action costs you that
+action, not your cache. What they do hold is a local filesystem that is
+deliberately not clean between actions;
+[worker execution](/explanations/worker-execution) explains why, and what it
+means for hermeticity.
+
+<Callout type="warn" title="The worker writes the action cache, not the scheduler">
+  It is natural to assume the scheduler records the result, since the
+  scheduler is what answered the client. It does not. The worker writes the
+  `ActionResult` into its configured `upload_action_result.ac_store` itself
+  (as an `UpdateActionResult` call when that store is a gRPC proxy), from
+  <SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="upload_ac_results" />.
+
+  The operational consequence: **the worker's `ac_store` is what decides
+  whether anything gets cached.** A worker with no `ac_store` refuses to
+  start unless `upload_ac_results_strategy` is `never`; a worker with
+  `never` runs every action and caches nothing, with builds still
+  succeeding and no errors anywhere in the logs. The symptom is a cache hit
+  rate pinned near zero.
+</Callout>
+
+## One build, twice [#one-build-twice]
+
+The concrete version. A developer runs `bazel build //app:server`, which
+expands to roughly two thousand actions. Take one of them: compiling
+`main.cc`.
+
+**Cold, nothing in the cache:**
 
 <Steps>
   <li>
-    **Bazel hashes the action.** Source file digests, the compiler
-    version, the command-line — everything goes into the hash.
+    **Bazel builds the action digest.** The compiler's own digest, the
+    command line, `main.cc` and every header it includes, the platform
+    properties. All of it hashes into one digest.
   </li>
   <li>
-    **Bazel checks the Action Cache.** `GetActionResult(action_hash)`.
-    If there's a hit, the AC returns the result digests, Bazel fetches
-    the output blobs from CAS, and the build action is done. Total
-    round-trip: a few milliseconds.
+    **`GetActionResult(digest)` → `NOT_FOUND`.** A single round trip, a few
+    milliseconds.
   </li>
   <li>
-    **Cache miss → Execute.** Bazel calls `Execute(action)` on the
-    Scheduler.
+    **Bazel uploads what's missing.** `FindMissingBlobs` first, then
+    `BatchUpdateBlobs` for the ones the CAS does not have. On a cold cache
+    this is most of the wall time.
   </li>
   <li>
-    **Scheduler dispatches.** It picks a worker that satisfies the
-    action's platform requirements (Linux, x86_64, has a C++ toolchain,
-    etc.) and hands the action off.
+    **`Execute(action)` to the scheduler.** The scheduler either merges this
+    into an identical in-flight action or queues it.
   </li>
   <li>
-    **Worker runs the command.** It fetches inputs from CAS, executes
-    in a sandbox, captures outputs.
+    **A worker is assigned.** The action's platform properties
+    (`OSFamily: Linux`, `container-image: ...`) have to be satisfiable by a
+    worker's declared properties, or the action queues indefinitely rather
+    than failing.
   </li>
   <li>
-    **Worker uploads outputs to CAS.** Every output file goes into CAS
-    keyed by its hash.
+    **The worker runs it.** Fetch inputs, materialise the input root, execute
+    the command under a timeout, capture stdout, stderr and the declared
+    output paths.
   </li>
   <li>
-    **Scheduler stores the ActionResult in AC.** The next request for
-    the same action hash hits the cache.
+    **The worker uploads.** Output blobs to the CAS, then the `ActionResult`
+    to the AC.
   </li>
   <li>
-    **Client fetches outputs from CAS.** The build completes.
+    **Bazel downloads what it needs.** With `--remote_download_minimal` it may
+    download nothing at all and keep only the digests.
   </li>
 </Steps>
 
-The path on a cache *hit* skips steps 3-7 entirely — that's where the
-10× wall-time wins come from.
+**Warm, the same build on a colleague's machine:**
 
-## A real-world example
+Step 2 returns an `ActionResult` instead of `NOT_FOUND`. Steps 3 through 7
+do not happen. The scheduler is never contacted; no worker is involved; no
+compiler runs. The cost of that action is one gRPC round trip plus whatever
+output bytes the client actually wants.
 
-LLVM contributors are running NativeLink under CMake + recc. Full
-clang builds went from **17 minutes to 4 minutes** on the same
-hardware. The cache hits are responsible for most of the win — the
-remote execution layer carries the rest by handing slow link steps to
-beefier workers.
+That gap, one round trip against a compile, is the whole value
+proposition, and it is why the cache hit rate is the number worth watching
+rather than worker count.
 
-The write-up: [LLVM, recc, NativeLink](https://reidkleckner.dev/posts/llvm-recc-nativelink/).
+<Callout type="info" title="Why the second build can still be slow">
+  A high hit rate with disappointing wall time usually means the client is
+  downloading outputs it does not need. `--remote_download_minimal` (Bazel)
+  keeps intermediate artifacts remote. The other common cause is a
+  mismatched `instance_name` between client and server, which produces a
+  permanently empty cache with no error.
+</Callout>
 
-## Why Rust, why this shape
+## What holds state [#what-holds-state]
 
-Three operational properties drove the design:
+Deployment planning comes down to this table, and one widespread claim about
+it is wrong.
 
-- **No garbage collector.** A scheduler stalls under GC pressure are
-  visible in build latency. Rust eliminates the entire class.
-- **Memory safety.** A miscompiled binary that ships across an
-  organisation is a serious incident. Rust catches the bugs at compile
-  time.
-- **Hot-path simplicity.** The CAS is content-addressed end-to-end. No
-  cache invalidation logic, no eviction races. Add a blob, retrieve a
-  blob, garbage-collect by reference count.
+| Role | Durable state | If you lose it |
+| --- | --- | --- |
+| CAS | Yes, the blobs | Every cached artifact. Rebuild from scratch. |
+| AC | Yes, but cheap | Clients re-execute and refill it. |
+| Scheduler | **Yes, by default** | In-flight actions. See below. |
+| Worker | No | The action it was running, which is retried. |
 
-The same simplicity at the protocol level is why NativeLink can
-sustain over a billion build requests a month on modest hardware.
+The scheduler is frequently described as stateless. It is not, by default:
+the awaited-action state (what is queued, what is executing, who is waiting
+on it) lives **in memory in that process**. Two scheduler replicas behind a
+load balancer with the default configuration are two independent schedulers
+that cannot merge each other's actions or answer each other's clients.
 
-## FAQ
+Making the scheduler horizontally scalable means moving that state out, which
+is what the Redis-backed state manager is for.
+[Scheduler internals](/explanations/scheduler-internals) covers what that
+changes and what it costs.
+
+## Why Rust, why this shape [#why-rust-why-this-shape]
+
+Three properties drove the design, and all three are operational rather than
+aesthetic.
+
+**No garbage collector.** A build's tail latency is very visible: a p99 stall
+in the scheduler shows up as developers watching a progress bar. Removing the
+GC removes an entire category of latency spike that is difficult to tune away
+in a managed runtime.
+
+**Memory safety without a runtime.** A cache serving a wrong artifact is a
+worse incident than a cache serving no artifact, because it is silent and it
+propagates. Rust removes the memory-corruption class of that bug at compile
+time while keeping predictable resource use.
+
+**Content addressing all the way down.** No cache invalidation exists
+logic, because there is nothing to invalidate; a blob's key is its content.
+Eviction is a size-and-age policy rather than a correctness mechanism. Most
+of the hard bugs in a build cache come from invalidation, and this design
+does not have the concept.
+
+## Common questions [#common-questions]
 
 <Accordions type="multiple">
-  <Accordion title="Which piece do I have to persist?" id="which-piece-do-i-have-to-persist">
-    Only the CAS — losing it loses every cached artifact. The AC is a
-    lookup table you can lose harmlessly: clients re-execute and refill
-    it. Schedulers and workers hold no durable state at all.
+  <Accordion title="Which piece do I have to back up?" id="which-piece-do-i-have-to-back-up">
+    The CAS, and only the CAS. The AC is a lookup table that refills itself.
+    Workers hold nothing durable. The scheduler holds in-flight state that is
+    worth nothing after a restart anyway; the clients will retry.
   </Accordion>
-  <Accordion title="Can one binary really run all four?" id="can-one-binary-really-run-all-four">
-    Yes — the same executable serves any subset, chosen by config.
-    Single-developer setups run everything in one process; teams split
-    the services so each scales independently.
+  <Accordion title="Can one binary really serve all four roles?" id="can-one-binary-really-serve-all-four-roles">
+    Yes. The same executable serves any subset, selected by config. Start
+    with one process running everything; split the services out when one of
+    them becomes the bottleneck, not before.
   </Accordion>
-  <Accordion title="What's an instance name?" id="what-s-an-instance-name">
-    A namespace within one cluster: action hashes from different instance
-    names never collide, so one deployment can serve isolated teams.
-    Every client and server must agree on it — a mismatch looks like a
-    permanently empty cache. More vocabulary in the
-    [glossary](/reference/glossary).
+  <Accordion title="What is an instance name?" id="what-is-an-instance-name">
+    A namespace within one cluster. Digests from different instance names
+    never collide, so one deployment can serve isolated teams. Every client
+    and server must agree on it; a mismatch looks exactly like a
+    permanently empty cache, with no error on either side. More vocabulary
+    in the [glossary](/reference/glossary).
+  </Accordion>
+  <Accordion title="Do I need remote execution to get value from this?" id="do-i-need-remote-execution">
+    No, and most deployments start without it. A shared cache alone
+    (CAS and AC, no scheduler, no workers) is the majority of the benefit
+    for the minority of the operational cost. The
+    [Remote execution](/remote-execution) section is the path from one to
+    the other when you want it.
+  </Accordion>
+  <Accordion title="Why did my action queue forever instead of failing?" id="why-did-my-action-queue-forever">
+    Its platform properties could not be satisfied by any connected worker.
+    A key the scheduler does not know is not rejected at submission either:
+    the matching pass logs an `Unknown platform property` error and the
+    action stays queued. Scheduler internals covers the matching rule in
+    detail.
   </Accordion>
 </Accordions>
 
-## What's next
-
-- [Local Remote Execution](/explanations/lre) — running the same
-  hermetic build locally without a remote cluster.
-- [Configuration → Production](/configuration/production) — the
-  cluster shape for serving a real team.
-- [History](/explanations/history) — why this exists and what
-  came before.
+<NextStep href="/explanations/architecture-deep-dive" title="Architecture deep dive">
+  The shape of the program rather than the protocol: the crate graph, the
+  startup ordering, and where an action's path forks inside the binary.
+</NextStep>

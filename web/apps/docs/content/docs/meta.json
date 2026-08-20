@@ -1,16 +1,16 @@
 {
   "pages": [
     "index",
-    "---Get started---",
+    "use-cases",
     "getting-started",
-    "rbe",
+    "remote-execution",
     "configuration",
-    "deployment",
-    "---Learn---",
+    "how-to",
+    "operate",
     "explanations",
-    "---Develop---",
+    "reference",
     "contribute",
-    "reference"
+    "agents"
   ],
   "title": "Docs"
 }

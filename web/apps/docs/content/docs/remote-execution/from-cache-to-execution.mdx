@@ -1,0 +1,217 @@
+---
+title: From cache to execution
+description: "You have a cache serving hits. This is what changes when the misses stop running on your laptop: in the deployment, in the build invocation, and in what breaks first."
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone who finished Getting started and is deciding whether to
+take the next step. **What you'll have at the end:** an accurate picture of
+what remote execution adds, what it costs, and which wall you'll hit first.
+**Time:** ten minutes of reading, no commands.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+A cache answers exactly one question: *has this exact action already been
+run somewhere?* When the answer is yes, you get the result back in
+milliseconds. When the answer is no (and on a first build, or after a
+toolchain bump, the answer is no for almost everything) something still has
+to run the action. With caching alone, that something is the machine you're
+sitting at.
+
+Remote execution changes the answer to that second question. The misses go
+to a fleet.
+
+## What execution buys you [#what-execution-buys-you]
+
+Two things, and it's worth being clear that they're separate.
+
+**The misses stop being your problem.** A cache makes repeated work free; it
+does nothing for work nobody has done yet. A clean build, a dependency bump,
+a merge that invalidates half the graph: these are all cache misses by
+definition, and they are exactly the builds that hurt. Remote execution is
+what turns those into a fan-out across as many cores as you're willing to
+pay for, instead of a fan-out across the eight your laptop has.
+
+**Actions get to run on hardware that fits them.** Once a scheduler is
+routing work, actions stop being homogeneous. A link step that needs 64 GB
+of RAM, a test that needs a GPU, a cross-compile that needs a specific libc:
+each can be routed to a worker that has it, without every developer
+needing that machine under their desk. This is the part that has no local
+equivalent at all, and for some teams it's the whole reason to adopt
+NativeLink.
+
+A third thing people expect and don't get: remote execution is not
+automatically *faster* per action. A single action that takes 200 ms locally
+will take 200 ms plus a network round-trip plus input materialization
+remotely. The win is parallelism and placement, not per-action latency,
+which is why [Classic patterns](/remote-execution/examples-and-templates)
+covers keeping small actions local.
+
+## What's new in the deployment [#whats-new-in-the-deployment]
+
+Three components, and one of them is a security boundary.
+
+<Mermaid>
+{`flowchart LR
+    C[your build tool]
+    S[scheduler]
+    W[worker]
+    CAS[("CAS + Action Cache\\n(already yours from Getting started)")]
+
+    C -->|"Execute()"| S
+    C -->|"read / write blobs"| CAS
+    S -->|"worker API :50061"| W
+    W -->|"fetch inputs\\nupload outputs"| CAS
+    S -.->|reads action digests| CAS`}
+</Mermaid>
+
+**A scheduler.** It owns the queue and the matching engine. It holds no
+blobs of its own; it reads the CAS through a `grpc` store pointed at the
+CAS process, and its whole job is deciding which worker gets which action.
+
+**At least one worker.** It connects *outward* to the scheduler, announces
+what it can do, and then pulls actions. Workers do not listen for client
+traffic; a worker config has an empty `servers` array.
+
+**The `execution` service on a server.** This is the client-facing half:
+the `Execute` and `WaitExecution` RPCs your build tool calls. It sits
+alongside the `cas` and `ac` services you already have, and it needs a
+`scheduler` reference.
+
+And one port that is genuinely new in a way that matters: the **worker API**
+listener, `50061` in every example config in the repo that has one. Workers register
+there. It is a backend port with a completely different permission set from
+the client port, and it must not be reachable from where your clients are.
+[Production configuration](/operate/production-config#which-ports-are-public)
+is blunt about why.
+
+<Callout type="warn" title="The worker API is not a client port">
+  Anything that can reach the worker API can register as a worker and
+  receive actions to execute, which means arbitrary commands, from your
+  build, running on its machine, with your CAS credentials. Bind it to a
+  private network. The repo's own example config says so in a comment.
+  <SourceLink file="nativelink-config/examples/local_rbe_self_test.json5" />
+</Callout>
+
+## What's new in the build invocation [#whats-new-in-the-build-invocation]
+
+Less than you'd think. Two flags and a declaration.
+
+```bash
+bazel test \
+  --remote_cache=grpc://nativelink.internal:50051 \
+  --remote_executor=grpc://nativelink.internal:50052 \
+  --remote_default_exec_properties=cpu_count=1 \
+  //your:target
+```
+
+`--remote_executor` is the new one. `--remote_cache` you already had. If
+you leave it out, Bazel reuses the `--remote_executor` endpoint as the
+cache, which is fine when one listener serves both; keep it explicit when
+the cache and the executor are different endpoints, which is the usual
+production shape. Whichever store the `execution` service reads must be
+the store the client uploads to, or `Execute` fails with
+`FAILED_PRECONDITION: Action ... is missing from CAS`.
+
+`--remote_default_exec_properties` is the declaration. It's how your build
+tells the scheduler what kind of machine the action needs. Getting this
+wrong is the single most common way a first remote build fails, which is why
+[Platform properties](/remote-execution/platform-properties) is its own
+page rather than a paragraph here.
+
+## What stays exactly the same [#what-stays-exactly-the-same]
+
+Your CAS and your action cache. The same stores, the same digests, the same
+hits you were already getting.
+
+This is not a coincidence; it's why the sections are in this order. Remote
+execution is a *consumer* of the cache you built in Getting started, not a
+replacement for it. The worker fetches an action's inputs from your CAS by
+digest and uploads its outputs back to the same place, so every result a
+worker produces is immediately a cache hit for the next person who asks for
+it. If your cache was serving hits before you added a scheduler, it is
+serving the same hits afterwards, plus new ones.
+
+The practical consequence: **if something breaks after you turn on remote
+execution, the cache is almost never the thing that broke.** You can drop
+`--remote_executor`, confirm your build still works cache-only, and know the
+problem is in the two components you just added.
+
+## What to expect the first time [#what-to-expect-the-first-time]
+
+The first remote action rarely works on the first attempt, and it is nearly
+always one of two walls. Both are ordinary; both have a page.
+
+**Wall one: platform properties.** The scheduler will only hand an action to
+a worker whose advertised properties satisfy what the action asked for. When
+they don't line up, nothing errors: the action sits in the queue
+indefinitely, which reads like a hang rather than a misconfiguration. Your
+build appears to stall at "0s remote" and stays there.
+[Platform properties](/remote-execution/platform-properties) covers the
+matching rules and how to read the scheduler's own diagnostic logging.
+
+**Wall two: toolchain hermeticity.** An action that succeeds on your machine
+because your machine happens to have the right compiler will fail on a
+worker that doesn't. Remote execution converts every unstated dependency on
+your local environment into a hard failure. This is uncomfortable the first
+time and extremely valuable afterwards; it's the same property that makes
+builds reproducible.
+[Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity)
+is the fix.
+
+A reliable way to keep these two walls from arriving together: run
+the whole cluster on your own machine first, with whatever toolchain is
+already on your `PATH`. That isolates the protocol wiring from the toolchain
+question, and it's what [Your first remote action](/remote-execution/first-remote-action)
+does next.
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+  <Accordion title="Do I have to run the scheduler and CAS as separate processes?" id="do-i-have-to-run-the-scheduler-and-cas-as-separate-processes">
+    No. One `nativelink` process can host the CAS, the action cache, a
+    scheduler, and a worker at once. That's exactly what
+    <SourceLink file="nativelink-config/examples/local_rbe_self_test.json5" />
+    does, and it's the right shape for learning. The split into separate
+    processes is an operational decision you make when you want to scale or
+    restart the pieces independently, not a protocol requirement. See
+    [Production configuration](/operate/production-config) for the shape a
+    real cluster uses.
+  </Accordion>
+  <Accordion title="Can I add execution to a cache that's already serving my team?" id="can-i-add-execution-to-a-cache-thats-already-serving-my-team">
+    Yes, and it's additive: the scheduler and workers read and write the CAS
+    you already have. The change on the server side is a `schedulers` entry,
+    an `execution` service (plus a `capabilities` service with
+    `remote_execution` set, so clients learn execution is available) on a
+    client-facing listener, and a `worker_api`
+    listener on a private port. Nothing about the existing `cas`, `ac`, or
+    `bytestream` services changes, so clients that only pass
+    `--remote_cache` keep working exactly as before.
+  </Accordion>
+  <Accordion title="What actually crosses the wire when an action runs remotely?" id="what-actually-crosses-the-wire-when-an-action-runs-remotely">
+    The action: input file digests, the command line, the environment, and
+    the platform properties. Not the input files themselves: the worker
+    fetches those from the CAS by hash, and skips anything it already has.
+    Outputs go back the same way. This is why a fat input tree is cheap to
+    re-run and a cold worker is expensive to start.
+  </Accordion>
+  <Accordion title="How many workers do I need to start?" id="how-many-workers-do-i-need-to-start">
+    One. A single worker proves the whole path end to end, and the number of
+    actions it will run concurrently is governed by its `cpu_count` property
+    (and how much of it each action requests) rather than by worker count. Add workers when the queue has depth, not
+    before. [Tuning](/operate/tuning) has the signal to watch.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/remote-execution/first-remote-action" title="Your first remote action">
+  A scheduler and one worker on your own machine, and a build you can watch
+  execute on them.
+</NextStep>
+
+<NextStep href="/remote-execution/platform-properties" kind="aside" title="Platform properties">
+  If you already have workers and your actions are queueing forever, skip
+  ahead: this is almost certainly why.
+</NextStep>

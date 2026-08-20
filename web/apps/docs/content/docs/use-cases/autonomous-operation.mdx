@@ -1,0 +1,259 @@
+---
+title: Autonomous operation
+description: "What it takes for a build farm to grow and shrink with demand without anyone watching it: which properties NativeLink gives you, which pieces you assemble yourself, and where the seams are."
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** whoever would otherwise be paged about the build farm.
+**What you'll have at the end:** an accurate picture of how close NativeLink
+gets you to a hands-off farm, and exactly which parts you build. **Time:**
+about fifteen minutes.
+
+## The shape of the problem [#the-shape-of-the-problem]
+
+Build load is spiky in a way that punishes static capacity. It is near zero at
+night, ragged through the morning, and vicious in the hour before a release. A
+farm sized for the peak is idle most of the time and expensive all of the time.
+A farm sized for the average has a queue during every moment anybody cares
+about.
+
+The way out is a farm that changes size on its own. That is not a NativeLink
+feature you switch on. It's a property that emerges when the components have
+the right characteristics, and most of this page is about which characteristics
+those are and which ones you have to supply.
+
+## Why workers can be treated as disposable [#why-workers-can-be-treated-as-disposable]
+
+Autoscaling only works if adding and removing a machine is uneventful. Three
+properties of the worker make it so.
+
+**Workers hold no authoritative state.** A worker executes actions and writes
+results to the CAS. Everything durable lives in the store, not on the worker, so
+a worker that vanishes takes nothing with it that isn't reproducible.
+
+**Workers announce themselves.** A worker dials the scheduler and registers,
+rather than the scheduler being told a list of workers. Starting five more is
+enough; there is no membership to update. That's why
+[running multiple workers](/how-to/run-multiple-workers) is mostly a matter of
+starting more processes.
+
+**Lost work is retried, not lost.** When a worker disappears mid-action, the
+scheduler notices, increments an attempt counter, and requeues the action,
+with its worker affinity cleared, so it goes to whichever worker is free rather
+than waiting for a machine that is gone.
+
+<SourceLink file="nativelink-scheduler/src/simple_scheduler_state_manager.rs" symbol="update_operation" />
+
+That last property is what makes preemptible and spot instances viable, and it
+is the single largest cost lever available. The retry budget is
+`max_job_retries` on the scheduler, defaulting to **3**.
+
+<Callout type="warn" title="`max_job_retries: 0` does not mean zero retries">
+  A configured `0` is read as "unset" and falls back to the default of 3. There
+  is no way to express "never retry" through this field.
+</Callout>
+
+A worker is declared dead when it stops keepaliving for `worker_timeout_s`,
+which defaults to **5 seconds** and is checked once a second. That is a
+deliberately short leash: fast detection means fast requeue, and the cost of a
+false positive is one repeated action rather than a stall.
+
+## Draining, for the shutdown you know about [#draining-for-the-shutdown-you-know-about]
+
+Retries handle the machines that die without warning. Machines that give you
+notice deserve better, and there's a specific hook for it.
+
+The admin interface exposes a drain endpoint:
+
+```
+POST {admin_path}/scheduler/{instance_name}/set_drain_worker/{worker_id}/1
+```
+
+A draining worker accepts no new actions and finishes the ones it is running.
+That is exactly the right response to a spot-termination notice or a rolling
+node upgrade: call it when the notice arrives, and the in-flight work completes
+instead of being thrown away and redone.
+
+<SourceLink file="nativelink-scheduler/src/worker.rs" symbol="Worker" />
+
+Nothing in the repository wires this to any cloud provider's interruption
+signal. The handler is a short script you write, and it is the highest-value
+piece of glue on this page.
+
+## What the scheduler remembers, and what it forgets [#what-the-scheduler-remembers-and-what-it-forgets]
+
+This is the constraint that shapes a hands-off design, so it's worth being
+precise.
+
+By default the scheduler keeps its queue **in process memory**. Restarting it
+loses the in-flight queue. Clients retry and the work gets done, so this is not
+data loss in any lasting sense, but it does mean the scheduler is the one
+component you cannot casually cycle under load, and that a single scheduler is a
+single point of interruption.
+
+A Redis-backed alternative exists, and the configuration names it honestly:
+the field is `experimental_backend`. It moves queue state out of the process so
+schedulers stop being special. It also carries the rough edges the name implies:
+there's a `fallback_match_interval_s` in the config specifically to paper over
+eventually-consistent searches.
+
+<Callout type="warn" title="The Redis backend does not emit the queue metric">
+  `execution.active.count`, the signal an autoscaler needs, is emitted only by
+  the in-memory backend. The Redis path emits none of it, so the topology that
+  makes schedulers replaceable is also the topology where the scaling signal
+  disappears. Know this before you plan around it.
+</Callout>
+
+## The signal you scale on [#the-signal-you-scale-on]
+
+An autoscaler needs a number that says "more work is waiting than there is
+capacity for." That number is queue depth: actions sitting in the `queued`
+stage rather than `executing`.
+
+NativeLink emits it as `execution.active.count`, an up-down counter attributed
+by `execution.stage`.
+
+<SourceLink file="nativelink-util/src/metrics.rs" symbol="EXECUTION_METRICS" />
+
+Three things about that metric decide your architecture, and all three surprise
+people:
+
+**Telemetry is OTLP push, not Prometheus pull.** The binary has no `/metrics`
+endpoint to scrape. It pushes OpenTelemetry to a collector, and the collector is
+what a Prometheus-shaped world reads from.
+`deployment-examples/metrics/` is the working example of that pipeline.
+
+**Queue depth is a derived series, not a metric name.** What you scale on is a
+recording rule that sums the counter filtered to the `queued` stage. The
+example rules in `deployment-examples/metrics/prometheus-recording-rules.yml`
+define `nativelink:queue_depth`, `nativelink:worker_utilization` and
+`nativelink:actions_per_worker`. An HPA reads the recording rule through an
+external-metrics adapter; there is no metric the binary emits that an HPA can
+target directly.
+
+**The metrics module is Business Source Licensed.** `nativelink-util/src/metrics.rs`
+carries a header requiring an enterprise license agreement, unlike the
+Functional Source License covering most of the repository. Production
+observability is exactly the case that header describes, so settle the licensing
+question before you design around it.
+
+<Callout type="info" title="Workers emit no metrics of their own">
+  Every utilization number is inferred scheduler-side from what it knows about
+  its workers. No worker-side telemetry exists to scrape, so host-level CPU
+  and memory from your existing node monitoring is the complement to the
+  scheduler's view, not a duplicate of it.
+</Callout>
+
+## What the repository ships, and what it doesn't [#what-the-repository-ships-and-what-it-doesnt]
+
+Being direct, because this is the part most likely to be assumed:
+
+**The repository contains no autoscaling manifests for NativeLink.** The Helm
+charts for Kubernetes ship with [NativeLink Enterprise](https://enterprise.nativelink.com),
+not with this repository. The Kustomize building blocks under `kubernetes/`
+set fixed replica counts. No HorizontalPodAutoscaler for workers, no KEDA `ScaledObject`,
+no cluster-autoscaler or Karpenter configuration, and no node pools or
+tolerations for build workers. The one HPA in the tree scales the OpenTelemetry
+collector, not NativeLink.
+
+What the repository does give you is the harder half: a worker that is safe to
+kill, a scheduler that requeues what it loses, a drain hook for planned
+shutdown, a queue-depth signal, and a working metrics pipeline to carry it.
+
+What you assemble is the standard Kubernetes half: an HPA on the derived queue
+metric via an external-metrics adapter, a cluster autoscaler or Karpenter for
+the nodes underneath, spot node pools with the drain hook wired to interruption
+notices, and node affinity for heterogeneous pools. These are not NativeLink
+concepts, which is the point: nothing here needs a bespoke controller.
+
+<Callout type="info" title="Where the manifests are">
+  Kubernetes deployments, including the Helm charts, are part of
+  [NativeLink Enterprise](https://enterprise.nativelink.com). This repository ships
+  only the Kustomize building blocks under `kubernetes/` that its own examples
+  use, and no KEDA adapter.
+</Callout>
+
+## What "no human in the loop" actually means [#what-no-human-in-the-loop-actually-means]
+
+A realistic end state, in the order the pieces earn their keep:
+
+Workers scale on queue depth and fall to a small floor overnight. Most of the
+fleet is preemptible, because retries make interruption a cost rather than an
+incident, and the drain hook converts warned shutdowns into clean ones. Node
+capacity follows pod demand through your existing autoscaler. The CAS scales
+separately and more conservatively, because it holds the state everything else
+depends on. Alerts fire on the things automation cannot resolve (sustained
+queue depth that scaling isn't clearing, error rates, storage approaching its
+limit) rather than on capacity, which now handles itself.
+
+The queue-depth alert is the one to get right. It's the signal that your
+autoscaler has hit a ceiling it cannot pass, whether that's a quota, a node
+pool's maximum, or an exhausted spot market. Everything else is noise by
+comparison.
+
+## Common questions [#common-questions]
+
+<Accordions>
+
+<Accordion title="Can I autoscale the CAS the same way?" id="can-i-autoscale-the-cas-the-same-way">
+
+More carefully. Workers are stateless and cheap to churn; the CAS holds the data
+everything else is asking for. Stateless CAS replicas in front of one shared
+backing store scale on request rate, but a local filesystem tier is warm state
+that a new replica does not have, so scaling in throws away cache locality.
+Scale it slowly, and prefer bigger replicas over more of them.
+[Tuning](/operate/tuning) covers the storage path.
+
+</Accordion>
+
+<Accordion title="What happens to an action when its worker is preempted?" id="what-happens-to-an-action-when-its-worker-is-preempted">
+
+The scheduler notices the worker stop keepaliving within `worker_timeout_s`,
+increments the action's attempt count, clears its worker affinity, and requeues
+it. Any worker can pick it up. Once the attempt count passes `max_job_retries`
+the action completes with an error saying it attempted to execute too many
+times, so a systematically failing action does not requeue forever.
+
+</Accordion>
+
+<Accordion title="Is one scheduler enough?" id="is-one-scheduler-enough">
+
+For most deployments, yes: the scheduler does bookkeeping, not the expensive
+work, and it fails over by restarting. The reasons to want more are availability
+across zones and not wanting a restart to drop the in-flight queue. Both point
+at the Redis backend, whose name says `experimental` and which stops emitting the
+queue metric. That trade is the current state of the art here.
+
+</Accordion>
+
+<Accordion title="How aggressively should workers scale in?" id="how-aggressively-should-workers-scale-in">
+
+Less aggressively than they scale out. Scaling out has a bounded cost, a
+machine you briefly didn't need. Scaling in during a lull that ends thirty
+seconds later costs a cold start on every action that arrives next. Generous
+scale-up, patient scale-down.
+
+</Accordion>
+
+<Accordion title="Do I need Prometheus, or can I use my existing vendor?" id="do-i-need-prometheus-or-can-i-use-my-existing-vendor">
+
+Anything that ingests OTLP works, and the collector can fan out to several
+destinations at once. Prometheus appears throughout the examples because the
+recording rules and the HPA external-metrics adapter are expressed in it, but the
+requirement is OTLP ingestion plus something an autoscaler can query, not
+Prometheus specifically.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/operate/tuning" title="Tuning">
+  The levers underneath all of this: worker sizing, the storage path, and what
+  to change when the queue is deep.
+</NextStep>
+
+<NextStep href="/operate/observability" kind="aside" title="Observability">
+  Getting the telemetry out of the binary and into something that can act on
+  it, which is the prerequisite for every scaling decision here.
+</NextStep>

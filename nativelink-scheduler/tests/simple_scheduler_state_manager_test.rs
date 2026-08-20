@@ -3,21 +3,25 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use futures::StreamExt;
 use mock_instant::thread_local::MockClock;
-use nativelink_error::Error;
+use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_scheduler::awaited_action_db::AwaitedAction;
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
 use nativelink_scheduler::worker_registry::WorkerRegistry;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier, OperationId,
-    WorkerId,
+    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
+    OperationId, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
+use nativelink_util::operation_state_manager::{
+    ClientStateManager, MatchingEngineStateManager, OperationFilter, OperationStageFlags,
+    UpdateOperationType, WorkerStateManager,
+};
 use tokio::sync::Notify;
 
 #[nativelink_test]
@@ -64,10 +68,9 @@ fn make_system_time(add_time: u64) -> SystemTime {
         .unwrap()
 }
 
-/// An action already assigned to `worker_id` and executing since `started`.
-fn executing_action(worker_id: &WorkerId, started: SystemTime) -> AwaitedAction {
+fn action_info(started: SystemTime) -> ActionInfo {
     let action_digest = DigestInfo::zero_digest();
-    let action_info = ActionInfo {
+    ActionInfo {
         command_digest: action_digest,
         input_root_digest: action_digest,
         timeout: Duration::ZERO,
@@ -80,7 +83,13 @@ fn executing_action(worker_id: &WorkerId, started: SystemTime) -> AwaitedAction 
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
         }),
-    };
+    }
+}
+
+/// An action already assigned to `worker_id` and executing since `started`.
+fn executing_action(worker_id: &WorkerId, started: SystemTime) -> AwaitedAction {
+    let action_info = action_info(started);
+    let action_digest = action_info.digest();
     let operation_id = OperationId::default();
     let mut action = AwaitedAction::new(operation_id.clone(), Arc::new(action_info), started);
     action.worker_set_state(
@@ -277,6 +286,111 @@ async fn eventually_times_out_an_orphan() -> Result<(), Error> {
     assert!(
         state_mgr.should_timeout_operation(&action).await,
         "an orphaned action must still be reaped on max_action_executing_timeout_s"
+    );
+    Ok(())
+}
+
+/// The worker scheduler asks this to decide whether a worker should be told
+/// to kill an operation, so it must be false for every way an operation can
+/// leave a worker: requeued, reassigned, finished, or gone.
+#[nativelink_test]
+async fn is_executing_on_worker_follows_the_assignment() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    let worker_id = WorkerId::from(String::from("worker"));
+    let other_worker_id = WorkerId::from(String::from("other-worker"));
+
+    let _client_listener = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+    let operation_id = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .next()
+    .await
+    .expect("the queued operation")
+    .as_state()
+    .await?
+    .0
+    .client_operation_id
+    .clone();
+
+    // Queued: on nobody.
+    assert!(
+        !state_mgr
+            .is_executing_on_worker(&operation_id, &worker_id)
+            .await?
+    );
+
+    state_mgr
+        .assign_operation(&operation_id, Ok(&worker_id))
+        .await?;
+    assert!(
+        state_mgr
+            .is_executing_on_worker(&operation_id, &worker_id)
+            .await?
+    );
+    assert!(
+        !state_mgr
+            .is_executing_on_worker(&operation_id, &other_worker_id)
+            .await?
+    );
+
+    // Requeued (a timeout), then picked up by another worker.
+    state_mgr
+        .assign_operation(
+            &operation_id,
+            Err(make_err!(Code::DeadlineExceeded, "timed out")),
+        )
+        .await?;
+    assert!(
+        !state_mgr
+            .is_executing_on_worker(&operation_id, &worker_id)
+            .await?
+    );
+    state_mgr
+        .assign_operation(&operation_id, Ok(&other_worker_id))
+        .await?;
+    assert!(
+        !state_mgr
+            .is_executing_on_worker(&operation_id, &worker_id)
+            .await?
+    );
+    assert!(
+        state_mgr
+            .is_executing_on_worker(&operation_id, &other_worker_id)
+            .await?
+    );
+
+    // Finished.
+    state_mgr
+        .update_operation(
+            &operation_id,
+            &other_worker_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                ActionResult::default(),
+            )),
+        )
+        .await?;
+    assert!(
+        !state_mgr
+            .is_executing_on_worker(&operation_id, &other_worker_id)
+            .await?
+    );
+
+    // Never existed.
+    assert!(
+        !state_mgr
+            .is_executing_on_worker(&OperationId::default(), &worker_id)
+            .await?
     );
     Ok(())
 }

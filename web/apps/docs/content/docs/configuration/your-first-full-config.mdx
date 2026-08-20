@@ -1,0 +1,429 @@
+---
+title: Your first full config
+description: An empty file to a running cache-and-execution cluster, one block at a time, checking after each.
+---
+
+{/* archetype: tutorial, see /web/apps/docs/templates/tutorial.mdx */}
+
+**Who this is for:** anyone who has read the rest of this section and wants to
+prove it by writing a config from nothing. **What you'll have at the end:** a
+single-process NativeLink serving a cache and executing actions, from a file
+you wrote yourself and can explain line by line. **Time:** about an hour.
+
+<Prerequisites>
+  The four previous pages in [Configuration](/configuration): the config file, stores, servers and services, and the scheduler and workers.
+</Prerequisites>
+
+Everything here runs in one process on one machine. That's deliberate: it
+keeps every name resolvable in one file, so when something is wrong the
+feedback is immediate. The same blocks split across machines unchanged; see
+[Production configuration](/operate/production-config) once this works.
+
+## Before you start [#before-you-start]
+
+You need the `nativelink` binary and a writable directory. This walkthrough
+uses `/tmp/nativelink`; if you use somewhere else, keep the **content path and
+the work directory on the same filesystem**, because the worker hard-links
+between them.
+
+```sh
+mkdir -p /tmp/nativelink/data /tmp/nativelink/work
+```
+
+## Step 1: Two stores and a listener [#step-1--two-stores-and-a-listener]
+
+Start a file called `my-config.json5`. The smallest useful NativeLink is a
+cache: two stores and one server.
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-cas",
+        temp_path: "/tmp/nativelink/data/tmp_path-cas",
+        eviction_policy: { max_bytes: 10000000000 }, // 10 GB
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-ac",
+        temp_path: "/tmp/nativelink/data/tmp_path-ac",
+        eviction_policy: { max_bytes: 500000000 }, // 500 MB
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: { socket_address: "0.0.0.0:50051" },
+      },
+      services: {
+        cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+        ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+        bytestream: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+        capabilities: [{ instance_name: "main" }],
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+    default_digest_hash_function: "sha256",
+  },
+}
+```
+
+Run it:
+
+```sh
+nativelink ./my-config.json5
+```
+
+<VerifyBlock title="Step 1 is right if">
+
+- The process starts and logs `Ready, listening on 0.0.0.0:50051`.
+- `/tmp/nativelink/data/` now contains a content and a temp directory for
+  each store (plus a `content_path-*.exec` sibling on Unix), all empty apart
+  from their `s/` and `d/` subdirectories.
+- Deliberately misspelling `eviction_policy` and re-running makes it exit
+  immediately, naming the key it didn't recognise.
+
+</VerifyBlock>
+
+That last check is worth actually doing once. It's the fastest feedback loop
+you have while editing configs, and knowing what the failure looks like means
+you'll recognise it later.
+
+## Step 2: Point a build at it [#step-2--point-a-build-at-it]
+
+Nothing about the config changes here, but proving the cache works before
+adding execution keeps the next failure unambiguous.
+
+For Bazel, in `.bazelrc`:
+
+```text
+build --remote_cache=grpc://localhost:50051
+build --remote_instance_name=main
+startup --digest_function=sha256
+```
+
+Build something twice. The second build should report remote cache hits.
+
+<VerifyBlock title="Step 2 is right if">
+
+- The first build uploads: `content_path-cas` grows.
+- The second build reports remote cache hits and finishes faster.
+- `--remote_instance_name` matches the `instance_name` in the config. If it
+  doesn't, the server rejects every cache call with `'instance_name' not
+  configured for '<name>'`, which Bazel reports as remote cache warnings and
+  zero hits.
+
+</VerifyBlock>
+
+<Callout type="info" title="Other build tools">
+  [Connect your build](/getting-started/connect-your-build) covers the
+  equivalent flags for Buck2, CMake, Goma-family clients, and others. The
+  config is the same either way.
+</Callout>
+
+## Step 3: Add a scheduler [#step-3--add-a-scheduler]
+
+Execution needs a queue. Add a `schedulers` array beside `stores`:
+
+```json5
+schedulers: [
+  {
+    name: "MAIN_SCHEDULER",
+    simple: {
+      supported_platform_properties: {
+        cpu_count: "minimum",
+        OSFamily: "exact",
+        "container-image": "priority",
+      },
+    },
+  },
+],
+```
+
+Three keys is enough to start. `cpu_count` lets an action ask for a machine of
+a certain size, `OSFamily` stops a Linux action landing on a macOS worker, and
+`container-image` is carried through to the worker without being matched on.
+
+Restart. Nothing observable changes yet: the scheduler exists but nothing
+reaches it, and no worker has joined.
+
+## Step 4: Expose execution, on two ports [#step-4--expose-execution-on-two-ports]
+
+Now wire the scheduler in. Add `execution` to the public server, give
+`capabilities` a `remote_execution` block, and add a **second server** for the
+worker API:
+
+```json5
+servers: [
+  {
+    name: "public",
+    listener: { http: { socket_address: "0.0.0.0:50051" } },
+    services: {
+      cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+      bytestream: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+      execution: [{
+        instance_name: "main",
+        cas_store: "CAS_MAIN_STORE",
+        scheduler: "MAIN_SCHEDULER",
+      }],
+      capabilities: [{
+        instance_name: "main",
+        remote_execution: { scheduler: "MAIN_SCHEDULER" },
+      }],
+    },
+  },
+  {
+    name: "private_workers_servers",
+    listener: { http: { socket_address: "0.0.0.0:50061" } },
+    services: {
+      worker_api: { scheduler: "MAIN_SCHEDULER" },
+      admin: {},
+      health: {},
+    },
+  },
+],
+```
+
+The `remote_execution` block on `capabilities` is the part that's often
+forget. Without it, clients are told this endpoint caches but does not
+execute, and they'll never send an `Execute` call to find out otherwise.
+
+<VerifyBlock title="Step 4 is right if">
+
+- Two listeners come up: `:50051` and `:50061`.
+- `curl http://localhost:50061/status` answers.
+- Nothing client-facing is served on `:50061`. That port is the security
+  boundary from
+  [Servers and services](/configuration/servers-and-services).
+
+</VerifyBlock>
+
+## Step 5: Add a worker [#step-5--add-a-worker]
+
+A worker needs a `fast_slow` store with a filesystem fast tier. Replace
+`CAS_MAIN_STORE` with one:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  fast_slow: {
+    fast: {
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-cas",
+        temp_path: "/tmp/nativelink/data/tmp_path-cas",
+        eviction_policy: { max_bytes: 10000000000 },
+      },
+    },
+    slow: { noop: {} },
+  },
+},
+```
+
+The `noop` slow tier looks strange and is correct here: workers *require* a
+`fast_slow` store, and in a single-process deployment the fast tier already is
+the storage. In a fleet, `slow` becomes a `grpc` store pointing at the shared
+CAS.
+
+Then add the `workers` array:
+
+```json5
+workers: [
+  {
+    local: {
+      name: "WORKER_1",
+      worker_api_endpoint: {
+        uri: "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
+      },
+      cas_fast_slow_store: "CAS_MAIN_STORE",
+      upload_action_result: { ac_store: "AC_MAIN_STORE" },
+      work_directory: "/tmp/nativelink/work",
+      platform_properties: {
+        cpu_count: { query_cmd: "nproc" },
+        OSFamily: { values: ["linux"] },
+        "container-image": { values: [""] },
+      },
+    },
+  },
+],
+```
+
+Every key the scheduler declared as `minimum` or `exact` is here. That is the
+contract, and it is the single most common thing to get wrong.
+
+Restart.
+
+<VerifyBlock title="Step 5 is right if">
+
+- The logs show `Worker registered with scheduler` with the worker id it was
+  assigned.
+- `content_path-cas` and `/tmp/nativelink/work` are on the same filesystem:
+  `df /tmp/nativelink/data /tmp/nativelink/work` reports the same device.
+- `/tmp/nativelink/work` is empty; the worker purges it on startup.
+
+</VerifyBlock>
+
+## Step 6: Execute something [#step-6--execute-something]
+
+Point the build at execution rather than just the cache:
+
+```text
+build --remote_executor=grpc://localhost:50051
+build --remote_instance_name=main
+build --remote_default_exec_properties=OSFamily=linux
+startup --digest_function=sha256
+```
+
+<VerifyBlock title="You did it right if">
+
+- The build reports actions running remotely, not `0 remote`.
+- The worker logs actions starting and finishing.
+- A second build of the same targets hits the action cache instead of
+  executing, proving `upload_action_result` is wired up.
+
+</VerifyBlock>
+
+If actions queue instead of running, the properties don't line up.
+[Platform properties](/remote-execution/platform-properties) is the page for
+that, and it is far more likely than anything being wrong with what you built
+here.
+
+## The finished file [#the-finished-file]
+
+<Accordions>
+
+<Accordion title="my-config.json5, complete" id="my-configjson5-complete">
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data/content_path-cas",
+            temp_path: "/tmp/nativelink/data/tmp_path-cas",
+            eviction_policy: { max_bytes: 10000000000 },
+          },
+        },
+        slow: { noop: {} },
+      },
+    },
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-ac",
+        temp_path: "/tmp/nativelink/data/tmp_path-ac",
+        eviction_policy: { max_bytes: 500000000 },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          OSFamily: "exact",
+          "container-image": "priority",
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        name: "WORKER_1",
+        worker_api_endpoint: {
+          uri: "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
+        },
+        cas_fast_slow_store: "CAS_MAIN_STORE",
+        upload_action_result: { ac_store: "AC_MAIN_STORE" },
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: {
+          cpu_count: { query_cmd: "nproc" },
+          OSFamily: { values: ["linux"] },
+          "container-image": { values: [""] },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: { http: { socket_address: "0.0.0.0:50051" } },
+      services: {
+        cas: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+        ac: [{ instance_name: "main", ac_store: "AC_MAIN_STORE" }],
+        bytestream: [{ instance_name: "main", cas_store: "CAS_MAIN_STORE" }],
+        execution: [{
+          instance_name: "main",
+          cas_store: "CAS_MAIN_STORE",
+          scheduler: "MAIN_SCHEDULER",
+        }],
+        capabilities: [{
+          instance_name: "main",
+          remote_execution: { scheduler: "MAIN_SCHEDULER" },
+        }],
+      },
+    },
+    {
+      name: "private_workers_servers",
+      listener: { http: { socket_address: "0.0.0.0:50061" } },
+      services: {
+        worker_api: { scheduler: "MAIN_SCHEDULER" },
+        admin: {},
+        health: {},
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+    default_digest_hash_function: "sha256",
+  },
+}
+```
+
+</Accordion>
+
+</Accordions>
+
+Compare it with `nativelink-config/examples/basic_cas.json5` in the source
+tree. The differences are instructive: the shipped example registers every
+service twice, under `instance_name: ""` and `"main"`, so clients that omit
+the instance name also work, and it declares nineteen platform properties
+rather than three.
+
+## What this is not yet [#what-this-is-not-yet]
+
+This config is correct and it is not production. Four things are missing, and
+each has a page:
+
+- **Durability.** A `noop` slow tier means the cache is exactly as durable as
+  `/tmp`. [Production configuration](/operate/production-config).
+- **Separation.** One process is one failure domain, and one machine's worth of
+  execution capacity. [Deploy on bare metal](/operate/deploy-bare-metal).
+- **Security.** `0.0.0.0:50061` is bound to every interface with no
+  authentication. [Servers and services](/configuration/servers-and-services)
+  explains why that port matters most.
+- **Visibility.** Nothing here tells you hit rate, queue depth, or worker
+  health. [Observability](/operate/observability).
+
+<NextStep href="/how-to" title="How-to guides">
+  You can now read and write a config. These are the specific blocks that do
+  specific things: object storage, Redis, compression, chunking.
+</NextStep>
+
+<NextStep href="/operate/production-config" kind="aside" title="Production configuration">
+  The shape this evolves into once one process on one machine stops being
+  enough.
+</NextStep>

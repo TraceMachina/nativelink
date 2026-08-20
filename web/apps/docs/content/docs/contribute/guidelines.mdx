@@ -1,105 +1,221 @@
 ---
 title: Contribution guidelines
-description: How to land code in NativeLink — what we accept, how reviews work, what good PRs look like.
+description: What NativeLink accepts, the git setup it requires, and the commit and review conventions a PR is held to.
 ---
 
-NativeLink is source-available, module-aware in its licensing, and
-accepts contributions from anyone willing to follow these guidelines.
-We try to make the process predictable.
+{/* archetype: how-to. See /web/apps/docs/templates/how-to.mdx */}
 
-## What we accept
+**Who this is for:** anyone about to open their first pull request.
+**What you'll have at the end:** the git configuration the project
+requires, the commit conventions, and an accurate picture of how review
+works. **Time:** thirty minutes, most of it one-time setup.
 
-- **Bug fixes** with a regression test.
-- **Performance improvements** with reproducible benchmark numbers.
-- **New storage backends, schedulers, worker types** discussed in an
-  issue first.
-- **Documentation improvements** — including fixing the page you're
-  reading. Smaller is better.
-- **Tooling** that makes development or operations easier.
+NativeLink accepts contributions from anyone. The process is more specific
+than most projects' (signed commits, a fork, one commit per pull request,
+review in Reviewable rather than in GitHub's own UI), and the specificity is
+deliberate: it keeps `main` a linear history of signed, reviewable commits.
+<SourceLink file="CONTRIBUTING.md" symbol="CONTRIBUTING.md" />
+is the authoritative version; this page is the orientation around it.
 
-## What we don't
+## What gets accepted [#what-gets-accepted]
 
-- **Breaking changes to the Remote Execution API surface.** We track
-  the upstream spec; changes go there first.
-- **Vendor-specific code paths** that only one customer can use.
-- **"Refactoring for its own sake"** PRs. Refactor as part of a real
-  change.
+| Welcome | With a caveat |
+| --- | --- |
+| Bug fixes, with a regression test | |
+| Performance improvements | Bring reproducible numbers |
+| New stores, schedulers, worker types | Open an issue and agree the approach first |
+| Documentation fixes, including this page | Smaller is better |
+| Tooling that makes development or operations easier | |
 
-## Before opening a PR
+Three things reliably do not land: breaking changes to the Remote Execution
+API surface, which is an upstream spec the project tracks rather than owns;
+vendor-specific code paths only one deployment can use; and refactoring
+proposed on its own merits rather than as part of a change that needed it.
+
+If you want to work on an existing issue, **claim it by commenting first.**
+That is the only mechanism preventing two people from writing the same patch.
+
+## Git setup, once [#git-setup]
 
 <Steps>
   <li>
-    **Open an issue first** for anything bigger than a typo fix.
-    Describe the problem and the rough approach. We'll comment within
-    a business day.
+    **Create distinct authentication and signing keys** in your
+    [GitHub key settings](https://github.com/settings/keys). Two keys, not
+    one reused.
   </li>
   <li>
-    **Run the test suite locally.** `bazel test //...` or
-    `cargo test --workspace`. Both should pass.
+    **Fork the repository** and clone your fork, not upstream:
+
+    ```bash
+    git clone git@github.com:yourusername/nativelink
+    cd nativelink
+    git remote add upstream git@github.com:TraceMachina/nativelink
+    ```
+
+    `git remote -v` should show `origin` pointing at your fork and
+    `upstream` at `TraceMachina/nativelink`.
   </li>
   <li>
-    **Run the formatter and linter.** `cargo fmt --all` and
-    `cargo clippy --all-targets`. CI will reject anything that
-    doesn't.
-  </li>
-  <li>
-    **Sign your commits.** We require DCO (Developer Certificate of
-    Origin) on every commit — `git commit -s`.
+    **Configure git to sign every commit and tag.** In `~/.gitconfig`:
+
+    ```ini
+    [user]
+        name = Your Full Name
+        email = the-email-you-use-on-github@example.com
+        signingkey = ~/.ssh/your_private_signing_key
+
+    [gpg]
+        format = ssh   # or gpg, if you use a GPG key
+
+    [commit]
+        gpgsign = true
+
+    [tag]
+        gpgsign = true
+    ```
   </li>
 </Steps>
 
-## What good PRs look like
+<Callout type="warn" title="Signing is not a DCO sign-off">
+  NativeLink requires cryptographically **signed** commits, SSH or GPG, via
+  `commit.gpgsign`. It does not use a Developer Certificate of Origin
+  sign-off, so `git commit -s` alone will not satisfy the requirement.
+</Callout>
 
-- **One change per PR.** Small PRs land. Big PRs get split or
-  bounced.
-- **Title in the imperative.** "Fix scheduler retry loop on
-  disconnect" — not "Fixes" or "Fixing."
-- **Body answers *why*, not *what*.** The diff shows what; the body
-  explains the constraint or incident that motivated it.
-- **Tests for new behaviour.** Bug fix → regression test. Feature →
-  unit + integration coverage.
+Direct commits and human-created branches on `TraceMachina/nativelink` are
+not allowed, including for members of the organization. Everything arrives
+as a pull request from a fork.
 
-## Review process
+## The pull request loop [#the-pull-request-loop]
 
-- **First response within 2 business days.** If it's longer, ping us
-  in the PR.
-- **One reviewer per change.** Others sometimes chime in.
-- **Squash on merge.** Every merged PR is one commit on `main`.
+<Steps>
+  <li>
+    **Sync your fork**, then branch:
 
-## License
+    ```bash
+    git switch main
+    git pull -r upstream main
+    git push
+    git switch -c some-feature
+    ```
+  </li>
+  <li>
+    **Make one commit.** The title rules are enforced by review, not by a
+    hook, and they are short: start with a capital letter, use the
+    imperative, no trailing period, keep it as short as it can be, and put
+    detail in the body wrapped at 72 characters.
 
-By submitting a PR you agree your contribution is licensed under the
-license that applies to the file or module you are changing. Most of
-the repository is `FSL-1.1-Apache-2.0`; metrics and remote persistent
-workers are Business Source License modules. See the
-[license page](https://nativelink.com/license) for the practical
-summary. The DCO sign-off in your commit is the formal declaration.
+    ```text
+    Add some feature          ← good
+    Add some feature.         ← trailing period
+    Adds some feature         ← not imperative
+    Add X and also Y          ← "and" means this is two commits
+    ```
 
-Meaningful contributors may be eligible for license waivers for
-Business Source License modules. Open an issue or contact the
-maintainers before depending on a waiver.
+    The word "and" in a title is the signal to split the commit.
+  </li>
+  <li>
+    **Push and open the PR** from your fork, then click the purple
+    **Reviewable** button on the GitHub page to add reviewers with
+    `+@somereviewer`. Review conversation happens there.
+  </li>
+  <li>
+    **Revise with `--amend`, not a follow-up commit.**
 
-## FAQ
+    ```bash
+    git commit --amend
+    git push -f
+    ```
+
+    Reviewable keeps the diff between commit versions visible, so nothing is
+    lost by rewriting, and the branch stays one commit, which is what lands.
+  </li>
+</Steps>
+
+## Before you push [#before-you-push]
+
+```bash
+bazel test //...                                  # what CI runs
+pre-commit run -a                                 # hooks, vale, typos
+bazel run --config=rustfmt @rules_rust//:rustfmt  # formatting
+```
+
+<Callout type="warn" title="Stable `cargo fmt` is not the formatter">
+  `.rustfmt.toml` uses `group_imports` and `imports_granularity`, both
+  nightly-only. Stable `cargo fmt` ignores them silently and produces output
+  CI rejects. Use the Bazel target.
+</Callout>
+
+`cargo test --all --profile=smol` is the fast inner loop, but a green Cargo
+run is not a green CI: `bazel test` attaches rustfmt and clippy aspects that
+Cargo does not. See [the testing guide](/contribute/testing-guide) for what
+the suites contain and which local failures are environmental.
+
+## What reviewers look for [#what-reviewers-look-for]
+
+**One change per pull request.** Small ones land; large ones get split.
+
+**A body that explains why.** The diff already shows what changed. The body
+is where the constraint, the incident or the measurement goes.
+
+**Tests that match the change.** A bug fix wants a regression test; new
+behaviour wants both unit and integration coverage. No coverage
+percentage gate; the question is whether the new path is exercised, not
+whether a number moved.
+
+**Conventions followed rather than argued.** Most review feedback on a first
+contribution is about the house rules: the task macros instead of
+`tokio::spawn`, `#[expect(..., reason = "…")]` rather than a bare `#[allow]`,
+the `BUILD.bazel` `srcs` entry. [Codebase internals](/contribute/codebase-internals) is the page that
+gets you past those in one read.
+
+## Licensing [#licensing]
+
+Your contribution is licensed under the license that applies to the file or
+module you change. Most of the repository is `FSL-1.1-Apache-2.0`; a handful
+of files are Apache-2.0; and two areas,
+`nativelink-util/src/metrics.rs` and everything under
+`nativelink-worker/src/persistent_worker/`, are **Business Source
+License**. Copy the header from the file next to the one you are creating
+rather than from memory.
+
+Meaningful contributors may be eligible for license waivers on the Business
+Source License modules. Raise an issue or contact the maintainers before
+depending on one.
+
+## Common questions [#common-questions]
 
 <Accordions type="multiple">
   <Accordion title="Which dev workflow should I pick?" id="which-dev-workflow-should-i-pick">
-    [Cargo](/contribute/cargo) for small, localized changes — it's the
-    fastest way in. [Bazel](/contribute/bazel) when you want exactly what
-    CI runs. [Nix](/contribute/nix) for the fully-pinned shell, and
-    required for LRE work.
+    [Cargo](/contribute/cargo) for small localized changes, the fastest way
+    in. [Bazel](/contribute/bazel) when you want exactly what CI runs.
+    [Nix](/contribute/nix) for the pinned shell, required for LRE work and
+    for the generated `bazelrc` fragments.
   </Accordion>
-  <Accordion title="cargo test --workspace is green — why is CI red?" id="cargo-test-workspace-is-green-why-is-ci-red">
-    CI runs Bazel, and some crates are Bazel-only (the LRE flake outputs,
-    the Bazel-generated proto bindings). Run `bazel test //...` before
-    submitting if you touched anything Bazel-specific.
+  <Accordion title="My Cargo tests pass but CI is red." id="cargo-green-ci-red">
+    Two usual causes. A new source file missing from its crate's
+    `BUILD.bazel` `srcs` list, since Bazel enumerates where Cargo globs; or
+    formatting, because `bazel test` attaches a rustfmt aspect and stable
+    `cargo fmt` produces different output.
+  </Accordion>
+  <Accordion title="Do I sign with `git commit -s`?" id="do-i-sign-with-dash-s">
+    No. That adds a DCO trailer, which this project does not use. Configure
+    `commit.gpgsign = true` with an SSH or GPG signing key so commits are
+    cryptographically signed.
+  </Accordion>
+  <Accordion title="I need to change something after review started." id="change-after-review">
+    Amend and force-push. `git commit --amend && git push -f`. Reviewable
+    tracks the diff between commit versions, so reviewers can see exactly
+    what you changed without a follow-up commit polluting the history.
+  </Accordion>
+  <Accordion title="How long until someone looks at my PR?" id="how-long-until-review">
+    Every PR is reviewed by a core contributor, including PRs from core
+    contributors. No turnaround is published; if a PR goes quiet,
+    comment on it or ping in the Reviewable thread.
   </Accordion>
 </Accordions>
 
-## What's next
-
-Pick the dev environment that fits how you work:
-
-- [Develop with Bazel](/contribute/bazel) — the CI-canonical
-  setup.
-- [Develop with Cargo](/contribute/cargo) — plain Rust workflow.
-- [Develop with Nix](/contribute/nix) — fully hermetic shell.
+<NextStep href="/contribute/repo-crate-map" title="Repository and crate map">
+  Where your change actually goes: twelve crates, a strict layering, and the
+  six places the first guess is wrong.
+</NextStep>

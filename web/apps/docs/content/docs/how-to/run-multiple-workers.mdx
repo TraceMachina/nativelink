@@ -1,0 +1,371 @@
+---
+title: Run multiple workers
+description: "Add workers to a running NativeLink: how they share the CAS, how the scheduler matches them, and the two things about the shipped compose example that will mislead you."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone with remote execution working against one worker
+who now wants several. **What you'll have at the end:** three workers pulling
+from one queue, and a clear idea of how to make it thirty. **Time:** forty
+minutes.
+
+<Prerequisites>
+  A working scheduler and at least one worker. See [Remote execution](/remote-execution).
+</Prerequisites>
+
+One worker is a demonstration. The reason to add more is that the scheduler
+already assumes them: it holds a queue, and every worker that connects to the
+worker API announces what it can run and starts taking work off that queue.
+Nothing about adding the second worker is different from adding the tenth.
+
+What does need thought is the part that goes wrong most often: workers do not
+share a disk. They share the CAS, and they share it over gRPC.
+
+## The topology [#the-topology]
+
+Three roles, three kinds of process, on one network:
+
+<Mermaid>
+{`flowchart LR
+  C["Bazel client"] -->|":50051 CAS + AC"| CAS["CAS server"]
+  C -->|":50052 execution"| S["Scheduler"]
+  S -->|"grpc store"| CAS
+  W1["worker-1"] -->|":50061 worker API"| S
+  W2["worker-2"] -->|":50061 worker API"| S
+  W3["worker-3"] -->|":50061 worker API"| S
+  W1 -->|"grpc store"| CAS
+  W2 -->|"grpc store"| CAS
+  W3 -->|"grpc store"| CAS`}
+</Mermaid>
+
+The CAS server owns the bytes. The scheduler owns the queue. Workers own
+nothing durable. They are the disposable tier, which is exactly why they are
+the tier you scale.
+
+Each worker keeps a local filesystem cache in front of the shared CAS so that
+an input it has fetched once does not cross the network again. That is a
+`fast_slow` store whose `slow` half is a `grpc` store pointing at the CAS
+server. [Compose stores](/how-to/stores/compose-stores) covers the wrapper in
+general; this is its most load-bearing use.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="LocalWorkerConfig" />
+
+## What a worker config looks like [#what-a-worker-config-looks-like]
+
+```json5
+{
+  stores: [
+    {
+      name: "GRPC_CAS",
+      grpc: {
+        instance_name: "",
+        store_type: "cas",
+        endpoints: [
+          { address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051" },
+        ],
+      },
+    },
+    {
+      name: "GRPC_AC",
+      grpc: {
+        instance_name: "",
+        store_type: "ac",
+        endpoints: [
+          { address: "grpc://${CAS_ENDPOINT:-127.0.0.1}:50051" },
+        ],
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        fast: {
+          filesystem: {
+            content_path: "/root/.cache/nativelink/content_path-cas",
+            temp_path: "/root/.cache/nativelink/tmp_path-cas",
+            eviction_policy: { max_bytes: 10000000000 },
+          },
+        },
+        slow: { ref_store: { name: "GRPC_CAS" } },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: { ac_store: "GRPC_AC" },
+        work_directory: "/root/.cache/nativelink/work",
+        platform_properties: {
+          cpu_count: { query_cmd: "nproc" },
+          OSFamily: { values: [""] },
+          "container-image": { values: [""] },
+          ISA: { values: ["x86-64"] },
+        },
+      },
+    },
+  ],
+  servers: [],
+}
+```
+
+`servers: []` is not an oversight. A worker listens on nothing; it dials out to
+the scheduler's worker API and to the CAS. That is why the worker tier needs no
+ingress, no certificates and no load balancer, and why it is safe to run many
+of them on machines that are otherwise unreachable.
+
+Every worker can run this identical file. The only things that must differ per
+worker are the paths, and only because two processes on the same host would
+otherwise collide.
+
+<Callout type="warn" title="`work_directory` is deleted at startup">
+  A worker removes its `work_directory` and recreates it every time it starts.
+  Point it somewhere that exists only for this purpose, never at a directory
+  that holds anything you want to keep, and never at a path two workers on the
+  same host both use.
+</Callout>
+
+## How the scheduler picks a worker [#how-the-scheduler-picks-a-worker]
+
+The scheduler will only send an action to a worker whose advertised
+`platform_properties` satisfy the action's platform requirements, and it will
+only consider property keys listed in its own
+`supported_platform_properties`:
+
+```json5
+schedulers: [
+  {
+    name: "MAIN_SCHEDULER",
+    simple: {
+      supported_platform_properties: {
+        cpu_count: "minimum",
+        OSFamily: "priority",
+        "container-image": "priority",
+        ISA: "exact",
+      },
+    },
+  },
+],
+```
+
+The value is the matching rule. `exact` means the strings must be equal.
+`minimum` means the worker's number must be at least what the action asks for,
+which is what makes `cpu_count` usable as a sizing hint. `priority` does not
+restrict matching at all: the worker only has to advertise the key, and the
+value is passed to the worker as information. Despite the name, the scheduler
+does not currently use it to prefer one worker over another. `ignore` lets an
+action request a key without requiring the worker to have it.
+
+A key an action requests that the scheduler does not list is a key the
+scheduler cannot match on: matching that action fails with `Unknown platform
+property`, and the usual symptom is an action that queues forever while idle
+workers sit next to it. A worker that advertises a key the scheduler does not
+list is rejected when it connects.
+
+<SourceLink file="nativelink-config/src/schedulers.rs" symbol="PropertyType" />
+
+[Platform properties](/remote-execution/platform-properties) is the page for
+that contract; this page only needs you to know that every worker in a pool
+should advertise the same keys.
+
+## Scaling the pool [#scaling-the-pool]
+
+Workers are stateless, so growing the pool is adding processes. Three things
+scale with them and are worth watching before you double the count.
+
+The CAS server is now serving every input to every worker. It is the first
+thing to saturate, and [Tuning](/operate/tuning) has the storage levers for it.
+Give each worker a large enough local `fast` tier and most reads never reach
+it.
+
+The scheduler holds one queue and matches against every connected worker. It is
+CPU-cheap but not free, and it is a single point of failure until you give it a
+shared store.
+
+Disk on each worker host is consumed by the `fast` tier plus the work
+directory of every action in flight. `max_bytes` bounds the first and nothing
+bounds the second, so leave headroom.
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Split the processes** if you have not already: one CAS server, one
+scheduler, workers separately. A single all-in-one config cannot become a
+multi-worker deployment without this.
+
+</li>
+
+<li>
+
+**Put the scheduler's worker API on its own listener**, conventionally
+`:50061`, separate from the client-facing `:50052`. It is a backend API with a
+different trust level.
+
+</li>
+
+<li>
+
+**Write one worker config** with a `fast_slow` store over a `grpc` store, and
+confirm it works with a single worker before adding any others.
+
+</li>
+
+<li>
+
+**Start two more workers** from the same config, giving each its own
+`content_path`, `temp_path` and `work_directory` if they share a host.
+
+</li>
+
+<li>
+
+**Run a build with high parallelism** (`--jobs=50` or so) and confirm the
+actions land across all three.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Each worker logs `Worker registered with scheduler` at startup, and the
+  scheduler's `worker.connected.count` metric reads three rather than one.
+- A build with high `--jobs` shows actions executing on more than one worker.
+- Stopping one worker mid-build does not fail the build. Its actions are
+  retried elsewhere.
+- Each worker's local `content_path` grows and then plateaus at its
+  `max_bytes`, rather than growing without bound.
+
+</VerifyBlock>
+
+## The shipped example, and where its README misleads [#the-shipped-example-and-where-its-readme-misleads]
+
+`deployment-examples/docker-compose/` contains a working three-worker
+deployment: `docker-compose-multi-worker.yml` with
+`cas-server-multi-worker.json5`, `scheduler-multi-worker.json5` and
+`worker-shared-cas.json5`. Start there. Two things in and around it will send
+you the wrong way.
+
+**The `MULTI_WORKER.md` advice to share a CAS volume is not what the shipped
+config does.** That document tells you all workers must mount the same
+`cas-data` volume and share a `content_path`. The worker config next to it does
+not do that. It uses a worker-local filesystem tier over a `grpc` store, which
+is the correct design, and it writes to a path the shared volume does not even
+cover. Workers share the CAS by talking to the CAS server. A shared filesystem
+between workers is neither required nor sufficient, and on anything other than
+one host it is not available.
+
+You will also see this line in every worker's log at startup (the quoted name
+is the worker's `name`, which the shipped config leaves empty):
+
+```
+Starting worker ''. IMPORTANT: If running multiple workers, all workers must
+share the same CAS storage path to avoid 'Object not found' errors.
+```
+
+It is unconditional (every worker prints it, including a single worker) and
+it is describing the same stale advice. If your workers reach one CAS server
+over gRPC, you have satisfied the requirement it is gesturing at.
+
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="new_local_worker" />
+
+**The healthchecks in the compose file probe a path that isn't served.** Both
+services healthcheck `http://localhost:PORT/status`, but `/status` only exists
+when that server's `services` block includes `health`. Neither the CAS config
+nor the scheduler's client-facing listener has one. Add `health: {}` to the
+services on the port you're probing, or drop the healthcheck.
+
+<Callout type="info" title="`--scale` needs a differently shaped compose file">
+  `docker compose up -d --scale worker=5` only works against a service literally
+  named `worker`. The shipped file declares `worker-1`, `worker-2` and
+  `worker-3` as three separate services, so scaling it means collapsing them
+  into one service without per-worker volume mounts, at which point each
+  replica needs its paths derived from something unique rather than hardcoded.
+</Callout>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Workers connect but never receive actions" id="workers-connect-but-never-receive-actions">
+
+Almost always the platform properties. Compare the keys the worker advertises
+against `supported_platform_properties` on the scheduler and against what the
+client requests: a key the scheduler doesn't list can't be matched on, and a
+key the worker doesn't advertise excludes it from anything requiring that key.
+Check the scheduler log for the queue depth: actions queuing while workers
+idle is the signature.
+
+</Accordion>
+
+<Accordion title="`Object not found in either fast or slow store`" id="object-not-found-in-either-fast-or-slow-store">
+
+The worker cannot reach the blob through its `slow` store. Check that the
+`grpc` store's address resolves from inside the worker (a container name that
+works on the host network usually doesn't) and that the CAS server is the
+same one the client uploaded to. This error also appears when the scheduler and
+the workers point at different CAS servers.
+
+</Accordion>
+
+<Accordion title="Two workers on one host interfere with each other" id="two-workers-on-one-host-interfere-with-each-other">
+
+They are sharing `work_directory`, `content_path` or `temp_path`. The work
+directory is the worst of the three, because it is deleted and recreated at
+startup: the second worker to start wipes the first one's in-flight actions.
+Give each process its own paths.
+
+</Accordion>
+
+<Accordion title="Adding workers made builds slower" id="adding-workers-made-builds-slower">
+
+You have moved the bottleneck to the CAS server, which is now serving inputs to
+every worker. Confirm by watching its network and disk while a build runs.
+Raising each worker's `fast` tier `max_bytes` cuts the read traffic; past that
+it is a CAS scaling problem.
+
+</Accordion>
+
+<Accordion title="Workers keep dropping and reconnecting" id="workers-keep-dropping-and-reconnecting">
+
+Check `worker_api_endpoint.timeout` on the worker against `worker_timeout_s`
+on the scheduler, and any proxy or load balancer between the two. The worker
+sends a `KeepAlive` RPC every `timeout / 2` (default timeout 5 seconds), and
+the scheduler evicts a worker it has not heard from within `worker_timeout_s`
+(default 5 seconds), so a hop that delays or drops those RPCs looks like a
+flapping worker. HTTP/2 keepalive pings on this listener come from
+`advanced_http.http2_keep_alive_interval` on the scheduler's worker API
+`servers` entry. The worker API is a long-lived streaming connection, not a
+series of requests.
+
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="start_keep_alive" />
+
+</Accordion>
+
+<Accordion title="Can workers run on different architectures?" id="can-workers-run-on-different-architectures">
+
+Yes, and this is what `ISA` and `OSFamily` are for. Advertise the real values
+on each worker and set `ISA` to `exact` on the scheduler, so an action built
+for `x86-64` never lands on an `aarch64` worker. A pool of mixed architectures
+with everything advertising the same values is a way to get silent, confusing
+build failures.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/operate/tuning" title="Tuning">
+  The worker and storage levers that matter once the pool is large enough to
+  push something to its limit.
+</NextStep>
+
+<NextStep href="/remote-execution/platform-properties" kind="aside" title="Platform properties">
+  The matching contract in full, and the single most common reason an action never
+  gets scheduled.
+</NextStep>

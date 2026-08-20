@@ -1,0 +1,547 @@
+---
+title: Compose stores
+description: The wrapper vocabulary (fast_slow, verify, dedup, existence_cache, size_partitioning, shard and the rest) and the order the layers have to go in.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone who has picked a backend and now needs it to be
+fast, cheap and trustworthy. **What you'll have at the end:** a layered store
+you can explain line by line, and the vocabulary to read anyone else's config.
+**Time:** thirty minutes.
+
+<Prerequisites>
+  A config file with at least one backend in it. See [Storage backends](/how-to/stores).
+</Prerequisites>
+
+Most store types in NativeLink are not places to put bytes. They are wrappers:
+each one takes another store and changes something about how it behaves. A real
+CAS store is four or five of these nested inside each other, and the nesting
+order is the design.
+
+The things at the bottom of the nesting are the backends:
+[filesystem](/how-to/stores/filesystem),
+[S3 and compatible](/how-to/stores/s3-and-compatible),
+[GCS](/how-to/stores/gcs), [Azure Blob](/how-to/stores/azure),
+[OCI](/how-to/stores/oci-object-storage), [Redis](/how-to/stores/redis),
+[Mongo](/how-to/stores/mongo), each with a page of its own under
+[Storage backends](/how-to/stores). Everything on this page goes above them.
+
+## The two ways stores refer to each other [#the-two-ways-stores-refer-to-each-other]
+
+A wrapper can hold its inner store inline:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  verify: {
+    verify_size: true,
+    verify_hash: true,
+    backend: {
+      filesystem: {
+        content_path: "/var/lib/nativelink/cas/content",
+        temp_path: "/var/lib/nativelink/cas/tmp",
+        eviction_policy: { max_bytes: "50gb" },
+      },
+    },
+  },
+},
+```
+
+Or it can name a store defined elsewhere in the `stores` array, with
+`ref_store`:
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    verify: {
+      verify_size: true,
+      verify_hash: true,
+      backend: { ref_store: { name: "CAS_DISK" } },
+    },
+  },
+  {
+    name: "CAS_DISK",
+    filesystem: {
+      content_path: "/var/lib/nativelink/cas/content",
+      temp_path: "/var/lib/nativelink/cas/tmp",
+      eviction_policy: { max_bytes: "50gb" },
+    },
+  },
+],
+```
+
+Both configs describe the same thing. Order in the array does not matter, because
+`ref_store` is resolved after every entry is read, so a store may reference one
+defined below it. Reach for `ref_store` when two stores genuinely share one
+backend, or when nesting has got deep enough to be unreadable.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
+
+## The wrappers [#the-wrappers]
+
+### `fast_slow`: a tier in front of a tier [#fast_slow--a-tier-in-front-of-a-tier]
+
+The single most important wrapper. Reads try `fast` first and fall through to
+`slow` on a miss, populating `fast` as they go. Writes go to both.
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  fast_slow: {
+    fast: {
+      filesystem: {
+        content_path: "/var/lib/nativelink/cas/content",
+        temp_path: "/var/lib/nativelink/cas/tmp",
+        eviction_policy: { max_bytes: "50gb", evict_bytes: "5gb" },
+      },
+    },
+    slow: {
+      experimental_cloud_object_store: {
+        provider: "aws",
+        region: "us-east-1",
+        bucket: "my-nativelink-cas",
+        key_prefix: "cas/",
+      },
+    },
+  },
+},
+```
+
+Two knobs are worth knowing. `fast_direction` and `slow_direction` restrict
+what each half participates in: `update` means writes land here but reads
+never consult it, which only makes sense on the fast half; `get`, `read_only`
+and the default `both` do what they sound like.
+
+`bypass_dedup_threshold_bytes` makes reads at or above a given size skip the
+fast tier entirely and stream straight from `slow`. It defaults to `0`, which
+disables the bypass; 256 MiB is a reasonable starting point if huge artifacts
+are evicting everything useful out of your fast tier.
+
+### `verify`: refuse to store corruption [#verify--refuse-to-serve-corruption]
+
+Checks the size and hash of an upload against the digest it is filed under,
+and rejects the write on a mismatch. Reads pass straight through to the
+backend unchecked, so this protects what enters the store, not what a backend
+later hands back.
+
+<SourceLink file="nativelink-store/src/verify_store.rs" symbol="VerifyStore" />
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  verify: {
+    verify_size: true,
+    verify_hash: true,
+    backend: { ref_store: { name: "CAS_DISK" } },
+  },
+},
+```
+
+<Callout type="warn" title="Verify the CAS, not the Action Cache">
+  A CAS entry is addressed by the hash of its content, so both checks are
+  meaningful. An Action Cache entry is not: its key is the action digest, and
+  its value is a result message, so `verify_size` and `verify_hash` should both
+  be `false` for an AC store. Setting them true there rejects every valid
+  update.
+</Callout>
+
+### `completeness_checking`: the Action Cache wrapper [#completeness_checking--the-action-cache-wrapper]
+
+The AC's counterpart. Before returning an action result as a hit, it confirms
+every output digest that result references still exists in the CAS. Without it,
+a client gets a cache hit pointing at blobs that have since been evicted.
+
+```json5
+{
+  name: "AC_MAIN_STORE",
+  completeness_checking: {
+    backend: { ref_store: { name: "AC_DISK" } },
+    cas_store: { ref_store: { name: "CAS_MAIN_STORE" } },
+  },
+},
+```
+
+This is why the AC and CAS eviction policies are coupled in practice: evicting
+aggressively from the CAS quietly invalidates AC entries, and this wrapper is
+what turns that from a confusing build failure into a clean cache miss.
+
+### `existence_cache`: stop asking the same question [#existence_cache--stop-asking-the-same-question]
+
+Caches the answer to "does this digest exist" so `FindMissingBlobs` doesn't hit
+the backend for every blob of every build.
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  existence_cache: {
+    backend: { ref_store: { name: "CAS_SLOW" } },
+    eviction_policy: { max_seconds: 3600 },
+  },
+},
+```
+
+The `eviction_policy` here governs the existence *index*, not the data. It is
+a small map of digests, so it can hold far more entries than the store itself.
+This is the highest-leverage wrapper in front of object storage, where every
+existence check is a billed request.
+
+### `compression`: smaller on the backend [#compression--smaller-on-the-backend]
+
+Compresses blobs with LZ4 before they reach the wrapped store.
+
+```json5
+{
+  name: "CAS_SLOW_STORE",
+  compression: {
+    compression_algorithm: { lz4: {} },
+    backend: { ref_store: { name: "CAS_BUCKET" } },
+  },
+},
+```
+
+LZ4 is the only algorithm. `block_size` defaults to 64 KiB, and
+`max_decode_block_size` defaults to match it. The latter bounds how much a
+malformed block can ask the decoder to allocate, so raise it only alongside
+`block_size`.
+
+This is store-level compression, on the way to the backend. It is a different
+thing from [remote cache compression](/how-to/stores/compression), which
+compresses on the wire between the client and NativeLink. The two are
+independent and can both be on.
+
+### `dedup`: store the changed parts only [#dedup--store-the-changed-parts-only]
+
+Splits blobs into content-defined chunks, stores each chunk once, and keeps a
+per-blob index of which chunks it is made of.
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  dedup: {
+    index_store: { ref_store: { name: "FAST_INDEX" } },
+    content_store: { ref_store: { name: "CAS_BUCKET" } },
+    min_size: 65536,
+    normal_size: 262144,
+    max_size: 524288,
+  },
+},
+```
+
+`index_store` should be small and fast; `content_store` is the large slow one.
+The three size fields bound the chunker: `normal_size` is the target average,
+`min_size` and `max_size` are hard limits, and they default to 64 KiB, 256 KiB
+and 512 KiB. Every blob gets an index entry, even one small enough to be a
+single chunk; there is no size below which the store skips the index.
+
+<SourceLink file="nativelink-store/src/dedup_store.rs" symbol="DedupStore" />
+
+`max_concurrent_fetch_per_get` (default 10) bounds parallel chunk fetches.
+Worst-case memory per `get()` is about
+`max_concurrent_fetch_per_get × max_size`, so the defaults cost roughly 5 MB
+per in-flight read.
+
+### `size_partitioning`: route by blob size [#size_partitioning--route-by-blob-size]
+
+Sends everything under `size` to one store and everything at or above it to
+another.
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  size_partitioning: {
+    size: 262144,
+    lower_store: { ref_store: { name: "SMALL_OBJECT_STORE" } },
+    upper_store: { ref_store: { name: "DEDUPED_LARGE_STORE" } },
+  },
+},
+```
+
+The usual use is to keep small objects out of a `dedup` store, where the
+per-blob index costs more than the deduplication saves. The other use is a hard
+ceiling: point `upper_store` at `noop` and blobs above the threshold are
+discarded rather than stored.
+
+### `shard`: spread across several backends [#shard--spread-across-several-backends]
+
+Distributes blobs across stores by digest, weighted.
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  shard: {
+    stores: [
+      { store: { ref_store: { name: "SHARD_A" } }, weight: 1 },
+      { store: { ref_store: { name: "SHARD_B" } }, weight: 1 },
+      { store: { ref_store: { name: "SHARD_C" } }, weight: 2 },
+    ],
+  },
+},
+```
+
+A store's share is its `weight` divided by the sum of all weights, so `SHARD_C`
+above takes half. `weight` defaults to `1`, so an unweighted list is an even
+split.
+
+<Callout type="warn" title="Changing the shard set invalidates placement">
+  Blobs are placed by hashing against the current set of stores and weights.
+  Add, remove or reweight a shard and existing entries stop being looked for
+  where they were put. Treat a shard change as a cache flush.
+</Callout>
+
+### `cache_metrics`: measure one layer [#cache_metrics--measure-one-layer]
+
+Wraps a store to record hit rates and timings under a label:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  cache_metrics: {
+    cache_type: "cas",
+    backend: { ref_store: { name: "CAS_LAYERS" } },
+  },
+},
+```
+
+`cache_type` should be low-cardinality: `cas` or `ac`, not something per-user.
+The wrapper is opt-in: stores not wrapped by it are built without it and pay
+none of its hot-path timing cost. Wrap the layer whose behaviour you actually
+want to see, not every layer.
+
+### The three with nothing to configure [#the-three-with-nothing-to-configure]
+
+`memory` takes an `eviction_policy` and nothing else. It is the right fast half
+for a short-lived process and the wrong one for anything that must survive a
+restart.
+
+`grpc` points at another REAPI cache upstream, and can attach `headers` and
+forward selected headers from the incoming request. Use it to front an existing
+cache.
+
+`noop` takes nothing at all and discards everything written to it, reporting
+every read as a miss. It is how you deliberately turn a half of something off.
+
+## The order the layers go in [#the-order-the-layers-go-in]
+
+Reading a real config outside-in, each layer answers a different question:
+
+<Mermaid>
+{`flowchart TD
+  A["cache_metrics<br/>what is this layer doing?"] --> B["verify<br/>is this data what it claims?"]
+  B --> C["existence_cache<br/>do I have to ask the backend?"]
+  C --> D["dedup<br/>have I stored these chunks already?"]
+  D --> E["compression<br/>can each chunk be smaller?"]
+  E --> F["fast_slow<br/>is it already nearby?"]
+  F --> G["backend<br/>filesystem, bucket, redis, mongo"]`}
+</Mermaid>
+
+Four placements are load-bearing rather than stylistic.
+
+**`verify` goes outermost.** It checks an upload against the digest the client
+filed it under. Underneath compression or dedup, the bytes it sees are no
+longer the bytes the digest describes.
+
+**`existence_cache` goes above the expensive store, not below it.** Its whole
+purpose is to avoid a round trip, so anything between it and the backend is
+work it was meant to skip.
+
+**`dedup` goes above `compression`, never below it.** Compressed bytes of
+similar inputs are not similar, so a `dedup` store fed by a `compression`
+wrapper finds nothing to share. Put `compression` on the dedup store's
+`content_store`, as the full example below does.
+
+**`fast_slow` goes innermost, just above the backends.** Layers above it apply
+to both halves once, rather than being paid twice.
+
+## A full example [#a-full-example]
+
+The shipped GCS and Azure examples both use this shape, and it is a good
+default for a cloud-backed CAS:
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    verify: {
+      verify_size: true,
+      verify_hash: true,
+      backend: {
+        dedup: {
+          index_store: {
+            fast_slow: {
+              fast: {
+                filesystem: {
+                  content_path: "/data/index/content",
+                  temp_path: "/data/index/tmp",
+                  eviction_policy: { max_bytes: "500mb" },
+                },
+              },
+              slow: {
+                experimental_cloud_object_store: {
+                  provider: "gcs",
+                  bucket: "my-nativelink-cas",
+                  key_prefix: "index/",
+                },
+              },
+            },
+          },
+          content_store: {
+            compression: {
+              compression_algorithm: { lz4: {} },
+              backend: {
+                fast_slow: {
+                  fast: {
+                    filesystem: {
+                      content_path: "/data/content/content",
+                      temp_path: "/data/content/tmp",
+                      eviction_policy: { max_bytes: "2gb" },
+                    },
+                  },
+                  slow: {
+                    experimental_cloud_object_store: {
+                      provider: "gcs",
+                      bucket: "my-nativelink-cas",
+                      key_prefix: "cas/",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+],
+```
+
+Read outside-in: verify what we serve; dedup so we store each chunk once; keep
+the index on fast local disk backed by the bucket; compress the content;
+tier that over the bucket too.
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Start with the backend alone** and confirm it works. Every layer you add
+makes a failure harder to attribute.
+
+</li>
+
+<li>
+
+**Add `fast_slow`** with a local filesystem fast half, and confirm the second
+build is a hit with the fast tier emptied.
+
+</li>
+
+<li>
+
+**Add `verify`** to the CAS, and *not* to the Action Cache.
+
+</li>
+
+<li>
+
+**Add `completeness_checking`** to the Action Cache, pointing `cas_store` at
+the CAS store by name.
+
+</li>
+
+<li>
+
+**Add `existence_cache`** if the slow tier is object storage, and watch the
+request count rather than the byte count to see whether it helped.
+
+</li>
+
+<li>
+
+**Add `dedup` and `compression`** last, and only if artifact size is the
+problem you actually have.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- The config loads. An unknown field anywhere in the nesting is rejected at
+  startup, so a clean start means every layer name is right.
+- A build is a cache hit on the second run with the fast tier emptied, which
+  proves the layers pass through to the slow tier.
+- Backend request counts are far below blob counts once `existence_cache` is
+  in.
+- Uploading a blob under a digest that does not match its content (for
+  example with a hand-built ByteStream write) is rejected rather than stored.
+  That's `verify` earning its place.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="The config is rejected at startup with an unknown field" id="the-config-is-rejected-at-startup-with-an-unknown-field">
+
+Almost every store spec is strict about unknown fields, so this is usually a
+field placed at the wrong nesting level: `eviction_policy` on the wrapper
+rather than on the store, or a backend option one layer too high. Check what
+the innermost brace you're inside actually is.
+
+</Accordion>
+
+<Accordion title="Every Action Cache lookup misses" id="every-action-cache-lookup-misses">
+
+`verify` with `verify_hash` or `verify_size` true on an AC store. An AC entry's
+key is the action digest and its value is a result message, so both checks
+fail by construction and every AC update is rejected, leaving nothing to hit.
+Set both false there, and use `completeness_checking` instead.
+
+</Accordion>
+
+<Accordion title="Cache hits point at blobs that no longer exist" id="cache-hits-point-at-blobs-that-no-longer-exist">
+
+The Action Cache has no `completeness_checking` wrapper, so it hands out
+results referencing outputs the CAS has since evicted. Add it with `cas_store`
+pointing at the CAS store.
+
+</Accordion>
+
+<Accordion title="A ref_store name isn't found" id="a-ref_store-name-isnt-found">
+
+The name is a store name from the `stores` array, matched exactly. Order does
+not matter, so a forward reference is fine. A typo or a renamed store is the
+usual cause.
+
+</Accordion>
+
+<Accordion title="Everything got slower after adding dedup" id="everything-got-slower-after-adding-dedup">
+
+Small blobs. A blob that fits in one chunk gains nothing and still costs an
+index write plus an extra existence check on every read. Put a
+`size_partitioning` above the dedup store and route small objects straight to
+the backend.
+
+</Accordion>
+
+<Accordion title="Entries went missing after changing the shard list" id="entries-went-missing-after-changing-the-shard-list">
+
+Placement is derived from the set of stores and weights. Changing it moves
+where blobs are looked for. Nothing rebalances, so treat it as a flush.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compression" title="Remote cache compression">
+  The other kind of compression: on the wire, between the client and
+  NativeLink.
+</NextStep>
+
+<NextStep href="/operate/production-config" kind="aside" title="Production configuration">
+  What these compositions look like once the three processes are separate.
+</NextStep>

@@ -125,6 +125,14 @@ impl WorkerStateManager for MockWorkerStateManager {
             WorkerStateManagerReturns::UpdateOperation(result) => result,
         }
     }
+
+    async fn is_executing_on_worker(
+        &self,
+        _operation_id: &OperationId,
+        _worker_id: &WorkerId,
+    ) -> Result<bool, Error> {
+        Ok(true)
+    }
 }
 
 struct TestContext {
@@ -176,6 +184,8 @@ async fn setup_api_server_with_task_limit(
     let worker_api_server = WorkerApiServer::new_with_now_fn(
         &WorkerApiConfig {
             scheduler: SCHEDULER_NAME.to_string(),
+            disable_kill_revoked_operations: false,
+            kill_revoked_operations_interval_s: 0,
         },
         &schedulers,
         now_fn,
