@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.6.4"
+version = "1.6.5"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -25,7 +25,7 @@ humantime = { version = "2.3.0", default-features = false }
 hyper = { version = "1.6.0", default-features = false }
 hyper-util = { version = "0.1.11", default-features = false }
 libc = { version = "0.2.177", default-features = false }
-lru = { version = "0.16.0", default-features = false }
+lru = { version = "0.18.0", default-features = false }
 mock_instant = { version = "0.5.3", default-features = false }
 opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry-appender-tracing = { version = "0.32.0", default-features = false }

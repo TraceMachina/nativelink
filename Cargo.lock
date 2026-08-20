@@ -297,7 +297,7 @@ dependencies = [
  "http 0.2.12",
  "http 1.4.1",
  "http-body 1.0.1",
- "lru",
+ "lru 0.16.3",
  "percent-encoding",
  "regex-lite",
  "sha2",
@@ -2699,6 +2699,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d2f2f9b4ba7e6b24d95e7e899329d35be83bcded72c8540cdd5368932d1d90a"
+
+[[package]]
 name = "lz4_flex"
 version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2963,7 +2969,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "async-lock",
  "axum",
@@ -2994,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -3013,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "base64 0.22.1",
  "mongodb",
@@ -3037,7 +3043,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3046,7 +3052,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -3057,7 +3063,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3066,7 +3072,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "derive_more 2.1.0",
  "prost",
@@ -3078,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "either",
  "nativelink-util",
@@ -3091,14 +3097,14 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "async-lock",
  "async-trait",
  "bytes",
  "futures",
  "humantime",
- "lru",
+ "lru 0.18.2",
  "mock_instant",
  "nativelink-config",
  "nativelink-error",
@@ -3128,7 +3134,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3172,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3250,7 +3256,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3267,7 +3273,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
- "lru",
+ "lru 0.18.2",
  "mock_instant",
  "nativelink-config",
  "nativelink-error",
@@ -3313,7 +3319,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.6.4"
+version = "1.6.5"
 dependencies = [
  "async-lock",
  "async-trait",

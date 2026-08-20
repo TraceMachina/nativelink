@@ -2,6 +2,7 @@ bazel-*
 !tools/bazel-retry.sh
 target/
 nativelink-test/fuzz/target/
+.turbo/
 .vscode/
 .idea/
 .zed
