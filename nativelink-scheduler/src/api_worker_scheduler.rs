@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
 
 use async_lock::Mutex;
+use futures::{StreamExt, future};
 use lru::LruCache;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
@@ -43,6 +44,10 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
 use tracing::{debug, error, info, trace, warn};
+
+/// How many state-manager lookups `kill_revoked_operations` has in flight
+/// at once while checking which running operations were revoked.
+const MAX_CONCURRENT_REVOKED_CHECKS: usize = 32;
 use uuid::Uuid;
 
 /// Metrics for tracking scheduler performance.
@@ -976,6 +981,13 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     worker
                         .running_action_infos
                         .iter()
+                        // An operation already told to die is never swept
+                        // again, and nothing re-sends or times out the kill
+                        // itself. A live worker that drops or ignores the
+                        // kill request therefore holds the slot until
+                        // keepalive-timeout eviction (remove_timedout_workers)
+                        // reclaims the whole worker; that is the sole
+                        // recovery path for an unresponsive-but-alive worker.
                         .filter(|(_, pending_action_info)| !pending_action_info.kill_requested)
                         .map(|(operation_id, _)| (worker_id.clone(), operation_id.clone()))
                 })
@@ -983,40 +995,65 @@ impl WorkerScheduler for ApiWorkerScheduler {
             (inner.worker_state_manager.clone(), running)
         };
 
-        let mut revoked = Vec::new();
-        for (worker_id, operation_id) in running {
-            match worker_state_manager
-                .is_executing_on_worker(&operation_id, &worker_id)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => revoked.push((worker_id, operation_id)),
-                // Only kill on positive evidence; try again next pass.
-                Err(err) => warn!(
-                    ?worker_id,
-                    %operation_id,
-                    ?err,
-                    "Could not check whether operation is still executing on worker"
-                ),
-            }
-        }
+        // On store-backed deployments each check is a network round-trip,
+        // so run them lock-free with bounded concurrency.
+        let revoked: Vec<(WorkerId, OperationId)> = futures::stream::iter(running)
+            .map(|(worker_id, operation_id)| {
+                let worker_state_manager = worker_state_manager.clone();
+                async move {
+                    match worker_state_manager
+                        .is_executing_on_worker(&operation_id, &worker_id)
+                        .await
+                    {
+                        Ok(true) => None,
+                        Ok(false) => Some((worker_id, operation_id)),
+                        // Only kill on positive evidence; try again next pass.
+                        Err(err) => {
+                            warn!(
+                                ?worker_id,
+                                %operation_id,
+                                ?err,
+                                "Could not check whether operation is still executing on worker"
+                            );
+                            None
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT_REVOKED_CHECKS)
+            .filter_map(future::ready)
+            .collect()
+            .await;
 
         if revoked.is_empty() {
             return Ok(());
         }
 
-        let mut inner = self.inner.lock().await;
-        let mut result = Ok(());
+        // Re-check lock-free so the scheduler mutex is never held across
+        // store I/O; the checks above may be stale by the time we get here.
+        // The remaining TOCTOU window is fine: worker_notify_kill_operation
+        // re-guards with contains_key + is_kill_requested under the lock.
+        let mut confirmed = Vec::new();
         for (worker_id, operation_id) in revoked {
-            match worker_state_manager
+            // A result of Ok(true) or Err(_) means the operation was
+            // reassigned to this worker after the first check, or the state
+            // manager went quiet: nothing to kill on this pass.
+            let revoked = worker_state_manager
                 .is_executing_on_worker(&operation_id, &worker_id)
                 .await
-            {
-                Ok(false) => {}
-                // Reassigned to this worker after the first check, or the
-                // state manager went quiet: nothing to kill on this pass.
-                Ok(true) | Err(_) => continue,
+                .is_ok_and(|executing| !executing);
+            if revoked {
+                confirmed.push((worker_id, operation_id));
             }
+        }
+
+        if confirmed.is_empty() {
+            return Ok(());
+        }
+
+        let mut inner = self.inner.lock().await;
+        let mut result = Ok(());
+        for (worker_id, operation_id) in confirmed {
             result = result.merge(
                 inner
                     .worker_notify_kill_operation(&worker_id, operation_id)

@@ -49,8 +49,9 @@ pub type ConnectWorkerStream =
 pub type NowFn = Box<dyn Fn() -> Result<Duration, Error> + Send + Sync>;
 
 /// How often workers are told to kill operations the scheduler no longer
-/// has executing on them.
-const KILL_REVOKED_OPERATIONS_INTERVAL: Duration = Duration::from_secs(5);
+/// has executing on them, unless overridden by
+/// `kill_revoked_operations_interval_s` in the worker API config.
+const DEFAULT_KILL_REVOKED_OPERATIONS_INTERVAL_S: u64 = 5;
 
 pub struct WorkerApiServer {
     scheduler: Arc<dyn WorkerScheduler>,
@@ -76,6 +77,12 @@ impl WorkerApiServer {
             rand::rng().fill_bytes(&mut out);
             out
         };
+        let kill_revoked_enabled = !config.disable_kill_revoked_operations;
+        let kill_revoked_interval_s = if config.kill_revoked_operations_interval_s == 0 {
+            DEFAULT_KILL_REVOKED_OPERATIONS_INTERVAL_S
+        } else {
+            config.kill_revoked_operations_interval_s
+        };
         for scheduler in schedulers.values() {
             // This will protect us from holding a reference to the scheduler forever in the
             // event our ExecutionServer dies. Our scheduler is a weak ref, so the spawn will
@@ -83,7 +90,7 @@ impl WorkerApiServer {
             let weak_scheduler = Arc::downgrade(scheduler);
             background_spawn!("worker_api_server", async move {
                 let mut timeout_ticker = interval(Duration::from_secs(1));
-                let mut kill_ticker = interval(KILL_REVOKED_OPERATIONS_INTERVAL);
+                let mut kill_ticker = interval(Duration::from_secs(kill_revoked_interval_s));
                 loop {
                     tokio::select! {
                         _ = timeout_ticker.tick() => {
@@ -102,7 +109,7 @@ impl WorkerApiServer {
                                 None => return,
                             }
                         }
-                        _ = kill_ticker.tick() => {
+                        _ = kill_ticker.tick(), if kill_revoked_enabled => {
                             match weak_scheduler.upgrade() {
                                 Some(scheduler) => {
                                     if let Err(err) = scheduler.kill_revoked_operations().await {

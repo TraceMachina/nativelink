@@ -209,6 +209,8 @@ impl Worker {
                             self.id
                         )
                     })?;
+                // Set before the send so a racing update_action cannot slip
+                // through in between.
                 pending_action_info.kill_requested = true;
                 self.metrics.kill_operation.inc();
                 send_msg_to_worker(
