@@ -1901,7 +1901,8 @@ impl RunningActionImpl {
                     #[cfg(not(target_os = "linux"))]
                     let resource_usage = None;
 
-                    info!(?args, "Command complete");
+                    // log something useful instead of repeating same ?arg
+                    info!(?exit_code, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
