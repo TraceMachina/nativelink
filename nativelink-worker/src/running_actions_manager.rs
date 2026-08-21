@@ -3331,10 +3331,20 @@ impl RunningActionsManagerImpl {
     }
 
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
-        let mut running_actions = self.running_actions.lock();
-        let result = running_actions.remove(operation_id).err_tip(|| {
-            format!("Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl")
-        });
+        // The guard must be dropped before notifying: `send_modify` takes
+        // the watch channel's internal lock, and a `wait_for` closure that
+        // takes `running_actions` runs while holding that same lock, so
+        // notifying while holding `running_actions` is an ABBA deadlock
+        // (issue #2672). There is no lost wakeup in the gap: the removal
+        // happens-before the notify.
+        let result = {
+            let mut running_actions = self.running_actions.lock();
+            running_actions.remove(operation_id).err_tip(|| {
+                format!(
+                    "Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl"
+                )
+            })
+        };
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
         result.map(|_| ())
@@ -3495,15 +3505,24 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 while kill_futures.next().await.is_some() {}
             })
             .await;
-        // Ignore error. If error happens it means there's no sender, which is not a problem.
-        // Note: Sanity check this API will always check current value then future values:
-        // https://play.rust-lang.org/?version=stable&edition=2021&gist=23103652cc1276a97e5f9938da87fdb2
-        drop(
-            self.action_done_tx
-                .subscribe()
-                .wait_for(|()| self.running_actions.lock().is_empty())
-                .await,
-        );
+        // Wait for the running actions to drain. Deliberately NOT
+        // `wait_for(|()| ...)`: that closure runs while the watch channel's
+        // internal lock is held, so taking `running_actions` inside it
+        // deadlocks with anyone notifying the channel while holding
+        // `running_actions` (issue #2672). Checking outside the channel's
+        // lock loses no wakeup: `changed()` reports any version bump since
+        // the last check, and `cleanup_action` removes before it notifies.
+        let mut action_done_rx = self.action_done_tx.subscribe();
+        loop {
+            if self.running_actions.lock().is_empty() {
+                break;
+            }
+            // The only sender lives on `self`, so this cannot error; if it
+            // ever did, giving up the wait is still the safe answer.
+            if action_done_rx.changed().await.is_err() {
+                break;
+            }
+        }
     }
 
     #[inline]

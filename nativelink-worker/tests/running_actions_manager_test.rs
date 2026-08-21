@@ -4157,6 +4157,123 @@ exit 1
         Ok(())
     }
 
+    /// Regression test for issue #2672: `cleanup_action` used to notify the
+    /// action-done watch channel while holding the `running_actions` mutex,
+    /// and `kill_all` used to take that mutex inside a `wait_for` closure,
+    /// which runs while the channel's internal lock is held. On a
+    /// multi-threaded runtime the two parked each other's threads forever.
+    /// This races many concurrent cleanups against `kill_all`; a
+    /// reintroduction shows up as the timeout firing rather than a wedge.
+    #[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+    async fn kill_all_does_not_deadlock_with_concurrent_cleanups()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        for iteration in 0..50 {
+            let mut actions = Vec::new();
+            for i in 0..4 {
+                let execute_request = ExecuteRequest {
+                    action_digest: Some(action_digest.into()),
+                    digest_function: ProtoDigestFunction::Sha256.into(),
+                    ..Default::default()
+                };
+                let running_action = running_actions_manager
+                    .create_and_add_action(
+                        WORKER_ID.to_string(),
+                        StartExecute {
+                            execute_request: Some(execute_request),
+                            operation_id: format!("kill-race-{iteration}-{i}"),
+                            queued_timestamp: Some(make_system_time(1000).into()),
+                            platform: action.platform.clone(),
+                            worker_id: WORKER_ID.to_string(),
+                        },
+                    )
+                    .await?;
+                actions.push(running_action);
+            }
+            // Cleanups notify the action-done channel while kill_all waits
+            // on it; running them concurrently is the racing window.
+            let cleanups: Vec<_> = actions
+                .into_iter()
+                .map(|running_action| tokio::spawn(running_action.cleanup()))
+                .collect();
+            tokio::time::timeout(Duration::from_mins(1), running_actions_manager.kill_all())
+                .await
+                .expect("kill_all deadlocked against concurrent cleanup_action (issue #2672)");
+            for cleanup in cleanups {
+                drop(cleanup.await??);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Regression Test for Issue #675
     #[cfg(target_family = "unix")]
     #[nativelink_test]
