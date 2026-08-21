@@ -65,10 +65,14 @@ pub enum WorkerUpdate {
 pub struct PendingActionInfoData {
     #[metric]
     pub action_info: ActionInfoWithProps,
-    /// Set once the worker has been told to kill this operation. Its later
-    /// report then only settles the worker's own bookkeeping.
-    #[metric(help = "If the worker has been asked to kill this operation.")]
-    pub kill_requested: bool,
+    /// When the worker was told to kill this operation, recorded as the
+    /// worker's last-seen timestamp at send time; keepalives keep that
+    /// within the worker timeout of now, so a deadline computed from it
+    /// fires at most one worker timeout late, never early. `None` until a
+    /// kill is sent. The operation's later report then only settles the
+    /// worker's own bookkeeping.
+    #[metric(help = "When the worker was asked to kill this operation.")]
+    pub kill_requested_at: Option<WorkerTimestamp>,
 }
 
 /// Represents a connection to a worker and used as the medium to
@@ -200,6 +204,7 @@ impl Worker {
                 send_msg_to_worker(&self.tx, update_for_worker::Update::Disconnect(()))
             }
             WorkerUpdate::KillOperation(operation_id) => {
+                let last_seen = self.last_update_timestamp;
                 let pending_action_info = self
                     .running_action_infos
                     .get_mut(&operation_id)
@@ -211,7 +216,7 @@ impl Worker {
                     })?;
                 // Set before the send so a racing update_action cannot slip
                 // through in between.
-                pending_action_info.kill_requested = true;
+                pending_action_info.kill_requested_at = Some(last_seen);
                 self.metrics.kill_operation.inc();
                 send_msg_to_worker(
                     &self.tx,
@@ -227,7 +232,7 @@ impl Worker {
     pub(crate) fn is_kill_requested(&self, operation_id: &OperationId) -> bool {
         self.running_action_infos
             .get(operation_id)
-            .is_some_and(|pending_action_info| pending_action_info.kill_requested)
+            .is_some_and(|pending_action_info| pending_action_info.kill_requested_at.is_some())
     }
 
     pub fn keep_alive(&mut self) -> Result<(), Error> {
@@ -268,7 +273,7 @@ impl Worker {
                     operation_id,
                     PendingActionInfoData {
                         action_info,
-                        kill_requested: false,
+                        kill_requested_at: None,
                     },
                 );
 

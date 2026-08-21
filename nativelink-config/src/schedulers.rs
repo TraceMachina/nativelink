@@ -146,6 +146,16 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_executing_timeout_s: u64,
 
+    /// Evict a worker that has not reported back on an operation it was
+    /// told to kill within this many seconds. A healthy worker
+    /// acknowledges a kill in moments; one that cannot is wedged, and its
+    /// keepalives would otherwise keep `worker_timeout_s` from ever firing
+    /// while the dead operation holds its slot. Eviction requeues the
+    /// worker's other operations.
+    /// Default: 60 seconds
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub unacknowledged_kill_timeout_s: u64,
+
     /// If a job returns an internal error or times out this many times when
     /// attempting to run on a worker the scheduler will return the last error
     /// to the client. Jobs will be retried and this configuration is to help

@@ -601,6 +601,10 @@ pub struct ApiWorkerScheduler {
         help = "Timeout of how long to evict workers if no response in this given amount of time in seconds."
     )]
     worker_timeout_s: u64,
+    #[metric(
+        help = "How long a sent kill may go unacknowledged before the worker is evicted, in seconds."
+    )]
+    unacknowledged_kill_timeout_s: u64,
     /// Shared worker registry for checking worker liveness.
     worker_registry: SharedWorkerRegistry,
 
@@ -613,12 +617,14 @@ pub struct ApiWorkerScheduler {
 }
 
 impl ApiWorkerScheduler {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         worker_state_manager: Arc<dyn WorkerStateManager>,
         platform_property_manager: Arc<PlatformPropertyManager>,
         allocation_strategy: WorkerAllocationStrategy,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
+        unacknowledged_kill_timeout_s: u64,
         worker_registry: SharedWorkerRegistry,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> Arc<Self> {
@@ -634,6 +640,7 @@ impl ApiWorkerScheduler {
             }),
             platform_property_manager,
             worker_timeout_s,
+            unacknowledged_kill_timeout_s,
             worker_registry,
             metrics: Arc::new(SchedulerMetrics::default()),
             maybe_origin_event_tx,
@@ -905,20 +912,40 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let now = UNIX_EPOCH + Duration::from_secs(now_timestamp);
         let timeout_threshold = now_timestamp.saturating_sub(self.worker_timeout_s);
 
-        let workers_to_check: Vec<(WorkerId, bool)> = {
+        let workers_to_check: Vec<(WorkerId, bool, bool)> = {
             let inner = self.inner.lock().await;
             inner
                 .workers
                 .iter()
                 .map(|(worker_id, worker)| {
                     let local_alive = worker.last_update_timestamp > timeout_threshold;
-                    (worker_id.clone(), local_alive)
+                    let kill_overdue = worker.running_action_infos.values().any(|info| {
+                        info.kill_requested_at.is_some_and(|at| {
+                            now_timestamp.saturating_sub(at) > self.unacknowledged_kill_timeout_s
+                        })
+                    });
+                    (worker_id.clone(), local_alive, kill_overdue)
                 })
                 .collect()
         };
 
         let mut worker_ids_to_remove = Vec::new();
-        for (worker_id, local_alive) in workers_to_check {
+        for (worker_id, local_alive, kill_overdue) in workers_to_check {
+            // A healthy worker acknowledges a kill in moments; one that
+            // cannot is wedged, and its keepalives keep the liveness checks
+            // below from ever firing while the dead operation holds its
+            // slot (the nativelink#2672 symptom). Evicting requeues its
+            // other operations.
+            if kill_overdue {
+                warn!(
+                    ?worker_id,
+                    unacknowledged_kill_timeout_s = self.unacknowledged_kill_timeout_s,
+                    "Worker did not acknowledge a kill in time, removing from pool"
+                );
+                worker_ids_to_remove.push((worker_id, true));
+                continue;
+            }
+
             if local_alive {
                 continue;
             }
@@ -936,7 +963,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     timeout_threshold,
                     "Worker timed out - neither local nor registry shows alive"
                 );
-                worker_ids_to_remove.push(worker_id);
+                worker_ids_to_remove.push((worker_id, false));
             }
         }
 
@@ -947,20 +974,21 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let mut inner = self.inner.lock().await;
         let mut result = Ok(());
 
-        for worker_id in &worker_ids_to_remove {
-            warn!(?worker_id, "Worker timed out, removing from pool");
-            result = result.merge(
-                inner
-                    .immediate_evict_worker(
-                        worker_id,
-                        make_err!(
-                            Code::Internal,
-                            "Worker {worker_id} timed out, removing from pool"
-                        ),
-                        false,
-                    )
-                    .await,
-            );
+        for (worker_id, kill_overdue) in &worker_ids_to_remove {
+            let err = if *kill_overdue {
+                make_err!(
+                    Code::Internal,
+                    "Worker {worker_id} did not acknowledge a kill within {}s, removing from pool",
+                    self.unacknowledged_kill_timeout_s
+                )
+            } else {
+                warn!(?worker_id, "Worker timed out, removing from pool");
+                make_err!(
+                    Code::Internal,
+                    "Worker {worker_id} timed out, removing from pool"
+                )
+            };
+            result = result.merge(inner.immediate_evict_worker(worker_id, err, false).await);
         }
 
         result
@@ -982,13 +1010,15 @@ impl WorkerScheduler for ApiWorkerScheduler {
                         .running_action_infos
                         .iter()
                         // An operation already told to die is never swept
-                        // again, and nothing re-sends or times out the kill
-                        // itself. A live worker that drops or ignores the
-                        // kill request therefore holds the slot until
-                        // keepalive-timeout eviction (remove_timedout_workers)
-                        // reclaims the whole worker; that is the sole
-                        // recovery path for an unresponsive-but-alive worker.
-                        .filter(|(_, pending_action_info)| !pending_action_info.kill_requested)
+                        // again; the kill itself is not re-sent. A worker
+                        // that received the kill but never reports back is
+                        // evicted by remove_timedout_workers once the kill
+                        // has gone unacknowledged longer than
+                        // `unacknowledged_kill_timeout_s`; a dead worker by
+                        // the ordinary keepalive timeout.
+                        .filter(|(_, pending_action_info)| {
+                            pending_action_info.kill_requested_at.is_none()
+                        })
                         .map(|(operation_id, _)| (worker_id.clone(), operation_id.clone()))
                 })
                 .collect();
