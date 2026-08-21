@@ -3384,3 +3384,38 @@ async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), 
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation().await?;
+
+    // The kill is delivered, but the worker is wedged (nativelink#2672): it
+    // keeps its keepalives up and never reports the operation.
+    scheduler.kill_revoked_operations().await?;
+    match rx_from_worker.try_recv().unwrap().update {
+        Some(update_for_worker::Update::KillOperationRequest(_)) => {}
+        v => panic!("Expected KillOperationRequest, got : {v:?}"),
+    }
+
+    // Inside the acknowledgement window the fresh keepalives shield it from
+    // the ordinary worker timeout and nothing is evicted.
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 30)
+        .await?;
+    scheduler.remove_timedout_workers(NOW_TIME + 30).await?;
+    assert!(!logs_contain("Evicting worker from pool"));
+
+    // Past the window the worker is evicted despite looking alive; its
+    // keepalives are exactly what would otherwise let the dead operation
+    // hold the slot forever.
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61)
+        .await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
+    assert!(logs_contain("did not acknowledge a kill in time"));
+    assert!(logs_contain("Evicting worker from pool"));
+
+    Ok(())
+}

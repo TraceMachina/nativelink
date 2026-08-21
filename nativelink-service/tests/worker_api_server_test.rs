@@ -175,6 +175,7 @@ async fn setup_api_server_with_task_limit(
         WorkerAllocationStrategy::default(),
         tasks_or_worker_change_notify,
         worker_timeout,
+        60, // unacknowledged_kill_timeout_s
         worker_registry,
         None,
     );
