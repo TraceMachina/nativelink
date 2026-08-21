@@ -4263,7 +4263,7 @@ exit 1
                 .into_iter()
                 .map(|running_action| tokio::spawn(running_action.cleanup()))
                 .collect();
-            tokio::time::timeout(Duration::from_secs(60), running_actions_manager.kill_all())
+            tokio::time::timeout(Duration::from_mins(1), running_actions_manager.kill_all())
                 .await
                 .expect("kill_all deadlocked against concurrent cleanup_action (issue #2672)");
             for cleanup in cleanups {
