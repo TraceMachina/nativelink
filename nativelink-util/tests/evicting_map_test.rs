@@ -22,8 +22,8 @@ use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::evicting_map::{EvictingMap, LenEntry};
-use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_evicting_map::{EvictingMap, LenEntry};
+use nativelink_instant_wrapper::MockInstantWrapped;
 use pretty_assertions::assert_eq;
 
 #[derive(Clone, PartialEq, Eq, Debug)]

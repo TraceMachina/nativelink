@@ -26,7 +26,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
     OperationId, WorkerId,
 };
-use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
 };

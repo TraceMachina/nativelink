@@ -20,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod metrics_utils;
+
 pub use nativelink_metric_macro_derive::MetricsComponent;
 pub use tracing::{
     error as __metric_error, info as __metric_info, info_span as __metric_info_span,

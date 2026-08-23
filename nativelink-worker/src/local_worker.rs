@@ -39,7 +39,7 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
+use nativelink_metric::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{spawn, tls_utils};

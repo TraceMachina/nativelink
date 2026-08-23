@@ -22,7 +22,7 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Credentials, Region};
 use nativelink_config::stores::{ExperimentalAwsSpec, ExperimentalR2Spec};
 use nativelink_error::Error;
-use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_instant_wrapper::InstantWrapper;
 
 use crate::common_s3_utils::TlsClient;
 use crate::s3_store::S3Store;

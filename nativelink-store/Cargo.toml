@@ -9,6 +9,8 @@ version = "1.6.6"
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
+nativelink-evicting-map = { path = "../nativelink-evicting-map" }
+nativelink-instant-wrapper = { path = "../nativelink-instant-wrapper" }
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 nativelink-redis-tester = { path = "../nativelink-redis-tester" }

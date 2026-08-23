@@ -27,8 +27,8 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::chunked_stream::ChunkedStream;
-use nativelink_util::evicting_map::{EvictingMap, LenEntry};
-use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_evicting_map::{EvictingMap, LenEntry};
+use nativelink_instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, ExecutionResult, ExecutionStage, make_execution_attributes,
 };

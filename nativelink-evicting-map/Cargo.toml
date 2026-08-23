@@ -1,0 +1,19 @@
+[package]
+name = "nativelink-evicting-map"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures = { version = "0.3.31", features = [
+  "async-await",
+], default-features = false }
+nativelink-instant-wrapper = { path = "../nativelink-instant-wrapper" }
+lru = { version = "0.18.0", default-features = false }
+nativelink-config = { path = "../nativelink-config" }
+nativelink-metric = { path = "../nativelink-metric" }
+parking_lot = { version = "0.12.3", features = [
+  "arc_lock",
+  "send_guard",
+], default-features = false }
+serde = { version = "1.0.219", default-features = false }
+tracing = { version = "0.1.41", default-features = false }

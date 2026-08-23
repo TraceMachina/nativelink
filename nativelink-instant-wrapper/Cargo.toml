@@ -1,0 +1,11 @@
+[package]
+name = "nativelink-instant-wrapper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mock_instant = { version = "0.5.3", default-features = false }
+tokio = { version = "1.52.2", features = [
+  "rt-multi-thread",
+  "time",
+], default-features = false }

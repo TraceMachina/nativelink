@@ -27,7 +27,7 @@ use nativelink_util::digest_hasher::{
     DigestHasher, DigestHasherFunc, digest_hasher_func_from_context,
 };
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::metrics_utils::CounterWithTime;
+use nativelink_metric::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };

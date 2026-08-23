@@ -2982,6 +2982,8 @@ dependencies = [
  "mimalloc",
  "nativelink-config",
  "nativelink-error",
+ "nativelink-evicting-map",
+ "nativelink-instant-wrapper",
  "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-service",
@@ -3042,6 +3044,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "nativelink-evicting-map"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "lru 0.18.2",
+ "nativelink-config",
+ "nativelink-instant-wrapper",
+ "nativelink-metric",
+ "parking_lot",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "nativelink-instant-wrapper"
+version = "0.1.0"
+dependencies = [
+ "mock_instant",
+ "tokio",
+]
+
+[[package]]
 name = "nativelink-macro"
 version = "1.6.6"
 dependencies = [
@@ -3055,6 +3079,7 @@ name = "nativelink-metric"
 version = "1.6.6"
 dependencies = [
  "async-lock",
+ "futures",
  "nativelink-metric-macro-derive",
  "parking_lot",
  "tokio",
@@ -3108,6 +3133,8 @@ dependencies = [
  "mock_instant",
  "nativelink-config",
  "nativelink-error",
+ "nativelink-evicting-map",
+ "nativelink-instant-wrapper",
  "nativelink-macro",
  "nativelink-metric",
  "nativelink-proto",
@@ -3217,6 +3244,8 @@ dependencies = [
  "mongodb",
  "nativelink-config",
  "nativelink-error",
+ "nativelink-evicting-map",
+ "nativelink-instant-wrapper",
  "nativelink-macro",
  "nativelink-metric",
  "nativelink-proto",
@@ -3277,6 +3306,8 @@ dependencies = [
  "mock_instant",
  "nativelink-config",
  "nativelink-error",
+ "nativelink-evicting-map",
+ "nativelink-instant-wrapper",
  "nativelink-macro",
  "nativelink-metric",
  "nativelink-proto",

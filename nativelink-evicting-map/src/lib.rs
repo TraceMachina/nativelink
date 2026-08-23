@@ -27,13 +27,12 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
+use nativelink_instant_wrapper::InstantWrapper;
 use nativelink_metric::MetricsComponent;
+use nativelink_metric::metrics_utils::{Counter, CounterWithTime};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
-
-use crate::instant_wrapper::InstantWrapper;
-use crate::metrics_utils::{Counter, CounterWithTime};
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
 pub struct SerializedLRU<K> {

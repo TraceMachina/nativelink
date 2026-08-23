@@ -33,6 +33,8 @@ nix = ["nativelink-worker/nix"]
 [dependencies]
 nativelink-config = { path = "nativelink-config" }
 nativelink-error = { path = "nativelink-error" }
+nativelink-evicting-map = { path = "nativelink-evicting-map" }
+nativelink-instant-wrapper = { path = "nativelink-instant-wrapper" }
 nativelink-proto = { path = "nativelink-proto" }
 nativelink-scheduler = { path = "nativelink-scheduler" }
 nativelink-service = { path = "nativelink-service" }

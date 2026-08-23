@@ -32,8 +32,8 @@ use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
-use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::metrics_utils::CounterWithTime;
+use nativelink_instant_wrapper::InstantWrapper;
+use nativelink_metric::metrics_utils::CounterWithTime;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     RemoveCallback, RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,

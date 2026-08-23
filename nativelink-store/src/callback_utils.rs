@@ -15,7 +15,7 @@
 use core::borrow::Borrow;
 use core::pin::Pin;
 
-use nativelink_util::evicting_map;
+use nativelink_evicting_map::RemoveItemCallback;
 use nativelink_util::store_trait::{RemoveCallback, StoreKey};
 
 // Generic struct to hold a RemoveCallback ref for the purposes
@@ -31,7 +31,7 @@ impl RemoveCallbackHolder {
     }
 }
 
-impl<'a, Q> evicting_map::RemoveItemCallback<Q> for RemoveCallbackHolder
+impl<'a, Q> RemoveItemCallback<Q> for RemoveCallbackHolder
 where
     Q: Borrow<StoreKey<'a>>,
 {

@@ -29,7 +29,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::oci_store::OciStore;
 use nativelink_store::s3_store::S3Store;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::StoreLike;
 use pretty_assertions::assert_eq;
 

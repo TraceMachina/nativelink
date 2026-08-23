@@ -29,7 +29,7 @@ use nativelink_store::gcs_store::GcsStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
-use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};

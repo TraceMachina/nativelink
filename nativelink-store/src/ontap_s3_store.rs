@@ -45,7 +45,7 @@ use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
-use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_instant_wrapper::InstantWrapper;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use parking_lot::Mutex;

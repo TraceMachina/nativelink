@@ -26,7 +26,7 @@ use aws_sdk_s3::config::{
 use aws_smithy_runtime_api::client::http::HttpClient as SmithyHttpClient;
 use nativelink_config::stores::{ExperimentalAwsSpec, ExperimentalOciSpec};
 use nativelink_error::Error;
-use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_instant_wrapper::InstantWrapper;
 
 use crate::common_s3_utils::TlsClient;
 use crate::s3_store::S3Store;

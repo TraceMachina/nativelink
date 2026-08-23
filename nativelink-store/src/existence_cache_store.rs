@@ -25,9 +25,9 @@ use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::evicting_map::{EvictingMap, LenEntry};
+use nativelink_evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
-use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_instant_wrapper::InstantWrapper;
 use nativelink_util::store_trait::{
     RemoveCallback, RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };

@@ -23,7 +23,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
-use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
+use nativelink_metric::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use tokio::sync::mpsc::UnboundedSender;

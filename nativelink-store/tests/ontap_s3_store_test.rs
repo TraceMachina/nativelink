@@ -31,7 +31,7 @@ use nativelink_store::ontap_s3_store::OntapS3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;

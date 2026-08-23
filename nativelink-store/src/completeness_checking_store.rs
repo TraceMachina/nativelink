@@ -27,7 +27,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-use nativelink_util::metrics_utils::CounterWithTime;
+use nativelink_metric::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };

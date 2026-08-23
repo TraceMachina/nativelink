@@ -10,6 +10,9 @@ version = "1.6.6"
 nativelink-metric-macro-derive = { path = "nativelink-metric-macro-derive" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
+futures = { version = "0.3.31", features = [
+  "async-await",
+], default-features = false }
 parking_lot = { version = "0.12.3", default-features = false }
 tokio = { version = "1.52.2", features = [
   "fs",

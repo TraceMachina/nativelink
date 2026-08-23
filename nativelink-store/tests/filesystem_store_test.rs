@@ -36,7 +36,7 @@ use nativelink_store::filesystem_store::{
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
-use nativelink_util::evicting_map::LenEntry;
+use nativelink_evicting_map::LenEntry;
 use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::{background_spawn, spawn};

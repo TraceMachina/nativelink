@@ -30,7 +30,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::azure_blob_store::AzureBlobStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_instant_wrapper::MockInstantWrapped;
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use sha2::{Digest, Sha256};
 

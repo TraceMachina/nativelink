@@ -17,8 +17,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use futures::Future;
-use nativelink_metric::{
-    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
+use crate::{
+    Error, MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group, publish,
 };
 
 #[derive(Debug, Default)]
@@ -49,7 +49,7 @@ impl MetricsComponent for FuncCounterWrapper {
         &self,
         _kind: MetricKind,
         field_metadata: MetricFieldData,
-    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+    ) -> Result<MetricPublishKnownKindData, Error> {
         let _enter = group!(field_metadata.name).entered();
 
         publish!(
@@ -142,7 +142,7 @@ impl MetricsComponent for AsyncCounterWrapper {
         &self,
         _kind: MetricKind,
         field_metadata: MetricFieldData,
-    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+    ) -> Result<MetricPublishKnownKindData, Error> {
         let _enter = group!(field_metadata.name).entered();
 
         publish!(
@@ -271,7 +271,7 @@ impl MetricsComponent for Counter {
         &self,
         kind: MetricKind,
         field_metadata: MetricFieldData,
-    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+    ) -> Result<MetricPublishKnownKindData, Error> {
         self.0.publish(kind, field_metadata)
     }
 }
@@ -306,7 +306,7 @@ impl MetricsComponent for CounterWithTime {
         &self,
         _kind: MetricKind,
         field_metadata: MetricFieldData,
-    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+    ) -> Result<MetricPublishKnownKindData, Error> {
         let _enter = group!(field_metadata.name).entered();
 
         publish!(

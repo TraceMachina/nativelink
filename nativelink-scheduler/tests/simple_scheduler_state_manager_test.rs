@@ -17,7 +17,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
     ClientStateManager, MatchingEngineStateManager, OperationFilter, OperationStageFlags,
     UpdateOperationType, WorkerStateManager,

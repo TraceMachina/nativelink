@@ -52,7 +52,7 @@ use nativelink_util::action_messages::{
     INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
-use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, OperationFilter, OperationStageFlags,
     UpdateOperationType,
