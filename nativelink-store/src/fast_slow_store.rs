@@ -797,6 +797,33 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        // A noop slow store makes this a read-only/update-only wrapper around
+        // the fast store. Delegate the read directly: the fast store may
+        // itself be a FastSlowStore whose has() intentionally consults only
+        // its durable tier even though get_part() can serve a valid hot-only
+        // blob. Gating the read on has() would therefore turn that valid hit
+        // into a NotFound from the noop store.
+        if self
+            .slow_store
+            .inner_store::<StoreKey<'_>>(None)
+            .optimized_for(StoreOptimizations::NoopDownloads)
+        {
+            let bytes_before = writer.get_bytes_written();
+            self.fast_store
+                .get_part(key, writer.borrow_mut(), offset, length)
+                .await?;
+            let downloaded_bytes = writer.get_bytes_written() - bytes_before;
+            self.metrics
+                .fast_store_hit_count
+                .fetch_add(1, Ordering::Acquire);
+            self.metrics
+                .fast_store_downloaded_bytes
+                .fetch_add(downloaded_bytes, Ordering::Acquire);
+            record_store_tier_read("fast", "hit");
+            record_store_tier_io("fast", "read", downloaded_bytes);
+            return Ok(());
+        }
+
         // `has()` can report a stale map entry whose file is gone, so
         // get_part may still return NotFound; fall through to the slow
         // store unless we have already streamed bytes to the caller.

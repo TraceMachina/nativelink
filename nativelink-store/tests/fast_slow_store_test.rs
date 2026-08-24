@@ -94,6 +94,47 @@ async fn check_data(
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
 #[nativelink_test]
+async fn read_only_wrapper_reads_inner_fast_only_blob() -> Result<(), Error> {
+    let data = make_random_data(64);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    let inner_fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    inner_fast
+        .update_oneshot(digest, data.clone().into())
+        .await?;
+    let inner = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        inner_fast,
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    ));
+
+    // A read-only FastSlowStore with a noop slow side is the production
+    // read-only CAS shape. The wrapped store intentionally answers has() from
+    // its durable tier, but get_part() can still serve a valid hot-only blob.
+    let read_only = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Noop(NoopSpec::default()),
+            fast_direction: StoreDirection::ReadOnly,
+            slow_direction: StoreDirection::ReadOnly,
+            bypass_dedup_threshold_bytes: 0,
+        },
+        inner,
+        Store::new(NoopStore::new()),
+    ));
+
+    let read = read_only.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(read, data);
+    Ok(())
+}
+
+#[nativelink_test]
 async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {
     let (store, fast_store, slow_store) = make_stores();
 
