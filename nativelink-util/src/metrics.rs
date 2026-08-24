@@ -32,6 +32,7 @@ pub const EXECUTION_RESULT: &str = "execution.result";
 pub const EXECUTION_INSTANCE: &str = "execution.instance";
 pub const EXECUTION_PRIORITY: &str = "execution.priority";
 pub const EXECUTION_WORKER_ID: &str = "execution.worker_id";
+pub const EXECUTION_ACTION_MNEMONIC: &str = "execution.action_mnemonic";
 pub const EXECUTION_EXIT_CODE: &str = "execution.exit_code";
 pub const EXECUTION_ACTION_DIGEST: &str = "execution.action_digest";
 
@@ -674,12 +675,12 @@ pub struct ExecutionMetrics {
 /// Wall time is already covered by `execution.stage.duration`. This is the
 /// other half: an action pinning eight cores for a minute and one sleeping
 /// for a minute look identical by wall time and nothing alike here.
-pub fn record_execution_cpu_time(cpu_time_ms: u64, instance_name: &str) {
+pub fn record_execution_cpu_time(cpu_time_ms: u64, instance_name: &str, action_mnemonic: &str) {
     #[expect(clippy::cast_precision_loss)] // Milliseconds; f64 is exact well past any real action.
     let seconds = cpu_time_ms as f64 / 1000.0;
     EXECUTION_METRICS.execution_cpu_time.record(
         seconds,
-        &[KeyValue::new(EXECUTION_INSTANCE, instance_name.to_string())],
+        &execution_sample_attributes(instance_name, action_mnemonic),
     );
 }
 
@@ -689,11 +690,29 @@ pub fn record_execution_cpu_time(cpu_time_ms: u64, instance_name: &str) {
 /// listed `execution_memory_usage` as unimplementable because
 /// `ExecutionMetadata` carries no memory figure; `ActionResourceUsage` does,
 /// and this is that number.
-pub fn record_execution_peak_memory(peak_memory_kb: u64, instance_name: &str) {
+pub fn record_execution_peak_memory(
+    peak_memory_kb: u64,
+    instance_name: &str,
+    action_mnemonic: &str,
+) {
     EXECUTION_METRICS.execution_peak_memory.record(
         peak_memory_sample(peak_memory_kb),
-        &[KeyValue::new(EXECUTION_INSTANCE, instance_name.to_string())],
+        &execution_sample_attributes(instance_name, action_mnemonic),
     );
+}
+
+/// Attributes for a per-action resource sample. The mnemonic is attached only
+/// when known: an empty value on every sample from an unattributed client
+/// would read as a real mnemonic named "".
+fn execution_sample_attributes(instance_name: &str, action_mnemonic: &str) -> Vec<KeyValue> {
+    let mut attrs = vec![KeyValue::new(EXECUTION_INSTANCE, instance_name.to_string())];
+    if !action_mnemonic.is_empty() {
+        attrs.push(KeyValue::new(
+            EXECUTION_ACTION_MNEMONIC,
+            action_mnemonic.to_string(),
+        ));
+    }
+    attrs
 }
 
 /// Ceiling on a recorded peak-memory sample.

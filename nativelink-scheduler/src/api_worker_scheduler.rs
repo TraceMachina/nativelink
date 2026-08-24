@@ -766,19 +766,27 @@ impl WorkerScheduler for ApiWorkerScheduler {
         // default and `observed_worker_peak_memory_mib` was never recorded.
         // Sampling is optional, so only record when the worker actually took a
         // reading. A zero here means "not sampled", not "used no memory".
+        let maybe_action_info = self.running_action_info(worker_id, operation_id).await;
+        let action_mnemonic = maybe_action_info
+            .as_ref()
+            .and_then(|action_info| action_info.origin_metadata.bazel_metadata.as_ref())
+            .map_or_else(String::new, |bazel_metadata| {
+                bazel_metadata.action_mnemonic.clone()
+            });
+
         if resource_usage.sampled {
             if resource_usage.peak_memory_kb > 0 {
-                record_execution_peak_memory(resource_usage.peak_memory_kb, "");
+                record_execution_peak_memory(resource_usage.peak_memory_kb, "", &action_mnemonic);
             }
             if resource_usage.cpu_time_ms > 0 {
-                record_execution_cpu_time(resource_usage.cpu_time_ms, "");
+                record_execution_cpu_time(resource_usage.cpu_time_ms, "", &action_mnemonic);
             }
         }
 
         let Some(origin_event_tx) = self.maybe_origin_event_tx.as_ref() else {
             return Ok(());
         };
-        let Some(action_info) = self.running_action_info(worker_id, operation_id).await else {
+        let Some(action_info) = maybe_action_info else {
             return Ok(());
         };
 
