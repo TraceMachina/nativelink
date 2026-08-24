@@ -348,8 +348,8 @@ fn test_new_metric_helpers_are_callable() {
     record_store_tier_read("slow", "hit");
     record_store_tier_io("fast", "read", 4096);
     record_health_check("store", "ok");
-    record_execution_peak_memory(512 * 1024, "main");
-    record_execution_cpu_time(90_000, "main");
+    record_execution_peak_memory(512 * 1024, "main", "CppCompile");
+    record_execution_cpu_time(90_000, "main", "CppCompile");
     record_connection_acquired("grpc", Some(12), false);
     record_connection_acquired("redis", Some(0), true);
     record_connection_acquired("grpc", None, false);
