@@ -10,7 +10,7 @@ resolver = "2"
 [package]
 edition = "2024"
 name = "nativelink"
-rust-version = "1.93.1"
+rust-version = "1.97.1"
 version = "1.6.6"
 
 [profile.release]
@@ -175,7 +175,6 @@ semicolon-if-nothing-returned = "deny"
 similar-names = "deny"
 single-char-pattern = "deny"
 single-match-else = "deny"
-std-instead-of-core = "deny"
 string-lit-as-bytes = "deny"
 todo = "deny"
 unchecked-time-subtraction = "deny"
@@ -201,6 +200,7 @@ iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) 
 option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829
 redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369
 significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) Flip
+std-instead-of-core = "allow"                                   # TODO(palfrey): see https://github.com/rust-lang/rust-clippy/pull/16964 fixed in 1.98
 too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) Flip
 uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
 

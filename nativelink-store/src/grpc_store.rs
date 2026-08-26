@@ -1203,7 +1203,7 @@ impl GrpcStore {
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/uploads/{}/compressed-blobs/zstd/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 uuid,
                 digest.packed_hash(),
                 digest.size_bytes(),
@@ -1217,7 +1217,7 @@ impl GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/uploads/{}/compressed-blobs/zstd/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 uuid,
                 digest_function,
                 digest.packed_hash(),
@@ -1368,7 +1368,7 @@ impl GrpcStore {
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/compressed-blobs/zstd/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest.packed_hash(),
                 digest.size_bytes(),
             )
@@ -1381,7 +1381,7 @@ impl GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/compressed-blobs/zstd/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest_function,
                 digest.packed_hash(),
                 digest.size_bytes(),
@@ -1660,7 +1660,7 @@ impl StoreDriver for GrpcStore {
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/uploads/{}/blobs/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 Uuid::new_v4().hyphenated().encode_lower(&mut buf),
                 digest.packed_hash(),
                 digest.size_bytes(),
@@ -1674,7 +1674,7 @@ impl StoreDriver for GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/uploads/{}/blobs/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 Uuid::new_v4().hyphenated().encode_lower(&mut buf),
                 digest_function,
                 digest.packed_hash(),
@@ -1851,7 +1851,7 @@ impl StoreDriver for GrpcStore {
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/blobs/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest.packed_hash(),
                 digest.size_bytes(),
             )
@@ -1864,7 +1864,7 @@ impl StoreDriver for GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/blobs/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest_function,
                 digest.packed_hash(),
                 digest.size_bytes(),

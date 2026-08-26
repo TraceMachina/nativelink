@@ -264,7 +264,7 @@
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
         buck2-toolchain = let
-          buck2-nightly-rust-version = "2026-03-24";
+          buck2-nightly-rust-version = "2026-08-26";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
           buck2-rust = buck2-nightly-rust.default.override {extensions = ["rust-src"];};
         in
@@ -480,11 +480,11 @@
         };
         lre = {
           Env = with pkgs.lre;
-            if pkgs.stdenv.isDarwin
+            if pkgs.stdenv.hostPlatform.isDarwin
             then lre-rs.meta.Env # C++ doesn't support Darwin yet.
             else (lre-cc.meta.Env ++ lre-rs.meta.Env);
           prefix =
-            if pkgs.stdenv.isDarwin
+            if pkgs.stdenv.hostPlatform.isDarwin
             then "macos"
             else "linux";
         };
@@ -572,7 +572,7 @@
               pkgs.nativelink-tools.create-multi-arch-image
               pkgs.attic-client
             ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
               pkgs.apple-sdk_14
               pkgs.libiconv
             ];

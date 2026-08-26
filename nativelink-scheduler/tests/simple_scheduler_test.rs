@@ -1730,8 +1730,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         // Our request should have sent an error back.
         assert!(
             update_action_result.is_err(),
-            "Expected error, got: {:?}",
-            &update_action_result
+            "Expected error, got: {update_action_result:?}",
         );
         let err = update_action_result.unwrap_err();
         assert!(

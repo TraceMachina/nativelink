@@ -593,7 +593,7 @@ pub async fn new_local_worker(
         fs::remove_dir_all(&path).await.err_tip(|| {
             format!(
                 "Could not remove work_directory '{}' in LocalWorker",
-                &path.as_path().to_str().unwrap_or("bad path")
+                path.as_path().to_str().unwrap_or("bad path")
             )
         })?;
     }

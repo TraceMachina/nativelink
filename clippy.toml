@@ -93,4 +93,4 @@ doc-valid-idents = [
   "macOS",
   "sRGB",
 ]
-msrv = "1.93.1"
+msrv = "1.97.1"

@@ -26,11 +26,9 @@ use_repo(
     lre_rs,
     "lre-rs-nightly-aarch64-darwin",
     "lre-rs-nightly-aarch64-linux",
-    "lre-rs-nightly-x86_64-darwin",
     "lre-rs-nightly-x86_64-linux",
     "lre-rs-stable-aarch64-darwin",
     "lre-rs-stable-aarch64-linux",
-    "lre-rs-stable-x86_64-darwin",
     "lre-rs-stable-x86_64-linux",
 )
 

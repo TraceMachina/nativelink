@@ -1043,11 +1043,7 @@ where
         // The TL;DR is that if we're in cluster mode and the names hash differently, we can't use request
         // pipelining. By using these braces, we tell redis to only hash the part of the temporary key that's
         // identical to the final key -- so they will always hash to the same node.
-        let temp_key = format!(
-            "temp-{}-{{{}}}",
-            (self.temp_name_generator_fn)(),
-            &final_key
-        );
+        let temp_key = format!("temp-{}-{{{final_key}}}", (self.temp_name_generator_fn)());
 
         if is_zero_digest(key.borrow()) {
             let chunk = reader
