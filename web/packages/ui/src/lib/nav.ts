@@ -10,11 +10,23 @@ export function normalizeNavPath(hrefOrPath: string): string {
     return raw;
   }
 
-  const pathOnly = raw.split(/[?#]/, 1)[0] ?? raw;
+  const query = raw.indexOf("?");
+  const hash = raw.indexOf("#");
+  let end = raw.length;
+  if (query !== -1) {
+    end = Math.min(end, query);
+  }
+  if (hash !== -1) {
+    end = Math.min(end, hash);
+  }
+  let pathOnly = raw.slice(0, end);
   if (pathOnly === "/" || pathOnly === "") {
     return "/";
   }
-  return pathOnly.replace(/\/+$/, "") || "/";
+  while (pathOnly.length > 1 && pathOnly.endsWith("/")) {
+    pathOnly = pathOnly.slice(0, -1);
+  }
+  return pathOnly || "/";
 }
 
 /**
