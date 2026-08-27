@@ -1,7 +1,12 @@
 /** Normalize a path or href to a comparable pathname (no query, hash, or trailing slash). */
 export function normalizeNavPath(hrefOrPath: string): string {
   const raw = hrefOrPath.trim();
-  if (!raw || raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("mailto:")) {
+  if (
+    !raw ||
+    raw.startsWith("http://") ||
+    raw.startsWith("https://") ||
+    raw.startsWith("mailto:")
+  ) {
     return raw;
   }
 
@@ -24,7 +29,11 @@ export function isCurrentNavHref(href: string, currentPath: string | undefined):
   }
 
   const target = normalizeNavPath(href);
-  if (target.startsWith("http://") || target.startsWith("https://") || target.startsWith("mailto:")) {
+  if (
+    target.startsWith("http://") ||
+    target.startsWith("https://") ||
+    target.startsWith("mailto:")
+  ) {
     return false;
   }
 
