@@ -1,4 +1,5 @@
 import { cn } from "../lib/cn";
+import { isCurrentNavHref } from "../lib/nav";
 import { Button } from "./button";
 import { Logo } from "./logo";
 import { MobileNav } from "./mobile-nav";
@@ -21,6 +22,8 @@ interface SiteHeaderProps {
   ctaLabel?: string;
   ctaHref?: string;
   githubHref?: string;
+  /** Current route pathname (e.g. from Next.js `usePathname`). */
+  currentPath?: string;
   className?: string;
 }
 
@@ -38,8 +41,11 @@ export function SiteHeader({
   ctaLabel = "Get started",
   ctaHref = "/docs",
   githubHref = "https://github.com/TraceMachina/nativelink",
+  currentPath,
   className,
 }: SiteHeaderProps) {
+  const homeCurrent = isCurrentNavHref("/", currentPath);
+
   return (
     <header
       className={cn(
@@ -58,7 +64,12 @@ export function SiteHeader({
 
       <div className="mx-auto flex h-16 w-full max-w-[1200px] items-center px-6">
         {/* Logo — always left edge */}
-        <a href="/" aria-label="NativeLink — home" className="inline-flex items-center">
+        <a
+          href="/"
+          aria-label="NativeLink — home"
+          aria-current={homeCurrent ? "page" : undefined}
+          className="inline-flex items-center"
+        >
           <Logo size="md" />
         </a>
 
@@ -69,18 +80,27 @@ export function SiteHeader({
           className="pointer-events-none absolute left-1/2 hidden -translate-x-1/2 md:block"
         >
           <ul className="pointer-events-auto flex items-center gap-1 rounded-full border border-border/70 bg-surface/60 px-1.5 backdrop-blur">
-            {links.map((link) => (
-              <li key={link.href}>
-                <a
-                  href={link.href}
-                  target={opensInNewTab(link.label, link.href) ? "_blank" : undefined}
-                  rel={opensInNewTab(link.label, link.href) ? "noreferrer" : undefined}
-                  className="inline-flex h-9 items-center rounded-full px-3.5 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground"
-                >
-                  {link.label}
-                </a>
-              </li>
-            ))}
+            {links.map((link) => {
+              const current = isCurrentNavHref(link.href, currentPath);
+              return (
+                <li key={link.href}>
+                  <a
+                    href={link.href}
+                    target={opensInNewTab(link.label, link.href) ? "_blank" : undefined}
+                    rel={opensInNewTab(link.label, link.href) ? "noreferrer" : undefined}
+                    aria-current={current ? "page" : undefined}
+                    className={cn(
+                      "inline-flex h-9 items-center rounded-full px-3.5 text-[13px] font-medium transition-colors",
+                      current
+                        ? "bg-brand-soft text-brand"
+                        : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
+                    )}
+                  >
+                    {link.label}
+                  </a>
+                </li>
+              );
+            })}
           </ul>
         </nav>
 
@@ -111,7 +131,12 @@ export function SiteHeader({
             </a>
           </Button>
 
-          <MobileNav links={links} ctaLabel={ctaLabel} ctaHref={ctaHref} />
+          <MobileNav
+            links={links}
+            ctaLabel={ctaLabel}
+            ctaHref={ctaHref}
+            currentPath={currentPath}
+          />
         </div>
       </div>
     </header>

@@ -3,6 +3,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../lib/cn";
+import { isCurrentNavHref } from "../lib/nav";
 import { Button } from "./button";
 import { Logo } from "./logo";
 import type { NavLink } from "./site-header";
@@ -13,6 +14,7 @@ interface MobileNavProps {
   ctaLabel: string;
   ctaHref: string;
   githubHref?: string;
+  currentPath?: string;
 }
 
 const opensInNewTab = (label: string, href: string) =>
@@ -27,6 +29,7 @@ export function MobileNav({
   ctaLabel,
   ctaHref,
   githubHref = "https://github.com/TraceMachina/nativelink",
+  currentPath,
 }: MobileNavProps) {
   const [open, setOpen] = React.useState(false);
   const [mounted, setMounted] = React.useState(false);
@@ -127,6 +130,7 @@ export function MobileNav({
                     href="/"
                     onClick={() => setOpen(false)}
                     aria-label="NativeLink — home"
+                    aria-current={isCurrentNavHref("/", currentPath) ? "page" : undefined}
                     className="inline-flex items-center"
                   >
                     <Logo size="md" />
@@ -156,32 +160,41 @@ export function MobileNav({
 
                 {/* Nav list */}
                 <ul className="flex flex-col gap-1 px-6 py-8">
-                  {links.map((link, i) => (
-                    <li
-                      key={link.href}
-                      className={cn(
-                        "transition-all duration-300 ease-out",
-                        open ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",
-                      )}
-                      style={{ transitionDelay: open ? `${60 + i * 40}ms` : "0ms" }}
-                    >
-                      <a
-                        href={link.href}
-                        target={opensInNewTab(link.label, link.href) ? "_blank" : undefined}
-                        rel={opensInNewTab(link.label, link.href) ? "noreferrer" : undefined}
-                        onClick={() => setOpen(false)}
-                        className="group flex items-center justify-between rounded-xl px-4 py-4 text-2xl font-semibold tracking-tight text-foreground transition-colors hover:bg-brand-soft hover:text-brand"
+                  {links.map((link, i) => {
+                    const current = isCurrentNavHref(link.href, currentPath);
+                    return (
+                      <li
+                        key={link.href}
+                        className={cn(
+                          "transition-all duration-300 ease-out",
+                          open ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0",
+                        )}
+                        style={{ transitionDelay: open ? `${60 + i * 40}ms` : "0ms" }}
                       >
-                        <span>{link.label}</span>
-                        <span
-                          aria-hidden="true"
-                          className="text-base text-muted transition-all group-hover:translate-x-1 group-hover:text-brand"
+                        <a
+                          href={link.href}
+                          target={opensInNewTab(link.label, link.href) ? "_blank" : undefined}
+                          rel={opensInNewTab(link.label, link.href) ? "noreferrer" : undefined}
+                          aria-current={current ? "page" : undefined}
+                          onClick={() => setOpen(false)}
+                          className={cn(
+                            "group flex items-center justify-between rounded-xl px-4 py-4 text-2xl font-semibold tracking-tight transition-colors",
+                            current
+                              ? "bg-brand-soft text-brand"
+                              : "text-foreground hover:bg-brand-soft hover:text-brand",
+                          )}
                         >
-                          →
-                        </span>
-                      </a>
-                    </li>
-                  ))}
+                          <span>{link.label}</span>
+                          <span
+                            aria-hidden="true"
+                            className="text-base text-muted transition-all group-hover:translate-x-1 group-hover:text-brand"
+                          >
+                            →
+                          </span>
+                        </a>
+                      </li>
+                    );
+                  })}
                 </ul>
 
                 {/* Footer — CTA + GitHub */}
