@@ -1,0 +1,299 @@
+---
+title: Schedulers and workers
+description: The minimum config for each, the properties contract between them, and the fields that decide what happens when something goes wrong.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone adding execution to a config that currently only
+caches. **What you'll know at the end:** the minimum scheduler and worker
+blocks, how the two are wired to each other, and which of the many optional
+fields actually change behaviour you'll notice. **Time:** thirty minutes.
+
+<Prerequisites>
+  A config whose `stores` and `servers` you understand. See [Stores](/configuration/stores) and [Servers and services](/configuration/servers-and-services).
+</Prerequisites>
+
+## The minimum scheduler [#the-minimum-scheduler]
+
+A scheduler is one entry in the `schedulers` array, with a name and a type:
+
+```json5
+schedulers: [
+  {
+    name: "MAIN_SCHEDULER",
+    simple: {
+      supported_platform_properties: {
+        cpu_count: "minimum",
+        OSFamily: "exact",
+        "container-image": "priority",
+      },
+    },
+  },
+],
+```
+
+`simple` is the scheduler you want. The other four types (`grpc`,
+`cache_lookup`, `property_modifier`, and `historical_resource`) either
+forward to another scheduler or wrap one to change its behaviour; none of them
+is a starting point.
+
+`supported_platform_properties` is the whole contract. It declares which
+property keys this scheduler understands and how each is matched:
+
+| Value | Meaning |
+| --- | --- |
+| `minimum` | Parsed as a number; a worker must advertise at least this much |
+| `exact` | Parsed as a string; must match the worker's value exactly |
+| `priority` | Not used for filtering; passed to the worker as information |
+| `ignore` | Actions may request the key; workers need not advertise it |
+
+A property key an action requests that is **not** in this map is an error. A
+key that is in the map but that no worker advertises means the action never
+matches anything and queues silently. That failure mode gets its own page,
+[Platform properties](/remote-execution/platform-properties), because it's
+the first wall almost everyone hits.
+
+<SourceLink file="nativelink-config/src/schedulers.rs" symbol="SimpleSpec" />
+
+## The minimum worker [#the-minimum-worker]
+
+A worker is one entry in the `workers` array. `local` is currently the only
+type; it means the worker runs actions in this process, on this machine:
+
+```json5
+workers: [
+  {
+    local: {
+      name: "WORKER_1",
+      worker_api_endpoint: {
+        uri: "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
+      },
+      cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+      upload_action_result: {
+        ac_store: "AC_MAIN_STORE",
+      },
+      work_directory: "/tmp/nativelink/work",
+      platform_properties: {
+        cpu_count: { values: ["16"] },
+        OSFamily: { values: ["linux"] },
+        "container-image": { values: [""] },
+      },
+    },
+  },
+],
+```
+
+Four of those fields are load-bearing.
+
+**`worker_api_endpoint`** is the address of the *scheduler's* `worker_api`
+service, the private port from
+[Servers and services](/configuration/servers-and-services), not the public
+one. The worker dials out; the scheduler never dials in. That direction is why
+a worker fleet can sit behind NAT with no inbound rules.
+
+**`cas_fast_slow_store`** must name a `fast_slow` store whose `fast` half is a
+`filesystem` store. The worker builds each action's input tree by hard-linking
+files out of that fast store into the work directory, which requires real
+files on a real filesystem. The `slow` half must eventually resolve to the
+same CAS the client and scheduler use, or be a `noop`, when the fast tier is
+the only storage.
+
+**`work_directory`** must be on the **same filesystem** as the fast store's
+`content_path`, for the same hard-linking reason. It is fully managed by the
+worker and purged on startup.
+
+**`platform_properties`** is the worker's half of the contract. Each key is
+either a static list of values or a `query_cmd` that is run (as a command, not
+through a shell) each time the worker connects to the scheduler, with its
+output split on newlines:
+
+```json5
+platform_properties: {
+  cpu_count: { query_cmd: "nproc" },
+  OSFamily: { values: ["linux"] },
+},
+```
+
+Every key the scheduler declares as `minimum` or `exact` must appear here, or
+this worker will never be matched for any action requesting it.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="LocalWorkerConfig" />
+
+<Callout type="warn" title="`upload_action_result` is one level, not two">
+  The correct shape is `upload_action_result: { ac_store: "AC_MAIN_STORE" }`.
+  Configs showing `upload_action_result: { upload_action_result: { ... } }`
+  are wrong and will be rejected; `ac_store` is a direct field. Omitting the
+  block entirely is also valid, and means the worker runs actions but never
+  caches their results, which looks exactly like a broken cache.
+</Callout>
+
+## How they find each other [#how-they-find-each-other]
+
+Nothing in the scheduler names a worker. Workers are not declared to the
+scheduler at all; they connect to it, announce their platform properties, and
+are added to the pool. Removing a worker means stopping it.
+
+That is what the three pieces of wiring add up to:
+
+- the `execution` service names the scheduler, so clients can submit actions;
+- the `worker_api` service names the same scheduler, on a different port, so
+  workers can join;
+- each worker names the `worker_api` address, so it knows where to join.
+
+In a single-process config all three are the same process and the endpoint is
+`127.0.0.1`. In a fleet, the scheduler is its own deployment and that endpoint
+is a service address. The config shape does not change.
+
+## The fields that change what you'll notice [#the-fields-that-change-what-youll-notice]
+
+`SimpleSpec` has ten optional fields. Most can stay at their defaults
+forever. These four are the ones worth setting deliberately:
+
+**`worker_timeout_s`** (default 5 s): how long a silent worker stays in the
+pool. Five seconds is aggressive for a fleet on a congested network; a worker
+evicted mid-action has its action re-queued.
+
+**`max_action_executing_timeout_s`** (default 0, disabled): caps how long an
+action can sit in `Executing` with no update, even from a worker that is
+otherwise healthy. This is the setting that catches a worker stuck on one
+specific action rather than dead. Without it, such an action hangs until a
+client gives up.
+
+**`max_job_retries`** (default 3): how many times an action that fails with
+an internal error is retried before the last error is returned to the client.
+It exists to stop one poisonous action from cycling through and destabilising
+your whole fleet.
+
+**`retain_completed_for_s`** (default 60 s): how long a completed action's
+result stays available for a late `WaitExecution` call. Clients that
+disconnect and reconnect need this window to be longer than their reconnect
+time.
+
+On the worker side, **`max_inflight_tasks`** (default 0, meaning unlimited) is
+the one to set on any real machine. Unlimited means the worker accepts every
+action the scheduler offers and lets the OS sort out the contention.
+
+<Callout type="info" title="Scheduler state is in memory by default">
+  `experimental_backend` defaults to memory, so restarting the scheduler loses
+  the queue. A Redis backend exists for shared state across scheduler
+  replicas. Both are covered in
+  [Production configuration](/operate/production-config); for a single
+  scheduler, the default is correct.
+</Callout>
+
+## Putting the pieces together [#putting-the-pieces-together]
+
+Adding execution to a cache-only config takes four edits, all of which you've
+now seen:
+
+<Steps>
+
+<li>
+
+**Add a `schedulers` array** with one `simple` entry, naming the platform
+properties you intend to match on.
+
+</li>
+
+<li>
+
+**Add `execution` to the public server's services**, naming the CAS store and
+the scheduler.
+
+</li>
+
+<li>
+
+**Add a second server on a private port** with `worker_api` naming the same
+scheduler, and nothing else client-facing on that port.
+
+</li>
+
+<li>
+
+**Add a `workers` array** with one `local` entry pointing at that private
+port, plus the `fast_slow` store it needs.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- The worker logs `Worker registered with scheduler` with its assigned worker
+  id.
+- A build submitted with matching platform properties reports actions
+  executing remotely rather than queuing.
+- Every key the scheduler declares `minimum` or `exact` appears in the
+  worker's `platform_properties`.
+
+</VerifyBlock>
+
+[Your first full config](/configuration/your-first-full-config) does exactly
+this, from an empty file, one block at a time.
+
+## FAQ [#faq]
+
+<Accordions>
+
+<Accordion title="Can one process be both scheduler and worker?" id="can-one-process-be-both-scheduler-and-worker">
+
+Yes, and that's what `nativelink-config/examples/basic_cas.json5` is: one
+process with stores, a scheduler, a worker, a public server on `:50051` and a
+private one on `:50061`. It's the right shape for a laptop and for testing.
+Splitting into separate processes is a deployment change, not a config
+rewrite; the same blocks move into separate files.
+
+</Accordion>
+
+<Accordion title="How do I run more than one worker?" id="how-do-i-run-more-than-one-worker">
+
+Run more worker processes. The `workers` array can hold several entries in one
+process, but they share the machine, so the useful form of scaling is more
+machines each running a worker config that dials the same scheduler. Nothing
+on the scheduler side changes.
+
+</Accordion>
+
+<Accordion title="What does `entrypoint` do?" id="what-does-entrypoint-do">
+
+It wraps every action. The configured command is prepended to the action's own
+command, so an `entrypoint` of `run.sh` and an action of `sleep 5` executes
+`run.sh sleep 5`. It's how you put actions inside a sandbox, a container, or a
+timeout wrapper without the client knowing.
+
+</Accordion>
+
+<Accordion title="Why did my action fail with a timeout the client didn't ask for?" id="why-did-my-action-fail-with-a-timeout-the-client-didnt-ask-for">
+
+`max_action_timeout_s` on the worker defaults to 20 minutes. An action that
+requests no timeout gets that limit; an action that requests a *longer* one is
+rejected outright with `InvalidArgument: Action timeout of N seconds is
+greater than the maximum allowed timeout`. Either way, an action legitimately
+needing longer needs this raised on the worker, not just on the client.
+
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="max_action_timeout" />
+
+</Accordion>
+
+<Accordion title="What is `experimental_precondition_script` for?" id="what-is-experimental_precondition_script-for">
+
+It runs before every action, and a non-zero exit pauses the worker; it stops
+accepting new work until the script succeeds. The intended use is resource
+gating: don't take another action while disk is nearly full or a shared
+resource is saturated.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/configuration/your-first-full-config" title="Your first full config">
+  Empty file to a running cache-and-execution cluster, one block at a time,
+  with a check after each.
+</NextStep>
+
+<NextStep href="/remote-execution/platform-properties" kind="aside" title="Platform properties">
+  The matching contract in depth, and how to diagnose a queue that never
+  drains.
+</NextStep>

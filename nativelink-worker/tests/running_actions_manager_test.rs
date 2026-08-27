@@ -853,6 +853,217 @@ mod tests {
         Ok(())
     }
 
+    /// Staging runs as separate passes over the whole tree — collect, create
+    /// directories, materialize the individual nodes, then link the rest — so
+    /// every node kind has to survive being handled out of order with respect
+    /// to the walk that found it.
+    ///
+    /// A tree with one node kind per directory would pass even if the passes
+    /// ran in the wrong order, so this nests them several levels deep and mixes
+    /// the kinds: a plain file, an executable (which resolves through the 0o555
+    /// variant rather than the shared blob), a zero-digest file, a file with
+    /// metadata to stamp (which needs a private inode), and a symlink. The
+    /// deepest leaves are what catch a missing directory, since nothing else
+    /// creates their parents.
+    #[nativelink_test]
+    async fn download_to_directory_deep_mixed_tree_test() -> Result<(), Box<dyn core::error::Error>>
+    {
+        const PLAIN_CONTENT: &str = "plain";
+        const EXEC_CONTENT: &str = "exec";
+        const STAMPED_CONTENT: &str = "stamped";
+        const STAMPED_MODE: u32 = 0o640;
+        const STAMPED_MTIME: u64 = 42;
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+
+        let plain_digest = DigestInfo::new([21u8; 32], PLAIN_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(plain_digest, PLAIN_CONTENT.into())
+            .await?;
+        let exec_digest = DigestInfo::new([22u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+        let stamped_digest = DigestInfo::new([23u8; 32], STAMPED_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(stamped_digest, STAMPED_CONTENT.into())
+            .await?;
+        // SHA-256 of empty content.
+        let zero_digest = DigestInfo::try_new(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            0,
+        )?;
+
+        // The deepest level, holding every node kind that is not a plain
+        // hardlink, three directories below the root.
+        let leaf_digest = DigestInfo::new([24u8; 32], 128);
+        let leaf = Directory {
+            files: vec![
+                FileNode {
+                    name: "exec.sh".to_string(),
+                    digest: Some(exec_digest.into()),
+                    is_executable: true,
+                    node_properties: None,
+                },
+                FileNode {
+                    name: "zero.txt".to_string(),
+                    digest: Some(zero_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "stamped.txt".to_string(),
+                    digest: Some(stamped_digest.into()),
+                    is_executable: false,
+                    node_properties: Some(NodeProperties {
+                        properties: vec![],
+                        mtime: Some(
+                            SystemTime::UNIX_EPOCH
+                                .checked_add(Duration::from_secs(STAMPED_MTIME))
+                                .unwrap()
+                                .into(),
+                        ),
+                        unix_mode: Some(STAMPED_MODE),
+                    }),
+                },
+            ],
+            symlinks: vec![SymlinkNode {
+                name: "link".to_string(),
+                target: "exec.sh".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(leaf_digest, leaf.encode_to_vec().into())
+            .await?;
+
+        let middle_digest = DigestInfo::new([25u8; 32], 96);
+        let middle = Directory {
+            directories: vec![DirectoryNode {
+                name: "leaf".to_string(),
+                digest: Some(leaf_digest.into()),
+            }],
+            files: vec![FileNode {
+                name: "middle.txt".to_string(),
+                digest: Some(plain_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(middle_digest, middle.encode_to_vec().into())
+            .await?;
+
+        // A sibling of `middle`, so the batch creates directories that are not
+        // on a single root-to-leaf path.
+        let sibling_digest = DigestInfo::new([26u8; 32], 64);
+        let sibling = Directory {
+            files: vec![FileNode {
+                name: "sibling.txt".to_string(),
+                digest: Some(plain_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(sibling_digest, sibling.encode_to_vec().into())
+            .await?;
+
+        let root_digest = DigestInfo::new([27u8; 32], 128);
+        let root = Directory {
+            directories: vec![
+                DirectoryNode {
+                    name: "middle".to_string(),
+                    digest: Some(middle_digest.into()),
+                },
+                DirectoryNode {
+                    name: "sibling".to_string(),
+                    digest: Some(sibling_digest.into()),
+                },
+            ],
+            files: vec![FileNode {
+                name: "root.txt".to_string(),
+                digest: Some(plain_digest.into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root_digest, root.encode_to_vec().into())
+            .await?;
+
+        let download_dir = make_temp_path("deep_mixed_tree");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_digest,
+            &download_dir,
+        )
+        .await?;
+
+        let leaf_dir = format!("{download_dir}/middle/leaf");
+        assert_eq!(
+            from_utf8(&fs::read(format!("{download_dir}/root.txt")).await?)?,
+            PLAIN_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{download_dir}/middle/middle.txt")).await?)?,
+            PLAIN_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{download_dir}/sibling/sibling.txt")).await?)?,
+            PLAIN_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{leaf_dir}/exec.sh")).await?)?,
+            EXEC_CONTENT
+        );
+        assert_eq!(
+            from_utf8(&fs::read(format!("{leaf_dir}/stamped.txt")).await?)?,
+            STAMPED_CONTENT
+        );
+
+        let zero_metadata = fs::metadata(format!("{leaf_dir}/zero.txt")).await?;
+        assert_eq!(zero_metadata.len(), 0, "zero-digest file must be empty");
+
+        #[cfg(target_family = "unix")]
+        {
+            let link_metadata = fs::symlink_metadata(format!("{leaf_dir}/link")).await?;
+            assert!(link_metadata.is_symlink());
+
+            let exec_metadata = fs::metadata(format!("{leaf_dir}/exec.sh")).await?;
+            assert_eq!(
+                exec_metadata.mode() & 0o111,
+                0o111,
+                "an executable input must arrive executable"
+            );
+
+            let stamped_metadata = fs::metadata(format!("{leaf_dir}/stamped.txt")).await?;
+            assert_eq!(stamped_metadata.mode() & 0o777, STAMPED_MODE);
+            assert_eq!(
+                stamped_metadata
+                    .modified()?
+                    .duration_since(SystemTime::UNIX_EPOCH)?
+                    .as_secs(),
+                STAMPED_MTIME
+            );
+            assert_eq!(
+                stamped_metadata.nlink(),
+                1,
+                "a stamped file must be a private inode, not a link to the shared blob"
+            );
+        }
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn ensure_output_files_full_directories_are_created_no_working_directory_test()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -3762,7 +3973,7 @@ exit 1
         let command = "[\"cmd\", \"/C\", \"ping -n 99999 127.0.0.1\"]";
 
         assert!(logs_contain(&format!("Executing command args={command}")));
-        assert!(logs_contain(&format!("Command complete args={command}")));
+        assert!(logs_contain("Command complete exit_code="));
 
         assert!(!logs_contain(
             "Child process was not cleaned up before dropping the call to execute(), killing in background spawn"
@@ -3941,6 +4152,123 @@ exit 1
                 Code::Aborted,
                 "Expected Aborted : {action_result:?}"
             );
+        }
+
+        Ok(())
+    }
+
+    /// Regression test for issue #2672: `cleanup_action` used to notify the
+    /// action-done watch channel while holding the `running_actions` mutex,
+    /// and `kill_all` used to take that mutex inside a `wait_for` closure,
+    /// which runs while the channel's internal lock is held. On a
+    /// multi-threaded runtime the two parked each other's threads forever.
+    /// This races many concurrent cleanups against `kill_all`; a
+    /// reintroduction shows up as the timeout firing rather than a wedge.
+    #[nativelink_test(flavor = "multi_thread", worker_threads = 4)]
+    async fn kill_all_does_not_deadlock_with_concurrent_cleanups()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        for iteration in 0..50 {
+            let mut actions = Vec::new();
+            for i in 0..4 {
+                let execute_request = ExecuteRequest {
+                    action_digest: Some(action_digest.into()),
+                    digest_function: ProtoDigestFunction::Sha256.into(),
+                    ..Default::default()
+                };
+                let running_action = running_actions_manager
+                    .create_and_add_action(
+                        WORKER_ID.to_string(),
+                        StartExecute {
+                            execute_request: Some(execute_request),
+                            operation_id: format!("kill-race-{iteration}-{i}"),
+                            queued_timestamp: Some(make_system_time(1000).into()),
+                            platform: action.platform.clone(),
+                            worker_id: WORKER_ID.to_string(),
+                        },
+                    )
+                    .await?;
+                actions.push(running_action);
+            }
+            // Cleanups notify the action-done channel while kill_all waits
+            // on it; running them concurrently is the racing window.
+            let cleanups: Vec<_> = actions
+                .into_iter()
+                .map(|running_action| tokio::spawn(running_action.cleanup()))
+                .collect();
+            tokio::time::timeout(Duration::from_mins(1), running_actions_manager.kill_all())
+                .await
+                .expect("kill_all deadlocked against concurrent cleanup_action (issue #2672)");
+            for cleanup in cleanups {
+                drop(cleanup.await??);
+            }
         }
 
         Ok(())

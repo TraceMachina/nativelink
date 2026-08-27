@@ -1,0 +1,510 @@
+---
+title: Observability
+description: NativeLink pushes OTLP and nothing else. Wire it to a collector, get the series into Prometheus under the names the shipped rules expect, and know which environment variables actually do something.
+---
+
+{/* archetype: how-to (deployment), see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you are running NativeLink for other people and need to
+see queue times, cache hit rates and worker behaviour on a dashboard.
+**What you'll have at the end:** a collector receiving OTLP from every
+NativeLink process, Prometheus holding the series under the names the shipped
+recording rules query, and a Grafana dashboard drawing them. **Time:** 30
+minutes.
+
+<Prerequisites>
+  A running deployment you can set environment variables on.
+</Prerequisites>
+
+## NativeLink pushes; it is never scraped [#nativelink-pushes-it-is-never-scraped]
+
+The binary has no `/metrics` endpoint and no configuration that creates
+one. NativeLink builds three OTLP exporters at startup (logs, traces and
+metrics) and pushes to whatever endpoint the environment names. Every
+Prometheus-shaped thing in this pipeline happens downstream of the process.
+
+<Mermaid>
+{`flowchart LR
+    NL["nativelink<br/>CAS · scheduler · worker"]
+    COL["OTel Collector<br/>otlp receiver :4317"]
+    PEX["prometheus exporter<br/>:9090 · namespace: nativelink"]
+    PROM["Prometheus<br/>published on :9091"]
+    GRAF["Grafana :3000"]
+
+    NL -->|"OTLP/gRPC push<br/>every 60 s"| COL
+    COL --> PEX
+    PEX -->|"Prometheus scrapes"| PROM
+    PROM --> GRAF`}
+</Mermaid>
+
+That `namespace: nativelink` on the collector's Prometheus exporter is
+load-bearing, and it is the single most misunderstood part of this pipeline.
+The instruments NativeLink declares are named `cache.operations`,
+`execution.queue.time` and so on, with **no `nativelink` prefix anywhere in the
+binary**. The prefix is added by the collector. Bypass the collector and you
+lose it, along with every shipped recording rule and dashboard panel. See
+[what happens if you skip the collector](#what-happens-if-you-skip-the-collector).
+
+<Callout type="info" title="Metrics are Business Source Licensed">
+  Individual developer cache use does not need a commercial licence. Teams
+  using metrics in shared, production or commercial settings can use NativeLink
+  Enterprise or a separate licence. Note that instrumentation cannot be
+  switched off (see
+  [Open source and Enterprise](/reference/oss-and-enterprise#metrics-are-always-on)), and
+  the operative text is the [licence page](https://nativelink.com/license).
+</Callout>
+
+## The configuration [#the-configuration]
+
+Point every NativeLink process at a collector. Two variables carry the whole
+decision:
+
+```sh
+export NL_OTEL_ENDPOINT=http://otel-collector:4317
+export RUST_LOG=info
+```
+
+<Callout type="warn" title="NL_OTEL_ENDPOINT needs a scheme and an explicit port">
+
+  The value is parsed as a URL and the host and port are pulled out
+  individually, and each step `unwrap`s. A value with no scheme, or with no
+  explicit port, yields `None` for the port and **panics the process during
+  startup**, before it binds a socket.
+
+  `http://otel-collector:4317` is correct. `otel-collector:4317` and
+  `http://otel-collector` both crash the binary.
+
+</Callout>
+
+`NL_OTEL_ENDPOINT` builds one client-side load-balanced gRPC channel shared by
+all three exporters. Leave it unset and each exporter falls back to the
+OpenTelemetry SDK's own resolution: `OTEL_EXPORTER_OTLP_ENDPOINT` (or the
+per-signal `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` and friends), defaulting
+to `http://localhost:4317`. Both work; the explicit channel is what you want in
+a cluster, because it re-resolves the collector's DNS as pods move. Either way
+the transport is OTLP over gRPC: the binary is built with only the gRPC
+exporter, so `OTEL_EXPORTER_OTLP_PROTOCOL` cannot switch it to HTTP.
+
+The rest of the surface is small enough to state in full:
+
+| Variable | Default | What it does here |
+| --- | --- | --- |
+| `NL_OTEL_ENDPOINT` | unset | One shared gRPC channel for logs, traces and metrics. Panics on a malformed value. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Used only when `NL_OTEL_ENDPOINT` is unset. |
+| `OTEL_EXPORTER_OTLP_COMPRESSION` | unset | `gzip` or `zstd` on the gRPC exporters; the shipped Kubernetes manifests set `zstd`. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | How often metrics flush. NativeLink sets no interval, so the SDK default of one minute applies. This is the first hop in the [reaction-time budget](/operate/autoscaling-reference#the-reaction-time-budget); lower it to 10000 before you scale on anything. |
+| `RUST_LOG` | `info` | Applies to the stdout layer **and** to all three OTLP layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled. |
+| `NL_LOG` | `pretty` | Stdout log format. `compact` and `json` are recognised; any other value silently falls back to `pretty`. |
+
+The complete list, including the variables the config file expands and the ones
+a worker forwards to actions, is in
+[CLI and environment](/reference/cli-and-env).
+
+<Callout type="warn" title="OTEL_SERVICE_NAME does nothing">
+
+  `Resource::builder().with_service_name("nativelink")` is called
+  unconditionally, so the service name is a compile-time constant. Setting
+  `OTEL_SERVICE_NAME`, as several examples in the wild do, changes nothing.
+
+  `service.instance.id` is a fresh UUIDv4 per process, so it changes on every
+  restart. It is useful for telling replicas apart within one incident and
+  useless as a stable series identity across restarts. Add your own stable
+  identity through `OTEL_RESOURCE_ATTRIBUTES` if you need one.
+
+</Callout>
+
+<SourceLink file="nativelink-util/src/telemetry.rs" symbol="init_tracing" />
+
+## Bring up the pipeline [#bring-up-the-pipeline]
+
+<Tabs items={["Docker Compose", "Kubernetes", "Direct to Prometheus"]}>
+
+  <Tab value="Docker Compose">
+
+    ```sh
+    git clone https://github.com/TraceMachina/nativelink
+    cd nativelink/deployment-examples/metrics
+    docker compose up -d
+    ```
+
+    Then point NativeLink at the collector and restart it:
+
+    ```sh
+    export NL_OTEL_ENDPOINT=http://localhost:4317
+    export OTEL_METRIC_EXPORT_INTERVAL=10000
+    nativelink /path/to/config.json5
+    ```
+
+    What comes up, and on which host port:
+
+    | Service | Host port | Notes |
+    | --- | --- | --- |
+    | OTel Collector, OTLP gRPC | `4317` | Where NativeLink pushes. |
+    | OTel Collector, OTLP HTTP | `4318` | Unused by NativeLink's gRPC exporters. |
+    | OTel Collector, Prometheus exporter | `9090` | **This is not Prometheus.** It is the collector's scrape target. |
+    | OTel Collector, own metrics | `8888` | `otelcol_*` series about the collector itself. |
+    | OTel Collector, health | `13133` | `GET /health`. |
+    | Prometheus UI | **`9091`** | Published as `9091:9090` to avoid colliding with the exporter above. |
+    | Grafana | `3000` | `admin` / `admin`. |
+    | Alertmanager | `9093` | Optional. |
+    | Jaeger UI | `16686` | Traces; the collector's traces pipeline forwards to it. |
+    | node-exporter | `9100` | Optional host metrics. |
+
+    <Callout type="warn" title="Prometheus is on 9091, not 9090">
+      Port 9090 belongs to the collector's Prometheus *exporter*, the thing
+      Prometheus scrapes. Opening `http://localhost:9090` gets you a page of raw
+      OpenMetrics text, not a query UI. The UI is `http://localhost:9091`.
+    </Callout>
+
+    The shipped collector config also runs a second metrics pipeline that
+    pushes the same stream into Prometheus's own OTLP receiver over HTTP
+    (`otlphttp/prometheus`). Those series arrive without the `nativelink_`
+    prefix, so do not be surprised to find both spellings in the same
+    Prometheus; the rules and dashboard use the prefixed one.
+
+  </Tab>
+
+  <Tab value="Kubernetes">
+
+    ```sh
+    kubectl apply -f deployment-examples/metrics/kubernetes/prometheus.yaml
+    kubectl apply -f deployment-examples/metrics/kubernetes/otel-collector.yaml
+    ```
+
+    Both manifests live in a `nativelink` namespace; `prometheus.yaml` is the
+    one that creates it, so apply it first. The collector's `ConfigMap`
+    carries the same metrics pipelines as the Compose file (no traces
+    pipeline), with a 1 GiB memory limiter instead of 512 MiB.
+
+    Then add the endpoint to every NativeLink container, CAS, scheduler and
+    worker alike:
+
+    ```yaml
+    env:
+      - name: NL_OTEL_ENDPOINT
+        value: "http://otel-collector:4317"
+      - name: OTEL_METRIC_EXPORT_INTERVAL
+        value: "10000"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=prod,k8s.cluster.name=main"
+    ```
+
+    On the scrape path, the collector's Prometheus exporter has
+    `resource_to_telemetry_conversion` enabled, so every resource attribute,
+    including anything you set in `OTEL_RESOURCE_ATTRIBUTES`, becomes a label
+    (`deployment_environment`, `k8s_cluster_name`, `service_instance_id`).
+    The `promote_resource_attributes` list in the shipped Prometheus config
+    (`k8s.pod.name`, `k8s.namespace.name`, `k8s.deployment.name` and a dozen
+    more) only governs the collector's second pipeline into Prometheus's own
+    OTLP receiver; on that path attributes not on the list do not become
+    labels on the series (they survive only on `target_info`).
+
+  </Tab>
+
+  <Tab value="Direct to Prometheus">
+
+    Prometheus can receive OTLP itself (`--web.enable-otlp-receiver`), but its
+    receiver is OTLP over HTTP at `/api/v1/otlp/v1/metrics`, and NativeLink's
+    exporters are built with the gRPC transport only. Setting
+    `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` does nothing, so there is no
+    working configuration that sends the binary's metrics straight into
+    Prometheus. Something that speaks OTLP/gRPC has to sit in between; the
+    shipped collector is that something, and its `otlphttp/prometheus`
+    exporter is exactly this hop.
+
+    Read [what happens if you skip the
+    collector](#what-happens-if-you-skip-the-collector) before pointing the
+    binary at any OTLP/gRPC receiver other than the shipped collector: it
+    renames every metric.
+
+  </Tab>
+
+</Tabs>
+
+## What happens if you skip the collector [#what-happens-if-you-skip-the-collector]
+
+The `namespace: nativelink` setting on the collector's Prometheus exporter is
+what produces every metric name you have ever seen in a NativeLink dashboard.
+Send the OTLP stream anywhere else (another collector without that setting,
+an OTLP-native backend, or the shipped collector's own `otlphttp/prometheus`
+pipeline into Prometheus's receiver) and the names change:
+
+| Path | Series name for the `cache.operations` counter |
+| --- | --- |
+| NativeLink → collector → Prometheus scrapes the `prometheus` exporter | `nativelink_cache_operations_total` |
+| NativeLink → OTLP receiver that adds no namespace | `cache_operations_total` (or `cache.operations_total`, depending on the receiver's name translation) |
+
+Everything shipped under `deployment-examples/metrics/` (the recording rules,
+the Grafana dashboard, the alert expressions) is written against the first
+spelling. Against the second they all evaluate to an empty vector, which on a
+dashboard renders as a flat healthy zero rather than as a missing signal.
+
+If you take the un-prefixed path anyway, either rewrite the rules without the
+prefix or add a `metric_relabel_config` that puts it back. The collector path
+is the one the repository supports.
+
+<Callout type="info" title="Counters gain _total, histograms fan out">
+  The exporter also rewrites OTLP names into Prometheus form: dots become
+  underscores, monotonic counters gain a `_total` suffix, and each histogram
+  becomes `_bucket`, `_sum` and `_count` series. The
+  [metrics reference](/reference/metrics#how-an-instrument-becomes-a-prometheus-series)
+  records the exact result for every instrument.
+</Callout>
+
+## Turn on cache metrics [#turn-on-cache-metrics]
+
+Every family except cache metrics is emitted with no configuration. Cache
+metrics exist only for stores you explicitly wrap:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  cache_metrics: {
+    cache_type: "cas",
+    backend: {
+      filesystem: {
+        content_path: "/var/lib/nativelink/content_path-cas",
+        temp_path: "/var/lib/nativelink/tmp_path-cas",
+      },
+    },
+  },
+}
+```
+
+With `cache_metrics` absent, NativeLink constructs the same store graph without
+a wrapper, a timer, an attribute allocation or an OpenTelemetry call on the hot
+path. The feature costs nothing when it is off, which is why it is off.
+
+Wrap the stores you actually want to measure, usually `CAS_MAIN_STORE` and the
+AC. Wrapping every layer of a `fast_slow` composition gives you one series per
+layer and a hit-rate query that no longer means what you think it means.
+
+## Which metrics exist [#which-metrics-exist]
+
+The authority is the [metrics reference](/reference/metrics), which is
+generated from `nativelink-util/src/metrics.rs` and its call sites. It records
+every declared instrument, its type and unit, its histogram buckets, and (the
+part no hand-written table stays honest about) **whether anything in the
+binary ever emits it**.
+
+As of v1.6.5 the 30 declared instruments fall into eight families. Which process emits
+each one decides where you have to point the collector:
+
+| Family | Series prefix | Emitted by | What it tells you |
+| --- | --- | --- | --- |
+| Cache | `nativelink_cache_*` | Any process with a store wrapped in `cache_metrics` | Hit rate, operation latency, bytes in and out, per cache type |
+| Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
+| Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
+| Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes and whether it succeeded |
+| gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
+| Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
+| Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |
+| Connection pool | `nativelink_connection_*` | Any process with a gRPC connection pool or a Redis store | Pool headroom, acquisitions that had to queue, and reconnects |
+
+Three things worth knowing before you build a dashboard:
+
+`nativelink_cache_size` and `nativelink_cache_entries` are declared and
+[never emitted](/reference/metrics#declared-but-never-emitted). The shipped
+recording rules and the metrics README query both. Those rules have always
+returned nothing.
+
+Execution and worker fleet metrics come from the scheduler process only, and
+they describe the fleet as that scheduler instance sees it. With several
+scheduler replicas, aggregate across instances before reading a fleet total.
+
+The shipped recording rules and dashboard predate the worker, gRPC, scheduler,
+store tier, health and connection pool families. Nothing under
+`deployment-examples/metrics/` queries them yet, so the queries below are the
+starting point.
+
+## Queries worth having [#queries-worth-having]
+
+Cache hit rate, per cache type:
+
+```text
+sum(rate(nativelink_cache_operations_total{cache_operation_result="hit"}[5m])) by (cache_type) /
+sum(rate(nativelink_cache_operations_total{cache_operation_name="read"}[5m])) by (cache_type)
+```
+
+How long actions wait before a worker picks them up, the number that tells you
+whether to add workers:
+
+```text
+histogram_quantile(0.95,
+  sum(rate(nativelink_execution_queue_time_bucket[5m])) by (le, instance_name)
+)
+```
+
+Actions currently queued, which is the closest thing to a queue depth:
+
+```text
+sum(nativelink_execution_active_count{execution_stage="queued"})
+```
+
+Success rate:
+
+```text
+sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
+sum(rate(nativelink_execution_completed_count_total[5m]))
+```
+
+Workers connected to each scheduler instance, and how many of them are paused
+or draining:
+
+```text
+sum(nativelink_worker_connected_count) by (service_instance_id)
+sum(nativelink_worker_state_count) by (worker_state)
+```
+
+Why workers are leaving, which separates a scaling event from a fleet that is
+being evicted for timeouts:
+
+```text
+sum(rate(nativelink_worker_disconnections_total[5m])) by (worker_disconnect_reason)
+```
+
+Matching pass latency, which is the scheduler's own cost per pass rather than
+how long actions wait:
+
+```text
+histogram_quantile(0.95, sum(rate(nativelink_scheduler_matching_duration_bucket[5m])) by (le))
+```
+
+gRPC error rate per method, across every process:
+
+```text
+sum(rate(nativelink_rpc_server_duration_count{rpc_grpc_status_code!="0"}[5m])) by (rpc_service, rpc_method) /
+sum(rate(nativelink_rpc_server_duration_count[5m])) by (rpc_service, rpc_method)
+```
+
+Fast tier hit rate of a `fast_slow` store, which is what tells you whether the
+local disk in front of a bucket is earning its keep:
+
+```text
+sum(rate(nativelink_store_tier_operations_total{store_tier="fast",store_result="hit"}[5m])) /
+sum(rate(nativelink_store_tier_operations_total{store_tier="fast"}[5m]))
+```
+
+Peak memory per action at the 95th percentile, which is the number to size
+worker pods from (the scheduler records this sample with an empty
+`execution_instance`, so there is nothing useful to group by):
+
+```text
+histogram_quantile(0.95, sum(rate(nativelink_execution_peak_memory_bucket[5m])) by (le))
+```
+
+The repository ships 34 more as recording rules in
+`prometheus-recording-rules.yml`, grouped into `nativelink_execution`,
+`nativelink_cache`, `nativelink_performance` and `nativelink_slo`. Loading that
+file gives you `nativelink:execution_queue_time_p95` and friends as
+pre-computed series. The shipped dashboard does not query them; its panels
+read the raw `nativelink_execution_*` series directly.
+
+## The Grafana dashboard [#the-grafana-dashboard]
+
+A reference dashboard lives at
+<SourceLink file="deployment-examples/metrics/grafana/dashboards/nativelink-overview.json" />.
+The Compose stack provisions it automatically. Elsewhere: Dashboards → New →
+Import, paste the JSON, pick your Prometheus data source. It draws execution
+throughput, success rate, active actions by stage and stage transitions from
+`nativelink_execution_*`; it has no cache, worker or gRPC panels.
+
+If you add panels bound to `nativelink_cache_size` or
+`nativelink_cache_entries`, they will be empty forever. That is the metric,
+not your pipeline.
+
+<SourceLink file="nativelink-util/src/telemetry.rs" symbol="init_tracing" />
+<SourceLink file="nativelink-util/src/metrics.rs" />
+<SourceLink file="deployment-examples/metrics/otel-collector-config.yaml" />
+
+<VerifyBlock>
+
+  `curl http://localhost:13133/health` returns healthy. The collector's
+  pipeline check is on, so this also fails when its exporters are failing.
+
+  `curl -s http://localhost:8888/metrics | grep otelcol_receiver_accepted_metric_points`
+  is non-zero and climbing. If it is zero, NativeLink is not reaching the
+  collector.
+
+  `curl -s http://localhost:9090/metrics | grep nativelink_execution` shows
+  series on the collector's exporter, with the `nativelink_` prefix present.
+
+  In Prometheus at `http://localhost:9091`, `nativelink_execution_queue_time_bucket`
+  returns data after one build.
+
+  If the `nativelink_cache_*` series are missing but `nativelink_execution_*`
+  are present, no store is wrapped in `cache_metrics`.
+
+</VerifyBlock>
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Process panics at startup with a URL error | `NL_OTEL_ENDPOINT` has no scheme or no explicit port | Use `http://host:4317` |
+| No metrics anywhere, process healthy | Nothing is pushing; check `otelcol_receiver_accepted_metric_points` on `:8888` | Verify the endpoint and that it is set on the process you are looking for |
+| Metrics appear a minute late | `OTEL_METRIC_EXPORT_INTERVAL` defaults to 60 s | Set `10000` |
+| `nativelink_execution_*` present, `nativelink_cache_*` missing | No store is wrapped | [Turn on cache metrics](#turn-on-cache-metrics) |
+| Metrics exist under names with no `nativelink_` prefix | They came through an OTLP receiver that adds no namespace (the shipped collector's `otlphttp/prometheus` pipeline does this alongside the scrape path) | [Skip the collector](#what-happens-if-you-skip-the-collector) |
+| No execution or worker metrics, cache metrics fine | The collector endpoint is set on the CAS but not on the scheduler process | Set `NL_OTEL_ENDPOINT` on the scheduler; those families are emitted from it alone |
+| `nativelink_worker_*` or `nativelink_rpc_*` series missing entirely | The binary is older than the release these families were added in | Upgrade to v1.6.5; the [metrics reference](/reference/metrics#every-instrument-at-a-glance) is generated from the version it names |
+| Cache-size panels flat at zero | Those instruments are never emitted | [Declared but never emitted](/reference/metrics#declared-but-never-emitted) |
+| `out of order sample` in Prometheus logs | Multiple processes with restart-fresh `service.instance.id` | Raise `storage.tsdb.out_of_order_time_window` in `prometheus.yml` (the shipped Kubernetes config sets 30m) |
+| Metrics stop when a worker OOMs and returns | Expected; the new process gets a new `service.instance.id` | Aggregate away from `service_instance_id` in your queries |
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+  <Accordion title="Can Prometheus scrape NativeLink directly?" id="can-prometheus-scrape-nativelink-directly">
+    No. The binary has no scrape endpoint, at any configuration, and
+    the binary cannot push to Prometheus's OTLP receiver either, because that
+    receiver is HTTP-only and NativeLink's exporters are gRPC-only. Run a
+    collector and scrape its Prometheus exporter; the shipped collector also
+    forwards into Prometheus's OTLP receiver, with the renaming described in
+    [what happens if you skip the collector](#what-happens-if-you-skip-the-collector).
+  </Accordion>
+  <Accordion title="Do metrics require a commercial licence?" id="do-metrics-require-a-commercial-licence">
+    Metrics are one of the Business Source Licensed modules. Individual
+    developer use is fine; shared, production or commercial settings need
+    NativeLink Enterprise or a separate licence; see the
+    [licence page](https://nativelink.com/license). No configuration
+    turns instrumentation off, which
+    [Open source and Enterprise](/reference/oss-and-enterprise#metrics-are-always-on)
+    explains and which matters when you assess your own position.
+  </Accordion>
+  <Accordion title="Which metric should drive worker autoscaling?" id="which-metric-should-drive-worker-autoscaling">
+    Queue time, not queue depth. `nativelink_execution_queue_time` is a real
+    histogram emitted by the scheduler; a p95 above your tolerance means add
+    workers. No `nativelink_scheduler_queue_depth` series exists; the
+    closest thing is `nativelink_execution_active_count{execution_stage="queued"}`,
+    a gauge, and `nativelink_worker_connected_count` tells you how many workers
+    that queue is waiting on. Before you build an HPA on either, read the
+    [autoscaling reference](/operate/autoscaling-reference#the-reaction-time-budget):
+    the default one-minute export interval alone puts your reaction time in
+    minutes, and CPU-based scaling is worse because workers are mostly I/O-bound.
+  </Accordion>
+  <Accordion title="Why does my dashboard show a new instance every restart?" id="why-does-my-dashboard-show-a-new-instance-every-restart">
+    `service.instance.id` is a fresh UUIDv4 per process and `OTEL_SERVICE_NAME`
+    is ignored. Set a stable identity of your own through
+    `OTEL_RESOURCE_ATTRIBUTES`, for example `nativelink.instance_name`, and
+    aggregate on that. The shipped collector config copies that attribute onto
+    every datapoint as `instance_name`, which is the label the shipped
+    recording rules group by; nothing in the binary sets it for you.
+  </Accordion>
+</Accordions>
+
+## What's next [#whats-next]
+
+<NextStep href="/reference/metrics" title="The metrics reference">
+  Every instrument, its buckets, its attributes, and whether anything emits it,
+  generated from the source.
+</NextStep>
+
+<NextStep href="/operate/autoscaling-reference" title="Scale on these signals" kind="aside">
+  The reaction-time budget, and the five gaps between a metric and a working
+  HPA.
+</NextStep>
+
+<NextStep href="/operate/runbooks" title="What to do when a signal fires" kind="aside">
+  The incidents that page you, and the sequence that resolves each.
+</NextStep>

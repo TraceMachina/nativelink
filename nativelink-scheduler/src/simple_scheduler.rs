@@ -58,6 +58,10 @@ use crate::worker_scheduler::WorkerScheduler;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
 
+/// Default timeout for a sent kill to be acknowledged in seconds.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S: u64 = 60;
+
 /// Mark operations as completed with error if no client has updated them
 /// within this duration.
 /// If this changes, remember to change the documentation in the config.
@@ -513,6 +517,11 @@ impl SimpleScheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
+        let mut unacknowledged_kill_timeout_s = spec.unacknowledged_kill_timeout_s;
+        if unacknowledged_kill_timeout_s == 0 {
+            unacknowledged_kill_timeout_s = DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S;
+        }
+
         let worker_change_notify = Arc::new(Notify::new());
 
         // Create shared worker registry for single heartbeat per worker.
@@ -538,6 +547,7 @@ impl SimpleScheduler {
             spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
+            unacknowledged_kill_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
         );
@@ -791,6 +801,10 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler
             .set_drain_worker(worker_id, is_draining)
             .await
+    }
+
+    async fn kill_revoked_operations(&self) -> Result<(), Error> {
+        self.worker_scheduler.kill_revoked_operations().await
     }
 }
 

@@ -404,6 +404,28 @@ pub struct WorkerApiConfig {
     /// The scheduler name referenced in the `schedulers` map in the main config.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub scheduler: SchedulerRefName,
+
+    /// Disable the periodic sweep that tells workers to kill operations
+    /// the scheduler no longer has executing on them (for example because
+    /// every client disconnected before the action finished). With the
+    /// sweep disabled such orphaned actions run to completion and still
+    /// warm the action cache, which can be preferable for deployments
+    /// with long or expensive actions whose clients merely retry.
+    ///
+    /// Default: false (the sweep runs)
+    #[serde(default)]
+    pub disable_kill_revoked_operations: bool,
+
+    /// How often, in seconds, the scheduler checks for operations that
+    /// are still running on a worker but are no longer executing
+    /// according to the state manager, and tells the worker to kill
+    /// them. Each pass costs one state-manager lookup per running
+    /// operation, so store-backed deployments with many concurrent
+    /// actions may want a longer interval.
+    ///
+    /// Default: 5 (0 uses the default)
+    #[serde(default)]
+    pub kill_revoked_operations_interval_s: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]

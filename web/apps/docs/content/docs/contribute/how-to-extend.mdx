@@ -1,0 +1,314 @@
+---
+title: How to extend NativeLink
+description: Complete file-by-file recipes for adding a store, a config field, a metric, or a gRPC service.
+---
+
+{/* archetype: how-to. See /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone adding a new component rather than changing an
+existing one. **What you'll have at the end:** four recipes, each listing
+every file a working change touches, including the ones that compile fine
+when you forget them and fail in CI. **Time:** use as a checklist.
+
+Each recipe below is derived from the smallest existing example in the tree.
+Copy that example rather than starting from a blank file: it already has the
+right license header, the right derives, and the right last line.
+
+Read [codebase internals](/contribute/codebase-internals) first if you have
+not; the trait split and the spawning rules are assumed here.
+
+## Adding a store [#adding-a-store]
+
+Model: `nativelink-store/src/noop_store.rs`, the smallest complete
+`StoreDriver` in the tree.
+
+<Steps>
+  <li>
+    **Add the spec** to `nativelink-config/src/stores.rs`. A new variant on
+    `StoreSpec` (the JSON5 key is the snake_case form of the variant name;
+    box the payload if it is large) plus a spec struct modelled on
+    `MemorySpec`:
+
+    ```rust
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    #[serde(deny_unknown_fields)]
+    #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+    pub struct MyStoreSpec {
+        /// What this field is for.
+        /// Default: 0
+        pub some_field: usize,
+    }
+    ```
+
+    The `dev-schema` `cfg_attr` is not optional; without it your store never
+    appears in the generated
+    [configuration reference](/reference/nativelink-config).
+  </li>
+  <li>
+    **Write the store** at `nativelink-store/src/my_store.rs`: the license
+    header copied from a neighbouring file, the struct, a `MetricsComponent`
+    impl, `pub fn new(...) -> Arc<Self>`, `#[async_trait] impl StoreDriver`,
+    and `default_health_status_indicator!(MyStore);` as the last line.
+  </li>
+  <li>
+    **Declare the module**: `pub mod my_store;` in
+    `nativelink-store/src/lib.rs`.
+  </li>
+  <li>
+    **Wire the factory**: an import and a match arm in
+    `nativelink-store/src/default_store_factory.rs`. The match is exhaustive,
+    so this one is a compile error if you forget it. It is the only step that
+    is.
+  </li>
+  <li>
+    **Add the file to `nativelink-store/BUILD.bazel`**, in the `srcs` list,
+    **alphabetically**. Cargo does not care. Bazel does, and CI runs Bazel;
+    this is the single most common way a store PR goes red after a green
+    local run.
+  </li>
+  <li>
+    **Add a test** at `nativelink-store/tests/my_store_test.rs` and register
+    it in the crate's `rust_test_suite`. See
+    [the testing guide](/contribute/testing-guide).
+  </li>
+</Steps>
+
+<Callout type="warn" title="The store examples file is generated from your doc comments">
+  `nativelink-config/examples/stores-config.json5` is produced by the
+  `generate-stores-config` tool from the ```` ```json ```` fenced blocks in
+  the doc comments in `stores.rs`, via a pre-commit hook. And
+  `tests/json5_test.rs` parses every example, so a malformed JSON fence in a
+  doc comment is not a cosmetic problem; it breaks the build.
+</Callout>
+
+Two semantics to get right, both covered in
+[the store model](/explanations/store-model):
+
+**`inner_store` must return `self`** if your store changes the bytes on the
+way through, and forward to the inner store if it only routes. Returning the
+wrong one is a runtime error, not a compile error.
+
+**`update` must drain its reader** even when it is discarding the data.
+`NoopStore` does this; a store that returns early without draining will hang
+its writer.
+
+## Adding a config field [#adding-a-config-field]
+
+Config fields are documentation. The doc comment becomes the description in
+the generated reference, and the ```` ```json ```` fences in `stores.rs` are
+also harvested into the examples file, which is why they have to be valid
+JSON rather than illustrative fragments.
+
+<Steps>
+  <li>
+    **Add the field with a doc comment ending in a default line:**
+
+    ```rust
+    /// How long to wait before giving up on a connection.
+    /// Default: 5 (seconds)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub connection_timeout_s: u64,
+    ```
+
+    The `Default:` line is parsed out of the description by the docs
+    generator. Without it the reference shows no default.
+  </li>
+  <li>
+    **Pick the right `deserialize_with` helper** from
+    <SourceLink file="nativelink-config/src/serde_utils.rs" symbol="serde_utils.rs" />.
+    They all expand shell variables, which is how a config file references
+    the environment.
+  </li>
+  <li>
+    **Regenerate the reference** if you want to see the result:
+    `bun --filter @nativelink/docs gen:config-reference` from `web/`.
+  </li>
+</Steps>
+
+The helpers that exist:
+
+| Helper | For |
+| --- | --- |
+| `convert_numeric_with_shellexpand` | Any integer type |
+| `convert_optional_numeric_with_shellexpand` | `Option<N>` |
+| `convert_string_with_shellexpand` | `String` |
+| `convert_optional_string_with_shellexpand` | `Option<String>` |
+| `convert_vec_string_with_shellexpand` | `Vec<String>` |
+| `convert_boolean_with_shellexpand` | `bool` |
+| `convert_data_size_with_shellexpand` | Byte sizes; accepts `1GB`, `512MiB` |
+| `convert_optional_data_size_with_shellexpand` | `Option<size>` |
+| `convert_duration_with_shellexpand` | Durations |
+| `convert_duration_with_shellexpand_and_negative` | Durations that may be negative |
+
+<Callout type="info" title="There is no `default_as_true` helper">
+  A `bool` that should default to `true` needs its own
+  `fn default_true() -> bool { true }` and `#[serde(default = "default_true")]`.
+  Several fields do this; there is no shared helper.
+</Callout>
+
+To rename a field without breaking existing configs, add a shim in
+`backcompat.rs`; both existing shims are `#[serde(untagged)]` enums that
+accept the old and new shapes and emit a `tracing::warn!` on the deprecated
+one.
+
+## Adding a metric [#adding-a-metric]
+
+Decide which system first; see
+[two metric systems](/contribute/codebase-internals#two-metric-systems).
+
+**The derive path** touches one file. Add the field, annotate it:
+
+```rust
+#[metric(help = "Number of blobs currently resident")]
+resident_blobs: AtomicU64,
+```
+
+The struct already derives `MetricsComponent`, and the value appears in the
+introspection tree automatically.
+
+**The OpenTelemetry path** touches three:
+
+<Steps>
+  <li>
+    Declare the instrument in the appropriate `LazyLock` bundle in
+    `nativelink-util/src/metrics.rs` (`CACHE_METRICS`, `EXECUTION_METRICS`,
+    `WORKER_METRICS`, `RPC_METRICS`, `SCHEDULER_METRICS`,
+    `STORE_TIER_METRICS`, `HEALTH_METRICS` or `CONNECTION_METRICS`). Use a
+    dotted name, a `.with_description`, and a `.with_unit` that is a UCUM
+    unit (`"By"`, `"s"`, `"ms"`) or a braced count such as `"{entry}"`.
+    Then regenerate the metrics reference with
+    `bun --filter @nativelink/docs gen:metrics-reference` from `web/`, which
+    reads this file.
+  </li>
+  <li>
+    Record it at the call site, using the pre-computed attribute struct
+    where one exists (`CacheMetricAttrs` / `ExecutionMetricAttrs`) rather
+    than building attributes inline.
+  </li>
+  <li>
+    Extend `nativelink-util/tests/metrics_test.rs`.
+  </li>
+</Steps>
+
+<Callout type="warn" title="Two things to not do here">
+  `nativelink-util/src/metrics.rs` is **Business Source License**; keep its
+  header, do not paste the FSL one in. And never add an action digest or a
+  worker ID as an attribute on a hot instrument: the cardinality will kill
+  the metrics backend long before it affects NativeLink.
+</Callout>
+
+## Adding a gRPC service [#adding-a-grpc-service]
+
+Model: `nativelink-service/src/fetch_server.rs`: 165 lines, and it has
+every convention in it.
+
+<Steps>
+  <li>
+    **Write the server** at `nativelink-service/src/my_server.rs`. Import
+    the generated trait and server type with the standard alias:
+
+    ```rust
+    use nativelink_proto::…::my_server::{My, MyServer as Server};
+    ```
+
+    Hold per-instance state in a `HashMap<String, _>` keyed by instance
+    name. Constructor signature:
+
+    ```rust
+    pub fn new(
+        configs: &[WithInstanceName<MyConfig>],
+        store_manager: &StoreManager,
+    ) -> Result<Self, Error>
+    ```
+  </li>
+  <li>
+    **Provide `into_service`**, exactly this name, because the
+    `service_setup!` macro calls it:
+
+    ```rust
+    pub fn into_service(self) -> Server<Self> {
+        Server::new(self)
+    }
+    ```
+  </li>
+  <li>
+    **Split each RPC in two.** A private `inner_<rpc>` returning
+    `nativelink_error::Error` holds the logic; the public
+    `#[tonic::async_trait]` method wraps it, converts to `Status`, and
+    carries the instrumentation:
+
+    ```rust
+    #[instrument(
+        err(level = Level::WARN),
+        ret(level = Level::INFO),
+        skip_all,
+        fields(request = ?grpc_request.get_ref())
+    )]
+    ```
+  </li>
+  <li>
+    **Register it** in the `Routes::builder().routes()` chain in
+    `src/bin/nativelink.rs`, with `.add_optional_service(...)` and
+    `service_setup!`. The macro applies the message-size limit (4 MiB by
+    default) and compression settings, so registering without it silently
+    opts out of both.
+  </li>
+</Steps>
+
+If the service needs new protos: add the package to `PROTO_NAMES` **and** to
+the `gen_rs_protos` `srcs` list in `nativelink-proto/BUILD.bazel`, then
+regenerate and commit the output:
+
+```bash
+bazel run nativelink-proto:update_protos
+```
+
+`//nativelink-proto:update_protos_test` is the CI gate that catches a
+forgotten regeneration.
+
+<Callout type="warn" title="Worker-facing services belong on their own port">
+  The CAS server carries an explicit note about this: the `worker_api`
+  service must not share a listener with client-facing services, because it
+  has no authentication of its own. Anything you add with worker-level
+  privileges inherits that requirement; see
+  [security hardening](/operate/security-hardening).
+</Callout>
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="My store builds with Cargo but CI fails. Why?" id="cargo-green-bazel-red">
+    Almost certainly the `srcs` list in `nativelink-store/BUILD.bazel`. Cargo
+    globs; Bazel enumerates. Add the file, keep the list alphabetical, and
+    run `bazel build //nativelink-store:nativelink-store` before pushing.
+  </Accordion>
+  <Accordion title="My new config field doesn't show up in the reference." id="field-missing-from-reference">
+    Check that the spec struct has
+    `#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]`. The generated
+    reference is produced from the schemars schema, and a struct without that
+    derive is invisible to it. If the field is there but has no default,
+    add a `/// Default: …` line to the doc comment.
+  </Accordion>
+  <Accordion title="A doc comment broke the build. How?" id="doc-comment-broke-build">
+    Doc comments in `nativelink-config` are load-bearing twice over: fenced
+    JSON blocks are extracted into
+    `nativelink-config/examples/stores-config.json5` by a pre-commit hook,
+    and `tests/json5_test.rs` parses every generated example. Malformed JSON
+    in a fence fails that test.
+  </Accordion>
+  <Accordion title="Do I need protoc installed to add a proto?" id="need-protoc">
+    No. Generated Rust is checked into `nativelink-proto/genproto/`, and
+    regeneration goes through `bazel run nativelink-proto:update_protos`.
+    Commit the regenerated files with your change.
+  </Accordion>
+  <Accordion title="Where does a new store's default go?" id="where-do-store-defaults-go">
+    In the implementation, not the config crate; the spec should describe
+    intent, and the store applies its own fallback. Record the value in the
+    field's `/// Default:` line so the reference stays honest.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/contribute/testing-guide" title="Testing guide">
+  How the suites are organised, what `#[nativelink_test]` does for you, and
+  which local environment problems produce which confusing failure.
+</NextStep>

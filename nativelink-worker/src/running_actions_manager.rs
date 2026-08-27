@@ -57,7 +57,7 @@ use nativelink_store::ac_utils::{
 };
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
-use nativelink_store::filesystem_store::{FileEntry, FilesystemStore};
+use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
@@ -470,6 +470,207 @@ fn download_to_directory_with_lease<'a>(
     input_lease: Option<Arc<ActionInputLease>>,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
+        let (dirs, files, inline_nodes) =
+            collect_download_links(cas_store, digest, current_directory, input_lease).await?;
+
+        let (exec_files, plain_files): (Vec<_>, Vec<_>) =
+            files.into_iter().partition(|file| file.executable);
+        let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
+        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+
+        // Every directory exists before anything is written into one, so no
+        // later pass has to create a parent it happens to need.
+        fs::create_dir_many(dirs).await?;
+        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes).await?;
+        materialize_links(filesystem_store, links).await
+    }
+    .boxed()
+}
+
+/// A hardlink deferred to the end of the input-tree walk, so the whole tree is
+/// materialized by one batched [`fs::hard_link_many`] pass instead of one
+/// `spawn_blocking` dispatch per file.
+struct PendingLink {
+    src: PathBuf,
+    dst: PathBuf,
+    /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
+    /// inode cannot be dropped out from under the batch. `None` for an
+    /// executable variant, which is a private file outside the entry map and so
+    /// has no entry to hold.
+    ///
+    /// Neither case is fully closed: a held entry pins the inode but does not
+    /// stop an eviction from *renaming* the blob, and a variant is deleted
+    /// outright by the eviction callback. Both races predate batching, which
+    /// widens the window from a single file to a whole input tree. An operator
+    /// seeing `NotFound` during staging should enable
+    /// `experimental_active_input_leases`, since a leased digest is not
+    /// evicted, or raise the store's `max_bytes`. The durable fix is a
+    /// `hard_link_locked_many` holding every read guard across the batch.
+    _keepalive: Option<Arc<FileEntryImpl>>,
+}
+
+/// A file whose CAS blob has not been resolved to a path yet.
+struct PendingFile {
+    digest: DigestInfo,
+    dst: String,
+    executable: bool,
+}
+
+/// The directories to create, the files to hardlink, and the nodes to
+/// materialize one at a time, for one input subtree.
+type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
+
+/// Executes every deferred hardlink of an input tree in one batched pass.
+async fn materialize_links(
+    filesystem_store: Pin<&FilesystemStore>,
+    links: Vec<PendingLink>,
+) -> Result<(), Error> {
+    let pairs = links
+        .iter()
+        .map(|link| (link.src.clone(), link.dst.clone()))
+        .collect();
+    for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
+        let (src_path, dest) = (&link.src, &link.dst);
+        result.map_err(|e| {
+            let src_metadata = std::fs::metadata(src_path);
+            let dest_metadata = std::fs::metadata(dest);
+            let dest_parent_metadata = dest.parent().map(Path::metadata);
+            let snapshot = filesystem_store.get_eviction_snapshot();
+            warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
+            if e.code == Code::NotFound {
+                e.append(
+                    format!(
+                    "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
+                    This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+                    To fix this issue:\n\
+                    1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+                    2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+                    3. The setting is typically found in your nativelink.json config under:\n\
+                    stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+                    4. Restart NativeLink after making the change\n\n\
+                    If this error persists after increasing max_bytes several times, please report at:\n\
+                    https://github.com/TraceMachina/nativelink/issues\n\
+                    Include your config file and both server and client logs to help us assist you.",
+                    src_path.display(), dest.display()
+                ))
+            } else {
+                e.append(format!("Could not make hardlink from {} to {}", src_path.display(), dest.display()))
+            }
+        })?;
+    }
+    Ok(())
+}
+
+/// Resolves every non-executable file of an input tree to its CAS blob path.
+///
+/// The blob is nearly always resident, and `populate_fast_store` would take the
+/// store's eviction lock only to discover that, so resolving the entry directly
+/// answers the same question and yields the path. Only a genuine miss pays the
+/// populate round trip.
+async fn resolve_plain_files(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    files: Vec<PendingFile>,
+) -> Result<Vec<PendingLink>, Error> {
+    let mut tasks = Vec::with_capacity(files.len());
+    for file in files {
+        tasks.push(async move {
+            let file_entry = if let Ok(entry) = filesystem_store
+                .get_file_entry_for_digest(&file.digest)
+                .await
+            {
+                entry
+            } else {
+                cas_store
+                    .populate_fast_store(file.digest.into())
+                    .await
+                    .err_tip(|| "Populating fast store for hard link")?;
+                filesystem_store
+                    .get_file_entry_for_digest(&file.digest)
+                    .await
+                    .err_tip(|| "During hard link")?
+            };
+            // TODO: add a test for #2051: deadlock with large number of files
+            let src_path = file_entry
+                .get_file_path_locked(|src| async move { Ok(src) })
+                .await
+                .err_tip(|| format!("for digest {}", file.digest))?;
+            Ok::<_, Error>(PendingLink {
+                src: PathBuf::from(src_path),
+                dst: PathBuf::from(file.dst),
+                _keepalive: Some(file_entry),
+            })
+        });
+    }
+    collect_links(tasks).await
+}
+
+/// Runs the resolution tasks of one input tree, bounded, into the link batch.
+async fn collect_links(
+    tasks: Vec<impl Future<Output = Result<PendingLink, Error>>>,
+) -> Result<Vec<PendingLink>, Error> {
+    futures::stream::iter(tasks)
+        .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
+/// Resolves every executable file of an input tree to its 0o555 variant.
+///
+/// The shared 0o444 CAS blob cannot carry the executable bit, so each of these
+/// digests hardlinks a private variant instead, and the batch checks the whole
+/// tree's variants for existence in one dispatch.
+///
+/// A variant cannot be built from a blob that is not resident, and only this
+/// caller can fetch one, so those digests are populated and retried here.
+async fn resolve_exec_files(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    files: Vec<PendingFile>,
+) -> Result<Vec<PendingLink>, Error> {
+    let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
+    let sources = filesystem_store
+        .get_executable_hardlink_sources(&digests)
+        .await;
+
+    let mut tasks = Vec::with_capacity(files.len());
+    for (file, source) in files.into_iter().zip(sources) {
+        tasks.push(async move {
+            let src_path = if let Ok(src_path) = source {
+                src_path
+            } else {
+                cas_store
+                    .populate_fast_store(file.digest.into())
+                    .await
+                    .err_tip(|| "Populating fast store for executable")?;
+                filesystem_store
+                    .get_executable_hardlink_source(&file.digest)
+                    .await
+                    .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
+            };
+            Ok::<_, Error>(PendingLink {
+                src: PathBuf::from(src_path),
+                dst: PathBuf::from(file.dst),
+                _keepalive: None,
+            })
+        });
+    }
+    collect_links(tasks).await
+}
+
+/// Walks the input tree, reading its `Directory` protos and sorting every node
+/// into one of the passes the caller then runs: directories to create, files to
+/// hardlink in a batch, and the few nodes that need individual treatment.
+///
+/// Nothing is written to disk here, which is what lets the caller create every
+/// directory before any node is materialized into one.
+fn collect_download_links<'a>(
+    cas_store: &'a FastSlowStore,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    input_lease: Option<Arc<ActionInputLease>>,
+) -> BoxFuture<'a, Result<CollectedTree, Error>> {
+    async move {
         if let Some(input_lease) = &input_lease {
             input_lease.lease_digest(digest);
         }
@@ -477,6 +678,8 @@ fn download_to_directory_with_lease<'a>(
             .await
             .err_tip(|| "Converting digest to Directory")?;
         let mut futures = Vec::new();
+        let mut pending_files = Vec::new();
+        let mut inline_nodes = Vec::new();
 
         for file in directory.files {
             let digest: DigestInfo = file
@@ -493,10 +696,161 @@ fn download_to_directory_with_lease<'a>(
             if let Some(input_lease) = &input_lease {
                 input_lease.lease_digest(&digest);
             }
+            // Hot path: nothing to stamp, so the file needs nothing from the
+            // walk beyond its digest. Hand it up unresolved and let the caller
+            // resolve and link the whole tree in one batch.
+            if mtime.is_none() && custom_unix_mode.is_none() && !is_zero_digest(digest) {
+                pending_files.push(PendingFile {
+                    digest,
+                    dst: dest,
+                    executable: is_executable,
+                });
+                continue;
+            }
+            inline_nodes.push(InlineNode::File {
+                digest,
+                dst: dest,
+                is_executable,
+                mtime: mtime
+                    .map(|mtime| FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32)),
+                custom_unix_mode,
+            });
+        }
+
+        for sub_directory in directory.directories {
+            let digest: DigestInfo = sub_directory
+                .digest
+                .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
+                .try_into()
+                .err_tip(|| "In Directory::file::digest")?;
+            let new_directory_path = format!("{}/{}", current_directory, sub_directory.name);
+            if let Some(input_lease) = &input_lease {
+                // Reserve queued child directories before their futures are
+                // polled. Without this, a large parent can leave later
+                // directory digests exposed to slow-tier eviction while the
+                // first batch of children is being materialized.
+                input_lease.lease_digest(&digest);
+            }
+            let input_lease = input_lease.clone();
             futures.push(
-                cas_store
-                    .populate_fast_store(digest.into())
-                    .and_then(move |()| async move {
+                async move {
+                    let (mut sub_dirs, files, inline) = collect_download_links(
+                        cas_store,
+                        &digest,
+                        &new_directory_path,
+                        input_lease,
+                    )
+                    .await
+                    .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
+                    sub_dirs.push(PathBuf::from(new_directory_path));
+                    Ok::<_, Error>((sub_dirs, files, inline))
+                }
+                .boxed(),
+            );
+        }
+
+        #[cfg(target_family = "unix")]
+        for symlink_node in directory.symlinks {
+            inline_nodes.push(InlineNode::Symlink {
+                target: symlink_node.target,
+                dst: format!("{}/{}", current_directory, symlink_node.name),
+            });
+        }
+
+        // Gate concurrency: at most DOWNLOAD_TO_DIRECTORY_CONCURRENCY futures
+        // polled at once for this directory level. Previously all futures were
+        // pushed into an unbounded FuturesUnordered, which on macOS produced
+        // thousands of parallel hardlink(2) calls fighting APFS's per-volume
+        // metadata lock and regressing throughput vs serial.
+        let collected: Vec<CollectedTree> = futures::stream::iter(futures)
+            .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+        let mut dirs = Vec::new();
+        for (sub_dirs, sub_files, sub_inline) in collected {
+            dirs.extend(sub_dirs);
+            pending_files.extend(sub_files);
+            inline_nodes.extend(sub_inline);
+        }
+        Ok((dirs, pending_files, inline_nodes))
+    }
+    .boxed()
+}
+
+/// A node materialized one at a time rather than through a batch, because it
+/// needs a private inode or is not a hardlink at all.
+///
+/// These are a tiny fraction of an input tree, and deferring them alongside the
+/// batched files keeps one ordering rule for the whole walk: nothing is written
+/// until every directory exists.
+enum InlineNode {
+    /// A zero-digest file, or one carrying metadata that must be stamped onto
+    /// an inode private to this action.
+    File {
+        digest: DigestInfo,
+        dst: String,
+        is_executable: bool,
+        mtime: Option<FileTime>,
+        custom_unix_mode: Option<u32>,
+    },
+    #[cfg(target_family = "unix")]
+    Symlink { target: String, dst: String },
+}
+
+/// Stamps the mode an input file asked for. `dest` must be an inode private to
+/// this action: the same call on a hardlinked CAS blob would mutate the inode
+/// every other action shares.
+#[cfg(target_family = "unix")]
+async fn stamp_unix_mode(
+    dest: &str,
+    is_executable: bool,
+    custom_unix_mode: Option<u32>,
+) -> Result<(), Error> {
+    let mode = match (custom_unix_mode, is_executable) {
+        (Some(mode), true) => mode | 0o111,
+        (Some(mode), false) => mode,
+        (None, true) => 0o555,
+        (None, false) => return Ok(()),
+    };
+    fs::set_permissions(dest, Permissions::from_mode(mode))
+        .await
+        .err_tip(|| format!("Could not set unix mode in download_to_directory {dest}"))
+}
+
+/// Non-unix has no mode to stamp.
+#[cfg(not(target_family = "unix"))]
+async fn stamp_unix_mode(
+    _dest: &str,
+    _is_executable: bool,
+    _custom_unix_mode: Option<u32>,
+) -> Result<(), Error> {
+    Ok(())
+}
+
+/// Materializes the nodes the batched passes cannot handle.
+async fn materialize_inline_nodes(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    nodes: Vec<InlineNode>,
+) -> Result<(), Error> {
+    let mut futures = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        futures.push(async move {
+            match node {
+                #[cfg(target_family = "unix")]
+                InlineNode::Symlink { target, dst } => fs::symlink(&target, &dst)
+                    .await
+                    .err_tip(|| format!("Could not create symlink {target} -> {dst}")),
+                InlineNode::File {
+                    digest,
+                    dst: dest,
+                    is_executable,
+                    mtime,
+                    custom_unix_mode,
+                } => {
+                    cas_store.populate_fast_store(digest.into()).await?;
+                    async move {
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
                             // FilesystemStore, so materialise them directly in
@@ -508,7 +862,7 @@ fn download_to_directory_with_lease<'a>(
                                 .write_all(&[])
                                 .await
                                 .err_tip(|| format!("Could not write zero-digest file at {dest}"))?;
-                        } else if custom_unix_mode.is_some() || mtime.is_some() {
+                        } else {
                             // Rare path: per-file metadata (a custom unix_mode or
                             // an mtime) must land on a PRIVATE inode. A
                             // chmod/utimes on a hardlink mutates the shared CAS
@@ -535,90 +889,16 @@ fn download_to_directory_with_lease<'a>(
                             .err_tip(|| {
                                 "Failed to launch spawn_blocking private copy in download_to_directory"
                             })??;
-                        } else {
-                            // Hot path: hardlink only — no writable fd is ever
-                            // opened for the materialized inode, so a concurrent
-                            // `execve` of an executable input cannot hit ETXTBSY
-                            // ("Text file busy"). Executables hardlink a
-                            // per-digest 0o555 variant created once off the hot
-                            // path (the 0o444 CAS blob is shared and cannot carry
-                            // +x); non-executables hardlink the 0o444 CAS blob.
-                            let src_path = if is_executable {
-                                filesystem_store
-                                    .get_executable_hardlink_source(&digest)
-                                    .await
-                                    .err_tip(|| "Resolving executable hardlink source")?
-                            } else {
-                                let file_entry = filesystem_store
-                                    .get_file_entry_for_digest(&digest)
-                                    .await
-                                    .err_tip(|| "During hard link")?;
-                                // TODO: add a test for #2051: deadlock with large number of files
-                                file_entry
-                                    .get_file_path_locked(|src| async move { Ok(src) })
-                                    .await?
-                            };
-                            fs::hard_link(&src_path, &dest)
-                                .await
-                                .map_err(|e| {
-                                    let src_metadata = std::fs::metadata(&src_path);
-                                    let dest_metadata = std::fs::metadata(&dest);
-                                    let dest_parent_metadata = Path::new(&dest).parent().map(Path::metadata);
-                                    let snapshot = filesystem_store.get_eviction_snapshot();
-                                    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, %dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
-                                    if e.code == Code::NotFound {
-                                        e.append(
-                                            format!(
-                                            "Could not make hardlink from {} to {dest}, file was likely evicted from cache.\n\
-                                            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                                            To fix this issue:\n\
-                                            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                                            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                                            3. The setting is typically found in your nativelink.json config under:\n\
-                                            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                                            4. Restart NativeLink after making the change\n\n\
-                                            If this error persists after increasing max_bytes several times, please report at:\n\
-                                            https://github.com/TraceMachina/nativelink/issues\n\
-                                            Include your config file and both server and client logs to help us assist you.", src_path.display()
-                                        ))
-                                    } else {
-                                        e.append(format!("Could not make hardlink from {} to {dest}", src_path.display()))
-                                    }
-                                })?;
-                            // Hardlinked inodes are already correct (the 0o444
-                            // blob or the 0o555 executable variant) and carry no
-                            // per-file metadata, so there is nothing to stamp.
-                            return Ok(());
                         }
 
                         // Private-inode tail (zero-digest or private copy only):
                         // stamp the requested mode and mtime. Safe because the
                         // inode is private to this action.
-                        #[cfg(target_family = "unix")]
-                        {
-                            let mode = if let Some(mode) = custom_unix_mode {
-                                Some(if is_executable { mode | 0o111 } else { mode })
-                            } else if is_executable {
-                                Some(0o555)
-                            } else {
-                                None
-                            };
-                            if let Some(mode) = mode {
-                                fs::set_permissions(&dest, Permissions::from_mode(mode))
-                                    .await
-                                    .err_tip(|| {
-                                        format!("Could not set unix mode in download_to_directory {dest}")
-                                    })?;
-                            }
-                        }
+                        stamp_unix_mode(&dest, is_executable, custom_unix_mode).await?;
                         if let Some(mtime) = mtime {
                             let spawned_dest = dest.clone();
                             spawn_blocking!("download_to_directory_set_mtime", move || {
-                                set_file_mtime(
-                                    &spawned_dest,
-                                    FileTime::from_unix_time(mtime.seconds, mtime.nanos as u32),
-                                )
-                                .err_tip(|| {
+                                set_file_mtime(&spawned_dest, mtime).err_tip(|| {
                                     format!("Failed to set mtime in download_to_directory {spawned_dest}")
                                 })
                             })
@@ -628,76 +908,17 @@ fn download_to_directory_with_lease<'a>(
                             )??;
                         }
                         Ok(())
-                    })
-                    .map_err(move |e| e.append(format!("for digest {digest}")))
-                    .boxed(),
-            );
-        }
-
-        for directory in directory.directories {
-            let digest: DigestInfo = directory
-                .digest
-                .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
-                .try_into()
-                .err_tip(|| "In Directory::file::digest")?;
-            let new_directory_path = format!("{}/{}", current_directory, directory.name);
-            if let Some(input_lease) = &input_lease {
-                // Reserve queued child directories before their futures are
-                // polled. Without this, a large parent can leave later
-                // directory digests exposed to slow-tier eviction while the
-                // first batch of children is being materialized.
-                input_lease.lease_digest(&digest);
-            }
-            let input_lease = input_lease.clone();
-            futures.push(
-                async move {
-                    fs::create_dir(&new_directory_path)
-                        .await
-                        .err_tip(|| format!("Could not create directory {new_directory_path}"))?;
-                    download_to_directory_with_lease(
-                        cas_store,
-                        filesystem_store,
-                        &digest,
-                        &new_directory_path,
-                        input_lease,
-                    )
+                    }
                     .await
-                    .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
-                    Ok(())
+                    .map_err(|e: Error| e.append(format!("for digest {digest}")))
                 }
-                .boxed(),
-            );
-        }
-
-        #[cfg(target_family = "unix")]
-        for symlink_node in directory.symlinks {
-            let dest = format!("{}/{}", current_directory, symlink_node.name);
-            futures.push(
-                async move {
-                    fs::symlink(&symlink_node.target, &dest).await.err_tip(|| {
-                        format!(
-                            "Could not create symlink {} -> {}",
-                            symlink_node.target, dest
-                        )
-                    })?;
-                    Ok(())
-                }
-                .boxed(),
-            );
-        }
-
-        // Gate concurrency: at most DOWNLOAD_TO_DIRECTORY_CONCURRENCY futures
-        // polled at once for this directory level. Previously all futures were
-        // pushed into an unbounded FuturesUnordered, which on macOS produced
-        // thousands of parallel hardlink(2) calls fighting APFS's per-volume
-        // metadata lock and regressing throughput vs serial.
-        futures::stream::iter(futures)
-            .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
-            .try_collect::<Vec<_>>()
-            .await?;
-        Ok(())
+            }
+        });
     }
-    .boxed()
+    futures::stream::iter(futures)
+        .buffer_unordered(DOWNLOAD_TO_DIRECTORY_CONCURRENCY)
+        .try_collect()
+        .await
 }
 
 /// Prepares action inputs by first trying the directory cache (if available),
@@ -1901,7 +2122,8 @@ impl RunningActionImpl {
                     #[cfg(not(target_os = "linux"))]
                     let resource_usage = None;
 
-                    info!(?args, "Command complete");
+                    // log something useful instead of repeating same ?arg
+                    info!(?exit_code, "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
@@ -3109,10 +3331,20 @@ impl RunningActionsManagerImpl {
     }
 
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
-        let mut running_actions = self.running_actions.lock();
-        let result = running_actions.remove(operation_id).err_tip(|| {
-            format!("Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl")
-        });
+        // The guard must be dropped before notifying: `send_modify` takes
+        // the watch channel's internal lock, and a `wait_for` closure that
+        // takes `running_actions` runs while holding that same lock, so
+        // notifying while holding `running_actions` is an ABBA deadlock
+        // (issue #2672). There is no lost wakeup in the gap: the removal
+        // happens-before the notify.
+        let result = {
+            let mut running_actions = self.running_actions.lock();
+            running_actions.remove(operation_id).err_tip(|| {
+                format!(
+                    "Expected operation id '{operation_id}' to exist in RunningActionsManagerImpl"
+                )
+            })
+        };
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
         result.map(|_| ())
@@ -3273,15 +3505,24 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 while kill_futures.next().await.is_some() {}
             })
             .await;
-        // Ignore error. If error happens it means there's no sender, which is not a problem.
-        // Note: Sanity check this API will always check current value then future values:
-        // https://play.rust-lang.org/?version=stable&edition=2021&gist=23103652cc1276a97e5f9938da87fdb2
-        drop(
-            self.action_done_tx
-                .subscribe()
-                .wait_for(|()| self.running_actions.lock().is_empty())
-                .await,
-        );
+        // Wait for the running actions to drain. Deliberately NOT
+        // `wait_for(|()| ...)`: that closure runs while the watch channel's
+        // internal lock is held, so taking `running_actions` inside it
+        // deadlocks with anyone notifying the channel while holding
+        // `running_actions` (issue #2672). Checking outside the channel's
+        // lock loses no wakeup: `changed()` reports any version bump since
+        // the last check, and `cleanup_action` removes before it notifies.
+        let mut action_done_rx = self.action_done_tx.subscribe();
+        loop {
+            if self.running_actions.lock().is_empty() {
+                break;
+            }
+            // The only sender lives on `self`, so this cannot error; if it
+            // ever did, giving up the wait is still the safe answer.
+            if action_done_rx.changed().await.is_err() {
+                break;
+            }
+        }
     }
 
     #[inline]

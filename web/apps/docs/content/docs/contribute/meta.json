@@ -1,10 +1,15 @@
 {
   "pages": [
     "guidelines",
-    "docs",
     "bazel",
     "cargo",
-    "nix"
+    "nix",
+    "repo-crate-map",
+    "codebase-internals",
+    "how-to-extend",
+    "testing-guide",
+    "release-versioning",
+    "docs"
   ],
-  "title": "For Contributors"
+  "title": "Contribute"
 }

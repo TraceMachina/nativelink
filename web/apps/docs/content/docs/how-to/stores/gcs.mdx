@@ -1,0 +1,224 @@
+---
+title: Google Cloud Storage
+description: "Back the cache with a GCS bucket: authentication, the resumable-upload chunk size, and the timeout fields whose names disagree with their units."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone running NativeLink on Google Cloud who wants the
+durable tier to be a GCS bucket. **What you'll have at the end:** a
+bucket-backed CAS behind a local fast tier, authenticated by the ambient
+service account. **Time:** twenty minutes, most of it IAM.
+
+<Prerequisites>
+  A config file you can edit (see [Configuration](/configuration)), and a GCS bucket you can write to.
+</Prerequisites>
+
+GCS is one `provider` value of the same cloud object store used by
+[S3 and compatible](/how-to/stores/s3-and-compatible),
+[Azure Blob](/how-to/stores/azure) and
+[OCI Object Storage](/how-to/stores/oci-object-storage). The composition
+around it is identical; only the provider block changes.
+
+## The recipe [#the-recipe]
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    fast_slow: {
+      fast: {
+        filesystem: {
+          content_path: "/var/lib/nativelink/cas/content",
+          temp_path: "/var/lib/nativelink/cas/tmp",
+          eviction_policy: { max_bytes: "50gb" },
+        },
+      },
+      slow: {
+        experimental_cloud_object_store: {
+          provider: "gcs",
+          bucket: "my-nativelink-cas",
+          key_prefix: "cas/",
+          retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+        },
+      },
+    },
+  },
+],
+```
+
+`bucket` is the only field you have to set. No region is needed: a GCS bucket's
+location is a property of the bucket, decided when you create it, and the
+client reaches it the same way wherever it lives. Put the bucket in the region
+your workers run in; cross-region reads are both slower and billed.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalGcsSpec" />
+
+## Authentication [#authentication]
+
+Credentials come from the ambient Google credential chain: a credentials file
+named by `GOOGLE_APPLICATION_CREDENTIALS` (or inline JSON in
+`GOOGLE_APPLICATION_CREDENTIALS_JSON`), the application-default credentials
+written by `gcloud auth application-default login`, or otherwise the metadata
+server on GCE, GKE or Cloud Run. Nothing secret goes in the config file.
+
+The service account needs to read and write objects in the bucket;
+`roles/storage.objectUser` scoped to the bucket covers it (overwriting an
+existing object in GCS also needs the delete permission that role includes).
+NativeLink itself never deletes objects; expiry is a bucket lifecycle rule.
+
+`authentication_required` defaults to `false`: if no credential is found, the
+store starts anyway and issues anonymous requests to `storage.googleapis.com`
+(there is no endpoint override for an emulator). Set it to `true` for anything real,
+so a misconfigured credential chain fails loudly at startup rather than as a
+permission error on the first request.
+
+<SourceLink file="nativelink-store/src/gcs_client/client.rs" symbol="GcsClient" />
+
+## Options worth setting [#options-worth-setting]
+
+| Field | Default | What it decides |
+| --- | --- | --- |
+| `key_prefix` | none | Namespacing inside one bucket; give the CAS `cas/` and the AC `ac/` |
+| `resumable_chunk_size` | 2 MB | Chunk size for resumable uploads of large objects; can only be lowered |
+| `authentication_required` | `false` | Whether to error at startup when no credential is found |
+| `retry` | | Exponential backoff with jitter, shared with every other provider |
+| `consider_expired_after_s` | `0` (never) | How old an object may be and still count as present |
+
+Objects under 5 MB with a known size go up in one request; everything else
+uses a resumable upload, sent chunk by chunk with `resumable_chunk_size`
+bytes per request. The value is rounded to a multiple of 256 KiB and capped at
+the 2 MB default, so it can only be lowered, which trades more round trips per
+object for less memory held per in-flight upload. No setting
+raises it.
+
+<SourceLink file="nativelink-store/src/gcs_store.rs" symbol="GcsStore" />
+
+<Callout type="warn" title="Two timeout fields are documented in milliseconds but read in seconds">
+  `connection_timeout_s` and `read_timeout_s` carry a documented default of
+  `3000` and the words "in milliseconds" in the reference. The code reads
+  both as seconds and uses 3 seconds when they are unset. If you set them,
+  set them in seconds, and leave them unset unless you are actively debugging
+  a timeout.
+</Callout>
+
+The remaining shared options behave as described in
+[the shared options section](/how-to/stores/s3-and-compatible), with one
+difference: here `multipart_max_concurrent_uploads` (default 10) caps how many
+requests this store has in flight to GCS at once, across all operations, and
+the chunks of one resumable upload are sent one after another.
+`max_retry_buffer_per_request` is raised to at least the chunk size, and
+`insecure_allow_http` and `disable_http2` are not consulted by the GCS
+client.
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Create the bucket** in the region your workers run in. Uniform bucket-level
+access is fine and simpler than per-object ACLs.
+
+</li>
+
+<li>
+
+**Grant the service account** object read and write on that bucket, and
+nothing wider.
+
+</li>
+
+<li>
+
+**Set `authentication_required: true`** so a missing credential fails at
+startup. A resumable upload session that a killed process leaves behind
+expires on its own after a week; there is nothing to clean up.
+
+</li>
+
+<li>
+
+**Add the store** as the `slow` half of a `fast_slow` pair whose `fast` half is
+a local [filesystem store](/how-to/stores/filesystem).
+
+</li>
+
+<li>
+
+**Run a build twice** (once cold, once after emptying the local fast tier)
+and watch object counts in the bucket.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Objects appear under `key_prefix` in the bucket during the first build.
+- The second build is a cache hit even after `content_path` is emptied, which
+  proves reads fall through to the bucket.
+- Bucket request counts are far lower than blob counts, which proves the fast
+  tier is absorbing repeat reads.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Every request fails with a permission error" id="every-request-fails-with-a-permission-error">
+
+The credential chain found something, but it can't act on the bucket. Confirm
+the service account attached to the instance or workload identity has object
+read and write on it. If it can create but not overwrite, re-uploads of a
+digest that already exists fail, because GCS needs the delete permission to
+replace an object.
+
+</Accordion>
+
+<Accordion title="The store starts but no credential was ever found" id="the-store-starts-but-no-credential-was-ever-found">
+
+That's `authentication_required` at its default of `false`. Set it to `true`
+so the store errors at startup instead of quietly issuing unauthenticated
+requests.
+
+</Accordion>
+
+<Accordion title="Large uploads are slow or memory-hungry" id="large-uploads-are-slow-or-memory-hungry">
+
+The chunk size is at most 2 MB and each chunk is a round trip, so a large
+object is many sequential requests; `resumable_chunk_size` can only make the
+chunks smaller. Memory per in-flight upload is bounded by the chunk size plus
+the retry buffer; the number of concurrent requests is bounded by
+`multipart_max_concurrent_uploads`.
+
+</Accordion>
+
+<Accordion title="Builds are slow even though the cache is hitting" id="builds-are-slow-even-though-the-cache-is-hitting">
+
+You're reaching the bucket on every read. Confirm the store is the `slow` half
+of a `fast_slow` pair, and that the `fast` half's `eviction_policy` isn't so
+small that everything is evicted before it's re-read.
+
+</Accordion>
+
+<Accordion title="Objects exist in the bucket but NativeLink reports them missing" id="objects-exist-in-the-bucket-but-nativelink-reports-them-missing">
+
+Check `consider_expired_after_s`. A non-zero value makes objects older than
+that window invisible on purpose, so they pair with a matching bucket lifecycle
+rule. If you didn't intend that, set it back to `0`.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Deduplication, compression and existence caching in front of the bucket,
+  the layers that decide what it actually costs.
+</NextStep>
+
+<NextStep href="/how-to/stores/s3-and-compatible" kind="aside" title="S3 and compatible">
+  The same store type with a different provider, and the shared options in
+  full.
+</NextStep>

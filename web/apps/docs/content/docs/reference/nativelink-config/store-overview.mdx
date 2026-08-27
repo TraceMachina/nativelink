@@ -1,6 +1,6 @@
 ---
 title: Store overview
-description: The mental model behind every store in the configuration reference — what holds data, what wraps another store, and how they compose.
+description: "The mental model behind every store in the configuration reference: what holds data, what wraps another store, and how they compose."
 ---
 
 The [full reference](/reference/nativelink-config) lists every field on
@@ -8,7 +8,7 @@ every store. This page is the map you need before that list is useful:
 what a store actually is, the two families every store falls into, and
 the compositions people actually run in production.
 
-## What a store is
+## What a store is [#what-a-store-is]
 
 A store is a named, pluggable backend for CAS or AC data. You declare
 each one once in the top-level `stores` array, then reference it by
@@ -27,17 +27,19 @@ name from `servers`, `workers`, or from inside another store:
 }
 ```
 
-The store's *type* is whichever key you put inside its object —
+The store's *type* is whichever key you put inside its object:
 `filesystem`, `memory`, `compression`, `fast_slow`, and so on. NativeLink
 picks the implementation from that key; everything else in the object is
-that implementation's config.
+that implementation's config. The set of legal keys is the variant list of a
+single enum, so the reference below and the parser cannot disagree.
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
 
-## Two families
+## Two families [#two-families]
 
 Every store type is either **terminal** (it actually holds or fetches
 bytes) or a **wrapper** (it adds behavior in front of another store,
 which it embeds as a nested `StoreSpec`). Wrappers nest arbitrarily
-deep — a `verify` can wrap a `compression`, which wraps a `fast_slow`,
+deep: a `verify` can wrap a `compression`, which wraps a `fast_slow`,
 which wraps two more terminal stores:
 
 <Mermaid>
@@ -49,23 +51,26 @@ which wraps two more terminal stores:
 </Mermaid>
 
 Reads and writes flow through every wrapper in order. Nothing about the
-client changes — it still speaks plain CAS/AC RPCs against whatever
+client changes; it still speaks plain CAS/AC RPCs against whatever
 store name the server exposes.
 
-### Terminal stores — where bytes actually live
+### Terminal stores: where bytes actually live [#terminal-stores--where-bytes-actually-live]
 
 | Store key | Holds data in | Notes |
 | --- | --- | --- |
 | `memory` | An in-process hash map | Fastest, gone on restart. Good for AC tiers and dev. |
 | `filesystem` | Local disk | Survives restarts; scans and rebuilds its index on startup. |
 | `experimental_cloud_object_store` | A cloud object bucket | One store type, six `provider`s: `aws` (S3), `gcs`, `azure`, `ontap` (NetApp ONTAP S3), `r2` (Cloudflare), `oci` (Oracle Cloud Infrastructure). All speak an S3-compatible API except `gcs` and `azure`. |
-| `redis_store` | Any Redis-API-compatible service | Pairs well with `size_partitioning` — most Redis services cap uploads around 256–512 MB. |
+| `redis_store` | Any Redis-API-compatible service | Pairs well with `size_partitioning`; most Redis services cap uploads around 256 to 512 MB. |
 | `experimental_mongo` | MongoDB | Supports CAS and scheduler data, with optional change streams for scheduler subscriptions. |
 | `grpc` | Another NativeLink-compatible gRPC endpoint | Proxies calls upstream. Useful for a regional cache in front of a central cluster. |
-| `ref_store` | Nothing itself — points at another store by name | Lets two composition trees share one underlying store instance (see below). |
+| `ref_store` | Nothing itself; points at another store by name | Lets two composition trees share one underlying store instance (see below). |
 | `noop` | Nothing | Reads 404. Writes vanish. Used to explicitly discard a partition of data. |
 
-### Wrapper stores — behavior layered on a backend
+Every implementation in this table lives in `nativelink-store/src`.
+<SourceLink file="nativelink-store/src" dir symbol="nativelink-store/src/" />
+
+### Wrapper stores: behavior layered on a backend [#wrapper-stores--behavior-layered-on-a-backend]
 
 | Store key | Wraps | What it adds |
 | --- | --- | --- |
@@ -73,21 +78,29 @@ store name the server exposes.
 | `dedup` | two stores (`index_store` + `content_store`) | Rolling-hash chunking so only changed slices upload. |
 | `fast_slow` | two stores (`fast` + `slow`) | Reads try `fast` first, fall back to `slow`, and backfill `fast`. Writes mirror to both. |
 | `shard` | N stores | Routes by digest hash. The standard shape for scaling CAS past one backend. |
-| `size_partitioning` | two stores (`lower_store` + `upper_store`) | Routes by blob size instead of hash. CAS-only — see the gotcha below. |
+| `size_partitioning` | two stores (`lower_store` + `upper_store`) | Routes by blob size instead of hash. CAS-only; see the gotcha below. |
 | `verify` | one store | Rejects uploads that fail a hash and/or size check before they ever reach the backend. |
 | `existence_cache` | one store | Caches `has()` results. CAS-only. |
 | `completeness_checking` | one store + a CAS store | Confirms an `ActionResult`'s output digests exist in CAS before returning it. AC-only. |
-| `cache_metrics` | one store | Emits OpenTelemetry cache-hit/miss metrics for the wrapped store. Opt-in — stores you don't wrap pay nothing extra. |
+| `cache_metrics` | one store | Emits OpenTelemetry cache-hit/miss metrics for the wrapped store. Opt-in; stores you don't wrap pay nothing extra. |
 | `ontap_s3_existence_cache` | (built-in ONTAP S3 backend) | Purpose-built existence cache for ONTAP S3 specifically, with disk-persisted sync instead of a generic wrapped backend. |
 
+The nested-`StoreSpec` shape each wrapper takes (one backend, two named
+backends, or N) is declared alongside the terminal specs.
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
+
 <Callout type="warn" title="A few wrappers only make sense one way round">
-  - Put `dedup` *inside* `compression` (compression wraps dedup's output),
-    never the other way — `compression` as `dedup`'s `content_store` negates
-    dedup's gains, since every chunk becomes a differently-compressed blob.
+  - Put `compression` *inside* `dedup` (as its `content_store`, so each
+    chunk is compressed after chunking), never the other way round;
+    `dedup` as `compression`'s backend negates dedup's gains, because
+    chunking then runs over an already-compressed stream whose bytes change
+    completely on any edit.
+    <SourceLink file="nativelink-config/src/stores.rs" symbol="DedupSpec" />
   - `fast_slow` never checks whether an object in `fast` also exists in
-    `slow`. If you need a durability guarantee — e.g. remote execution
-    artifacts that must survive a `fast`-tier wipe — write-through both
+    `slow`. If you need a durability guarantee (e.g. remote execution
+    artifacts that must survive a `fast`-tier wipe), write-through both
     tiers deliberately rather than assuming it.
+    <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   - `existence_cache` and `size_partitioning` are CAS-only; `completeness_checking`
     is AC-only. Using them on the other store type produces confusing
     correctness bugs, not a config error.
@@ -97,7 +110,7 @@ store name the server exposes.
     dedicated section below before deploying it.
 </Callout>
 
-## Pass-through compression: `compression_algorithm.zstd`
+## Pass-through compression: `compression_algorithm.zstd` [#pass-through-compression-zstd]
 
 The `zstd` algorithm of `compression` keeps CAS blobs as zstd streams **at
 rest** instead of raw bytes. Unlike `compression_algorithm: { lz4: ... }`
@@ -107,7 +120,7 @@ the `StoreDriver` boundary), `compression_algorithm: { zstd: ... }` can serve it
 a cache hit — no decompress-then-recompress round trip at the gRPC
 boundary. Identity clients (no `--remote_cache_compression`) are unaffected:
 they still receive plain decompressed bytes. See
-[Remote cache compression](/configuration/compression) for the wire-level
+[Remote cache compression](/how-to/stores/compression) for the wire-level
 feature this pairs with.
 
 It is **CAS-only** — every operation requires a digest key. Never point an
@@ -138,7 +151,7 @@ AC store at it.
 }
 ```
 
-### Placement: it must be the outermost store
+### Placement: it must be the outermost store [#zstd-store-placement]
 
 Every wrapper in the table above can nest at any depth. `compression` with
 `compression_algorithm.zstd` is different: **it must be the store the
@@ -147,6 +160,11 @@ passthrough to apply. `fast_slow`,
 `dedup`, `existence_cache`, `cache_metrics`, `shard`, `ref_store`, and
 `size_partitioning` are all fine **inside** it — they then operate on the
 physical zstd stream exactly as they would on raw bytes.
+This is correctness-safe, but the normal composition tradeoffs still apply:
+putting `dedup` inside this store makes it chunk already-compressed bytes and
+therefore gives up most cross-version deduplication. Efficient deduplication
+and byte-for-byte zstd passthrough require opposite wrapper orders, so choose
+the optimization that matches the workload.
 
 A wrapper placed **outside** the zstd compression store (for example,
 `verify` wrapping it) is still correct, but that wrapper has to decode the
@@ -172,7 +190,7 @@ stream to do its job, which disables passthrough at that boundary.
     to the same keys, every reader misinterprets roughly half the entries.
 </Callout>
 
-### `compression_level`: capped at 19, not 22
+### `compression_level`: capped at 19, not 22 [#zstd-compression-level]
 
 `compression_level` is optional and sets the level used for **two** things: the
 uploads this store compresses itself (identity clients), and the re-encoding of
@@ -195,7 +213,7 @@ absolute cap. Zstd compression never enables long-distance matching or external
 dictionaries (REAPI has no dictionary channel, and long-distance matching
 alone can push `windowLog` past 23).
 
-### Bounds and admission: stopping a zstd bomb
+### Bounds and admission: stopping a zstd bomb [#zstd-bounds-and-admission]
 
 Every compressed input is bounded from both ends. `max_compressed_upload_size`
 caps the compressed bytes a client may push; exceeding it fails the upload with
@@ -252,7 +270,7 @@ are small and numerous, so a per-blob disk round trip would dominate their cost.
 Inline uploads are validated exactly as staged ones are and take the same
 staging admission permit and `stage_timeout_s`.
 
-### `temp_path`: staging directory, size and place it deliberately
+### `temp_path`: staging directory, size and place it deliberately [#zstd-temp-path]
 
 Zstd compression stages every compressed upload larger than
 `max_inline_commit_size` as a temp file under `temp_path` before committing it to
@@ -286,7 +304,7 @@ later `chmod`. Every staged file is removed on success, error, and cancellation.
   never stored, and the temp file is still cleaned up — instead of silently
   falling back to a copy.
 
-### Recompression: keep whichever encoding is smaller
+### Recompression: keep whichever encoding is smaller [#zstd-recompression]
 
 With `compression_level` set and `max_recompression_size > 0`, an incoming
 upload whose *decoded* size is within `max_recompression_size` gets
@@ -309,7 +327,7 @@ upload path. Skipped recompressions are counted in the store's metrics
 small for the offered load, not that anything failed. Recompression also runs
 under the same `commit_timeout_s` deadline as the inner-store commit.
 
-### Observability
+### Observability [#zstd-observability]
 
 The store publishes its own counters, so the bounds above can be tuned against
 measurements rather than guesses:
@@ -324,7 +342,7 @@ measurements rather than guesses:
 | `recompressions_applied`, `recompressions_rejected`, `recompressions_skipped_busy` | Whether recompression is earning its CPU, and whether its pool is too small. |
 | `stage_timeouts`, `commit_timeouts` | Deadlines that fired. A nonzero `stage_timeouts` is either a trickling client or a `stage_timeout_s` set below real upload times. |
 
-## Choosing a terminal backend
+## Choosing a terminal backend [#choosing-a-terminal-backend]
 
 | Backend | Durability | Shared across instances | Typical role |
 | --- | --- | --- | --- |
@@ -334,12 +352,12 @@ measurements rather than guesses:
 | `redis_store` | As durable as your Redis deployment | Yes | Low-latency shared tier, usually fronted by `size_partitioning` to keep large blobs out of it. |
 | `experimental_mongo` | Durable | Yes | Alternative shared backend when you already operate MongoDB and want scheduler-state change streams. |
 
-## Common compositions
+## Common compositions [#common-compositions]
 
-**Single-node dev cache** — no wrapping at all. See
-[Configuration → Basic](/configuration/basic).
+**Single-node dev cache**: no wrapping at all. See
+[Configuration → Stores](/configuration/stores).
 
-**Validated, compressed, tiered CAS** — the shape most self-hosted
+**Validated, compressed, tiered CAS**: the shape most self-hosted
 production clusters converge on:
 
 ```json5
@@ -369,7 +387,7 @@ production clusters converge on:
 }
 ```
 
-**Sharing one store instance across two trees** — use `ref_store`
+**Sharing one store instance across two trees**: use `ref_store`
 instead of declaring the same backend twice:
 
 ```json5
@@ -392,13 +410,14 @@ instead of declaring the same backend twice:
 }
 ```
 
-## FAQ
+## FAQ [#faq]
 
 <Accordions type="multiple">
   <Accordion title="Does fast_slow guarantee the slow tier has everything?" id="does-fast-slow-guarantee-the-slow-tier-has-everything">
-    No — it never checks that an object in `fast` also made it to `slow`.
+    No; it never checks that an object in `fast` also made it to `slow`.
     If an artifact must survive a fast-tier wipe, make sure the write
     path covers both tiers deliberately.
+    <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   </Accordion>
   <Accordion title="Why pair redis_store with size_partitioning?" id="why-pair-redis-store-with-size-partitioning">
     Redis caps uploads at roughly 256-512 MB. Route large blobs to a
@@ -408,18 +427,19 @@ instead of declaring the same backend twice:
   <Accordion title="Which wrappers only apply to the CAS or the AC?" id="which-wrappers-only-apply-to-the-cas-or-the-ac">
     `existence_cache` and `size_partitioning` are CAS-only;
     `completeness_checking` is AC-only. Misplacing one isn't a config
-    error — it surfaces as a confusing correctness bug.
+    error; it surfaces as a confusing correctness bug.
+    <SourceLink file="nativelink-store/src/completeness_checking_store.rs" symbol="CompletenessCheckingStore" />
   </Accordion>
 </Accordions>
 
-## What's next
+## What's next [#whats-next]
 
-- [Configuration reference](/reference/nativelink-config) — every
+- [Configuration reference](/reference/nativelink-config): every
   field, default, and JSON5 example for every store type above.
-- [Configuration → Introduction](/configuration/intro) — how stores
-  fit alongside servers, schedulers, and workers.
-- [Configuration → Production](/configuration/production) — sharded,
-  multi-region store topologies end to end.
-- [`deployment-examples/docker-compose/local-storage-cas-zstd.json5`](https://github.com/TraceMachina/nativelink/blob/main/deployment-examples/docker-compose/local-storage-cas-zstd.json5)
-  — a complete zstd compression deployment, annotated with the namespace and
+- [Configuration](/configuration): how stores fit alongside servers,
+  schedulers, and workers.
+- [Production configuration](/operate/production-config): the store
+  composition a real cluster uses end to end.
+- [`deployment-examples/docker-compose/local-storage-cas-zstd.json5`](https://github.com/TraceMachina/nativelink/blob/main/deployment-examples/docker-compose/local-storage-cas-zstd.json5):
+  a complete zstd compression deployment, annotated with the namespace and
   placement rules above.

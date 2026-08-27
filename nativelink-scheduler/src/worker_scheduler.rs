@@ -70,4 +70,9 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Sets if the worker is draining or not.
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
+
+    /// Tells workers to kill operations they are still running but the
+    /// scheduler has finished, requeued or dropped without them (client
+    /// timeouts and cancellations, execution deadlines, retries elsewhere).
+    async fn kill_revoked_operations(&self) -> Result<(), Error>;
 }
