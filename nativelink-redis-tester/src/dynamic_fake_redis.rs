@@ -316,11 +316,9 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                             0,
                             "Non-even args for hmset: {args:?}"
                         );
-                        let chunks = args[1..].chunks_exact(2);
-                        for chunk in chunks {
-                            let [key, value] = chunk else {
-                                panic!("Uneven hmset args");
-                            };
+                        let (chunks, rest) = args[1..].as_chunks::<2>();
+                        assert!(rest.is_empty(), "Uneven hmset args");
+                        for [key, value] in chunks {
                             let key_name: String =
                                 str::from_utf8(key.as_bytes().expect("Key argument is not bytes"))
                                     .expect("Unable to parse key as string")
