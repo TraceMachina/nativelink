@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isCurrentNavHref, normalizeNavPath } from "./nav";
+import { isCurrentNavHref, normalizeNavPath } from "../src/lib/nav";
 
 test("normalizeNavPath strips query, hash, and trailing slashes", () => {
   expect(normalizeNavPath("/product/")).toBe("/product");
