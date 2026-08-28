@@ -242,21 +242,17 @@
     color: inherit;
     text-decoration: none;
   }
-  .blog-prose .glance-logo-mark {
+  .blog-prose .glance-logo-frame {
     display: inline-flex;
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    width: 2.15rem;
-    height: 2.15rem;
-    border-radius: 0.55rem;
-    background: rgb(var(--nl-color-foreground));
-    color: rgb(var(--nl-color-background));
-  }
-  .blog-prose .glance-logo-mark svg {
-    display: block;
-    width: 1.2rem;
-    height: 1.2rem;
+    width: 4.85rem;
+    height: 2.55rem;
+    padding: 0.3rem 0.35rem;
+    overflow: hidden;
+    border-radius: 0.4rem;
+    background: #fff;
   }
   .blog-prose .glance-company-copy {
     display: flex;
@@ -422,7 +418,7 @@
     margin-inline: 0;
   }
   .blog-prose img:not(.glance-logo),
-  .blog-prose figure img {
+  .blog-prose figure img:not(.glance-logo) {
     display: block;
     width: 100%;
     height: auto;
@@ -431,6 +427,20 @@
     border-radius: 1rem;
     background: rgb(var(--nl-color-surface));
     box-shadow: 0 24px 60px -36px rgb(var(--nl-color-brand) / 0.28);
+  }
+  .blog-prose a.glance-company-card img.glance-logo,
+  .blog-prose img.glance-logo {
+    display: block;
+    width: auto;
+    height: 2rem;
+    max-width: 4.25rem;
+    max-height: 2rem;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    object-fit: contain;
   }
   .blog-prose figcaption {
     margin-top: 0.75rem;
