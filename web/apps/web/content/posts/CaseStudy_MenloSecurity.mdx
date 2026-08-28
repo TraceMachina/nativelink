@@ -66,6 +66,8 @@ Menlo runs all builds on Kubernetes with a deliberately hybrid topology:
 - **Multi-tier caching** — each office runs a local NativeLink CAS cache, so most builds avoid fetching from the cloud entirely. (Uncached Chromium builds can require ~8 GB of downloads, so local caching pays off quickly.)
 - **Elastic workers** — Menlo built an autoscaling worker provisioner, since contributed upstream, that scales workers up and down while maintaining a baseline of warm "base workers" so quick developer builds never wait on cold starts.
 
+![Menlo Security's hybrid NativeLink topology: a Kubernetes scheduler node talking gRPC to GCS and a local office CAS, and dispatching work to a warm base worker pool plus an on-demand ephemeral pool](/case-studies/menlo-security-kubernetes-topology.jpg)
+
 For Christopher, this configurability is the core of NativeLink's fit: it's well-suited to organizations that need fast storage and, especially, high deployment flexibility. Menlo's "crazy topology" — GCS storage, multi-tier proxies in Kubernetes, plus a proxy in the local build environment — is exactly the kind of design NativeLink enables.
 
 ## What's Next
