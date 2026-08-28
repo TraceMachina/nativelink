@@ -225,8 +225,8 @@
   }
   .blog-prose a.glance-company-card {
     display: inline-flex;
-    align-items: start;
-    gap: 0.65rem;
+    align-items: stretch;
+    gap: 0.625rem;
     max-width: 100%;
     padding: 0;
     border: 0;
@@ -240,29 +240,30 @@
     text-decoration: none;
   }
   .blog-prose .glance-logo-frame {
-    display: inline-flex;
+    display: flex;
     flex-shrink: 0;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 0.12rem;
+    align-items: stretch;
+    line-height: 0;
   }
   .blog-prose .glance-company-copy {
     display: flex;
     min-width: 0;
+    min-height: 2.125rem;
     flex-direction: column;
-    gap: 0.15rem;
+    justify-content: space-between;
+    gap: 0;
   }
   .blog-prose .glance-company-name {
-    font-size: 0.98rem;
+    font-size: 0.95rem;
     font-weight: 400;
-    line-height: 1.45;
+    line-height: 1.15;
     color: rgb(var(--nl-color-foreground));
   }
   .blog-prose .glance-company-url {
     font-family: var(--nl-font-mono);
     font-size: 0.6875rem;
     font-weight: 500;
-    line-height: 1.35;
+    line-height: 1.15;
     letter-spacing: 0.02em;
     color: rgb(var(--nl-color-muted));
   }
@@ -426,9 +427,9 @@
   .blog-prose img.glance-logo {
     display: block;
     width: auto;
-    height: 1.5rem;
-    max-width: 3.35rem;
-    max-height: 1.5rem;
+    height: 2.125rem;
+    max-width: 4.4rem;
+    max-height: 2.125rem;
     margin: 0;
     border: 0;
     border-radius: 0;
