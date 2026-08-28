@@ -238,10 +238,15 @@
   }
 
   .blog-prose ul,
-  .blog-prose ol {
-    margin-block: 1.1em;
+  .blog-prose ol,
+  .blog-prose li {
+    margin-block: 0;
     padding-left: 0;
     list-style: none;
+  }
+  .blog-prose ul,
+  .blog-prose ol {
+    margin-block: 1.1em;
   }
   .blog-prose li {
     position: relative;
@@ -252,11 +257,11 @@
     content: "";
     position: absolute;
     left: 0;
-    top: 0.72em;
-    width: 5px;
-    height: 5px;
+    top: 0.65em;
+    width: 7px;
+    height: 7px;
     border-radius: 999px;
-    background: rgb(var(--nl-color-brand) / 0.75);
+    background: rgb(var(--nl-color-brand));
   }
   .blog-prose ol {
     counter-reset: blog-ol;
