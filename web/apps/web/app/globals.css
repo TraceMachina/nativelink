@@ -217,7 +217,6 @@
   }
   .blog-prose .glance-company {
     align-items: center;
-    background: rgb(var(--nl-color-surface-elevated));
   }
   .blog-prose .glance-company dd {
     display: flex;
@@ -227,18 +226,16 @@
   .blog-prose a.glance-company-card {
     display: inline-flex;
     align-items: center;
-    gap: 0.7rem;
+    gap: 0.85rem;
     max-width: 100%;
-    padding: 0.4rem 0.85rem 0.4rem 0.4rem;
-    border: 1px solid rgb(var(--nl-color-border));
-    border-radius: 0.85rem;
-    background: rgb(var(--nl-color-background));
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: inherit;
     font-weight: 400;
     text-decoration: none;
   }
   .blog-prose a.glance-company-card:hover {
-    border-color: rgb(var(--nl-color-border-strong));
     color: inherit;
     text-decoration: none;
   }
@@ -247,31 +244,29 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    width: 4.85rem;
-    height: 2.55rem;
-    padding: 0.3rem 0.35rem;
-    overflow: hidden;
-    border-radius: 0.4rem;
-    background: #fff;
   }
   .blog-prose .glance-company-copy {
     display: flex;
     min-width: 0;
     flex-direction: column;
-    gap: 0.12rem;
+    gap: 0.15rem;
   }
   .blog-prose .glance-company-name {
-    font-size: 0.95rem;
-    font-weight: 600;
-    line-height: 1.2;
+    font-size: 0.98rem;
+    font-weight: 400;
+    line-height: 1.45;
     color: rgb(var(--nl-color-foreground));
   }
   .blog-prose .glance-company-url {
     font-family: var(--nl-font-mono);
-    font-size: 0.7rem;
-    line-height: 1.2;
-    letter-spacing: 0.02em;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1.45;
+    letter-spacing: 0.04em;
     color: rgb(var(--nl-color-muted));
+  }
+  .blog-prose a.glance-company-card:hover .glance-company-url {
+    color: rgb(var(--nl-color-brand));
   }
   .blog-prose dt {
     display: flex;
@@ -319,7 +314,7 @@
       padding-top: 0;
     }
     .blog-prose a.glance-company-card {
-      width: 100%;
+      width: auto;
     }
   }
 
@@ -441,6 +436,14 @@
     background: transparent;
     box-shadow: none;
     object-fit: contain;
+  }
+  :root[data-theme="dark"] .blog-prose img.glance-logo {
+    filter: invert(1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .blog-prose img.glance-logo {
+      filter: invert(1);
+    }
   }
   .blog-prose figcaption {
     margin-top: 0.75rem;
