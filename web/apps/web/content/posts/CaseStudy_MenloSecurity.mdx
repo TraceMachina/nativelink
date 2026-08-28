@@ -1,0 +1,85 @@
+---
+title: "How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink"
+tags: ["news", "case-studies"]
+image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp
+slug: case-study-menlo-security
+pubDate: 2026-08-28
+readTime: 6 minutes
+---
+
+> "NativeLink is the simplest way to get fast builds with Chromium." — **Christopher Staite, Principal Engineer, Menlo Security**
+
+## At a Glance
+
+- **Industry:** Cybersecurity — cloud browser isolation
+- **Scale:** A fleet of thousands of machines, each running 40–100 Chromium instances
+- **Challenge:** Continuous Chromium development at scale, with an insecure, non-scaling build cache
+- **Solution:** NativeLink remote build execution and content-addressable storage on Kubernetes
+- **Result:** Full Chromium builds reduced from ~4.5 hours to ~25 minutes
+- **Adoption:** 4+ years in production; used daily by every active developer
+
+## About Menlo Security
+
+Menlo Security protects enterprises with browser isolation: Chrome runs in the cloud, and end users interact through a thin local client. Rendering happens client-side to preserve a native look and feel, while JavaScript and active content execute remotely — isolating users from web-borne threats.
+
+That architecture has a demanding consequence for engineering. Menlo operates a fleet of thousands of machines, each running between forty and a hundred Chromium instances, and must continuously develop proxy functionality to keep pace with upstream Chromium. Roughly 18 engineers work directly on Chrome infrastructure across rebase, rendering, and functional teams, with many other engineers in the company building in the same Bazel ecosystem.
+
+## The Challenge: A Build Cache That Didn't Scale — and Couldn't Be Trusted
+
+Before NativeLink, Menlo's Chromium builds ran through a distributed object cache that was falling short on every dimension that mattered:
+
+- **Performance** — the cache performed poorly, and build execution ran on local developer machines, which could not scale to the team's needs.
+- **Security** — the object cache lacked integrity controls and could be poisoned easily. For a security company shipping a browser, that was an unacceptable supply-chain risk.
+- **Developer time** — a full Chromium build took around four and a half hours.
+
+Christopher Staite, Principal Engineer at Menlo Security, brought a background in distributed build systems and evaluated the landscape: Goma for distributed compilation, and Buildbarn as a backend — which didn't work for their needs at the time. Then he found the project that would become NativeLink (then called TurboCache), which handled content-addressable storage well but wasn't yet compatible with Goma.
+
+## The Rollout: From Four Workers to the Whole Team
+
+Rather than wait for a perfect fit, Menlo invested in the open-source project directly. Christopher spent roughly four months making the system work with Goma and contributed that work back upstream — contributions that helped shape what NativeLink is today.
+
+Once Goma compatibility landed, rollout was fast:
+
+1. **Initial deployment** — a static pool of four workers plus one scheduler that doubled as the CAS.
+2. **Developer adoption** — over roughly three months, the system rolled out to developers' machines, dramatically reducing the resources each dev box needed.
+3. **Organic growth** — Christopher built it first for his own productivity ("so I don't have to wait for builds"), and adoption accelerated as soon as the benefit was visible to others.
+
+Today, every active developer at Menlo Security relies on NativeLink daily.
+
+## The Results
+
+The metric Menlo cares about most is **developer wait time**, and the improvement was decisive:
+
+| | Before | After |
+| --- | --- | --- |
+| Full Chromium build | ~4.5 hours | ~25 minutes |
+
+Christopher calls it a "game changer." Remaining build time is now dominated by the link step — an upstream Chromium tooling limitation rather than a NativeLink one.
+
+The economics work too. Menlo Security caches everything and stores artifacts in Google Cloud Storage, which is inexpensive enough that they retain every artifact — including every developer build — because deletion isn't worth the effort. The configurability and total cost of ownership of NativeLink versus other solutions is a key reason for Chris's choice.
+
+## The Architecture: Flexibility as a Feature
+
+Menlo runs all builds on Kubernetes with a deliberately hybrid topology:
+
+- **Cloud control plane** — scheduler and action-cache traffic goes to the cloud, with artifacts in GCS.
+- **Multi-tier caching** — each office runs a local NativeLink CAS cache, so most builds avoid fetching from the cloud entirely. (Uncached Chromium builds can require ~8 GB of downloads, so local caching pays off quickly.)
+- **Elastic workers** — Menlo built an autoscaling worker provisioner, since contributed upstream, that scales workers up and down while maintaining a baseline of warm "base workers" so quick developer builds never wait on cold starts.
+
+For Christopher, this configurability is the core of NativeLink's fit: it's well-suited to organizations that need fast storage and, especially, high deployment flexibility. Menlo's "crazy topology" — GCS storage, multi-tier proxies in Kubernetes, plus a proxy in the local build environment — is exactly the kind of design NativeLink enables.
+
+## What's Next
+
+Menlo and NativeLink are exploring the next set of build-performance frontiers:
+
+- **Cloud co-location** — moving build machines next to the build cluster, unlocked by fast worker spawn from warm Chromium checkouts (a fresh checkout takes 1–1.5 hours, so snapshot-based ephemeral workers are the key).
+- **Elastic heavy workloads** — LTO release builds consume ~16 GB of RAM and ~45 minutes per architecture, and release weeks can surge to ~64 concurrent builds; on-demand heavy workers would eliminate the need for always-on peak capacity.
+- **Hermetic Bazel builds** — extending remote execution beyond Chromium to Menlo's broader codebase as it becomes fully hermetic, with NativeLink's team supporting the migration.
+
+## Advice for Teams Evaluating NativeLink
+
+Christopher's guidance for teams considering the same path: NativeLink is right for organizations that need fast, secure build infrastructure and value the flexibility to shape deployment around their own topology. His one wish in hindsight — an easier path to the final architecture — is one NativeLink has since addressed with published sizing recommendations, reference documentation, and a modern Helm chart, turning what was once tribal knowledge into an accessible onboarding path.
+
+---
+
+**Want builds like this?** Learn more at [nativelink.com](https://nativelink.com) or get started at [app.nativelink.com](https://app.nativelink.com).

@@ -27,6 +27,11 @@ export function Prose({
         "[&_li]:my-1.5 [&_li]:pl-1",
         // Blockquote.
         "[&_blockquote]:my-6 [&_blockquote]:border-l-2 [&_blockquote]:border-brand/50 [&_blockquote]:pl-5 [&_blockquote]:italic [&_blockquote]:text-foreground",
+        // Tables (case-study glance/results grids).
+        "[&_table]:my-6 [&_table]:w-full [&_table]:border-collapse [&_table]:text-[0.95em]",
+        "[&_th]:border-b [&_th]:border-border [&_th]:py-2.5 [&_th]:pr-4 [&_th]:text-left [&_th]:font-semibold [&_th]:text-foreground",
+        "[&_td]:border-b [&_td]:border-border/60 [&_td]:py-2.5 [&_td]:pr-4 [&_td]:align-top",
+        "[&_tr:last-child_td]:border-b-0",
         // Images.
         "[&_img]:my-8 [&_img]:rounded-xl",
         "[&_hr]:my-10 [&_hr]:border-border/60",
