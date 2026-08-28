@@ -206,8 +206,9 @@
   }
   .blog-prose dl > div {
     display: grid;
-    grid-template-columns: 9.25rem 1fr;
+    grid-template-columns: 11.25rem 1fr;
     gap: 1rem;
+    align-items: start;
     padding: 0.95rem 1.35rem;
     border-bottom: 1px solid rgb(var(--nl-color-border) / 0.75);
   }
@@ -215,7 +216,11 @@
     border-bottom: 0;
   }
   .blog-prose dt {
-    padding-top: 0.2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-height: 1.65rem;
+    padding-top: 0;
     font-family: var(--nl-font-mono);
     font-size: 0.6875rem;
     font-weight: 500;
@@ -223,8 +228,25 @@
     text-transform: uppercase;
     color: rgb(var(--nl-color-muted));
   }
+  .blog-prose .glance-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 1.65rem;
+    height: 1.65rem;
+    border-radius: 0.45rem;
+    background: rgb(var(--nl-color-brand-soft));
+    color: rgb(var(--nl-color-brand));
+  }
+  .blog-prose .glance-icon svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+  }
   .blog-prose dd {
     margin: 0;
+    padding-top: 0.15rem;
     font-size: 0.98rem;
     line-height: 1.45;
     color: rgb(var(--nl-color-foreground));
