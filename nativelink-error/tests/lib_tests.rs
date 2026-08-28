@@ -135,7 +135,9 @@ fn test_try_from_int_error_conversion() {
     let error: Error = int_error.unwrap_err().into();
     assert_eq!(error.code, Code::InvalidArgument);
     assert!(
-        error.messages[0].contains("out of range"),
+        // Depending on Rust version
+        error.messages[0].contains("out of range")
+            || error.messages[0].contains("number too large to fit in target type"),
         "messages: {:#?}",
         error.messages
     );
