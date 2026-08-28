@@ -425,7 +425,7 @@ mod tests {
             .map(|s| (*s).to_string())
             .collect();
         let key = WorkerKey::from_argv(&argv, WireFormat::Json).unwrap();
-        assert!(key.startup_args.is_empty());
+        assert_eq!(key.startup_args, Vec::<String>::new());
         assert_eq!(key.wire_format, WireFormat::Json);
     }
 

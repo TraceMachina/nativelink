@@ -84,7 +84,7 @@ async fn exists_many_and_create_dir_many_answer_positionally()
         vec![false, true, false],
         "answers must line up with the paths asked about"
     );
-    assert!(exists_many(Vec::new()).await?.is_empty());
+    assert_eq!(exists_many(Vec::new()).await?, Vec::<bool>::new());
 
     // A child may be listed before its parent; the batch sorts them itself.
     let parent = dir.join("parent");
