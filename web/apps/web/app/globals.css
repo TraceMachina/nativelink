@@ -305,8 +305,8 @@
   @media (max-width: 639px) {
     .blog-prose dl > div {
       grid-template-columns: 1fr;
-      gap: 0.4rem;
-      padding-block: 0.85rem;
+      gap: 0.45rem;
+      padding-block: 0.95rem;
     }
     .blog-prose dt {
       padding-top: 0;
