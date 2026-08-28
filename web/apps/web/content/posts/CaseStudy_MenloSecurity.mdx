@@ -1,7 +1,7 @@
 ---
 title: "How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink"
 tags: ["news", "case-studies"]
-image: /case-studies/menlo-security-wordmark.png
+image: /case-studies/menlo-security-build-time-comparison.jpg
 slug: case-study-menlo-security
 pubDate: 2026-08-28
 readTime: 6 minutes
@@ -53,6 +53,8 @@ The metric Menlo cares about most is **developer wait time**, and the improvemen
 | | Before | After |
 | --- | --- | --- |
 | Full Chromium build | ~4.5 hours | ~25 minutes |
+
+![Chromium build wall-time at Menlo Security: 4.5 hours on the legacy distributed cache, 25 minutes with NativeLink remote execution](/case-studies/menlo-security-build-time-comparison.jpg)
 
 Christopher calls it a "game changer." Remaining build time is now dominated by the link step — an upstream Chromium tooling limitation rather than a NativeLink one.
 
