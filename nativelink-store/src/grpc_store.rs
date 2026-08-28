@@ -270,11 +270,11 @@ pub struct GrpcStore {
 }
 
 impl GrpcStore {
-    pub async fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
-        Self::new_with_jitter(spec, spec.retry.make_jitter_fn()).await
+    pub fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn())
     }
 
-    pub async fn new_with_jitter(
+    pub fn new_with_jitter(
         spec: &GrpcSpec,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Arc<Self>, Error> {
