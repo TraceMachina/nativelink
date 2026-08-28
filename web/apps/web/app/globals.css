@@ -206,10 +206,9 @@
   }
   .blog-prose dl > div {
     display: grid;
-    grid-template-columns: 9.25rem 1fr;
-    gap: 1rem;
+    grid-template-columns: minmax(10.25rem, 11.25rem) 1fr;
+    gap: 0.85rem 1.15rem;
     align-items: start;
-    position: relative;
     padding: 0.95rem 1.35rem;
     border-bottom: 1px solid rgb(var(--nl-color-border) / 0.75);
   }
@@ -223,31 +222,67 @@
   .blog-prose .glance-company dd {
     display: flex;
     align-items: center;
-    min-height: 2rem;
+    min-width: 0;
   }
-  .blog-prose img.glance-logo,
-  .blog-prose .glance-logo {
+  .blog-prose a.glance-company-card {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7rem;
+    max-width: 100%;
+    padding: 0.4rem 0.85rem 0.4rem 0.4rem;
+    border: 1px solid rgb(var(--nl-color-border));
+    border-radius: 0.85rem;
+    background: rgb(var(--nl-color-background));
+    color: inherit;
+    font-weight: 400;
+    text-decoration: none;
+  }
+  .blog-prose a.glance-company-card:hover {
+    border-color: rgb(var(--nl-color-border-strong));
+    color: inherit;
+    text-decoration: none;
+  }
+  .blog-prose .glance-logo-mark {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    width: 2.15rem;
+    height: 2.15rem;
+    border-radius: 0.55rem;
+    background: rgb(var(--nl-color-foreground));
+    color: rgb(var(--nl-color-background));
+  }
+  .blog-prose .glance-logo-mark svg {
     display: block;
-    width: auto;
-    height: 2rem;
-    max-width: 10.5rem;
-    margin: 0;
-    border: 0;
-    border-radius: 0;
-    box-shadow: none;
-    background: transparent;
+    width: 1.2rem;
+    height: 1.2rem;
   }
-  :root[data-theme="dark"] .blog-prose .glance-logo {
-    filter: invert(1);
+  .blog-prose .glance-company-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.12rem;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .blog-prose .glance-logo {
-      filter: invert(1);
-    }
+  .blog-prose .glance-company-name {
+    font-size: 0.95rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: rgb(var(--nl-color-foreground));
+  }
+  .blog-prose .glance-company-url {
+    font-family: var(--nl-font-mono);
+    font-size: 0.7rem;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+    color: rgb(var(--nl-color-muted));
   }
   .blog-prose dt {
-    display: block;
-    padding-top: 0.2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+    padding-top: 0.15rem;
     font-family: var(--nl-font-mono);
     font-size: 0.6875rem;
     font-weight: 500;
@@ -255,21 +290,22 @@
     text-transform: uppercase;
     color: rgb(var(--nl-color-muted));
   }
+  .blog-prose .glance-company dt {
+    padding-top: 0;
+  }
   .blog-prose .glance-icon {
-    position: absolute;
-    top: 1.12rem;
-    left: 0.55rem;
     display: inline-flex;
+    flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    width: 11px;
-    height: 11px;
+    width: 12px;
+    height: 12px;
     color: rgb(var(--nl-color-brand));
   }
   .blog-prose .glance-icon svg {
     display: block;
-    width: 11px;
-    height: 11px;
+    width: 12px;
+    height: 12px;
   }
   .blog-prose dd {
     margin: 0;
@@ -280,8 +316,14 @@
   @media (max-width: 639px) {
     .blog-prose dl > div {
       grid-template-columns: 1fr;
-      gap: 0.3rem;
+      gap: 0.4rem;
       padding-block: 0.85rem;
+    }
+    .blog-prose dt {
+      padding-top: 0;
+    }
+    .blog-prose a.glance-company-card {
+      width: 100%;
     }
   }
 
@@ -379,7 +421,7 @@
     margin-block: 1.75rem 2.25rem;
     margin-inline: 0;
   }
-  .blog-prose img,
+  .blog-prose img:not(.glance-logo),
   .blog-prose figure img {
     display: block;
     width: 100%;
