@@ -409,6 +409,7 @@
   .blog-prose figure {
     margin-block: 1.75rem 2.25rem;
     margin-inline: 0;
+    text-align: center;
   }
   .blog-prose img:not(.glance-logo),
   .blog-prose figure img:not(.glance-logo) {
@@ -444,11 +445,16 @@
     }
   }
   .blog-prose figcaption {
+    display: block;
     margin-top: 0.75rem;
+    margin-inline: auto;
+    max-width: 38rem;
     font-family: var(--nl-font-mono);
     font-size: 0.72rem;
     line-height: 1.45;
     letter-spacing: 0.03em;
+    text-align: center;
+    text-wrap: balance;
     color: rgb(var(--nl-color-muted));
   }
 

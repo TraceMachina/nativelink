@@ -127,7 +127,7 @@ The metric Menlo cares about most is **developer wait time**, and the improvemen
 
 <figure>
   <img src="/case-studies/menlo-security-build-time-comparison.jpg" alt="Chromium build wall-time at Menlo Security: 4.5 hours on the legacy distributed cache, 25 minutes with NativeLink remote execution" />
-  <figcaption>Full Chromium build wall-time: ~4.5 hours → ~25 minutes</figcaption>
+  <figcaption>Fig. 1. Full Chromium build wall-time at Menlo Security dropped from ~4.5 hours to ~25 minutes.</figcaption>
 </figure>
 
 Christopher calls it a "game changer." Remaining build time is now dominated by the link step — an upstream Chromium tooling limitation rather than a NativeLink one.
@@ -144,7 +144,7 @@ Menlo runs all builds on Kubernetes with a deliberately hybrid topology:
 
 <figure>
   <img src="/case-studies/menlo-security-kubernetes-topology.jpg" alt="Menlo Security's hybrid NativeLink topology: a Kubernetes scheduler node talking gRPC to GCS and a local office CAS, and dispatching work to a warm base worker pool plus an on-demand ephemeral pool" />
-  <figcaption>Hybrid topology: cloud control plane, local office CAS, warm and ephemeral workers</figcaption>
+  <figcaption>Fig. 2. Hybrid NativeLink topology: cloud control plane, local office CAS, and warm and ephemeral workers.</figcaption>
 </figure>
 
 For Christopher, this configurability is the core of NativeLink's fit: it's well-suited to organizations that need fast storage and, especially, high deployment flexibility. Menlo's "crazy topology" — GCS storage, multi-tier proxies in Kubernetes, plus a proxy in the local build environment — is exactly the kind of design NativeLink enables.
