@@ -43,6 +43,7 @@ Makefile
 [Mm]etamaterials
 [Mm]onorepo
 Nvidia
+Omniverse
 NVMe
 hello@nativelink.com
 [Nn]ative[Ll]ink
