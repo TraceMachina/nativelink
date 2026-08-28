@@ -69,7 +69,7 @@ export default async function BlogPostPage({
       <Section width="default" className="pb-28">
         <div className="mx-auto max-w-[760px]">
           <Prose
-            className="max-w-none [&_img]:my-6 [&_img]:max-w-full [&_img]:rounded-xl"
+            className="blog-prose max-w-none [&_img]:my-6 [&_img]:max-w-full [&_img]:rounded-xl"
             // biome-ignore lint/security/noDangerouslySetInnerHtml: Post bodies are trusted repo content, rendered from markdown at build time.
             dangerouslySetInnerHTML={{ __html: html }}
           />
