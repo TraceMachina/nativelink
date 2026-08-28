@@ -25,8 +25,11 @@ export function Prose({
         "[&_ul]:my-[1.15em] [&_ul]:list-disc [&_ul]:pl-6",
         "[&_ol]:my-[1.15em] [&_ol]:list-decimal [&_ol]:pl-6",
         "[&_li]:my-1.5 [&_li]:pl-1",
-        // Blockquote.
-        "[&_blockquote]:my-6 [&_blockquote]:border-l-2 [&_blockquote]:border-brand/50 [&_blockquote]:pl-5 [&_blockquote]:italic [&_blockquote]:text-foreground",
+        // Pull quotes: large claim, smaller attribution on the last paragraph.
+        "[&_blockquote]:my-8 [&_blockquote]:border-l-2 [&_blockquote]:border-brand/50 [&_blockquote]:pl-6 [&_blockquote]:text-foreground",
+        "[&_blockquote_p]:my-0",
+        "[&_blockquote_p:first-of-type]:text-[1.5rem] [&_blockquote_p:first-of-type]:leading-[1.3] [&_blockquote_p:first-of-type]:font-medium [&_blockquote_p:first-of-type]:tracking-[-0.02em] md:[&_blockquote_p:first-of-type]:text-[1.75rem]",
+        "[&_blockquote_p:not(:first-of-type)]:mt-3 [&_blockquote_p:not(:first-of-type)]:text-[0.95rem] [&_blockquote_p:not(:first-of-type)]:font-normal [&_blockquote_p:not(:first-of-type)]:leading-normal [&_blockquote_p:not(:first-of-type)]:tracking-normal [&_blockquote_p:not(:first-of-type)]:text-muted-foreground [&_blockquote_p:not(:first-of-type)]:not-italic",
         // Tables (case-study glance/results grids).
         "[&_table]:my-6 [&_table]:w-full [&_table]:border-collapse [&_table]:text-[0.95em]",
         "[&_th]:border-b [&_th]:border-border [&_th]:py-2.5 [&_th]:pr-4 [&_th]:text-left [&_th]:font-semibold [&_th]:text-foreground",
