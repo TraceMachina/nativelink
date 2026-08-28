@@ -216,6 +216,35 @@
   .blog-prose dl > div:last-child {
     border-bottom: 0;
   }
+  .blog-prose .glance-company {
+    align-items: center;
+    background: rgb(var(--nl-color-surface-elevated));
+  }
+  .blog-prose .glance-company dd {
+    display: flex;
+    align-items: center;
+    min-height: 2rem;
+  }
+  .blog-prose img.glance-logo,
+  .blog-prose .glance-logo {
+    display: block;
+    width: auto;
+    height: 2rem;
+    max-width: 10.5rem;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  :root[data-theme="dark"] .blog-prose .glance-logo {
+    filter: invert(1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .blog-prose .glance-logo {
+      filter: invert(1);
+    }
+  }
   .blog-prose dt {
     display: block;
     padding-top: 0.2rem;
