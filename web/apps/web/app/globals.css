@@ -427,9 +427,9 @@
   .blog-prose img.glance-logo {
     display: block;
     width: auto;
-    height: 2rem;
-    max-width: 4.25rem;
-    max-height: 2rem;
+    height: 1.85rem;
+    max-width: 4rem;
+    max-height: 1.85rem;
     margin: 0;
     border: 0;
     border-radius: 0;
