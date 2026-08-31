@@ -100,7 +100,7 @@ That architecture has a demanding consequence for engineering. Menlo operates a 
 Before NativeLink, Menlo's Chromium builds ran through a distributed object cache that was falling short on every dimension that mattered:
 
 - **Performance** — the cache performed poorly, and build execution ran on local developer machines, which could not scale to the team's needs.
-- **Security** — the object cache lacked integrity controls and could be poisoned easily. For a security company shipping a browser, that was an unacceptable supply-chain risk.
+- **Security** — the object cache lacked integrity controls and could be poisoned readily. For a security company shipping a browser, that was an unacceptable supply-chain risk.
 - **Developer time** — a full Chromium build took around four and a half hours.
 
 Christopher Staite, Principal Engineer at Menlo Security, brought a background in distributed build systems and evaluated the landscape: Goma for distributed compilation, and Buildbarn as a backend — which didn't work for their needs at the time. Then he found the project that would become NativeLink (then called TurboCache), which handled content-addressable storage well but wasn't yet compatible with Goma.
@@ -132,14 +132,14 @@ The metric Menlo cares about most is **developer wait time**, and the improvemen
 
 Christopher calls it a "game changer." Remaining build time is now dominated by the link step — an upstream Chromium tooling limitation rather than a NativeLink one.
 
-The economics work too. Menlo Security caches everything and stores artifacts in Google Cloud Storage, which is inexpensive enough that they retain every artifact — including every developer build — because deletion isn't worth the effort. The configurability and total cost of ownership of NativeLink versus other solutions is a key reason for Chris's choice.
+The economics work too. Menlo Security caches everything and stores artifacts in Google Cloud Storage, which is inexpensive enough that they retain every artifact — including every developer build — because deletion isn't worth the effort. The configuration and total cost of ownership of NativeLink versus other solutions is a key reason for Chris's choice.
 
 ## The Architecture: Flexibility as a Feature
 
 Menlo runs all builds on Kubernetes with a deliberately hybrid topology:
 
 - **Cloud control plane** — scheduler and action-cache traffic goes to the cloud, with artifacts in GCS.
-- **Multi-tier caching** — each office runs a local NativeLink CAS cache, so most builds avoid fetching from the cloud entirely. (Uncached Chromium builds can require ~8 GB of downloads, so local caching pays off quickly.)
+- **Multi-tier caching** — each office runs a local NativeLink CAS cache, so most builds avoid fetching from the cloud entirely. (Chromium builds that are not cached can require ~8 GB of downloads, so local caching pays off quickly.)
 - **Elastic workers** — Menlo built an autoscaling worker provisioner, since contributed upstream, that scales workers up and down while maintaining a baseline of warm "base workers" so quick developer builds never wait on cold starts.
 
 <figure>
@@ -147,7 +147,7 @@ Menlo runs all builds on Kubernetes with a deliberately hybrid topology:
   <figcaption>Fig. 2. Hybrid NativeLink topology: cloud control plane, local office CAS, and warm and ephemeral workers.</figcaption>
 </figure>
 
-For Christopher, this configurability is the core of NativeLink's fit: it's well-suited to organizations that need fast storage and, especially, high deployment flexibility. Menlo's "crazy topology" — GCS storage, multi-tier proxies in Kubernetes, plus a proxy in the local build environment — is exactly the kind of design NativeLink enables.
+For Christopher, this configuration is the core of NativeLink's fit: it's well-suited to organizations that need fast storage and, especially, high deployment flexibility. Menlo's "crazy topology" — GCS storage, multi-tier proxies in Kubernetes, plus a proxy in the local build environment — is exactly the kind of design NativeLink enables.
 
 ## What's Next
 
