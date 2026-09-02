@@ -467,6 +467,16 @@ impl StoreDriver for FastSlowStore {
         Ok(())
     }
 
+    async fn demote_keys(self: Pin<&Self>, keys: &[StoreKey<'_>]) -> Result<(), Error> {
+        // Eviction-ordering hint: forward to both tiers; each may have its
+        // own size cap.
+        try_join!(
+            self.fast_store.demote_keys(keys),
+            self.slow_store.demote_keys(keys)
+        )?;
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         key: &[StoreKey<'_>],
