@@ -1070,12 +1070,12 @@ impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
         unreachable!();
     }
 
-    async fn borrow(&self) -> Result<AwaitedAction, Error> {
-        Ok(AwaitedAction::new(
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> {
+        std::future::ready(Ok(AwaitedAction::new(
             OperationId::default(),
             make_base_action_info(SystemTime::UNIX_EPOCH, DigestInfo::zero_digest()),
             MockSystemTime::now().into(),
-        ))
+        )))
     }
 }
 
@@ -1132,10 +1132,11 @@ impl AwaitedActionDb for RxMockAwaitedAction {
             .expect("Could not receive msg in mpsc")
     }
 
-    async fn get_all_awaited_actions(
+    fn get_all_awaited_actions(
         &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        Ok(futures::stream::empty())
+    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>>
+    {
+        std::future::ready(Ok(futures::stream::empty()))
     }
 
     async fn get_by_operation_id(

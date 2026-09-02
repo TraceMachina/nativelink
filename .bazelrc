@@ -175,6 +175,7 @@ build --@rules_rust//:clippy_flag=-Aclippy::significant_drop_tightening
 build --@rules_rust//:clippy_flag=-Aclippy::too_many_lines
 build --@rules_rust//:clippy_flag=-Aclippy::uninhabited_references
 build --@rules_rust//:clippy_flag=-Aclippy::unused_async
+build --@rules_rust//:clippy_flag=-Aclippy::unused_async_trait_impl
 build --@rules_rust//:clippy_flag=-Aclippy::unused_self
 
 ## END CARGO LINTS ##

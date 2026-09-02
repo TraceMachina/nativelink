@@ -335,8 +335,7 @@ impl PersistentWorkerPool {
             &key.startup_args,
             key.wire_format,
             working_dir,
-        )
-        .await;
+        );
         let worker = match spawn_result {
             Ok(w) => w,
             Err(err) => {
