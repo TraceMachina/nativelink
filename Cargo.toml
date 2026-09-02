@@ -117,7 +117,7 @@ overlapping-range-endpoints = "deny"
 suspicious-double-ref-op = "deny"
 unconditional-recursion = "deny"
 unexpected-cfgs = "deny"
-unknown-lints = "deny"
+unknown-lints = "allow"                     # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
 unnameable-test-items = "deny"
 unsafe-op-in-unsafe-fn = "deny"
 unstable-syntax-pre-expansion = "deny"
@@ -216,5 +216,5 @@ must_use_candidate = { level = "allow", priority = 1 }
 ref_option = { level = "allow", priority = 1 }
 too_many_lines = { level = "allow", priority = 1 }
 unused_async = { level = "allow", priority = 1 }
-unused_async_trait_impl = { level = "allow", priority = 1 }
+unused_async_trait_impl = { level = "allow", priority = 1 } # TODO(palfrey): nightly only, remove when we upgrade Rust above 1.97.1
 unused_self = { level = "allow", priority = 1 }
