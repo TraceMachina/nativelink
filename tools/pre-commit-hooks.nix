@@ -50,6 +50,9 @@ in {
     excludes = [
       # Testdata for fastcdc.
       "nativelink-util/tests/data/SekienAkashita.jpg"
+      # Menlo Security case-study figures on the marketing site.
+      "web/apps/web/public/assets/menlo-security-build-time-comparison.jpg"
+      "web/apps/web/public/assets/menlo-security-kubernetes-topology.jpg"
     ];
     name = "forbid-binary-files";
     types = ["binary"];

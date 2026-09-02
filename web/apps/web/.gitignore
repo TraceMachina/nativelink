@@ -3,5 +3,3 @@ out/
 .turbo/
 next-env.d.ts
 *.tsbuildinfo
-*.jpg
-*.png
