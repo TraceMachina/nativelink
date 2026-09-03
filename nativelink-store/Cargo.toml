@@ -130,6 +130,7 @@ wincode = { version = "0.5.4", default-features = false, features = [
   "alloc",
   "derive",
 ] }
+zstd = { version = "0.13.3", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { version = "0.2.177", default-features = false }

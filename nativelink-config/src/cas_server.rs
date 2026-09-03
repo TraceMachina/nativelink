@@ -352,6 +352,21 @@ pub struct ByteStreamConfig {
         alias = "persist_stream_on_disconnect_timeout"
     )]
     pub persist_stream_on_disconnect_timeout_s: usize,
+
+    /// How long, in seconds, to wait for the *next* `WriteRequest` of a
+    /// compressed (`compressed-blobs/...`) upload before failing it with
+    /// `DEADLINE_EXCEEDED`. A client that keeps making progress resets the
+    /// deadline on every message, so this never rejects a large upload — it
+    /// bounds a client that opens a compressed write, takes a store slot, then
+    /// stalls or never sends `finish_write`.
+    ///
+    /// Default: 60 seconds
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "is_default"
+    )]
+    pub compressed_upload_idle_timeout_s: usize,
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires

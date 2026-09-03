@@ -161,10 +161,26 @@ and text-heavy outputs commonly shrink 2-10x on the wire. It does little on
 same-rack links (the zstd CPU cost buys nothing when the wire isn't the
 bottleneck) and nothing for already-compressed artifacts.
 
-Wire compression doesn't change what's stored: the CAS holds raw bytes. To also
-shrink bytes at rest, wrap the backing store in a `compression` store; see
-[Compose stores](/how-to/stores/compose-stores). The two compose, since one
-covers the wire and the other covers storage.
+By default, wire compression doesn't change what's stored: the CAS holds raw
+bytes. To also shrink bytes at rest, wrap the backing store in a `compression`
+store; see [Compose stores](/how-to/stores/compose-stores).
+
+### Skip the decode/re-encode round trip [#skip-the-decode-re-encode-round-trip]
+
+`compression_algorithm: { lz4: ... }` still decodes wire-compressed uploads to
+raw bytes at the store boundary, then re-encodes them for compressed clients on
+read. `compression_algorithm: { zstd: ... }` can instead keep REAPI-compatible
+zstd frames at rest and, when it is the outermost store exposed by the CAS and
+ByteStream services, serve those bytes directly to
+`--remote_cache_compression` clients. Identity clients still receive the plain
+decoded blob.
+
+This mode is CAS-only and has deployment constraints that do not apply to LZ4:
+its backend must be a dedicated, empty namespace, rollout and rollback cannot
+reuse a populated raw-byte namespace, and wrapper placement determines whether
+passthrough is available. Read
+[Pass-through compression](/reference/nativelink-config/store-overview#pass-through-compression-zstd)
+before enabling it.
 
 ## Steps [#steps]
 
@@ -232,10 +248,12 @@ the same instance.
 
 <Accordion title="Can I combine this with the dedup store?" id="can-i-combine-this-with-the-dedup-store">
 
-Yes, but order matters at the store level: deduplication must operate on raw
-content, because identical chunks stop being identical after compression, so a `dedup`
-store fed compressed bytes finds no duplicates. Wire compression is fine either
-way; it's undone at the gRPC boundary before any store sees the bytes.
+Yes, but order matters. For effective cross-version deduplication, `dedup` must
+see raw content and its `content_store` may compress each chunk afterward.
+Ordinary wire compression is decoded at the gRPC boundary and does not affect
+that ordering. The zstd-at-rest passthrough mode is different: it must be
+outermost, so a nested `dedup` sees compressed bytes. That remains correct but
+gives up most deduplication benefit.
 
 </Accordion>
 

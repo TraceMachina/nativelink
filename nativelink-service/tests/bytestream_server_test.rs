@@ -24,7 +24,9 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
-use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
+use nativelink_config::stores::{
+    CompressionAlgorithm, CompressionSpec, MemorySpec, StoreSpec, VerifySpec, ZstdConfig,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
@@ -37,9 +39,9 @@ use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
-use nativelink_util::common::{DigestInfo, encode_stream_proto};
+use nativelink_util::common::{DigestInfo, encode_stream_proto, make_temp_path};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{StoreLike, WireCompressionStore, WireCompressor};
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
 use pretty_assertions::assert_eq;
@@ -91,6 +93,39 @@ async fn make_verify_store_manager() -> Result<Arc<StoreManager>, Error> {
     Ok(store_manager)
 }
 
+/// Builds a [`StoreManager`] whose `main_cas` store is a pure-passthrough
+/// zstd compression over an in-memory backend, so the `ByteStream` zstd fast
+/// paths are exercised end-to-end.
+async fn make_zstd_store_manager() -> Result<Arc<StoreManager>, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    let temp_path = make_temp_path("bytestream-zstd-store");
+    std::fs::create_dir_all(&temp_path)
+        .map_err(|e| make_err!(Code::Internal, "Failed to create zstd temp dir: {e}"))?;
+    let spec = StoreSpec::Compression(Box::new(CompressionSpec {
+        backend: StoreSpec::Memory(MemorySpec::default()),
+        compression_algorithm: CompressionAlgorithm::Zstd(ZstdConfig {
+            temp_path,
+            max_compressed_upload_size: 512 * 1024 * 1024,
+            ..ZstdConfig::default()
+        }),
+    }));
+    store_manager.add_store(
+        "main_cas",
+        store_factory(&spec, &store_manager, None).await?,
+    )?;
+    Ok(store_manager)
+}
+
+/// Gets the configured store's immediate wire-compression capability for
+/// direct fast-path setup without coupling this service test to a store type.
+fn wire_compression_store_of(store_manager: &StoreManager) -> Arc<dyn WireCompressionStore> {
+    store_manager
+        .get_store("main_cas")
+        .expect("main_cas store missing")
+        .wire_compression_store()
+        .expect("main_cas store was not wire-compression capable")
+}
+
 fn make_bytestream_server(
     store_manager: &StoreManager,
     config: Option<Vec<WithInstanceName<ByteStreamConfig>>>,
@@ -109,6 +144,7 @@ fn make_bytestream_server_with_remote_cache_compression(
             config: ByteStreamConfig {
                 cas_store: "main_cas".to_string(),
                 persist_stream_on_disconnect_timeout_s: 0,
+                compressed_upload_idle_timeout_s: 0,
                 max_bytes_per_stream: 1024,
             },
         }]
@@ -2032,5 +2068,601 @@ async fn uuid_collision_does_not_deadlock() -> Result<(), Box<dyn core::error::E
 
     join2.await.expect("task panicked")?;
     drop(tx1);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ZstdStore instance fast path (byte-for-byte passthrough)
+// ---------------------------------------------------------------------------
+
+/// A compressed read at offset 0 from a `ZstdStore` instance must return the
+/// exact stored zstd bytes, byte-for-byte, with no re-encode.
+#[nativelink_test]
+pub async fn zstd_store_compressed_read_is_byte_for_byte() -> Result<(), Box<dyn core::error::Error>>
+{
+    let raw_data = Bytes::from("byte-for-byte zstd passthrough ".repeat(256));
+    let hash = sha256_hex(raw_data.as_ref());
+    // A known zstd stream. With compression_level=None + max_recompression_size=0
+    // the store is a pure passthrough, so these exact bytes are what is stored.
+    let compressed = Bytes::from(zstd::bulk::compress(raw_data.as_ref(), 3)?);
+    assert_ne!(
+        compressed.as_ref(),
+        raw_data.as_ref(),
+        "test data must actually compress"
+    );
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server"),
+    );
+    let wire_store = wire_compression_store_of(store_manager.as_ref());
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    wire_store
+        .update_compressed_oneshot(
+            digest,
+            DigestHasherFunc::Sha256,
+            WireCompressor::Zstd,
+            compressed.clone(),
+        )
+        .await?;
+
+    let read_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: 0,
+            read_limit: 0,
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        read_data.as_slice(),
+        compressed.as_ref(),
+        "offset-0 compressed read from a ZstdStore must be byte-for-byte identical to what was stored"
+    );
+    let decoded = zstd::bulk::decompress(&read_data, raw_data.len())?;
+    assert_eq!(
+        decoded.as_slice(),
+        raw_data.as_ref(),
+        "returned zstd stream must decode to the original blob"
+    );
+
+    Ok(())
+}
+
+/// A compressed upload to a `ZstdStore` instance stores the client's zstd bytes
+/// byte-for-byte, reports the compressed wire byte count as `committed_size`, and
+/// a re-upload of an already-present blob still completes.
+#[nativelink_test]
+pub async fn zstd_store_compressed_write_round_trip() -> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = "zstd store compressed write round trip ".repeat(256);
+    let hash = sha256_hex(raw_data.as_bytes());
+    let compressed = zstd::bulk::compress(raw_data.as_bytes(), 3)?;
+    assert!(compressed.len() < raw_data.len(), "test data must compress");
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server"),
+    );
+
+    // Upload the compressed blob.
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_compressed_resource_name(
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb60",
+            &hash,
+            raw_data.len(),
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.clone().into(),
+    })?))
+    .await?;
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+    assert_eq!(
+        server_result.into_inner().committed_size,
+        i64::try_from(compressed.len()).unwrap(),
+        "compressed write to a ZstdStore must report the compressed wire byte count"
+    );
+
+    // A subsequent compressed read returns the exact stored zstd bytes.
+    let read_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: 0,
+            read_limit: 0,
+        },
+    )
+    .await?;
+    assert_eq!(
+        read_data.as_slice(),
+        compressed.as_slice(),
+        "read-back must be byte-for-byte identical to the uploaded zstd stream"
+    );
+    assert_eq!(
+        zstd::bulk::decompress(&read_data, raw_data.len())?.as_slice(),
+        raw_data.as_bytes()
+    );
+
+    // Re-upload an already-present blob; it must still complete (REAPI allows
+    // -1 or the byte count for an already-present blob).
+    let (tx2, join2) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx2.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_compressed_resource_name(
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb61",
+            &hash,
+            raw_data.len(),
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.clone().into(),
+    })?))
+    .await?;
+    let committed_size = join2
+        .await
+        .expect("Failed to join")
+        .expect("Failed re-upload write")
+        .into_inner()
+        .committed_size;
+    assert!(
+        committed_size == -1 || committed_size == i64::try_from(compressed.len()).unwrap(),
+        "re-upload committed_size must be -1 or the compressed byte count {}; got {committed_size}",
+        compressed.len()
+    );
+
+    Ok(())
+}
+
+/// A compressed read at offset > 0 from a `ZstdStore` instance takes the
+/// fallback path (`StoreDriver::get_part` decompresses, service re-encodes) and
+/// returns a valid zstd stream decoding to the uncompressed suffix.
+#[nativelink_test]
+pub async fn zstd_store_compressed_read_offset_uses_fallback()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from(
+        (0usize..4096)
+            .map(|i| u8::try_from((i * 31 + i / 7) % 251).expect("modulo 251 fits in u8"))
+            .collect::<Vec<_>>(),
+    );
+    let hash = sha256_hex(raw_data.as_ref());
+    let compressed = Bytes::from(zstd::bulk::compress(raw_data.as_ref(), 3)?);
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server"),
+    );
+    let wire_store = wire_compression_store_of(store_manager.as_ref());
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    wire_store
+        .update_compressed_oneshot(
+            digest,
+            DigestHasherFunc::Sha256,
+            WireCompressor::Zstd,
+            compressed,
+        )
+        .await?;
+
+    let read_offset = 100usize;
+    let ranged_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: i64::try_from(read_offset).unwrap(),
+            read_limit: 0,
+        },
+    )
+    .await?;
+
+    let decoded = zstd::bulk::decompress(&ranged_data, raw_data.len() - read_offset)?;
+    assert_eq!(
+        decoded.as_slice(),
+        &raw_data.as_ref()[read_offset..],
+        "offset > 0 compressed read must decode to the uncompressed suffix"
+    );
+
+    Ok(())
+}
+
+/// An identity (non-compressed) write + read round trip through a `ZstdStore`
+/// instance returns the correct raw bytes via the `StoreDriver` path.
+#[nativelink_test]
+pub async fn zstd_store_identity_write_and_read_round_trip()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from("identity round trip through a zstd store ".repeat(64));
+    let hash = sha256_hex(raw_data.as_ref());
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: format!(
+            "{}/uploads/{}/blobs/{}/{}",
+            INSTANCE_NAME,
+            "4dcec57e-1389-4ab5-b188-4a59f22ceb62",
+            hash,
+            raw_data.len()
+        ),
+        write_offset: 0,
+        finish_write: true,
+        data: raw_data.clone(),
+    })?))
+    .await?;
+    let server_result = join_handle
+        .await
+        .expect("Failed to join")
+        .expect("Failed write");
+    assert_eq!(
+        server_result.into_inner().committed_size,
+        i64::try_from(raw_data.len()).unwrap()
+    );
+
+    let read_data = read_all_bytes(
+        bs_server.as_ref(),
+        ReadRequest {
+            resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, hash, raw_data.len()),
+            read_offset: 0,
+            read_limit: i64::try_from(raw_data.len()).unwrap(),
+        },
+    )
+    .await?;
+    assert_eq!(
+        read_data.as_slice(),
+        raw_data.as_ref(),
+        "identity round trip through a ZstdStore must return the raw bytes"
+    );
+
+    Ok(())
+}
+
+/// A compressed read with a non-zero `read_limit` against a `ZstdStore` instance
+/// must be rejected with `INVALID_ARGUMENT` (regression: the guard runs before the
+/// fast path).
+#[nativelink_test]
+pub async fn zstd_store_compressed_read_rejects_nonzero_read_limit()
+-> Result<(), Box<dyn core::error::Error>> {
+    let raw_data = Bytes::from("read_limit rejection over a zstd store ".repeat(64));
+    let hash = sha256_hex(raw_data.as_ref());
+    let compressed = Bytes::from(zstd::bulk::compress(raw_data.as_ref(), 3)?);
+
+    let store_manager = make_zstd_store_manager().await?;
+    let bs_server =
+        make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
+            .expect("Failed to make server");
+    let wire_store = wire_compression_store_of(store_manager.as_ref());
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    wire_store
+        .update_compressed_oneshot(
+            digest,
+            DigestHasherFunc::Sha256,
+            WireCompressor::Zstd,
+            compressed,
+        )
+        .await?;
+
+    let Err(status) = bs_server
+        .read(Request::new(ReadRequest {
+            resource_name: format!(
+                "{}/compressed-blobs/zstd/{}/{}",
+                INSTANCE_NAME,
+                hash,
+                raw_data.len()
+            ),
+            read_offset: 0,
+            read_limit: 1,
+        }))
+        .await
+    else {
+        panic!("compressed read with read_limit should fail");
+    };
+
+    assert_eq!(status.code(), Code::InvalidArgument);
+    assert!(
+        status.message().contains("read_limit must be 0"),
+        "unexpected error: {}",
+        status.message()
+    );
+
+    Ok(())
+}
+
+/// Builds a [`StoreManager`] whose `main_cas` store is a pure-passthrough
+/// `ZstdStore` over memory with a configurable staged-upload bound.
+async fn make_zstd_store_manager_with_staging(
+    max_concurrent_staged_uploads: usize,
+    stage_timeout_s: u64,
+) -> Result<Arc<StoreManager>, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    let temp_path = make_temp_path("bytestream-zstd-idle");
+    std::fs::create_dir_all(&temp_path)
+        .map_err(|e| make_err!(Code::Internal, "Failed to create zstd temp dir: {e}"))?;
+    let spec = StoreSpec::Compression(Box::new(CompressionSpec {
+        backend: StoreSpec::Memory(MemorySpec::default()),
+        compression_algorithm: CompressionAlgorithm::Zstd(ZstdConfig {
+            temp_path,
+            max_compressed_upload_size: 512 * 1024 * 1024,
+            max_concurrent_staged_uploads,
+            stage_timeout_s,
+            ..ZstdConfig::default()
+        }),
+    }));
+    store_manager.add_store(
+        "main_cas",
+        store_factory(&spec, &store_manager, None).await?,
+    )?;
+    Ok(store_manager)
+}
+
+/// A compressed `ByteStream` client that acquires the single staging slot and then
+/// stalls (never sends `finish_write`, never disconnects) is timed out with
+/// `DeadlineExceeded`, its staging permit is released, and a subsequent valid
+/// upload behind the `max_concurrent_staged_uploads = 1` bound completes.
+///
+/// Uses a short real-time (1s) idle timeout rather than a paused clock: the
+/// stalled upload parks a `spawn_blocking` recv thread inside the store, and
+/// tokio's `start_paused` auto-advance will not fire the idle timer while a
+/// blocking task is outstanding — so a paused clock would deadlock here.
+#[nativelink_test]
+async fn zstd_compressed_upload_idle_timeout_frees_staging_slot()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_zstd_store_manager_with_staging(1, 0).await?;
+    // Short idle timeout; under start_paused the virtual clock advances past it.
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            persist_stream_on_disconnect_timeout_s: 1,
+            // The knob under test: how long to wait for the next WriteRequest
+            // of a compressed upload.
+            compressed_upload_idle_timeout_s: 1,
+            max_bytes_per_stream: 1024,
+        },
+    }];
+    let bs_server = Arc::new(make_bytestream_server_with_remote_cache_compression(
+        store_manager.as_ref(),
+        Some(config),
+        true,
+    )?);
+
+    let raw = "idle timeout regression payload ".repeat(64);
+    let compressed = zstd::bulk::compress(raw.as_bytes(), 3)?;
+    let hash = sha256_hex(raw.as_bytes());
+
+    // --- Upload A: send a partial chunk, then stall (keep tx alive). ---
+    let resource_a =
+        make_compressed_resource_name("aaaaaaaa-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_a, join_a) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx_a.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_a,
+        write_offset: 0,
+        finish_write: false,
+        data: Bytes::copy_from_slice(&compressed[..compressed.len() / 2]),
+    })?))
+    .await?;
+
+    // Do not send more and do not drop tx_a: the server is left waiting for the
+    // next WriteRequest. The idle timeout must fire (DeadlineExceeded), not an
+    // InvalidArgument "stream ended without finish_write".
+    let status_a = join_a
+        .await
+        .expect("join A")
+        .expect_err("stalled upload A must fail");
+    assert_eq!(
+        status_a.code(),
+        Code::DeadlineExceeded,
+        "an idle-stalled compressed upload must time out with DeadlineExceeded, got: {status_a:?}"
+    );
+    drop(tx_a);
+
+    // --- Upload B: a full valid upload must complete (slot was released). ---
+    let resource_b =
+        make_compressed_resource_name("bbbbbbbb-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_b, join_b) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx_b.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_b,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.clone().into(),
+    })?))
+    .await?;
+    join_b
+        .await
+        .expect("join B")
+        .expect("valid upload B behind the freed slot must succeed");
+
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(&hash, raw.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw.as_bytes(),
+        "the recovered upload must store the decompressed bytes"
+    );
+    Ok(())
+}
+
+/// A client that keeps making progress is NOT idle-timed-out even when the whole
+/// upload takes longer than the idle timeout: the deadline is per-WriteRequest
+/// and resets on every chunk. Real-time test with sub-timeout inter-chunk gaps
+/// whose sum exceeds the timeout.
+#[nativelink_test]
+async fn zstd_compressed_upload_making_progress_is_not_idle_timed_out()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_zstd_store_manager_with_staging(1, 0).await?;
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            persist_stream_on_disconnect_timeout_s: 1,
+            // The knob under test: how long to wait for the next WriteRequest
+            // of a compressed upload.
+            compressed_upload_idle_timeout_s: 1,
+            max_bytes_per_stream: 1024,
+        },
+    }];
+    let bs_server = Arc::new(make_bytestream_server_with_remote_cache_compression(
+        store_manager.as_ref(),
+        Some(config),
+        true,
+    )?);
+
+    let raw = "progress keeps the stream alive ".repeat(256);
+    let compressed = zstd::bulk::compress(raw.as_bytes(), 3)?;
+    let hash = sha256_hex(raw.as_bytes());
+    let resource_name =
+        make_compressed_resource_name("cccccccc-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+
+    // Five chunks, ~300ms apart: each inter-chunk gap is well under the 1s idle
+    // timeout, but their sum (~1.2s) exceeds it. A per-message deadline that
+    // resets on progress lets this succeed; a whole-upload deadline would not.
+    let chunk_count = 5usize;
+    let chunk_len = compressed.len().div_ceil(chunk_count);
+    let mut offset = 0usize;
+    while offset < compressed.len() {
+        let end = (offset + chunk_len).min(compressed.len());
+        tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: resource_name.clone(),
+            write_offset: i64::try_from(offset).unwrap(),
+            finish_write: end == compressed.len(),
+            data: Bytes::copy_from_slice(&compressed[offset..end]),
+        })?))
+        .await?;
+        offset = end;
+        if offset < compressed.len() {
+            tokio::time::sleep(core::time::Duration::from_millis(300)).await;
+        }
+    }
+
+    join_handle
+        .await
+        .expect("join")
+        .expect("a continuously-progressing upload must not be idle-timed-out");
+
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(&hash, raw.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw.as_bytes(),
+        "the progressive upload must store the decompressed bytes"
+    );
+    Ok(())
+}
+
+/// A total `ZstdStore` staging deadline must terminate the `ByteStream` RPC even
+/// while the client stays connected and continues sending within the service's
+/// per-message idle deadline. Terminating the pump closes the store channel so
+/// its detached validator can release the staging slot.
+#[nativelink_test]
+async fn zstd_stage_timeout_stops_a_progressing_client_and_frees_the_slot()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_zstd_store_manager_with_staging(1, 1).await?;
+    let config = vec![WithInstanceName {
+        instance_name: INSTANCE_NAME.to_string(),
+        config: ByteStreamConfig {
+            cas_store: "main_cas".to_string(),
+            persist_stream_on_disconnect_timeout_s: 1,
+            compressed_upload_idle_timeout_s: 5,
+            max_bytes_per_stream: 1024,
+        },
+    }];
+    let bs_server = Arc::new(make_bytestream_server_with_remote_cache_compression(
+        store_manager.as_ref(),
+        Some(config),
+        true,
+    )?);
+
+    // A long valid frame ensures the byte-at-a-time prefix remains incomplete
+    // until the store's total staging deadline fires.
+    let mut state = 0x9E37_79B9_u32;
+    let raw = (0..256 * 1024)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect::<Vec<_>>();
+    let compressed = zstd::bulk::compress(&raw, 3)?;
+    assert!(compressed.len() > 100);
+    let hash = sha256_hex(&raw);
+
+    let resource_a =
+        make_compressed_resource_name("dddddddd-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_a, join_a) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    let trickle = Bytes::from(compressed.clone());
+    let sender = spawn!("bytestream_zstd_stage_timeout_trickle", async move {
+        let mut offset = 0usize;
+        while offset < trickle.len() {
+            if tx_a
+                .send(Frame::data(
+                    encode_stream_proto(&WriteRequest {
+                        resource_name: resource_a.clone(),
+                        write_offset: i64::try_from(offset).unwrap(),
+                        finish_write: false,
+                        data: trickle.slice(offset..=offset),
+                    })
+                    .unwrap(),
+                ))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            offset += 1;
+            tokio::time::sleep(core::time::Duration::from_millis(100)).await;
+        }
+    });
+
+    let status_a = tokio::time::timeout(core::time::Duration::from_secs(3), join_a)
+        .await
+        .expect("the store timeout must stop the client pump before the idle timeout")
+        .expect("join A")
+        .expect_err("the progressively trickling upload must hit the total staging deadline");
+    assert_eq!(status_a.code(), Code::DeadlineExceeded, "got: {status_a:?}");
+    drop(sender);
+
+    // The failed RPC dropped the pump, so the blocking validator can finish
+    // cleanup and a valid upload behind the single staging slot can proceed.
+    let resource_b =
+        make_compressed_resource_name("eeeeeeee-1111-2222-3333-444444444444", &hash, raw.len());
+    let (tx_b, join_b) = make_stream_and_writer_spawn(bs_server, None);
+    tx_b.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_b,
+        write_offset: 0,
+        finish_write: true,
+        data: compressed.into(),
+    })?))
+    .await?;
+    tokio::time::timeout(core::time::Duration::from_secs(3), join_b)
+        .await
+        .expect("the valid upload must acquire the slot after cleanup")
+        .expect("join B")
+        .expect("valid upload B must succeed");
     Ok(())
 }

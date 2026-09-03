@@ -121,6 +121,7 @@ services:
 ### Single Worker Setup
 - [`docker-compose.yml`](./docker-compose.yml) - Docker Compose file for single worker deployment
 - [`local-storage-cas.json5`](./local-storage-cas.json5) - Local storage CAS configuration for single worker
+- [`local-storage-cas-zstd.json5`](./local-storage-cas-zstd.json5) - Same, but the CAS selects `compression_algorithm.zstd` to keep blobs as zstd at rest for byte-for-byte `--remote_cache_compression` passthrough (see the file's header comment for the dedicated-namespace and placement rules)
 - [`scheduler.json5`](./scheduler.json5) - Scheduler configuration for single worker deployment
 - [`worker.json5`](./worker.json5) - Worker configuration for single worker deployment
 

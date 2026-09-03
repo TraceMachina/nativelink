@@ -43,3 +43,4 @@ pub mod shard_store;
 pub mod size_partitioning_store;
 pub mod store_manager;
 pub mod verify_store;
+pub mod zstd_store;
