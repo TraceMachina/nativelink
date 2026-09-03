@@ -151,6 +151,10 @@ pub struct SimpleScheduler {
     /// is dropped the spawn will be cancelled as well.
     task_worker_matching_spawn: JoinHandleDropGuard<()>,
 
+    /// Background task that retires queued actions nobody is waiting on.
+    /// Dropped with the struct, like the matching task.
+    task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
+
     /// Every duration, do logging of worker matching
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
@@ -166,6 +170,10 @@ impl core::fmt::Debug for SimpleScheduler {
             .field(
                 "task_worker_matching_spawn",
                 &self.task_worker_matching_spawn,
+            )
+            .field(
+                "task_abandoned_sweep_spawn",
+                &self.task_abandoned_sweep_spawn,
             )
             .finish_non_exhaustive()
     }
@@ -560,6 +568,28 @@ impl SimpleScheduler {
             secs => Some(Duration::from_secs(secs.unsigned_abs())),
         };
 
+        // Retiring abandoned queued actions is its own task rather than part
+        // of the matching pass. The matching pass is exactly what stops
+        // running when they pile up, so making the cleanup depend on it
+        // means the cleanup stops precisely when it is needed. Sweeping on
+        // the client timeout bounds how long one can sit there to roughly
+        // twice that.
+        let sweep_interval = Duration::from_secs(client_action_timeout_s);
+        let sweep_state_manager = Arc::downgrade(&state_manager);
+        let task_abandoned_sweep_spawn =
+            spawn!("simple_scheduler_task_abandoned_sweep", async move {
+                loop {
+                    tokio::time::sleep(sweep_interval).await;
+                    // Weak, so the sweep stops when the scheduler goes away.
+                    let Some(state_manager) = sweep_state_manager.upgrade() else {
+                        return;
+                    };
+                    if let Err(err) = state_manager.sweep_abandoned_queued_actions().await {
+                        error!(?err, "Error while sweeping abandoned queued actions");
+                    }
+                }
+            });
+
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
@@ -713,6 +743,7 @@ impl SimpleScheduler {
                 platform_property_manager,
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
+                task_abandoned_sweep_spawn,
                 worker_match_logging_interval,
             }
         });
