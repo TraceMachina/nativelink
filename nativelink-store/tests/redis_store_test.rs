@@ -824,7 +824,7 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-fn test_connection_errors() {
+async fn test_connection_errors() {
     // name is resolvable, but not connectable
     let spec = RedisSpec {
         addresses: vec!["redis://nativelink.com:6379/".to_string()],
@@ -839,7 +839,7 @@ fn test_connection_errors() {
             code: Code::DeadlineExceeded,
             messages: vec![
                 "Io: timed out".into(),
-                format!("While connecting to redis with url: redis://nativelink.com:6379/")
+                "While connecting to redis with url: redis://nativelink.com:6379/".into()
             ],
             context: ErrorContext::None,
         },

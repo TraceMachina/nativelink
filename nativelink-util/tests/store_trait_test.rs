@@ -81,7 +81,7 @@ async fn fast_has_with_results() -> Result<(), Error> {
 async fn fast_has_many() -> Result<(), Error> {
     let store = Store::new(Arc::new(FakeStore {}));
     let res = store.has_many(&[]).await?;
-    assert!(res.is_empty());
+    assert_eq!(res, []);
 
     Ok(())
 }
