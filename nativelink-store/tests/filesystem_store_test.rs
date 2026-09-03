@@ -45,6 +45,7 @@ use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Take};
 use tokio::sync::{Barrier, Semaphore};
@@ -1246,6 +1247,7 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
     Ok(())
 }
 
+#[serial(filesystem_open_permits)]
 #[nativelink_test]
 async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     #[expect(clippy::collection_is_never_read)] // TODO(jhpratt) investigate
@@ -1919,6 +1921,88 @@ async fn detect_duplicate_upload() -> Result<(), Error> {
     ));
     // Keep it alive until here to avoid early drop and delete, which breaks the test
     drop(arc_entry);
+    Ok(())
+}
+
+/// Concurrent content-addressed uploads of the same digest are idempotent.
+/// Every caller must succeed and the canonical content path must retain the
+/// complete blob after all publisher futures finish.
+#[serial(filesystem_open_permits)]
+#[nativelink_test(flavor = "multi_thread", worker_threads = 8)]
+async fn concurrent_same_digest_uploads_publish_once() -> Result<(), Error> {
+    const WRITERS: usize = 32;
+    const ROUNDS: usize = 32;
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let store = Arc::new(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path,
+            temp_path,
+            ..Default::default()
+        })
+        .await?,
+    );
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+
+    for round in 0..ROUNDS {
+        let start = Arc::new(Barrier::new(WRITERS));
+        let writers = (0..WRITERS).map(|_| {
+            let store = Arc::clone(&store);
+            let start = Arc::clone(&start);
+            tokio::spawn(async move {
+                start.wait().await;
+                store.update_oneshot(digest, VALUE1.into()).await
+            })
+        });
+
+        for result in futures::future::join_all(writers).await {
+            result
+                .map_err(|err| make_err!(Code::Internal, "writer join failed: {err:?}"))?
+                .err_tip(|| format!("same-digest writer failed in round {round}"))?;
+        }
+
+        assert_eq!(
+            store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+            VALUE1.as_bytes(),
+            "canonical blob changed after round {round}"
+        );
+    }
+
+    Ok(())
+}
+
+/// A stale in-memory entry whose canonical file is already missing must not
+/// poison future uploads of that content-addressed key. The next upload owns
+/// repair: it replaces the stale entry and republishes the complete blob.
+#[nativelink_test]
+async fn same_digest_upload_repairs_missing_content_file() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path,
+        ..Default::default()
+    })
+    .await?;
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let canonical_path = Path::new(&content_path)
+        .join(DIGEST_FOLDER)
+        .join(digest.to_string());
+
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    fs::remove_file(&canonical_path).await?;
+
+    store
+        .update_oneshot(digest, VALUE1.into())
+        .await
+        .err_tip(|| "same-digest repair upload failed")?;
+
+    assert_eq!(
+        fs::read(&canonical_path).await?.as_slice(),
+        VALUE1.as_bytes(),
+        "repair upload did not restore the canonical blob"
+    );
     Ok(())
 }
 

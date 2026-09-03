@@ -13,19 +13,19 @@
 // limitations under the License.
 
 use core::fmt::{Debug, Formatter};
+use core::hash::{Hash, Hasher};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 #[cfg(unix)]
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-#[cfg(unix)]
-use async_lock::Mutex;
-use async_lock::RwLock;
+use async_lock::{Mutex, RwLock};
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
@@ -61,6 +61,10 @@ use crate::cas_utils::is_zero_digest;
 const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
+// Publication is brief, but it must be ordered for equal keys: the eviction
+// map and canonical filesystem path form one transaction. A fixed stripe set
+// keeps that ordering bounded without retaining one lock per digest forever.
+const PUBLICATION_LOCK_SHARDS: usize = 256;
 
 pub const STR_FOLDER: &str = "s";
 pub const DIGEST_FOLDER: &str = "d";
@@ -987,7 +991,25 @@ where
             let temp_path = temp_file_encoded_file_path.get_file_path();
             trace!(?existing_path, ?temp_path, "Checking duplicate files");
             let mut temp_file = fs::open_file(&temp_path, 0, file_length).await?;
-            let mut existing_file = fs::open_file(&existing_path, 0, file_length).await?;
+            let mut existing_file = match fs::open_file(&existing_path, 0, file_length).await {
+                Ok(file) => file,
+                // A prior same-key race or external cache loss can leave the
+                // map entry present after its canonical file disappeared.
+                // This upload owns repair: treating the entry as a
+                // non-duplicate lets `insert` unref the stale record and the
+                // normal rename republish the complete temp file. Preserve
+                // every other I/O error rather than hiding permission,
+                // descriptor, or filesystem failures as cache misses.
+                Err(err) if err.code == Code::NotFound => {
+                    warn!(
+                        ?existing_path,
+                        ?temp_path,
+                        "Existing filesystem-store entry is missing; replacing it"
+                    );
+                    return Ok(false);
+                }
+                Err(err) => return Err(err),
+            };
 
             let mut temp_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
             let mut existing_buffer: [u8; CHUNK_SIZE] = [0; CHUNK_SIZE];
@@ -1119,6 +1141,11 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
+    /// Serializes the eviction-map insertion and canonical-path rename for
+    /// equal keys. Without this, two publishers can hold different
+    /// `FileEntry` locks for the same path, allowing one entry's `unref()` to
+    /// move the file while the other is checking or publishing it.
+    publication_locks: Vec<Arc<Mutex<()>>>,
     /// See [`FlushCoalescer`]: amortizes the per-blob `F_FULLFSYNC` cost
     /// across concurrent uploads without weakening durability. `None` when
     /// the sentinel could not be created (e.g. read-only content volume);
@@ -1252,6 +1279,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             weak_self: weak_self.clone(),
             rename_fn,
             write_semaphore,
+            publication_locks: (0..PUBLICATION_LOCK_SHARDS)
+                .map(|_| Arc::new(Mutex::new(())))
+                .collect(),
             #[cfg(target_os = "macos")]
             flush_coalescer,
             #[cfg(unix)]
@@ -1263,6 +1293,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     pub fn get_arc(&self) -> Option<Arc<Self>> {
         self.weak_self.upgrade()
+    }
+
+    fn publication_lock(&self, key: &StoreKey<'_>) -> Arc<Mutex<()>> {
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        let shard_count = u64::try_from(self.publication_locks.len())
+            .expect("publication lock shard count always fits u64");
+        let shard = usize::try_from(hasher.finish() % shard_count)
+            .expect("publication lock shard always fits usize");
+        self.publication_locks[shard].clone()
     }
 
     /// Reserve a digest before it is populated so active action inputs cannot
@@ -1636,10 +1676,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         //    contents until we release the lock.
         let evicting_map = self.evicting_map.clone();
         let rename_fn = self.rename_fn;
+        let publication_lock = self.publication_lock(&key);
 
         // We need to guarantee that this will get to the end even if the parent future is dropped.
         // See: https://github.com/TraceMachina/nativelink/issues/495
         background_spawn!("filesystem_store_emplace_file", async move {
+            let _publication_guard = publication_lock.lock().await;
+
             // Sometimes we get files to emplace that are identical to the existing files
             // Due to the evict/remove/replace cycle taking some amount of time, we actually
             // want to drop these
