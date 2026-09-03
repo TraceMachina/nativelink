@@ -1,7 +1,7 @@
 ---
 title: "How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink"
 tags: ["news", "case-studies"]
-image: /case-studies/menlo-security-build-time-comparison.jpg
+image: /assets/menlo-security-build-time-comparison.jpg
 slug: case-study-menlo-security
 pubDate: 2026-08-28
 readTime: 6 minutes
@@ -24,7 +24,7 @@ readTime: 6 minutes
     <dd>
       <a class="glance-company-card" href="https://www.menlosecurity.com/" rel="noopener noreferrer">
         <span class="glance-logo-frame">
-          <img class="glance-logo" src="/case-studies/menlo-security-wordmark.svg" alt="" width="70" height="34" />
+          <img class="glance-logo" src="/assets/menlo-security-wordmark.svg" alt="" width="70" height="34" />
         </span>
         <span class="glance-company-copy">
           <span class="glance-company-name">Menlo Security</span>
@@ -126,7 +126,7 @@ The number Menlo watches most is **developer wait time**:
 | Full Chromium build | ~4.5 hours | ~25 minutes |
 
 <figure>
-  <img src="/case-studies/menlo-security-build-time-comparison.jpg" alt="Chromium build wall-time at Menlo Security: 4.5 hours on the legacy distributed cache, 25 minutes with NativeLink remote execution" />
+  <img src="/assets/menlo-security-build-time-comparison.jpg" alt="Chromium build wall-time at Menlo Security: 4.5 hours on the legacy distributed cache, 25 minutes with NativeLink remote execution" />
   <figcaption>Fig. 1. Full Chromium build wall-time at Menlo Security dropped from ~4.5 hours to ~25 minutes.</figcaption>
 </figure>
 
@@ -143,7 +143,7 @@ Menlo runs all builds on Kubernetes in a hybrid layout:
 - **Elastic workers:** Menlo built an autoscaling worker provisioner (later contributed upstream) that adds and removes workers while keeping a set of warm base workers ready, so a quick developer build does not sit on a cold start.
 
 <figure>
-  <img src="/case-studies/menlo-security-kubernetes-topology.jpg" alt="Menlo Security's hybrid NativeLink topology: a Kubernetes scheduler node talking gRPC to GCS and a local office CAS, and dispatching work to a warm base worker pool plus an on-demand ephemeral pool" />
+  <img src="/assets/menlo-security-kubernetes-topology.jpg" alt="Menlo Security's hybrid NativeLink topology: a Kubernetes scheduler node talking gRPC to GCS and a local office CAS, and dispatching work to a warm base worker pool plus an on-demand ephemeral pool" />
   <figcaption>Fig. 2. Hybrid NativeLink topology: cloud control plane, local office CAS, and warm and ephemeral workers.</figcaption>
 </figure>
 
