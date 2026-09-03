@@ -168,7 +168,7 @@ where
             multipart_max_concurrent_uploads: spec
                 .common
                 .multipart_max_concurrent_uploads
-                .map_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS, |v| v),
+                .unwrap_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS),
             remove_callbacks: Mutex::new(Vec::new()),
         }))
     }

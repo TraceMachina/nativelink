@@ -889,17 +889,17 @@ where
             .await
     }
 
-    async fn get_by_operation_id(
+    fn get_by_operation_id(
         &self,
         operation_id: &OperationId,
-    ) -> Result<Option<Self::Subscriber>, Error> {
-        Ok(Some(OperationSubscriber::new(
+    ) -> impl Future<Output = Result<Option<Self::Subscriber>, Error>> {
+        std::future::ready(Ok(Some(OperationSubscriber::new(
             None,
             OperationIdToAwaitedAction(Cow::Owned(operation_id.clone())),
             Arc::downgrade(&self.store),
             self.now_fn.clone(),
             self.retain_completed_for,
-        )))
+        ))))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {

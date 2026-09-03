@@ -327,7 +327,11 @@ impl DropCloserReadHalf {
             data_sum += chunk.len() as u64;
             self.queued_data.push_front(chunk);
         }
-        assert!(self.recent_data.is_empty(), "Recent_data should be empty");
+        assert_eq!(
+            self.recent_data,
+            Vec::<Bytes>::new(),
+            "Recent_data should be empty"
+        );
         // Ensure the sum of the bytes in recent_data is equal to the bytes_received.
         error_if!(
             data_sum != self.bytes_received,

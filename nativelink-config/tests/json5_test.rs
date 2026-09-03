@@ -18,7 +18,7 @@ fn test_example_parsing() {
     let mut found_at_least_one_entry = false;
 
     for entry in fs::read_dir(&examples_path)
-        .unwrap_or_else(|e| panic!("Failed to read from {:?}: {}", &examples_path, e))
+        .unwrap_or_else(|e| panic!("Failed to read from {examples_path:?}: {e}"))
     {
         let config_file = entry.unwrap().path().display().to_string();
         if !config_file.contains(".json5") {

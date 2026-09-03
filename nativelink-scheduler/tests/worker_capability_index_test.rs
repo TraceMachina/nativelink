@@ -14,7 +14,7 @@
 
 //! Tests for the worker capability index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nativelink_scheduler::worker_capability_index::WorkerCapabilityIndex;
 use nativelink_util::action_messages::WorkerId;
@@ -38,7 +38,7 @@ fn test_empty_index() {
     let index = WorkerCapabilityIndex::new();
     let props = make_properties(&[]);
     let result = index.find_matching_workers(&props, true);
-    assert!(result.is_empty());
+    assert_eq!(result, HashSet::new());
 
     assert!(logs_contain("No workers available to match!"));
 }
@@ -174,7 +174,7 @@ fn test_remove_worker() {
 
     let props = make_properties(&[("os", PlatformPropertyValue::Exact("linux".to_string()))]);
     let result = index.find_matching_workers(&props, true);
-    assert!(result.is_empty());
+    assert_eq!(result, HashSet::new());
 }
 
 #[test]

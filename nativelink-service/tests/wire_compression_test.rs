@@ -220,7 +220,7 @@ fn held_compressed_download_streams_must_not_starve_blocking_pool() {
                     let mut state = 0x9E37_79B9_7F4A_7C15_u64;
                     loop {
                         let mut chunk = vec![0u8; 64 * 1024];
-                        for word in chunk.chunks_exact_mut(8) {
+                        for word in chunk.as_chunks_mut::<8>().0 {
                             state = state
                                 .wrapping_mul(6_364_136_223_846_793_005)
                                 .wrapping_add(1_442_695_040_888_963_407);
