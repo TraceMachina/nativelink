@@ -18,6 +18,8 @@ use_repo(java, "local_jdk")
 # Python
 bazel_dep(name = "rules_python", version = "2.0.0")
 
+# This example has no third-party Python dependencies, so it does not need a
+# pip hub or a requirements lockfile.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
     is_default = True,
@@ -47,6 +49,8 @@ rust_toolchains.toolchain(
 )
 use_repo(rust_toolchains, "default_rust_toolchains")
 
+# rules_rs publishes toolchains in subpackages and uses LLVM for hermetic
+# cross-linking, so both registrations are required.
 register_toolchains(
     "@default_rust_toolchains//...",
     "@llvm//toolchain:all",
