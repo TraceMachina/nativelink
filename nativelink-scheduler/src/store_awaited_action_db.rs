@@ -231,7 +231,22 @@ where
             let mut maybe_changed_action = None;
 
             let last_known_keepalive_ts = self.last_known_keepalive_ts.load(Ordering::Acquire);
-            if I::from_secs(last_known_keepalive_ts).elapsed() > CLIENT_KEEPALIVE_DURATION {
+            // Only a subscriber that stands for a client may say a client is
+            // still there. The matching engine subscribes to every queued
+            // action it considers, and `get_range_of_actions` builds those
+            // subscribers with no client operation id precisely because there
+            // is no client behind them. Letting them write the keepalive
+            // makes the scheduler hold open the actions it is supposed to be
+            // retiring: the keepalive is refreshed, the client timeout in
+            // `apply_filter_predicate` never comes due, and the action is
+            // offered to the matcher again, which refreshes it again.
+            //
+            // The effect is that every queued action carries a keepalive
+            // only seconds old however long its client has been gone, and
+            // none of them are ever retired.
+            if self.maybe_client_operation_id.is_some()
+                && I::from_secs(last_known_keepalive_ts).elapsed() > CLIENT_KEEPALIVE_DURATION
+            {
                 let now = (self.now_fn)().now();
                 let now_ts = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
 
