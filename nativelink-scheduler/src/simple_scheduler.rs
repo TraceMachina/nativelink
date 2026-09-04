@@ -65,7 +65,7 @@ const DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S: u64 = 60;
 /// Mark operations as completed with error if no client has updated them
 /// within this duration.
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+pub(crate) const DEFAULT_CLIENT_ACTION_TIMEOUT_S: u64 = 60;
 
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.

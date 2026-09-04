@@ -296,7 +296,7 @@ async fn build_db(
     }
     let now_fn: fn() -> MockInstantWrapped = MockInstantWrapped::default;
     let op_id_fn: fn() -> OperationId = new_op_id;
-    StoreAwaitedActionDb::new(store, Arc::new(Notify::new()), now_fn, op_id_fn, 60)
+    StoreAwaitedActionDb::new(store, Arc::new(Notify::new()), now_fn, op_id_fn, 60, 60)
         .await
         .expect("construct test db")
 }

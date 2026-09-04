@@ -153,6 +153,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         MockInstantWrapped::default,
         move || WORKER_OPERATION_ID.into(),
         60,
+        60,
     )
     .await
     .unwrap();
@@ -261,6 +262,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         notifier.clone(),
         MockInstantWrapped::default,
         move || worker_operation_id_clone.lock().clone().into(),
+        60,
         60,
     )
     .await
@@ -419,6 +421,7 @@ async fn test_outdated_version() -> Result<(), Error> {
         MockInstantWrapped::default,
         move || worker_operation_id_clone.lock().clone().into(),
         60,
+        60,
     )
     .await
     .unwrap();
@@ -494,6 +497,7 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
         MockInstantWrapped::default,
         move || worker_operation_id_clone.lock().clone().into(),
         60,
+        60,
     )
     .await
     .unwrap();
@@ -552,6 +556,7 @@ async fn add_action_attaches_ttl_to_cid_mapping() -> Result<(), Error> {
         notifier.clone(),
         MockInstantWrapped::default,
         move || WORKER_OPERATION_ID.into(),
+        60,
         60,
     )
     .await

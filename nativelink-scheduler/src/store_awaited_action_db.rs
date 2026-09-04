@@ -71,6 +71,10 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     // as well as listening for the publishing.
     maybe_last_stage: Option<Discriminant<ActionStage>>,
     retain_completed_for: Duration,
+    /// How long a written client keepalive stays meaningful. Past it, an
+    /// absent key and a stale one say the same thing, so the key may as
+    /// well be gone.
+    client_keepalive_ttl: Duration,
 }
 
 impl<S: SchedulerStore, I: InstantWrapper, NowFn: Fn() -> I + core::fmt::Debug> core::fmt::Debug
@@ -103,6 +107,7 @@ where
         weak_store: Weak<S>,
         now_fn: NowFn,
         retain_completed_for: Duration,
+        client_keepalive_ttl: Duration,
     ) -> Self {
         Self {
             maybe_client_operation_id,
@@ -113,6 +118,7 @@ where
             now_fn,
             maybe_last_stage: None,
             retain_completed_for,
+            client_keepalive_ttl,
         }
     }
 
@@ -258,7 +264,13 @@ where
                                 operation_id,
                                 timestamp: now_ts,
                             },
-                            None,
+                            // Written with no expiry these outlive every
+                            // action that produced them and accumulate
+                            // without bound. A keepalive older than the
+                            // client timeout cannot change any decision,
+                            // because the timeout has already come due and
+                            // the stored timestamp is consulted either way.
+                            Some(self.client_keepalive_ttl),
                         )
                         .await;
 
@@ -645,6 +657,7 @@ where
     operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
     retain_completed_for: Duration,
+    client_keepalive_ttl: Duration,
     worker_registry: Option<SharedWorkerRegistry>,
 }
 
@@ -661,6 +674,7 @@ where
         now_fn: NowFn,
         operation_id_creator: F,
         retain_completed_for_s: u32,
+        client_action_timeout_s: u64,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -697,6 +711,7 @@ where
             operation_id_creator,
             _pull_task_change_subscriber_spawn: pull_task_change_subscriber,
             retain_completed_for: Duration::from_secs(retain_completed_for_s.into()),
+            client_keepalive_ttl: Duration::from_secs(client_action_timeout_s),
             worker_registry: None,
         })
     }
@@ -883,6 +898,7 @@ where
             Arc::downgrade(&self.store),
             self.now_fn.clone(),
             self.retain_completed_for,
+            self.client_keepalive_ttl,
         )))
     }
 }
@@ -914,6 +930,7 @@ where
             Arc::downgrade(&self.store),
             self.now_fn.clone(),
             self.retain_completed_for,
+            self.client_keepalive_ttl,
         ))))
     }
 
@@ -1007,6 +1024,7 @@ where
                 Arc::downgrade(&self.store),
                 self.now_fn.clone(),
                 self.retain_completed_for,
+                self.client_keepalive_ttl,
             ));
         }
     }
@@ -1054,6 +1072,7 @@ where
                     Arc::downgrade(&self.store),
                     self.now_fn.clone(),
                     self.retain_completed_for,
+                    self.client_keepalive_ttl,
                 )
             }))
     }
@@ -1073,6 +1092,7 @@ where
                     Arc::downgrade(&self.store),
                     self.now_fn.clone(),
                     self.retain_completed_for,
+                    self.client_keepalive_ttl,
                 )
             }))
     }
