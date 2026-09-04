@@ -27,7 +27,7 @@ use tracing::info;
 
 use crate::fake_redis::{arg_as_string, fake_redis_internal};
 
-const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
+const FAKE_SCRIPT_SHA: &str = "d89e3573a1f9689c22115e8a41bd332d0c7c2643";
 
 #[derive(Clone, Debug)]
 pub struct ReadOnlyRedis {

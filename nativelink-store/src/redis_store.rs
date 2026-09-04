@@ -1591,7 +1591,17 @@ local i
 local indexes = {{}}
 
 if new_version-1 ~= expected_version then
-    redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    local reverted = redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    -- HINCRBY creates the key before the version can be checked, so a
+    -- caller holding a stale version for a key that has since gone leaves
+    -- behind a hash with nothing in it but a zeroed version. It has no
+    -- data, no expiry and never gains either, yet it still matches the
+    -- index prefix, so it sits in the index as an empty document and
+    -- crowds every search that reads it. Only ever removes a key this
+    -- call brought into existence: a real record always carries data.
+    if reverted == 0 and redis.call('HEXISTS', key, '{DATA_FIELD_NAME}') == 0 then
+        redis.call('DEL', key)
+    end
     return {{ 0, new_version-1 }}
 end
 -- Skip first 3 argvs, as they are known inputs.
