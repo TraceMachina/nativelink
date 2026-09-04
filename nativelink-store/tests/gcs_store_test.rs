@@ -24,7 +24,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::gcs_client::client::GcsOperations;
 use nativelink_store::gcs_client::mocks::{FailureMode, MockGcsOperations, MockRequest};
-use nativelink_store::gcs_client::types::{DEFAULT_CONTENT_TYPE, ObjectPath};
+use nativelink_store::gcs_client::types::{DEFAULT_CONTENT_TYPE, MIN_MULTIPART_SIZE, ObjectPath};
 use nativelink_store::gcs_store::GcsStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
@@ -686,6 +686,315 @@ async fn large_file_update_test() -> Result<(), Error> {
     Ok(())
 }
 
+/// Drives `update()` with `upload_size`, sending `data` in `chunk_size` pieces
+/// so the store cannot infer the total length from the first chunk.
+async fn run_update_in_chunks(
+    store: Arc<GcsStore<MockGcsOperations, fn() -> MockInstantWrapped>>,
+    declared_size: u64,
+    data: Bytes,
+    chunk_size: usize,
+    upload_size: UploadSizeInfo,
+) -> Result<u64, Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, declared_size)?;
+    let store_key: StoreKey = to_store_key(digest);
+    let (mut tx, rx) = make_buf_channel_pair();
+
+    let update_fut = nativelink_util::spawn!("update_task", async move {
+        store.update(store_key, rx, upload_size).await
+    });
+
+    for start in (0..data.len()).step_by(chunk_size) {
+        let end = core::cmp::min(start + chunk_size, data.len());
+        tx.send(data.slice(start..end)).await?;
+    }
+    tx.send_eof()?;
+    update_fut.await?
+}
+
+#[nativelink_test]
+async fn max_size_small_upload_uses_resumable_by_default() -> Result<(), Error> {
+    const MAX_SIZE: usize = 300;
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store(mock_ops.clone()).await?;
+
+    let written = run_update_in_chunks(
+        store.clone(),
+        MAX_SIZE as u64,
+        Bytes::from(vec![0x5a; MAX_SIZE]),
+        1,
+        UploadSizeInfo::MaxSize(MAX_SIZE as u64),
+    )
+    .await?;
+    assert_eq!(
+        written, MAX_SIZE as u64,
+        "Expected the full blob to be written"
+    );
+
+    let counts = mock_ops.get_call_counts();
+    assert_eq!(
+        counts.write_calls.load(Ordering::Relaxed),
+        0,
+        "Unset threshold must never take the simple upload path for MaxSize"
+    );
+    assert_eq!(
+        counts.start_resumable_calls.load(Ordering::Relaxed),
+        1,
+        "Expected one resumable session start"
+    );
+    assert_eq!(
+        counts.upload_chunk_calls.load(Ordering::Relaxed),
+        1,
+        "Expected one chunk upload"
+    );
+    assert_eq!(
+        counts.object_exists_calls.load(Ordering::Relaxed),
+        1,
+        "Expected one post-upload verification"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn max_size_small_upload_below_threshold_uses_single_write() -> Result<(), Error> {
+    const MAX_SIZE: usize = 300;
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store =
+        create_test_store_with_simple_upload_threshold(mock_ops.clone(), MIN_MULTIPART_SIZE)
+            .await?;
+    let data = Bytes::from(vec![0x5a; MAX_SIZE]);
+
+    let written = run_update_in_chunks(
+        store.clone(),
+        MAX_SIZE as u64,
+        data.clone(),
+        1,
+        UploadSizeInfo::MaxSize(MAX_SIZE as u64),
+    )
+    .await?;
+    assert_eq!(
+        written, MAX_SIZE as u64,
+        "Expected the full blob to be written"
+    );
+
+    let counts = mock_ops.get_call_counts();
+    assert_eq!(
+        counts.write_calls.load(Ordering::Relaxed),
+        1,
+        "Expected exactly one simple upload"
+    );
+    assert_eq!(
+        counts.start_resumable_calls.load(Ordering::Relaxed),
+        0,
+        "Expected no resumable session"
+    );
+    assert_eq!(
+        counts.upload_chunk_calls.load(Ordering::Relaxed),
+        0,
+        "Expected no chunk uploads"
+    );
+    assert_eq!(
+        counts.object_exists_calls.load(Ordering::Relaxed),
+        0,
+        "Expected no post-upload verification"
+    );
+
+    let requests = mock_ops.get_requests().await;
+    assert_eq!(requests.len(), 1, "Expected exactly one GCS request");
+    assert!(
+        matches!(&requests[0], MockRequest::Write { content_len, .. } if *content_len == MAX_SIZE),
+        "Expected a Write request carrying the whole blob, got {:?}",
+        requests[0]
+    );
+
+    let digest = DigestInfo::try_new(VALID_HASH1, MAX_SIZE as u64)?;
+    let stored = store
+        .get_part_unchunked(to_store_key(digest), 0, None)
+        .await?;
+    assert_eq!(stored, data, "Stored content must match the uploaded bytes");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn max_size_shorter_stream_writes_actual_length() -> Result<(), Error> {
+    const MAX_SIZE: usize = 300;
+    const ACTUAL_SIZE: usize = 200;
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store =
+        create_test_store_with_simple_upload_threshold(mock_ops.clone(), MIN_MULTIPART_SIZE)
+            .await?;
+
+    let written = run_update_in_chunks(
+        store.clone(),
+        MAX_SIZE as u64,
+        Bytes::from(vec![0x5a; ACTUAL_SIZE]),
+        1,
+        UploadSizeInfo::MaxSize(MAX_SIZE as u64),
+    )
+    .await?;
+    assert_eq!(
+        written, ACTUAL_SIZE as u64,
+        "Expected the actual stream length, not the declared bound"
+    );
+
+    let requests = mock_ops.get_requests().await;
+    assert_eq!(requests.len(), 1, "Expected exactly one GCS request");
+    assert!(
+        matches!(&requests[0], MockRequest::Write { content_len, .. } if *content_len == ACTUAL_SIZE),
+        "Expected a Write request of the actual length, got {:?}",
+        requests[0]
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn max_size_stream_exceeding_declared_bound_errors_before_any_request() -> Result<(), Error> {
+    const MAX_SIZE: usize = 300;
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store =
+        create_test_store_with_simple_upload_threshold(mock_ops.clone(), MIN_MULTIPART_SIZE)
+            .await?;
+
+    let result = run_update_in_chunks(
+        store.clone(),
+        MAX_SIZE as u64,
+        Bytes::from(vec![0x5a; MAX_SIZE + 1]),
+        1,
+        UploadSizeInfo::MaxSize(MAX_SIZE as u64),
+    )
+    .await;
+
+    let err = result.expect_err("Expected an oversized stream to be rejected");
+    assert_eq!(err.code, Code::InvalidArgument, "Expected InvalidArgument");
+    assert!(
+        err.to_string()
+            .contains("exceeded its declared maximum size"),
+        "Unexpected error message: {err}"
+    );
+
+    let requests = mock_ops.get_requests().await;
+    assert_eq!(
+        requests.len(),
+        0,
+        "No GCS request may be issued for a stream that violates its bound"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn max_size_at_threshold_uses_resumable() -> Result<(), Error> {
+    const THRESHOLD: usize = 1024;
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store =
+        create_test_store_with_simple_upload_threshold(mock_ops.clone(), THRESHOLD as u64).await?;
+
+    let written = run_update_in_chunks(
+        store.clone(),
+        THRESHOLD as u64,
+        Bytes::from(vec![0x5a; THRESHOLD]),
+        64,
+        UploadSizeInfo::MaxSize(THRESHOLD as u64),
+    )
+    .await?;
+    assert_eq!(
+        written, THRESHOLD as u64,
+        "Expected the full blob to be written"
+    );
+
+    let counts = mock_ops.get_call_counts();
+    assert_eq!(
+        counts.write_calls.load(Ordering::Relaxed),
+        0,
+        "A bound equal to the threshold must not take the simple path"
+    );
+    assert_eq!(
+        counts.start_resumable_calls.load(Ordering::Relaxed),
+        1,
+        "Expected one resumable session start"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn max_size_large_upload_still_uses_resumable() -> Result<(), Error> {
+    const MAX_SIZE: usize = 6 * 1024 * 1024;
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store =
+        create_test_store_with_simple_upload_threshold(mock_ops.clone(), MIN_MULTIPART_SIZE)
+            .await?;
+
+    let written = run_update_in_chunks(
+        store.clone(),
+        MAX_SIZE as u64,
+        Bytes::from(vec![0x5a; MAX_SIZE]),
+        64 * 1024,
+        UploadSizeInfo::MaxSize(MAX_SIZE as u64),
+    )
+    .await?;
+    assert_eq!(
+        written, MAX_SIZE as u64,
+        "Expected the full blob to be written"
+    );
+
+    let counts = mock_ops.get_call_counts();
+    assert_eq!(
+        counts.write_calls.load(Ordering::Relaxed),
+        0,
+        "Expected no simple upload above the threshold"
+    );
+    assert_eq!(
+        counts.start_resumable_calls.load(Ordering::Relaxed),
+        1,
+        "Expected one resumable session start"
+    );
+    assert!(
+        counts.upload_chunk_calls.load(Ordering::Relaxed) >= 3,
+        "Expected several chunk uploads for a 6MiB blob"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn simple_upload_threshold_is_clamped_to_min_multipart_size() -> Result<(), Error> {
+    const MAX_SIZE: usize = 6 * 1024 * 1024;
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store =
+        create_test_store_with_simple_upload_threshold(mock_ops.clone(), 2 * MIN_MULTIPART_SIZE)
+            .await?;
+
+    let written = run_update_in_chunks(
+        store.clone(),
+        MAX_SIZE as u64,
+        Bytes::from(vec![0x5a; MAX_SIZE]),
+        64 * 1024,
+        UploadSizeInfo::MaxSize(MAX_SIZE as u64),
+    )
+    .await?;
+    assert_eq!(
+        written, MAX_SIZE as u64,
+        "Expected the full blob to be written"
+    );
+
+    let counts = mock_ops.get_call_counts();
+    assert_eq!(
+        counts.write_calls.load(Ordering::Relaxed),
+        0,
+        "A threshold above 5MB must not buffer a 6MiB blob into one request"
+    );
+    assert_eq!(
+        counts.start_resumable_calls.load(Ordering::Relaxed),
+        1,
+        "Expected one resumable session start"
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 async fn test_content_type() -> Result<(), Error> {
     // Create mock GCS operations
@@ -774,6 +1083,26 @@ async fn create_test_store(
     GcsStore::new_with_ops(
         &ExperimentalGcsSpec {
             bucket: BUCKET_NAME.to_string(),
+            common: CommonObjectSpec {
+                key_prefix: Some(KEY_PREFIX.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ops,
+        MockInstantWrapped::default,
+    )
+}
+
+// Helper function to create a test GCS store with a simple upload threshold
+async fn create_test_store_with_simple_upload_threshold(
+    ops: Arc<MockGcsOperations>,
+    simple_upload_threshold: u64,
+) -> Result<Arc<GcsStore<MockGcsOperations, fn() -> MockInstantWrapped>>, Error> {
+    GcsStore::new_with_ops(
+        &ExperimentalGcsSpec {
+            bucket: BUCKET_NAME.to_string(),
+            simple_upload_threshold: Some(simple_upload_threshold),
             common: CommonObjectSpec {
                 key_prefix: Some(KEY_PREFIX.to_string()),
                 ..Default::default()
