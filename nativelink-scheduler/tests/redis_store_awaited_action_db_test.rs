@@ -588,3 +588,84 @@ async fn add_action_attaches_ttl_to_cid_mapping() -> Result<(), Error> {
 
     Ok(())
 }
+
+/// A caller holding a version for a record that has since gone must not
+/// bring it back as an empty shell.
+///
+/// The versioned update increments before it can compare, so the increment
+/// itself creates the key. On a mismatch the increment is undone, but the
+/// key stays: a hash with nothing in it but a zeroed version, no data and
+/// no expiry. It still matches the index prefix, so it sits in the index
+/// as an empty document and crowds every search that reads it. Records
+/// expire on completion, so any straggler holding a version hits exactly
+/// this path.
+///
+/// This pins the contract at this layer. It does not exercise the Lua,
+/// which the fake backend emulates rather than runs, and which already
+/// declined to insert here - the behaviour being fixed is only observable
+/// against a real redis.
+#[nativelink_test]
+async fn an_update_against_a_vanished_record_leaves_nothing_behind() -> Result<(), Error> {
+    const OPERATION_ID: &str = "vanished_operation_id";
+
+    let worker_operation_id = Arc::new(Mutex::new(OPERATION_ID));
+    let worker_operation_id_clone = worker_operation_id.clone();
+
+    let fake_redis_backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    let fake_redis_port = fake_redis_backend.clone().run().await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{fake_redis_port}")],
+        experimental_pub_sub_channel: Some("sub_channel".into()),
+        ..Default::default()
+    };
+    let store = RedisStore::new_standard(spec).await.expect("Working spec");
+    let notifier = Arc::new(Notify::new());
+    let awaited_action_db = StoreAwaitedActionDb::new(
+        store.clone(),
+        notifier.clone(),
+        MockInstantWrapped::default,
+        move || worker_operation_id_clone.lock().clone().into(),
+        60,
+        60,
+    )
+    .await
+    .unwrap();
+
+    // Land it once so the stored version moves off zero, then read it back
+    // so the handle carries that version.
+    let mut awaited_action = make_awaited_action(OPERATION_ID);
+    awaited_action_db
+        .update_awaited_action(awaited_action.clone())
+        .await
+        .unwrap();
+    awaited_action = awaited_action_db
+        .get_by_operation_id(&OPERATION_ID.into())
+        .await
+        .unwrap()
+        .expect("just written")
+        .borrow()
+        .await
+        .unwrap();
+    // The record completes and its retention expires.
+    let key = format!("aa_{OPERATION_ID}");
+    fake_redis_backend.table.lock().unwrap().remove(&key);
+
+    // A straggler updates with the version it was holding.
+    let update_res = awaited_action_db
+        .update_awaited_action(awaited_action)
+        .await;
+    // Refusal is also what proves the handle carried a non-zero version: a
+    // zero-version update against a missing key is a create, and succeeds.
+    assert!(
+        update_res.is_err(),
+        "the update must still be refused: {update_res:?}"
+    );
+
+    assert!(
+        !fake_redis_backend.table.lock().unwrap().contains_key(&key),
+        "a refused update recreated {key} as an empty shell; it has no data and \
+         no expiry, and the index will carry it forever"
+    );
+
+    Ok(())
+}
