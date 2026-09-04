@@ -1264,6 +1264,27 @@ pub struct ExperimentalGcsSpec {
     )]
     pub resumable_chunk_size: Option<usize>,
 
+    /// Uploads with an unknown exact size use a single-request upload when
+    /// their declared upper bound is strictly below this threshold. The store
+    /// buffers the stream through EOF and uploads its actual length. A stream
+    /// exceeding its declared bound is rejected before an upload request.
+    ///
+    /// The effective threshold is capped at 5 MiB (5,242,880 bytes). A bound
+    /// equal to the threshold still uses a resumable upload. Exact-size
+    /// uploads retain their existing behavior regardless of this setting.
+    ///
+    /// This threshold applies to the declared bound, not the final object
+    /// size. Compression can produce a bound larger than the stored object.
+    /// Buffering occurs before acquiring a connection permit; this setting
+    /// does not bound aggregate upload memory or account for request copies.
+    ///
+    /// Default: unset. Unset or zero leaves unknown-size uploads resumable.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub simple_upload_threshold: Option<u64>,
+
     /// Common retry and upload configuration
     #[serde(flatten)]
     pub common: CommonObjectSpec,
