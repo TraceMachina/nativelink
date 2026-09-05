@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::fmt::{Debug, Formatter};
+use core::cmp;
+use core::fmt::{Debug, Display, Formatter};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -104,6 +105,25 @@ enum PathType {
     Custom(OsString),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Generation(u64);
+
+impl Generation {
+    pub const fn new(generation: u64) -> Self {
+        Self(generation)
+    }
+
+    pub const fn inner(&self) -> u64 {
+        self.0
+    }
+}
+
+impl Display for Generation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 /// [`EncodedFilePath`] stores the path to the file
 /// including the context, path type and key to the file.
 /// The whole [`StoreKey`] is stored as opposed to solely
@@ -114,12 +134,18 @@ pub struct EncodedFilePath {
     shared_context: Arc<SharedContext>,
     path_type: PathType,
     key: StoreKey<'static>,
+    generation: Generation,
 }
 
 impl EncodedFilePath {
     #[inline]
     fn get_file_path(&self) -> Cow<'_, OsStr> {
-        get_file_path_raw(&self.path_type, self.shared_context.as_ref(), &self.key)
+        get_file_path_raw(
+            &self.path_type,
+            self.shared_context.as_ref(),
+            &self.key,
+            self.generation,
+        )
     }
 }
 
@@ -128,13 +154,14 @@ fn get_file_path_raw<'a>(
     path_type: &'a PathType,
     shared_context: &SharedContext,
     key: &StoreKey<'a>,
+    generation: Generation,
 ) -> Cow<'a, OsStr> {
     let folder = match path_type {
         PathType::Content => &shared_context.content_path,
         PathType::Temp => &shared_context.temp_path,
         PathType::Custom(path) => return Cow::Borrowed(path),
     };
-    Cow::Owned(to_full_path_from_key(folder, key))
+    Cow::Owned(to_full_path_from_key(folder, key, generation))
 }
 
 impl Drop for EncodedFilePath {
@@ -193,10 +220,12 @@ impl Drop for EncodedFilePath {
 /// Previously, only the string representation of the [`DigestInfo`] was
 /// used with no prefix
 #[inline]
-fn to_full_path_from_key(folder: &str, key: &StoreKey<'_>) -> OsString {
+fn to_full_path_from_key(folder: &str, key: &StoreKey<'_>, generation: Generation) -> OsString {
     match key {
-        StoreKey::Str(str) => format!("{folder}/{STR_FOLDER}/{str}"),
-        StoreKey::Digest(digest_info) => format!("{folder}/{DIGEST_FOLDER}/{digest_info}"),
+        StoreKey::Str(str) => format!("{folder}/{STR_FOLDER}/{str}-{generation}"),
+        StoreKey::Digest(digest_info) => {
+            format!("{folder}/{DIGEST_FOLDER}/{digest_info}-{generation}")
+        }
     }
     .into()
 }
@@ -677,7 +706,11 @@ impl LenEntry for FileEntryImpl {
         let from_path = encoded_file_path.get_file_path();
         let new_key = make_temp_key(&encoded_file_path.key);
 
-        let to_path = to_full_path_from_key(&encoded_file_path.shared_context.temp_path, &new_key);
+        let to_path = to_full_path_from_key(
+            &encoded_file_path.shared_context.temp_path,
+            &new_key,
+            encoded_file_path.generation,
+        );
 
         if let Err(err) = fs::rename(&from_path, &to_path).await {
             // ENOENT from rename is ambiguous: the source may be gone, or
@@ -736,11 +769,19 @@ fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
     DigestInfo::try_new(hash, size)
 }
 
-pub fn key_from_file(file_name: &str, file_type: FileType) -> Result<StoreKey<'_>, Error> {
-    match file_type {
-        FileType::String => Ok(StoreKey::new_str(file_name)),
-        FileType::Digest => digest_from_filename(file_name).map(StoreKey::Digest),
-    }
+pub fn key_and_generation_from_file(
+    file_name: &str,
+    file_type: FileType,
+) -> Result<(StoreKey<'_>, Generation), Error> {
+    let (key, generation) = file_name.rsplit_once('-').err_tip(|| "")?;
+    let generation = Generation::new(generation.parse::<u64>()?);
+
+    let key = match file_type {
+        FileType::String => StoreKey::new_str(key),
+        FileType::Digest => digest_from_filename(key).map(StoreKey::Digest)?,
+    };
+
+    Ok((key, generation))
 }
 
 /// The number of files to read the metadata for at the same time when running
@@ -756,7 +797,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     shared_context: &Arc<SharedContext>,
     block_size: u64,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
-) -> Result<(), Error> {
+) -> Result<Generation, Error> {
     #[expect(clippy::too_many_arguments)]
     async fn process_entry<Fe: FileEntry>(
         evicting_map: &FsEvictingMap<'_, Fe>,
@@ -767,8 +808,8 @@ async fn add_files_to_cache<Fe: FileEntry>(
         block_size: u64,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
-    ) -> Result<(), Error> {
-        let key = key_from_file(file_name, file_type)?;
+    ) -> Result<Generation, Error> {
+        let (key, generation) = key_and_generation_from_file(file_name, file_type)?;
 
         let file_entry = Fe::create(
             data_size,
@@ -777,6 +818,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 shared_context: shared_context.clone(),
                 path_type: PathType::Content,
                 key: key.borrow().into_owned(),
+                generation,
             }),
         );
         let time_since_anchor = if let Ok(d) = anchor_time.duration_since(atime) {
@@ -797,7 +839,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 i32::try_from(time_since_anchor.as_secs()).unwrap_or(i32::MAX),
             )
             .await;
-        Ok(())
+        Ok(generation)
     }
 
     async fn read_files(
@@ -877,13 +919,38 @@ async fn add_files_to_cache<Fe: FileEntry>(
         Ok(())
     }
 
+    async fn move_old_cache_2(
+        shared_context: &Arc<SharedContext>,
+        rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    ) -> Result<(), Error> {
+        let file_infos = read_files(Some(DIGEST_FOLDER), shared_context).await?;
+        let folder_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
+
+        for (file_name, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
+            if file_name.matches('-').count() != 1 {
+                continue;
+            }
+
+            let from_file: OsString = format!("{folder_path}/{file_name}").into();
+            let to_file: OsString = format!("{folder_path}/{file_name}-0").into();
+
+            if let Err(err) = rename_fn(&from_file, &to_file) {
+                warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
+            } else {
+                debug!(?from_file, ?to_file, "Renamed file (old cache)",);
+            }
+        }
+
+        Ok(())
+    }
+
     async fn add_files_to_cache<Fe: FileEntry>(
         evicting_map: &FsEvictingMap<'_, Fe>,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
         block_size: u64,
         folder: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<Generation, Error> {
         let file_infos = read_files(Some(folder), shared_context).await?;
         let file_type = match folder {
             STR_FOLDER => FileType::String,
@@ -892,6 +959,8 @@ async fn add_files_to_cache<Fe: FileEntry>(
         };
 
         let path_root = format!("{}/{folder}", shared_context.content_path);
+
+        let mut max_generation = 0;
 
         for (file_name, atime, data_size, _) in file_infos.into_iter().filter(|x| x.3) {
             let result = process_entry(
@@ -905,18 +974,26 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 shared_context,
             )
             .await;
-            if let Err(err) = result {
-                warn!(?file_name, ?err, "Failed to add file to eviction cache",);
-                // Ignore result.
-                drop(fs::remove_file(format!("{path_root}/{file_name}")).await);
+
+            match result {
+                Ok(generation) => {
+                    max_generation = cmp::max(max_generation, generation.inner());
+                }
+                Err(err) => {
+                    warn!(?file_name, ?err, "Failed to add file to eviction cache",);
+                    // Ignore result.
+                    drop(fs::remove_file(format!("{path_root}/{file_name}")).await);
+                }
             }
         }
-        Ok(())
+        Ok(Generation::new(max_generation))
     }
 
     move_old_cache(shared_context, rename_fn).await?;
 
-    add_files_to_cache(
+    move_old_cache_2(shared_context, rename_fn).await?;
+
+    let max_digest_generation = add_files_to_cache(
         evicting_map,
         anchor_time,
         shared_context,
@@ -925,7 +1002,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
     )
     .await?;
 
-    add_files_to_cache(
+    let max_str_generation = add_files_to_cache(
         evicting_map,
         anchor_time,
         shared_context,
@@ -933,7 +1010,10 @@ async fn add_files_to_cache<Fe: FileEntry>(
         STR_FOLDER,
     )
     .await?;
-    Ok(())
+
+    Ok(Generation::new(
+        cmp::max(max_digest_generation.inner(), max_str_generation.inner()) + 1,
+    ))
 }
 
 async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
@@ -1119,6 +1199,8 @@ pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     /// Limits concurrent write operations to prevent disk I/O saturation.
     write_semaphore: Option<Semaphore>,
+    /// A monotonic counter by which we stamp newly added files.
+    next_generation: AtomicU64,
     /// See [`FlushCoalescer`]: amortizes the per-blob `F_FULLFSYNC` cost
     /// across concurrent uploads without weakening durability. `None` when
     /// the sentinel could not be created (e.g. read-only content volume);
@@ -1209,7 +1291,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         } else {
             spec.block_size
         };
-        add_files_to_cache(
+        let next_generation = add_files_to_cache(
             evicting_map.as_ref(),
             &now,
             &shared_context,
@@ -1251,6 +1333,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             evict_page_cache: spec.evict_page_cache,
             weak_self: weak_self.clone(),
             rename_fn,
+            next_generation: AtomicU64::new(next_generation.inner()),
             write_semaphore,
             #[cfg(target_os = "macos")]
             flush_coalescer,
@@ -1277,6 +1360,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.evicting_map
             .release_keys(digests.iter().map(|digest| StoreKey::Digest(*digest)))
             .await;
+    }
+
+    fn get_and_update_generation(&self) -> Generation {
+        Generation::new(self.next_generation.fetch_add(1, Ordering::Relaxed))
     }
 
     /// Path of the read-only executable (0o555) variant for `digest`.
@@ -1664,6 +1751,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 &PathType::Content,
                 encoded_file_path.shared_context.as_ref(),
                 &key,
+                encoded_file_path.generation,
             );
 
             let from_path = encoded_file_path.get_file_path();
@@ -1811,6 +1899,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Temp,
                 key: temp_key,
+                generation: self.get_and_update_generation(),
             },
         )
         .await
@@ -1971,6 +2060,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Custom(path),
                 key: key.borrow().into_owned(),
+                generation: self.get_and_update_generation(),
             }),
         );
         // We are done with the file, if we hold a reference to the file here, it could
