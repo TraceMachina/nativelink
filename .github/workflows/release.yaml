@@ -63,12 +63,18 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             attr: nativelink-x86_64-linux
+            # The runner shares this target's architecture, so the packaged
+            # binary can be executed to prove it actually starts.
+            smoke_test: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04
             attr: nativelink-aarch64-linux
+            # Cross-built from x86_64, so the runner cannot execute it.
+            smoke_test: false
           - target: aarch64-apple-darwin
             os: macos-26
             attr: nativelink-aarch64-darwin
+            smoke_test: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -124,6 +130,38 @@ jobs:
 
           sha256 "${ASSET}.tar.gz" | tee "${ASSET}.tar.gz.sha256"
           echo "asset=${ASSET}" >> "${GITHUB_OUTPUT}"
+
+      # The v1.6.6 macOS tarball shipped with an absolute /nix/store install
+      # name for libiconv and could not launch on any machine but the builder
+      # (#2727). The Nix build now fails on a leftover store reference, and
+      # this re-checks the packaged tarball so a regression cannot reach a
+      # published release unnoticed.
+      - name: Smoke test packaged binary
+        if: matrix.smoke_test
+        run: |
+          set -euo pipefail
+          ASSET="${{ steps.package.outputs.asset }}"
+          CHECK="$(mktemp -d)"
+          tar -C "${CHECK}" -xzf "${ASSET}.tar.gz"
+
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            otool -L "${CHECK}/nativelink"
+            if otool -L "${CHECK}/nativelink" | tail -n +2 | grep '/nix/store'; then
+              echo "::error::Packaged macOS binary links against /nix/store paths that do not exist on user machines."
+              exit 1
+            fi
+            codesign --verify --verbose "${CHECK}/nativelink"
+          fi
+
+          # nativelink exits non-zero with a usage message when handed no
+          # config file. Reaching that message proves dyld loaded the binary
+          # and it ran, which is all this check needs to establish.
+          output="$("${CHECK}/nativelink" 2>&1 || true)"
+          echo "${output}"
+          if ! echo "${output}" | grep -q 'Usage: nativelink'; then
+            echo "::error::Packaged binary for ${{ matrix.target }} did not start."
+            exit 1
+          fi
 
       - name: Generate SBOM
         uses: >- # v0.24.0
