@@ -1281,6 +1281,14 @@ pub struct ExperimentalGcsSpec {
     /// Default: 3000
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub read_timeout_s: u64,
+
+    /// Maximum time in seconds a request waits for one of the
+    /// `multipart_max_concurrent_uploads` connection permits before it fails
+    /// with `FailedPrecondition`. A value of `0` waits until a permit is free.
+    ///
+    /// Default: 0 (unbounded)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub permit_wait_timeout_s: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
