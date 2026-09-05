@@ -248,11 +248,7 @@ impl ApiWorkerSchedulerImpl {
     }
 
     /// Sets if the worker is draining or not.
-    async fn set_drain_worker(
-        &mut self,
-        worker_id: &WorkerId,
-        is_draining: bool,
-    ) -> Result<(), Error> {
+    fn set_drain_worker(&mut self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
         let worker = self
             .workers
             .get_mut(worker_id)
@@ -310,11 +306,7 @@ impl ApiWorkerSchedulerImpl {
             }
 
             // Verify Minimum properties at runtime (their values are dynamic)
-            if !platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging) {
-                return false;
-            }
-
-            true
+            platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging)
         };
 
         // Now check constraints on filtered candidates.
@@ -415,7 +407,7 @@ impl ApiWorkerSchedulerImpl {
         let complete_action_res = {
             // Note: We need to run this before dealing with backpressure logic.
             let was_paused = worker.is_paused;
-            let complete_action_res = worker.complete_action(operation_id).await;
+            let complete_action_res = worker.complete_action(operation_id);
 
             if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
                 worker.is_paused = true;
@@ -1004,7 +996,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
-        inner.set_drain_worker(worker_id, is_draining).await
+        inner.set_drain_worker(worker_id, is_draining)
     }
 
     async fn kill_revoked_operations(&self) -> Result<(), Error> {

@@ -1069,7 +1069,7 @@ async fn replacing_entry_keeps_filter_index_consistent() -> Result<(), Error> {
     let first_value = BytesWrapper(Bytes::from_static(b"first"));
     let second_value = BytesWrapper(Bytes::from_static(b"second"));
 
-    evicting_map.enable_filtering().await;
+    evicting_map.enable_filtering();
     evicting_map.insert(key, first_value).await;
     evicting_map.insert(key, second_value.clone()).await;
 

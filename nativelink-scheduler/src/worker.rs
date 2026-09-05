@@ -139,8 +139,8 @@ fn reduce_platform_properties(
     for (property, prop_value) in &reduction_props.properties {
         if let PlatformPropertyValue::Minimum(value) = prop_value {
             let worker_props = &mut parent_props.properties;
-            if let &mut PlatformPropertyValue::Minimum(worker_value) =
-                &mut worker_props.get_mut(property).unwrap()
+            if let PlatformPropertyValue::Minimum(worker_value) =
+                worker_props.get_mut(property).unwrap()
             {
                 *worker_value -= value;
             }
@@ -294,10 +294,7 @@ impl Worker {
         }
     }
 
-    pub(crate) async fn complete_action(
-        &mut self,
-        operation_id: &OperationId,
-    ) -> Result<(), Error> {
+    pub(crate) fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
         let pending_action_info = self.running_action_infos.remove(operation_id).err_tip(|| {
             format!(
                 "Worker {} tried to complete operation {} that was not running",

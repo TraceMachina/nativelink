@@ -135,6 +135,8 @@ Brex
 Citrix
 CIQ
 Menlo
+Staite
+[Cc]ybersecurity
 benchmarked
 [Bb]orderless
 CTAs

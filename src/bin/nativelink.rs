@@ -440,8 +440,7 @@ async fn inner_main(
                                     .get(&instance_name)
                                     .err_tip(|| {
                                         format!(
-                                            "Can not get an instance with the name of '{}'",
-                                            &instance_name
+                                            "Can not get an instance with the name of '{instance_name}'",
                                         )
                                     })?
                                     .clone()

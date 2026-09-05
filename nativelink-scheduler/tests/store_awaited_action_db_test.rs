@@ -89,19 +89,20 @@ impl SchedulerStore for FakeSchedulerStore {
         Ok(Some(1))
     }
 
-    async fn search_by_index_prefix<K>(
+    fn search_by_index_prefix<K>(
         &self,
         _index: K,
-    ) -> Result<
-        impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
-        Error,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
     >
     where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
         <K as SchedulerStoreDecodeTo>::DecodeOutput: Send,
     {
-        // todo!();
-        Ok(stream::empty())
+        std::future::ready(Ok(stream::empty()))
     }
 
     async fn get_and_decode<K>(
@@ -228,30 +229,34 @@ impl EventuallyVisibleStore {
 impl SchedulerStore for EventuallyVisibleStore {
     type SubscriptionManager = PendingSubscriptionManager;
 
-    async fn subscription_manager(&self) -> Result<Arc<Self::SubscriptionManager>, Error> {
-        Ok(Arc::new(PendingSubscriptionManager))
+    fn subscription_manager(
+        &self,
+    ) -> impl Future<Output = Result<Arc<Self::SubscriptionManager>, Error>> {
+        std::future::ready(Ok(Arc::new(PendingSubscriptionManager)))
     }
 
-    async fn update_data<T>(
+    fn update_data<T>(
         &self,
         _data: T,
         _expiry: Option<Duration>,
-    ) -> Result<Option<i64>, Error>
+    ) -> impl Future<Output = Result<Option<i64>, Error>>
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
             + SchedulerCurrentVersionProvider
             + Send,
     {
-        Ok(Some(1))
+        std::future::ready(Ok(Some(1)))
     }
 
-    async fn search_by_index_prefix<K>(
+    fn search_by_index_prefix<K>(
         &self,
         _index: K,
-    ) -> Result<
-        impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
-        Error,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
     >
     where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
@@ -264,7 +269,7 @@ impl SchedulerStore for EventuallyVisibleStore {
             } else {
                 vec![K::decode(1, self.encoded_action.clone())]
             };
-        Ok(stream::iter(items))
+        std::future::ready(Ok(stream::iter(items)))
     }
 
     async fn get_and_decode<K>(
@@ -291,7 +296,7 @@ async fn build_db(
     }
     let now_fn: fn() -> MockInstantWrapped = MockInstantWrapped::default;
     let op_id_fn: fn() -> OperationId = new_op_id;
-    StoreAwaitedActionDb::new(store, Arc::new(Notify::new()), now_fn, op_id_fn, 60)
+    StoreAwaitedActionDb::new(store, Arc::new(Notify::new()), now_fn, op_id_fn, 60, 60)
         .await
         .expect("construct test db")
 }
