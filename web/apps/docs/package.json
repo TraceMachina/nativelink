@@ -4,13 +4,13 @@
   "dependencies": {
     "@nativelink/tokens": "workspace:*",
     "@nativelink/ui": "workspace:*",
-    "@next/third-parties": "^16.2.11",
+    "@next/third-parties": "~16.2.11",
     "fumadocs-core": "^16",
     "fumadocs-mdx": "^15",
     "fumadocs-ui": "^16",
     "geist": "^1.5.1",
     "mermaid": "^11.4.1",
-    "next": "^16",
+    "next": "~16.2.11",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
