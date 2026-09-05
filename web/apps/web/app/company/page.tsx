@@ -35,7 +35,10 @@ const contactCards = [
   {
     title: "Media kit",
     body: "Logos, branding guidelines, and approved press resources.",
-    cta: { label: "Download", href: "https://drive.google.com/drive/folders/" },
+    cta: {
+      label: "Download",
+      href: "https://drive.google.com/drive/folders/1fNmr4IpIaaiej6yKr1t0ispbXOaCVVTa?usp=sharing",
+    },
     variant: "outline" as const,
   },
   {
