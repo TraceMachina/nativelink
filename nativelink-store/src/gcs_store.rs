@@ -60,6 +60,10 @@ pub struct GcsStore<Client: GcsOperations, NowFn> {
     max_chunk_size: usize,
     #[metric(help = "The number of concurrent uploads allowed")]
     max_concurrent_uploads: usize,
+    #[metric(
+        help = "Unknown-size uploads with a declared upper bound below this use a simple upload"
+    )]
+    simple_upload_threshold: Option<u64>,
 }
 
 impl<I, NowFn> GcsStore<GcsClient, NowFn>
@@ -122,6 +126,12 @@ where
             max_retry_buffer_size
         };
 
+        // Never treat a bounded unknown-size upload more aggressively than an
+        // exact-size one: both use the simple path only below MIN_MULTIPART_SIZE.
+        let simple_upload_threshold = spec
+            .simple_upload_threshold
+            .map(|threshold| core::cmp::min(threshold, MIN_MULTIPART_SIZE));
+
         Ok(Arc::new(Self {
             client,
             now_fn,
@@ -141,6 +151,7 @@ where
             max_retry_buffer_size,
             max_chunk_size,
             max_concurrent_uploads: max_connections,
+            simple_upload_threshold,
         }))
     }
 
@@ -257,11 +268,32 @@ where
                 .err_tip(|| "Could not convert max_retry_buffer_size to u64")?,
         );
 
-        // For small files with exact size, we'll use simple upload
-        if let UploadSizeInfo::ExactSize(size) = upload_size
-            && size < MIN_MULTIPART_SIZE
-        {
-            let content = reader.consume(Some(usize::try_from(size)?)).await?;
+        // Small uploads take the single-request path: exact sizes below the
+        // multipart floor always, bounded unknown sizes only when opted in.
+        let simple_upload_bound = match upload_size {
+            UploadSizeInfo::ExactSize(size) if size < MIN_MULTIPART_SIZE => Some(size),
+            UploadSizeInfo::MaxSize(max_size)
+                if self
+                    .simple_upload_threshold
+                    .is_some_and(|threshold| max_size < threshold) =>
+            {
+                Some(max_size)
+            }
+            _ => None,
+        };
+        if let Some(bound) = simple_upload_bound {
+            let content = reader.consume(Some(usize::try_from(bound)?)).await?;
+            // A MaxSize stream is only bounded by the caller's declaration, so
+            // refuse one that keeps producing bytes before any request is sent.
+            if matches!(upload_size, UploadSizeInfo::MaxSize(_))
+                && content.len() as u64 == bound
+                && !reader.peek().await?.is_empty()
+            {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Upload stream exceeded its declared maximum size of {bound} bytes"
+                ));
+            }
             let content_len = content.len() as u64;
             let client = &self.client;
 

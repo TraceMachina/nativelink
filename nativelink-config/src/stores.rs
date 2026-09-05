@@ -1264,6 +1264,22 @@ pub struct ExperimentalGcsSpec {
     )]
     pub resumable_chunk_size: Option<usize>,
 
+    /// Uploads whose exact size is unknown but whose declared upper bound is
+    /// below this threshold are buffered in memory and written with one
+    /// single-request upload instead of a resumable session (one `POST` to
+    /// open the session, one `PUT` per chunk and one `GET` to verify).
+    /// Values above 5MB are clamped to 5MB, the same bound that uploads of
+    /// known exact size already use for the single-request path.
+    /// When unset, uploads of unknown exact size always use a resumable
+    /// session, regardless of their declared upper bound.
+    ///
+    /// Default: unset (unknown-size uploads always use a resumable session)
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub simple_upload_threshold: Option<u64>,
+
     /// Common retry and upload configuration
     #[serde(flatten)]
     pub common: CommonObjectSpec,
