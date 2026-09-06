@@ -74,10 +74,11 @@ export function SiteHeader({
         </a>
 
         {/* Desktop nav — absolutely centered so it doesn't depend on the
-            widths of the logo or actions cluster */}
+            widths of the logo or actions cluster. lg (1024) not md: six
+            pills plus Get started collide with the logo below that. */}
         <nav
           aria-label="Primary"
-          className="pointer-events-none absolute left-1/2 hidden -translate-x-1/2 md:block"
+          className="pointer-events-none absolute left-1/2 hidden -translate-x-1/2 lg:block"
         >
           <ul className="pointer-events-auto flex items-center gap-1 rounded-full border border-border/70 bg-surface/60 px-1.5 backdrop-blur">
             {links.map((link) => {
@@ -121,7 +122,7 @@ export function SiteHeader({
 
           <ThemeToggle className="hidden sm:inline-flex" />
 
-          <Button asChild size="sm" variant="primary" className="hidden md:inline-flex">
+          <Button asChild size="sm" variant="primary" className="hidden lg:inline-flex">
             <a
               href={ctaHref}
               target={opensInNewTab(ctaLabel, ctaHref) ? "_blank" : undefined}

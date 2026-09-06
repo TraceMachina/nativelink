@@ -65,7 +65,7 @@ export function MobileNav({
           "relative inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-full",
           "text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60",
-          "md:hidden",
+          "lg:hidden",
         )}
       >
         <span className="relative block h-4 w-5">
@@ -98,7 +98,7 @@ export function MobileNav({
               id="mobile-nav-panel"
               aria-hidden={!open}
               className={cn(
-                "fixed inset-0 z-[100] md:hidden",
+                "fixed inset-0 z-[100] lg:hidden",
                 open ? "pointer-events-auto" : "pointer-events-none",
               )}
             >
