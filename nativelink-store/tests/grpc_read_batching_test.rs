@@ -279,7 +279,7 @@ async fn make_fixture(read_batching: Option<GrpcReadBatchingConfig>) -> Result<T
         experimental_read_batching: read_batching,
         experimental_remote_cache_compression: Some(false),
     };
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
     Ok(TestFixture {
         cas_server,
         bytestream_server,
@@ -543,7 +543,7 @@ async fn duplicate_digest_reads_all_succeed() -> Result<(), Error> {
 // Batched reads share one upstream RPC, so combining them with per-client
 // forwarded headers must be rejected at construction.
 #[nativelink_test]
-async fn forward_headers_with_batching_rejected() -> Result<(), Error> {
+fn forward_headers_with_batching_rejected() -> Result<(), Error> {
     let spec = GrpcSpec {
         instance_name: String::new(),
         endpoints: vec![GrpcEndpoint {
@@ -566,9 +566,7 @@ async fn forward_headers_with_batching_rejected() -> Result<(), Error> {
         experimental_read_batching: Some(batching_config()),
         experimental_remote_cache_compression: Some(false),
     };
-    let err = GrpcStore::new(&spec)
-        .await
-        .expect_err("Expected construction to fail");
+    let err = GrpcStore::new(&spec).expect_err("Expected construction to fail");
     assert_eq!(err.code, Code::InvalidArgument, "Got error: {err:?}");
     Ok(())
 }

@@ -407,7 +407,8 @@ where
         }
     }
 
-    pub async fn enable_filtering(&self) {
+    // Only used for tests
+    pub fn enable_filtering(&self) {
         let mut state = self.state.lock();
         if state.btree.is_none() {
             Self::rebuild_btree_index(&mut state);

@@ -87,7 +87,7 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
         send_fut,
         store.update(digest, rx, UploadSizeInfo::ExactSize(100))
     );
-    assert!(result.is_err(), "Expected error, got: {:?}", &result);
+    assert!(result.is_err(), "Expected error, got: {result:?}");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains(EXPECTED_ERR),
@@ -339,7 +339,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
         send_fut,
         store.update(digest, rx, UploadSizeInfo::ExactSize(4))
     );
-    assert!(result.is_err(), "Expected error, got: {:?}", &result);
+    assert!(result.is_err(), "Expected error, got: {result:?}");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains(EXPECTED_ERR),

@@ -71,7 +71,7 @@ fn test_spec<T: Into<String>>(endpoint: T, use_legacy_resource_names: bool) -> G
 #[nativelink_test]
 async fn fast_find_missing_blobs() -> Result<(), Error> {
     let spec = test_spec("http://foobar", false);
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
     let request = Request::new(FindMissingBlobsRequest {
         instance_name: String::new(),
         blob_digests: vec![],
@@ -234,7 +234,7 @@ async fn write_update_works_core(
         format!("http://localhost:{port}"),
         use_legacy_resource_names,
     );
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
     let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len()).unwrap();
 
     let (mut tx, rx) = make_buf_channel_pair();
@@ -289,7 +289,7 @@ where
         format!("http://localhost:{port}"),
         use_legacy_resource_names,
     ));
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
     let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len()).unwrap();
 
     let (tx, mut rx) = make_buf_channel_pair();
@@ -475,7 +475,7 @@ async fn split_and_splice_blob_forward_to_backend() -> Result<(), Error> {
     let (server, port) = make_fake_cas_server().await;
     let mut spec = test_spec(format!("http://localhost:{port}"), false);
     spec.instance_name = "backend_instance".to_string();
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
 
     let digest = Digest {
         hash: VALID_HASH.to_string(),
@@ -534,7 +534,7 @@ async fn update_splits_buffers_larger_than_the_grpc_message_limit() -> Result<()
     // Keep the RPC deadline comfortably above sanitizer overhead; timeout
     // behavior is not what this test exercises.
     spec.rpc_timeout_s = 5;
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
     let digest = DigestInfo::try_new(VALID_HASH, BLOB_LEN).unwrap();
 
     let payload = vec![0xABu8; BLOB_LEN];
@@ -619,7 +619,7 @@ async fn write_splits_frames_larger_than_the_grpc_message_limit() -> Result<(), 
     // Streaming several MiB through ByteStream is slow under instrumented
     // builds. This deadline is headroom for that, not part of the test.
     spec.rpc_timeout_s = 30;
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
 
     let payload = vec![0xCDu8; BLOB_LEN];
     let resource_name = format!(
@@ -692,7 +692,7 @@ async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<()
     let mut spec = test_spec(format!("http://localhost:{port}"), false);
     spec.instance_name = "backend_instance".to_string();
     spec.rpc_timeout_s = 5;
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
 
     let requests: Vec<batch_update_blobs_request::Request> = (0..ENTRIES)
         .map(|i| batch_update_blobs_request::Request {

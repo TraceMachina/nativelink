@@ -201,7 +201,7 @@ fn make_mixed_content(seed: u64, len: usize) -> (Bytes, DigestInfo) {
 async fn compressed_upload_round_trip() -> Result<(), Box<dyn core::error::Error>> {
     let memory_store = MemoryStore::new(&MemorySpec::default());
     let port = start_real_cas_server(memory_store.clone(), true).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let (content, digest) = make_content(0xA1, 1024 * 1024);
     grpc_store.update_oneshot(digest, content.clone()).await?;
@@ -217,7 +217,7 @@ async fn compressed_upload_round_trip() -> Result<(), Box<dyn core::error::Error
 async fn compressed_download_round_trip() -> Result<(), Box<dyn core::error::Error>> {
     let memory_store = MemoryStore::new(&MemorySpec::default());
     let port = start_real_cas_server(memory_store.clone(), true).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let (content, digest) = make_content(0xB2, 1024 * 1024);
     memory_store.update_oneshot(digest, content.clone()).await?;
@@ -233,7 +233,7 @@ async fn compressed_download_round_trip() -> Result<(), Box<dyn core::error::Err
 async fn small_blob_uses_identity_path() -> Result<(), Box<dyn core::error::Error>> {
     let memory_store = MemoryStore::new(&MemorySpec::default());
     let port = start_real_cas_server(memory_store.clone(), false).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let (content, digest) = make_content(0xC3, 4 * 1024);
     grpc_store.update_oneshot(digest, content.clone()).await?;
@@ -248,7 +248,7 @@ async fn small_blob_uses_identity_path() -> Result<(), Box<dyn core::error::Erro
 async fn ranged_read_uses_identity_path() -> Result<(), Box<dyn core::error::Error>> {
     let memory_store = MemoryStore::new(&MemorySpec::default());
     let compressed_port = start_real_cas_server(memory_store.clone(), true).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(compressed_port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(compressed_port, true))?;
 
     let (content, digest) = make_content(0xD4, 1024 * 1024);
     memory_store.update_oneshot(digest, content.clone()).await?;
@@ -266,7 +266,7 @@ async fn ranged_read_uses_identity_path() -> Result<(), Box<dyn core::error::Err
 async fn upload_to_non_compressed_upstream_fails() -> Result<(), Box<dyn core::error::Error>> {
     let memory_store = MemoryStore::new(&MemorySpec::default());
     let port = start_real_cas_server(memory_store.clone(), false).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let (content, digest) = make_content(0xE5, 1024 * 1024);
     let err = grpc_store
@@ -282,7 +282,7 @@ async fn upload_to_non_compressed_upstream_fails() -> Result<(), Box<dyn core::e
 async fn flag_off_plain_round_trip() -> Result<(), Box<dyn core::error::Error>> {
     let memory_store = MemoryStore::new(&MemorySpec::default());
     let port = start_real_cas_server(memory_store.clone(), false).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, false)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, false))?;
 
     let (content, digest) = make_content(0xF6, 1024 * 1024);
     grpc_store.update_oneshot(digest, content.clone()).await?;
@@ -496,7 +496,7 @@ async fn compressed_upload_mid_stream_failure_fails_fast() -> Result<(), Box<dyn
         delay: 0.01,
         ..Default::default()
     };
-    let grpc_store = GrpcStore::new(&spec).await?;
+    let grpc_store = GrpcStore::new(&spec)?;
 
     let (content, digest) = make_content(0x11, 4 * 1024 * 1024);
     let result = grpc_store.update_oneshot(digest, content).await;
@@ -548,7 +548,7 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
         ..Default::default()
     })
     .await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let result = tokio::time::timeout(
         // This only guards against a cancellation deadlock; the decoder's
@@ -586,7 +586,7 @@ async fn compressed_upload_returns_after_early_completion()
         ..Default::default()
     })
     .await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let (content, digest) = make_content(0x33, 4 * 1024 * 1024);
     let (mut tx, rx) = make_buf_channel_pair();
@@ -632,7 +632,7 @@ async fn compressed_download_failure_before_progress_falls_back_to_identity()
         ..Default::default()
     })
     .await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let fetched = tokio::time::timeout(
         core::time::Duration::from_secs(10),
@@ -691,7 +691,7 @@ async fn corrupt_interrupted_compressed_download_after_progress_is_terminal()
         ..Default::default()
     })
     .await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let result = tokio::time::timeout(
         core::time::Duration::from_secs(10),
@@ -732,7 +732,7 @@ async fn compressed_download_consumer_hangup_does_not_refetch()
         ..Default::default()
     })
     .await?;
-    let grpc_store = GrpcStore::new(&grpc_spec(port, true)).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec(port, true))?;
 
     let (mut writer, reader) = make_buf_channel_pair();
     // Hang up on the read before it can complete.

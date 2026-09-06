@@ -171,6 +171,60 @@
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
         nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
+        # Darwin binaries link against Nix's `libiconv`, which records an
+        # absolute `/nix/store/...` install name. That path only exists on the
+        # machine that built the binary, so the published macOS tarball failed
+        # to launch anywhere else with a dyld "Library not loaded" error.
+        #
+        # Nix's darwin `libiconv` is Apple's own libiconv and exports the same
+        # symbols as the copy macOS keeps in the dyld shared cache, so pointing
+        # the install name at `/usr/lib` is ABI-safe and leaves the binary with
+        # no Nix store references at all.
+        #
+        # See https://github.com/TraceMachina/nativelink/issues/2727.
+        darwinSystemDylibArgs = p: {
+          # `install_name_tool` invalidates the ad-hoc signature that arm64
+          # macOS requires. This hook re-signs during fixup, i.e. after the
+          # `preFixup` rewrite below.
+          nativeBuildInputs =
+            (commonArgsFor p).nativeBuildInputs
+            ++ [p.darwin.autoSignDarwinBinariesHook];
+
+          preFixup = ''
+            for binary in "$out"/bin/*; do
+              [ -f "$binary" ] || continue
+
+              # Skip anything that isn't a Mach-O image, such as wrapper scripts.
+              linkage="$(otool -L "$binary" 2>/dev/null)" || continue
+
+              printf '%s\n' "$linkage" | tail -n +2 | awk '{print $1}' \
+              | while read -r dylib; do
+                case "$dylib" in
+                  /nix/store/*/lib/libiconv*.dylib | /nix/store/*/lib/libcharset*.dylib)
+                    echo "relocating $dylib -> /usr/lib/''${dylib##*/} in $binary"
+                    install_name_tool \
+                      -change "$dylib" "/usr/lib/''${dylib##*/}" "$binary"
+                    ;;
+                esac
+              done
+
+              remaining="$(
+                otool -L "$binary" | tail -n +2 | awk '{print $1}' \
+                | grep '^/nix/store' || true
+              )"
+              if [ -n "$remaining" ]; then
+                echo "error: $binary still links against Nix store libraries:" >&2
+                echo "$remaining" >&2
+                echo "Those paths do not exist on machines without Nix, so the" >&2
+                echo "released binary would fail to launch. Either relocate the" >&2
+                echo "library to its /usr/lib equivalent above, or link it" >&2
+                echo "statically." >&2
+                exit 1
+              fi
+            done
+          '';
+        };
+
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
             // {
@@ -178,7 +232,8 @@
               # If you're testing Nativelink locally, doing a dev profile will
               # massively speedup build times. Just don't commit/push anything build with dev!
               # CARGO_PROFILE = "dev";
-            });
+            }
+            // pkgs.lib.optionalAttrs p.stdenv.targetPlatform.isDarwin (darwinSystemDylibArgs p));
 
         nativeTargetPkgs =
           if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
@@ -264,7 +319,7 @@
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
         buck2-toolchain = let
-          buck2-nightly-rust-version = "2026-03-24";
+          buck2-nightly-rust-version = "2026-08-26";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
           buck2-rust = buck2-nightly-rust.default.override {extensions = ["rust-src"];};
         in
@@ -357,7 +412,7 @@
               '';
               doInstallCargoArtifacts = false;
               pnameSuffix = "-llvm-cov";
-              nativeBuildInputs = [(p.callPackage ./tools/cargo-llvm-cov/package.nix {})];
+              nativeBuildInputs = [p.cargo-llvm-cov];
 
               cargoArtifacts = nightlyCargoArtifactsFor p;
               preConfigurePhases = ["tempHome"];
@@ -480,11 +535,11 @@
         };
         lre = {
           Env = with pkgs.lre;
-            if pkgs.stdenv.isDarwin
+            if pkgs.stdenv.hostPlatform.isDarwin
             then lre-rs.meta.Env # C++ doesn't support Darwin yet.
             else (lre-cc.meta.Env ++ lre-rs.meta.Env);
           prefix =
-            if pkgs.stdenv.isDarwin
+            if pkgs.stdenv.hostPlatform.isDarwin
             then "macos"
             else "linux";
         };
@@ -572,7 +627,7 @@
               pkgs.nativelink-tools.create-multi-arch-image
               pkgs.attic-client
             ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
               pkgs.apple-sdk_14
               pkgs.libiconv
             ];

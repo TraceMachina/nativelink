@@ -39,16 +39,21 @@ where
 {
     type Rejection = (StatusCode, &'static str);
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> {
         let context = global::get_text_map_propagator(|propagator| {
             propagator.extract(&OTELHeaderExtractor(&parts.headers))
         });
-        if let Some(client_headers) = context.get::<ClientHeaders>() {
-            Ok(Self(client_headers.clone()))
-        } else {
-            error!("Missing OTEL headers");
-            Err((StatusCode::BAD_REQUEST, "OTEL headers are missing"))
-        }
+        std::future::ready(
+            if let Some(client_headers) = context.get::<ClientHeaders>() {
+                Ok(Self(client_headers.clone()))
+            } else {
+                error!("Missing OTEL headers");
+                Err((StatusCode::BAD_REQUEST, "OTEL headers are missing"))
+            },
+        )
     }
 }
 

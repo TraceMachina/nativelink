@@ -101,7 +101,7 @@ build --@rules_rust//:extra_rustc_flag=-Wtrivial_casts
 build --@rules_rust//:extra_rustc_flag=-Wtrivial_numeric_casts
 build --@rules_rust//:extra_rustc_flag=-Dunconditional_recursion
 build --@rules_rust//:extra_rustc_flag=-Dunexpected_cfgs
-build --@rules_rust//:extra_rustc_flag=-Dunknown_lints
+build --@rules_rust//:extra_rustc_flag=-Aunknown_lints
 build --@rules_rust//:extra_rustc_flag=-Dunnameable_test_items
 build --@rules_rust//:extra_rustc_flag=-Wunreachable_pub
 build --@rules_rust//:extra_rustc_flag=-Dunsafe_op_in_unsafe_fn
@@ -145,7 +145,7 @@ build --@rules_rust//:clippy_flag=-Dclippy::semicolon_if_nothing_returned
 build --@rules_rust//:clippy_flag=-Dclippy::similar_names
 build --@rules_rust//:clippy_flag=-Dclippy::single_char_pattern
 build --@rules_rust//:clippy_flag=-Dclippy::single_match_else
-build --@rules_rust//:clippy_flag=-Dclippy::std_instead_of_core
+build --@rules_rust//:clippy_flag=-Aclippy::std_instead_of_core
 build --@rules_rust//:clippy_flag=-Dclippy::string_lit_as_bytes
 build --@rules_rust//:clippy_flag=-Dclippy::todo
 build --@rules_rust//:clippy_flag=-Aclippy::too_long_first_doc_paragraph
@@ -175,6 +175,7 @@ build --@rules_rust//:clippy_flag=-Aclippy::significant_drop_tightening
 build --@rules_rust//:clippy_flag=-Aclippy::too_many_lines
 build --@rules_rust//:clippy_flag=-Aclippy::uninhabited_references
 build --@rules_rust//:clippy_flag=-Aclippy::unused_async
+build --@rules_rust//:clippy_flag=-Aclippy::unused_async_trait_impl
 build --@rules_rust//:clippy_flag=-Aclippy::unused_self
 
 ## END CARGO LINTS ##

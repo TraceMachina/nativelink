@@ -16,7 +16,7 @@
         enable = lib.mkOption {
           type = lib.types.bool;
           default =
-            if pkgs.stdenv.isDarwin
+            if pkgs.stdenv.hostPlatform.isDarwin
             then true
             else false;
         };

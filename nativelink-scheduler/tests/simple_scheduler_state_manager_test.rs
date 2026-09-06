@@ -394,3 +394,61 @@ async fn is_executing_on_worker_follows_the_assignment() -> Result<(), Error> {
     );
     Ok(())
 }
+
+/// Counts what the matching engine would be handed.
+async fn queued_count(
+    state_mgr: &SimpleSchedulerStateManager<
+        impl nativelink_scheduler::awaited_action_db::AwaitedActionDb,
+        MockInstantWrapped,
+        fn() -> MockInstantWrapped,
+    >,
+) -> Result<usize, Error> {
+    Ok(MatchingEngineStateManager::filter_operations(
+        state_mgr,
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await
+    .len())
+}
+
+/// A queued action has no worker, so neither the worker-liveness timeout nor
+/// the executing-stage ceiling can retire it. The only thing that does is a
+/// filter pass reaching it, which is the matching engine's job and is exactly
+/// what stops happening when these accumulate. The sweep retires them without
+/// needing the matching engine to get there first.
+#[nativelink_test]
+async fn the_sweep_retires_queued_actions_no_client_is_waiting_on() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+
+    let client_listener = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+
+    // Nothing is retired while the client is still listening.
+    assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 0);
+    assert_eq!(queued_count(state_mgr.as_ref()).await?, 1);
+
+    // The client goes away and stops keeping the action alive.
+    drop(client_listener);
+    MockClock::advance(Duration::from_mins(6));
+
+    // Retired without any matching pass having run.
+    assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 1);
+    assert_eq!(
+        queued_count(state_mgr.as_ref()).await?,
+        0,
+        "a retired action must stop being offered to the matching engine"
+    );
+    // And stays retired rather than being retired again on every pass.
+    assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 0);
+    Ok(())
+}

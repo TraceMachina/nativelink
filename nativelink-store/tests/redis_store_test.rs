@@ -71,7 +71,7 @@ async fn make_mock_store(
     make_mock_store_with_prefix(commands, String::new()).await
 }
 
-const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
+const FAKE_SCRIPT_SHA: &str = "d89e3573a1f9689c22115e8a41bd332d0c7c2643";
 
 fn add_lua_version_script(mut responses: HashMap<String, String>) -> HashMap<String, String> {
     add_lua_script(&mut responses, LUA_VERSION_SET_SCRIPT, FAKE_SCRIPT_SHA);
@@ -824,7 +824,7 @@ async fn dont_loop_forever_on_empty() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-fn test_connection_errors() {
+async fn test_connection_errors() {
     // name is resolvable, but not connectable
     let spec = RedisSpec {
         addresses: vec!["redis://nativelink.com:6379/".to_string()],
@@ -839,7 +839,7 @@ fn test_connection_errors() {
             code: Code::DeadlineExceeded,
             messages: vec![
                 "Io: timed out".into(),
-                format!("While connecting to redis with url: redis://nativelink.com:6379/")
+                "While connecting to redis with url: redis://nativelink.com:6379/".into()
             ],
             context: ErrorContext::None,
         },

@@ -16,8 +16,10 @@ nativelink-util = { path = "../nativelink-util" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = { version = "0.1.88", default-features = false }
-aws-config = { version = "1.6.1", default-features = false, features = ["sso"] }
-aws-sdk-s3 = { version = "1.82.0", features = [
+aws-config = { version = "1.11.0", default-features = false, features = [
+  "sso",
+] }
+aws-sdk-s3 = { version = "1.144.0", features = [
   "http-1x",
   "rt-tokio",
 ], default-features = false }
@@ -137,10 +139,6 @@ libc = { version = "0.2.177", default-features = false }
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
-aws-sdk-s3 = { version = "1.82.0", features = [
-  "http-1x",
-  "rt-tokio",
-], default-features = false }
 aws-smithy-http-client = { version = "1.1.13", default-features = false, features = [
   "test-util",
 ] }

@@ -1610,7 +1610,7 @@ async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
         ..Default::default()
     };
     let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_spec).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec)?;
     let cas_store = FastSlowStore::new(
         &FastSlowSpec {
             fast: StoreSpec::Filesystem(fast_spec),

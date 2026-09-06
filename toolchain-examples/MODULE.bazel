@@ -7,39 +7,32 @@ module(
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # C++
-bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_cc", version = "0.2.22")
 
 # Java
 bazel_dep(name = "rules_java", version = "9.0.3")
 
-java = use_extension("//java:extensions.bzl", "toolchains")
+java = use_extension("@rules_java//java:extensions.bzl", "toolchains")
 use_repo(java, "local_jdk")
 
 # Python
 bazel_dep(name = "rules_python", version = "2.0.0")
 
-pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
-pip.parse(
-    hub_name = "pip",
-    python_version = "3.12",
-    requirements_lock = "//:requirements_lock.txt",
-)
-
+# This example has no third-party Python dependencies, so it does not need a
+# pip hub or a requirements lockfile.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
 python.toolchain(
     is_default = True,
     python_version = "3.12",
 )
 
-use_repo(pip, "pip")
-
 # Go
 bazel_dep(name = "rules_go", version = "0.62.0")
 
 # Rust
 #
-bazel_dep(name = "rules_rs", version = "0.0.102")
-bazel_dep(name = "llvm", version = "0.8.15")
+bazel_dep(name = "rules_rs", version = "0.0.108")
+bazel_dep(name = "llvm", version = "0.8.18")
 
 rust_toolchains = use_extension("@rules_rs//rs/toolchains:module_extension.bzl", "toolchains")
 rust_toolchains.toolchain(
@@ -52,12 +45,15 @@ rust_toolchains.toolchain(
         "aarch64-unknown-linux-gnu": ["-Clink-self-contained=-linker"],
         "x86_64-unknown-linux-gnu": ["-Clink-self-contained=-linker"],
     },
-    version = "1.93.1",
+    version = "1.97.1",
 )
 use_repo(rust_toolchains, "default_rust_toolchains")
 
+# rules_rs publishes toolchains in subpackages and uses LLVM for hermetic
+# cross-linking, so both registrations are required.
 register_toolchains(
-    "@default_rust_toolchains//:all",
+    "@default_rust_toolchains//...",
+    "@llvm//toolchain:all",
 )
 
 # C++ toolchain via zig-cc.
@@ -97,7 +93,7 @@ use_repo(llvm, "llvm_toolchain")
 bazel_dep(name = "curl", version = "8.8.0.bcr.3")
 
 # Zstandard (C)
-bazel_dep(name = "zstd", version = "1.5.7")
+bazel_dep(name = "zstd", version = "1.5.7.bcr.1")
 
 # Abseil for C++
 bazel_dep(name = "abseil-cpp", version = "20250814.1")

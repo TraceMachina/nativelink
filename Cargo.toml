@@ -10,7 +10,7 @@ resolver = "2"
 [package]
 edition = "2024"
 name = "nativelink"
-rust-version = "1.93.1"
+rust-version = "1.97.1"
 version = "1.6.6"
 
 [profile.release]
@@ -117,7 +117,7 @@ overlapping-range-endpoints = "deny"
 suspicious-double-ref-op = "deny"
 unconditional-recursion = "deny"
 unexpected-cfgs = "deny"
-unknown-lints = "deny"
+unknown-lints = "allow"                     # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
 unnameable-test-items = "deny"
 unsafe-op-in-unsafe-fn = "deny"
 unstable-syntax-pre-expansion = "deny"
@@ -175,7 +175,6 @@ semicolon-if-nothing-returned = "deny"
 similar-names = "deny"
 single-char-pattern = "deny"
 single-match-else = "deny"
-std-instead-of-core = "deny"
 string-lit-as-bytes = "deny"
 todo = "deny"
 unchecked-time-subtraction = "deny"
@@ -201,6 +200,7 @@ iter-with-drain = { level = "allow", priority = 1 }             # TODO(jhpratt) 
 option-if-let-else = { level = "allow", priority = 1 }          # rust-lang/rust-clippy#8829
 redundant-pub-crate = { level = "allow", priority = 1 }         # rust-lang/rust-clippy#5369
 significant-drop-tightening = { level = "allow", priority = 1 } # TODO(jhpratt) Flip
+std-instead-of-core = "allow"                                   # TODO(palfrey): see https://github.com/rust-lang/rust-clippy/pull/16964 fixed in 1.98
 too-long-first-doc-paragraph = { level = "allow" }              # TODO(jhpratt) Flip
 uninhabited-references = { level = "allow", priority = 1 }      # rust-lang/rust-clippy#11984
 
@@ -216,4 +216,5 @@ must_use_candidate = { level = "allow", priority = 1 }
 ref_option = { level = "allow", priority = 1 }
 too_many_lines = { level = "allow", priority = 1 }
 unused_async = { level = "allow", priority = 1 }
+unused_async_trait_impl = { level = "allow", priority = 1 } # TODO(palfrey): nightly only, remove when we upgrade Rust above 1.97.1
 unused_self = { level = "allow", priority = 1 }

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
@@ -769,7 +771,7 @@ mod tests {
             // Read back to confirm it is actually readable (not a phantom
             // dirent) and truly empty.
             let bytes = fs::read(&path).await?;
-            assert!(bytes.is_empty(), "{path} must read back as empty");
+            assert_eq!(bytes, Vec::<u8>::new(), "{path} must read back as empty");
         }
 
         // Sanity-check the non-zero-digest path still works.

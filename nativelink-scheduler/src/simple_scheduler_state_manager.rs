@@ -346,6 +346,93 @@ where
         })
     }
 
+    /// Retires queued actions whose client has stopped listening.
+    ///
+    /// A queued action has no worker, so neither of the other two timeout
+    /// paths can reach it. `MatchingEngineActionStateResult::changed` skips
+    /// the `Queued` stage outright, and `should_timeout_operation` only
+    /// considers `Executing`. That leaves the matching pass as the only
+    /// thing that retires them, and it only does so for actions it happens
+    /// to visit.
+    ///
+    /// When it does not, they accumulate with no expiry and are handed to
+    /// the matcher again on every pass, ahead of live work because they are
+    /// the oldest. Enough of them starve dispatch entirely: workers sit
+    /// idle, nothing executes or completes, and clients eventually report a
+    /// remote execution failure.
+    ///
+    /// Returns how many were retired.
+    pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
+        let now = (self.now_fn)().now();
+        let stream = self
+            .action_db
+            .get_range_of_actions(
+                SortedAwaitedActionState::Queued,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                true,
+            )
+            .await
+            .err_tip(|| "In sweep_abandoned_queued_actions")?;
+        tokio::pin!(stream);
+
+        let mut retired = 0u64;
+        while let Some(subscriber) = stream.next().await {
+            let subscriber = subscriber.err_tip(|| "In sweep_abandoned_queued_actions")?;
+            let awaited_action = subscriber
+                .borrow()
+                .await
+                .err_tip(|| "In sweep_abandoned_queued_actions")?;
+
+            // Only queued actions belong to this sweep, and only once the
+            // client has been gone longer than it is allowed to be.
+            if !matches!(awaited_action.state().stage, ActionStage::Queued) {
+                continue;
+            }
+            if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout >= now
+            {
+                continue;
+            }
+
+            let mut state = awaited_action.state().as_ref().clone();
+            state.stage = ActionStage::Completed(ActionResult {
+                error: Some(make_err!(
+                    Code::DeadlineExceeded,
+                    "Operation timed out {} seconds of having no more clients listening",
+                    self.client_action_timeout.as_secs_f32(),
+                )),
+                ..ActionResult::default()
+            });
+            state.last_transition_timestamp = now;
+
+            let mut new_awaited_action = awaited_action;
+            new_awaited_action.worker_set_state(Arc::new(state), now);
+            // A conflict means something else is already changing this
+            // action, which is the outcome this sweep wants anyway. Leave it
+            // for the next pass rather than fighting for it.
+            match self
+                .action_db
+                .update_awaited_action(new_awaited_action)
+                .await
+            {
+                Ok(()) => retired += 1,
+                Err(err) if err.code == Code::Aborted => {}
+                Err(err) => {
+                    return Err(err).err_tip(|| "In sweep_abandoned_queued_actions");
+                }
+            }
+        }
+
+        if retired > 0 {
+            warn!(
+                retired,
+                timeout_secs = self.client_action_timeout.as_secs_f32(),
+                "Retired queued operations that had no clients listening"
+            );
+        }
+        Ok(retired)
+    }
+
     pub async fn should_timeout_operation(&self, awaited_action: &AwaitedAction) -> bool {
         if !matches!(awaited_action.state().stage, ActionStage::Executing) {
             return false;

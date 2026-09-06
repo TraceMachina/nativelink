@@ -888,19 +888,13 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
 impl SchedulerStore for ExperimentalMongoStore {
     type SubscriptionManager = ExperimentalMongoSubscriptionManager;
 
-    async fn subscription_manager(
+    fn subscription_manager(
         &self,
-    ) -> Result<Arc<ExperimentalMongoSubscriptionManager>, Error> {
+    ) -> impl Future<Output = Result<Arc<ExperimentalMongoSubscriptionManager>, Error>> {
         let mut subscription_manager = self.subscription_manager.lock();
-        if let Some(subscription_manager) = &*subscription_manager {
+        std::future::ready(if let Some(subscription_manager) = &*subscription_manager {
             Ok(subscription_manager.clone())
-        } else {
-            if !self.enable_change_streams {
-                return Err(make_input_err!(
-                    "ExperimentalMongoStore must have change streams enabled for scheduler subscriptions"
-                ));
-            }
-
+        } else if self.enable_change_streams {
             let sub = Arc::new(ExperimentalMongoSubscriptionManager::new(
                 self.database.clone(),
                 self.scheduler_collection.name().to_string(),
@@ -908,7 +902,11 @@ impl SchedulerStore for ExperimentalMongoStore {
             ));
             *subscription_manager = Some(sub.clone());
             Ok(sub)
-        }
+        } else {
+            Err(make_input_err!(
+                "ExperimentalMongoStore must have change streams enabled for scheduler subscriptions"
+            ))
+        })
     }
 
     async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>

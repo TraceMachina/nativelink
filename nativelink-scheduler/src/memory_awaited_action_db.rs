@@ -209,12 +209,12 @@ where
         Ok(awaited_action)
     }
 
-    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send {
         let mut awaited_action = self.awaited_action_rx.borrow().clone();
         if let Some(client_info) = self.client_info.as_ref() {
             awaited_action.set_client_operation_id(client_info.client_operation_id.clone());
         }
-        Ok(awaited_action)
+        std::future::ready(Ok(awaited_action))
     }
 }
 
@@ -969,10 +969,11 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
             .await
     }
 
-    async fn get_all_awaited_actions(
+    fn get_all_awaited_actions(
         &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error> {
-        Ok(ChunkedStream::new(
+    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error>>
+    {
+        std::future::ready(Ok(ChunkedStream::new(
             Bound::Unbounded,
             Bound::Unbounded,
             move |start, end, mut output| async move {
@@ -989,7 +990,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                 Ok(maybe_new_start
                     .map(|new_start| ((Bound::Excluded(new_start.clone()), end), output)))
             },
-        ))
+        )))
     }
 
     async fn get_by_operation_id(
@@ -999,14 +1000,15 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         Ok(self.inner.lock().await.get_by_operation_id(operation_id))
     }
 
-    async fn get_range_of_actions(
+    fn get_range_of_actions(
         &self,
         state: SortedAwaitedActionState,
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        Ok(ChunkedStream::new(
+    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>>
+    {
+        std::future::ready(Ok(ChunkedStream::new(
             start,
             end,
             move |start, end, mut output| async move {
@@ -1043,7 +1045,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                 }
                 Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
             },
-        ))
+        )))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {

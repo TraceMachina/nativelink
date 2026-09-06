@@ -9,6 +9,10 @@
   "engines": {
     "node": ">=20"
   },
+  "overrides": {
+    "postcss": "^8.5.23",
+    "sharp": "^0.35.4"
+  },
   "packageManager": "bun@1.2.21",
   "private": true,
   "scripts": {

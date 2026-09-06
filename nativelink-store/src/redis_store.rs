@@ -1043,11 +1043,7 @@ where
         // The TL;DR is that if we're in cluster mode and the names hash differently, we can't use request
         // pipelining. By using these braces, we tell redis to only hash the part of the temporary key that's
         // identical to the final key -- so they will always hash to the same node.
-        let temp_key = format!(
-            "temp-{}-{{{}}}",
-            (self.temp_name_generator_fn)(),
-            &final_key
-        );
+        let temp_key = format!("temp-{}-{{{final_key}}}", (self.temp_name_generator_fn)());
 
         if is_zero_digest(key.borrow()) {
             let chunk = reader
@@ -1595,7 +1591,17 @@ local i
 local indexes = {{}}
 
 if new_version-1 ~= expected_version then
-    redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    local reverted = redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    -- HINCRBY creates the key before the version can be checked, so a
+    -- caller holding a stale version for a key that has since gone leaves
+    -- behind a hash with nothing in it but a zeroed version. It has no
+    -- data, no expiry and never gains either, yet it still matches the
+    -- index prefix, so it sits in the index as an empty document and
+    -- crowds every search that reads it. Only ever removes a key this
+    -- call brought into existence: a real record always carries data.
+    if reverted == 0 and redis.call('HEXISTS', key, '{DATA_FIELD_NAME}') == 0 then
+        redis.call('DEL', key)
+    end
     return {{ 0, new_version-1 }}
 end
 -- Skip first 3 argvs, as they are known inputs.
@@ -1991,13 +1997,16 @@ where
 {
     type SubscriptionManager = RedisSubscriptionManager;
 
-    async fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
-        if self.pub_sub_channel.is_none() {
-            return Err(make_input_err!(
+    fn subscription_manager(
+        &self,
+    ) -> impl Future<Output = Result<Arc<RedisSubscriptionManager>, Error>> {
+        std::future::ready(if self.pub_sub_channel.is_none() {
+            Err(make_input_err!(
                 "RedisStore must have a pubsub for Redis Scheduler if using subscriptions"
-            ));
-        }
-        Ok(self.subscription_manager.clone())
+            ))
+        } else {
+            Ok(self.subscription_manager.clone())
+        })
     }
 
     async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
