@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod directory_cache;
+pub mod input_mounts;
 pub mod local_worker;
 #[cfg(target_os = "linux")]
 pub mod namespace_utils;
