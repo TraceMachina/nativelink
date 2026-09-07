@@ -1121,6 +1121,42 @@ pub struct LocalWorkerConfig {
     #[serde(default)]
     pub experimental_active_input_leases: bool,
 
+    /// Reuse immutable input directories through read-only bind mounts on Linux.
+    /// The worker prepares each selected subtree once per REAPI `Directory`
+    /// digest in the directory cache, then mounts it into each action instead of
+    /// recreating its filesystem entries.
+    ///
+    /// Paths are relative to the action input root, for example `["out/x/sdk"]`.
+    /// They must be nonempty, canonical, and non-overlapping. Absolute paths,
+    /// empty path components, and `.`/`..` components are rejected.
+    /// Requires `directory_cache`, `use_namespaces: true`, and
+    /// `use_mount_namespace: true`.
+    ///
+    /// Actions declaring overlapping outputs, working inside a selected subtree,
+    /// or using a persistent worker fall back to ordinary materialization.
+    /// Output paths reached through symlink aliases cannot be checked for
+    /// overlap. Use this only with trusted workloads that do not modify the
+    /// selected trees; read-only input mounts are not a security boundary.
+    ///
+    /// Select trees whose contents (and Directory digest) are reused across
+    /// many actions. Trees that change per action add cache construction work
+    /// without reuse. When mounts apply, other inputs use ordinary downloads,
+    /// bypassing both root and subtree directory caching for that action.
+    /// Failed mount preparation retries once without mounts; a failed mount
+    /// syscall still aborts the action before its command runs.
+    ///
+    /// An action can remount its inputs writable in its own user namespace
+    /// and corrupt the shared cache. Later actions can then produce incorrect
+    /// results from those inputs. Enable only for trusted commands.
+    ///
+    /// Cache entries remain pinned until action cleanup and may temporarily
+    /// exceed the cache's eviction budget. Pinned bytes have no separate limit,
+    /// so concurrent distinct trees can exhaust the disk. Leave headroom.
+    ///
+    /// Default: [] (disabled)
+    #[serde(default)]
+    pub experimental_readonly_input_mounts: Vec<String>,
+
     /// Whether to use namespaces to isolate the execution. This is only available
     /// on Linux. It is highly recommended as it avoids a number of issues with
     /// zombie processes and also provides additional hermeticity. If explicitly set

@@ -848,6 +848,43 @@ pub fn execution_output_bytes(action_result: &ActionResult) -> u64 {
         + action_result.stderr_digest.size_bytes()
 }
 
+/// Input mount counters, emitted by workers rather than schedulers.
+pub static INPUT_MOUNT_METRICS: LazyLock<InputMountMetrics> = LazyLock::new(|| {
+    let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());
+    InputMountMetrics {
+        cache_hits: meter
+            .u64_counter("worker.input_mount.cache_hits")
+            .with_description("Cached directories reused for input mount preparation")
+            .build(),
+        cache_misses: meter
+            .u64_counter("worker.input_mount.cache_misses")
+            .with_description("Input mount directories requiring cache construction")
+            .build(),
+        fallbacks: meter
+            .u64_counter("worker.input_mount.fallbacks")
+            .with_description(
+                "Actions using ordinary input preparation despite configured input mounts",
+            )
+            .build(),
+        prepare_failures: meter
+            .u64_counter("worker.input_mount.prepare_failures")
+            .with_description("Failed input mount preparations retried without mounts")
+            .build(),
+    }
+});
+
+#[derive(Debug)]
+pub struct InputMountMetrics {
+    /// Cached directories reused for input mount preparation.
+    pub cache_hits: metrics::Counter<u64>,
+    /// Input mount directories requiring cache construction.
+    pub cache_misses: metrics::Counter<u64>,
+    /// Actions using ordinary input preparation despite configured input mounts.
+    pub fallbacks: metrics::Counter<u64>,
+    /// Failed input mount preparations retried without mounts.
+    pub prepare_failures: metrics::Counter<u64>,
+}
+
 /// Global worker fleet metrics instruments.
 pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
     let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());

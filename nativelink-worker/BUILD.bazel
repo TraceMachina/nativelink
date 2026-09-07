@@ -12,6 +12,7 @@ rust_library(
     srcs = [
         "src/buck2_file_capture.rs",
         "src/directory_cache.rs",
+        "src/input_mounts.rs",
         "src/lib.rs",
         "src/local_worker.rs",
         "src/persistent_worker/live_worker.rs",
