@@ -95,6 +95,9 @@ the merge rule, the ordering rule and the retry rule.
 
 A worker fetches the action's inputs from the CAS, materialises them into a
 directory, runs the command, uploads the outputs, and reports back.
+Linux workers can optionally share cached input directories between actions
+through [read-only mounts](/reference/nativelink-config/main#localworkerconfig),
+avoiding repeated directory creation.
 
 Workers hold no durable state; a worker that dies mid-action costs you that
 action, not your cache. What they do hold is a local filesystem that is

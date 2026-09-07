@@ -309,3 +309,77 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn readonly_input_mount_is_private_and_source_survives_masking() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(true) {
+        eprintln!("SKIP: mount namespaces unavailable");
+        return Ok(());
+    }
+    let root = std::path::PathBuf::from(nativelink_util::common::make_temp_path("readonly_mount"));
+    let action = root.join("action");
+    let target = action.join("sdk");
+    // Intentionally put the source under the root that configure_namespace
+    // masks. Inputs must be mounted before the root is masked.
+    let source = root.join("cache");
+    std::fs::create_dir_all(&target)?;
+    std::fs::create_dir_all(&source)?;
+    std::fs::write(source.join("header.h"), "sdk-content")?;
+    std::os::unix::fs::symlink("header.h", source.join("alias.h"))?;
+    let cwd = std::env::current_dir()?;
+    let relative_source = pathdiff::diff_paths(&source, &cwd).unwrap();
+    let relative_target = pathdiff::diff_paths(&target, &cwd).unwrap();
+    let mounts = vec![namespace_utils::ReadOnlyBindMount::new(
+        &relative_source,
+        &relative_target,
+    )?];
+    let root_c = CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
+    let action_c = CString::new(action.as_os_str().as_encoded_bytes()).unwrap();
+    let mut command = Command::new("sh");
+    command.current_dir(&action);
+    command.arg("-c").arg(
+        "test \"$(cat \"$1/alias.h\")\" = sdk-content && ! touch \"$1/new.h\" && ! rm \"$1/header.h\""
+    ).arg("sh").arg(&target);
+    // SAFETY: namespace setup and prepared bind mounts use only operations
+    // designed for the pre-exec child; no parent locks are held.
+    unsafe {
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace_with_input_mounts(
+                true, &root_c, &action_c, &mounts,
+            )
+        });
+    }
+    let output = command.output()?;
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        std::fs::read_dir(&target)?.next().is_none(),
+        "mount escaped into parent"
+    );
+    assert_eq!(
+        std::fs::read_to_string(source.join("header.h"))?,
+        "sdk-content"
+    );
+    assert!(!source.join("new.h").exists());
+
+    // A failed input mount must abort spawning, never run the command against
+    // an empty placeholder and accidentally cache an incorrect action result.
+    let mounts = vec![namespace_utils::ReadOnlyBindMount::new(
+        &source,
+        &target.join("missing"),
+    )?];
+    let root_c = CString::new(root.to_str().unwrap())?;
+    let action_c = CString::new(action.to_str().unwrap())?;
+    let mut command = Command::new("sh");
+    command.args(["-c", "exit 0"]);
+    // SAFETY: the pre-exec hook only uses prepared paths and namespace syscalls.
+    unsafe {
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace_with_input_mounts(
+                true, &root_c, &action_c, &mounts,
+            )
+        });
+    }
+    assert!(command.spawn().is_err());
+    std::fs::remove_dir_all(root)?;
+    Ok(())
+}
