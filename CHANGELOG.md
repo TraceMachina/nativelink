@@ -3,6 +3,47 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.7](https://github.com/TraceMachina/nativelink/compare/v1.6.6..v1.6.7) - 2026-09-07
+
+### ⛰️  Features
+
+- Introduce Rules Omniverse ([#2720](https://github.com/TraceMachina/nativelink/issues/2720)) - ([1b735ca](https://github.com/TraceMachina/nativelink/commit/1b735caee0410c9177ce603ec278c9c4e4c0b39c))
+
+### 🐛 Bug Fixes
+
+- point Media kit Download at the shared Drive folder ([#2722](https://github.com/TraceMachina/nativelink/issues/2722)) - ([4c5fa6f](https://github.com/TraceMachina/nativelink/commit/4c5fa6fed171d340739361cd48f155edaf17b749))
+
+### 📚 Documentation
+
+- *(config-reference)* regenerate for NativeLink ([#2711](https://github.com/TraceMachina/nativelink/issues/2711)) - ([9d0731e](https://github.com/TraceMachina/nativelink/commit/9d0731e8c8629524e3115a071f22bb788417c094))
+- Update mermaid to 11.17.2 [SECURITY] ([#2738](https://github.com/TraceMachina/nativelink/issues/2738)) - ([e6d3796](https://github.com/TraceMachina/nativelink/commit/e6d37967f1aeccb438e1c7cdeaf3bd3d5c3a3716))
+- Update esbuild to 0.28.2 [SECURITY] ([#2736](https://github.com/TraceMachina/nativelink/issues/2736)) - ([df6d817](https://github.com/TraceMachina/nativelink/commit/df6d817192f4da0adadc1e06feef643599352b9a))
+- track Menlo case-study figures under public/assets ([#2723](https://github.com/TraceMachina/nativelink/issues/2723)) - ([4d8fc4b](https://github.com/TraceMachina/nativelink/commit/4d8fc4bf4bd58bf3082d1b6eab42e826854c2fef))
+- Cursor/menlo security case study 6c68 ([#2721](https://github.com/TraceMachina/nativelink/issues/2721)) - ([574986b](https://github.com/TraceMachina/nativelink/commit/574986bb99e236a22931e050d41a9ab7895d7d2e))
+
+### 🧪 Testing & CI
+
+- Upgrade to Rust 1.97.1 ([#2718](https://github.com/TraceMachina/nativelink/issues/2718)) - ([710ab3b](https://github.com/TraceMachina/nativelink/commit/710ab3b5786c976476dbc57a4240aff988d053b6))
+
+### ⚙️ Miscellaneous
+
+- stop linking released macOS binaries to /nix/store libiconv ([#2742](https://github.com/TraceMachina/nativelink/issues/2742)) - ([63c9fd7](https://github.com/TraceMachina/nativelink/commit/63c9fd7a82105e627fbbd5b96f6cb9c0011297ce))
+- Retire queued actions no client is waiting on ([#2726](https://github.com/TraceMachina/nativelink/issues/2726)) - ([090d972](https://github.com/TraceMachina/nativelink/commit/090d9722aaa4813631c14221edde77a43c9bd801))
+- Label execution resource samples with the action mnemonic ([#2712](https://github.com/TraceMachina/nativelink/issues/2712)) - ([53b528e](https://github.com/TraceMachina/nativelink/commit/53b528e36c2a2657ba132dd94e6616877f5270d9))
+
+### ⬆️ Bumps & Version Updates
+
+- Update postcss to 8.5.28 [SECURITY] ([#2740](https://github.com/TraceMachina/nativelink/issues/2740)) - ([908250c](https://github.com/TraceMachina/nativelink/commit/908250c782d6e4f4e48f78b15d5dbdfe25bd5660))
+- Update Next.js to 16.2.12 [SECURITY] ([#2733](https://github.com/TraceMachina/nativelink/issues/2733)) - ([f081c89](https://github.com/TraceMachina/nativelink/commit/f081c89c768cec6a964f09ab04df55e7dcf29f7a))
+- Update js-yaml to 4.3.2 [SECURITY] ([#2737](https://github.com/TraceMachina/nativelink/issues/2737)) - ([634214f](https://github.com/TraceMachina/nativelink/commit/634214f89827613d8990982a217ab3004a63d60f))
+- Update dompurify to 3.4.14 [SECURITY] ([#2735](https://github.com/TraceMachina/nativelink/issues/2735)) - ([64e6e04](https://github.com/TraceMachina/nativelink/commit/64e6e041c888e0d7e900276db33859502729869f))
+- Update nanoid to 3.3.18 [SECURITY] ([#2739](https://github.com/TraceMachina/nativelink/issues/2739)) - ([5d720d5](https://github.com/TraceMachina/nativelink/commit/5d720d527f96f9a3afc23935f19b50719b648ecc))
+- Update Rust crate h2 to 0.4.19 [SECURITY] ([#2732](https://github.com/TraceMachina/nativelink/issues/2732)) - ([b8a1163](https://github.com/TraceMachina/nativelink/commit/b8a1163b8d8aec7cc3303c1906687e6d56ae7e36))
+- Update Rust crate event-listener to 5.4.2 [SECURITY] ([#2731](https://github.com/TraceMachina/nativelink/issues/2731)) - ([5dae6a0](https://github.com/TraceMachina/nativelink/commit/5dae6a01496364a63f5f60f3a0165e2280dea22a))
+- Upgrade scorecard action to 2.4.4 ([#2725](https://github.com/TraceMachina/nativelink/issues/2725)) - ([5daa1a2](https://github.com/TraceMachina/nativelink/commit/5daa1a29f6ea3ebcc4cef4ad61551306b4a67ec1))
+- Upgrade rules_rs to 0.0.108 to fix zlib issues ([#2724](https://github.com/TraceMachina/nativelink/issues/2724)) - ([e42efc8](https://github.com/TraceMachina/nativelink/commit/e42efc8693271ae9445f0b5f9d44d0faa53535a4))
+- Upgrade curl to 8.5.0-2ubuntu10.13 ([#2717](https://github.com/TraceMachina/nativelink/issues/2717)) - ([1330267](https://github.com/TraceMachina/nativelink/commit/1330267e5a5ef8fedd8d0829f731f124e2f2fada))
+
 ## [1.6.6](https://github.com/TraceMachina/nativelink/compare/v1.6.5..v1.6.6) - 2026-08-21
 
 ### ⛰️  Features
