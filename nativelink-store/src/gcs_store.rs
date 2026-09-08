@@ -420,10 +420,42 @@ where
         let client = &self.client;
 
         let object_path_ref = &object_path;
+        let key_ref = &key;
         self.retrier
             .retry(unfold(
-                (offset, writer),
-                |(mut offset, writer)| async move {
+                (offset, None::<u64>, writer),
+                |(mut offset, mut expected_end, writer)| async move {
+                    // The body's end is only trustworthy against a known size; resolve
+                    // it inside the retry loop so NotFound keeps its retry_on_errors path.
+                    let want_end = if let Some(end) = expected_end {
+                        end
+                    } else {
+                        let size = match client.read_object_metadata(object_path_ref).await {
+                            Ok(Some(metadata)) => u64::try_from(metadata.size).unwrap_or(0),
+                            Ok(None) => {
+                                return Some((
+                                    RetryResult::Retry(make_err!(
+                                        Code::NotFound,
+                                        "Object {} not found in GCS store",
+                                        key_ref.as_str()
+                                    )),
+                                    (offset, expected_end, writer),
+                                ));
+                            }
+                            Err(e) => return Some((RetryResult::Retry(e), (offset, expected_end, writer))),
+                        };
+                        let end = end_offset.map_or(size, |end| end.min(size)).max(offset);
+                        expected_end = Some(end);
+                        end
+                    };
+
+                    if offset >= want_end {
+                        if let Err(err) = writer.send_eof() {
+                            return Some((RetryResult::Err(err), (offset, expected_end, writer)));
+                        }
+                        return Some((RetryResult::Ok(()), (offset, expected_end, writer)));
+                    }
+
                     let mut stream = match client
                         .read_object_content(object_path_ref, offset, end_offset)
                         .await
@@ -434,7 +466,7 @@ where
                         // emitting `Retry` lets `retry.retry_on_errors` opt
                         // reads into retrying read-after-write races where
                         // an object is still finalizing or being repopulated.
-                        Err(e) => return Some((RetryResult::Retry(e), (offset, writer))),
+                        Err(e) => return Some((RetryResult::Retry(e), (offset, expected_end, writer))),
                     };
 
                     while let Some(next_chunk) = stream.next().await {
@@ -449,18 +481,34 @@ where
                                 }
                                 offset += bytes.len() as u64;
                                 if let Err(err) = writer.send(bytes).await {
-                                    return Some((RetryResult::Err(err), (offset, writer)));
+                                    return Some((RetryResult::Err(err), (offset, expected_end, writer)));
                                 }
                             }
-                            Err(err) => return Some((RetryResult::Retry(err), (offset, writer))),
+                            Err(err) => return Some((RetryResult::Retry(err), (offset, expected_end, writer))),
                         }
                     }
 
-                    if let Err(err) = writer.send_eof() {
-                        return Some((RetryResult::Err(err), (offset, writer)));
+                    // Retry resumes from `offset`, so a transient truncation heals and a
+                    // short object surfaces as this error once the retries are spent.
+                    if offset < want_end {
+                        return Some((
+                            RetryResult::Retry(make_err!(
+                                Code::Internal,
+                                "Short read from GCS store for {}: expected {} bytes, body ended after {} bytes (resuming at offset {})",
+                                key_ref.as_str(),
+                                want_end,
+                                offset,
+                                offset,
+                            )),
+                            (offset, expected_end, writer),
+                        ));
                     }
 
-                    Some((RetryResult::Ok(()), (offset, writer)))
+                    if let Err(err) = writer.send_eof() {
+                        return Some((RetryResult::Err(err), (offset, expected_end, writer)));
+                    }
+
+                    Some((RetryResult::Ok(()), (offset, expected_end, writer)))
                 },
             ))
             .await

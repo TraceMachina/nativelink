@@ -1031,7 +1031,7 @@ where
         self: Pin<&Self>,
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
-        _upload_size: UploadSizeInfo,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let final_key = self.encode_key(&key);
 
@@ -1141,6 +1141,20 @@ where
             if last_pos > total_len {
                 total_len = last_pos;
             }
+        }
+
+        // A stream that ends before the announced size must not be renamed in
+        // as a shorter value: every later read would serve it as complete.
+        if let UploadSizeInfo::ExactSize(exact_size) = upload_size
+            && u64::from(total_len) != exact_size
+        {
+            return Err(make_input_err!(
+                "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, stream ended after {} bytes",
+                key.borrow().as_str(),
+                temp_key,
+                exact_size,
+                total_len,
+            ));
         }
 
         let expected_len = usize::try_from(total_len).unwrap_or(usize::MAX);
@@ -1290,13 +1304,58 @@ where
         let encoded_key = self.encode_key(&key);
         let encoded_key = encoded_key.as_ref();
 
+        let mut client = self.get_client().await?;
+
+        // GETRANGE on a missing key returns "", indistinguishable from end of
+        // data, so learn the stored length first and read exactly that window.
+        let (blob_len, exists): (u64, bool) = {
+            let mut attempt: u32 = 0;
+            loop {
+                attempt += 1;
+                match pipe()
+                    .strlen(encoded_key)
+                    .exists(encoded_key)
+                    .query_async::<(u64, bool)>(&mut client.connection_manager)
+                    .await
+                {
+                    Ok(v) => break v,
+                    Err(err)
+                        if attempt < MAX_REDIS_RETRY_ATTEMPTS && is_retryable_redis_error(&err) =>
+                    {
+                        client.reconnect(&self.connection_manager).await?;
+                        sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                    }
+                    Err(err) => {
+                        return Err(Error::from(err).append("In RedisStore::get_part::strlen"));
+                    }
+                }
+            }
+        };
+        if !exists {
+            return Err(make_err!(
+                Code::NotFound,
+                "Data not found in Redis store for digest: {key:?}"
+            ));
+        }
+
+        let available = blob_len.saturating_sub(u64::try_from(offset).unwrap_or(u64::MAX));
+        let expected_len = length.map_or(available, |l| {
+            cmp::min(u64::try_from(l).unwrap_or(u64::MAX), available)
+        });
+        if expected_len == 0 {
+            return writer
+                .send_eof()
+                .err_tip(|| "Failed to write EOF in redis store get_part");
+        }
+        let expected_len_isize = isize::try_from(expected_len).unwrap_or(isize::MAX);
+
         // N.B. the `-1`'s you see here are because redis GETRANGE is inclusive at both the start and end, so when we
         // do math with indices we change them to be exclusive at the end.
 
-        // We want to read the data at the key from `offset` to `offset + length`.
+        // We want to read the data at the key from `offset` to `offset + expected_len`.
         let data_start = offset;
         let data_end = data_start
-            .saturating_add(length.map_or(isize::MAX, |l| isize::try_from(l).unwrap_or(isize::MAX)))
+            .saturating_add(expected_len_isize)
             .saturating_sub(1);
 
         // And we don't ever want to read more than `read_chunk_size` bytes at a time, so we'll need to iterate.
@@ -1306,7 +1365,7 @@ where
             data_end,
         );
 
-        let mut client = self.get_client().await?;
+        let mut delivered: u64 = 0;
         loop {
             // getrange is position-based and idempotent, so re-resolve the
             // master and retry on a transient failover without re-sending
@@ -1337,25 +1396,40 @@ where
                 }
             };
 
-            let didnt_receive_full_chunk = chunk.len() < self.read_chunk_size;
-            let reached_end_of_data = chunk_end == data_end;
-
-            if didnt_receive_full_chunk || reached_end_of_data {
-                if !chunk.is_empty() {
-                    writer
-                        .send(chunk)
-                        .await
-                        .err_tip(|| "Failed to write data in RedisStore::get_part")?;
-                }
-
-                break; // No more data to read.
+            // Inside the window every chunk has a known length; a shorter one
+            // means the value was evicted or replaced, never end of data.
+            let expected_chunk_len = u64::try_from(chunk_end - chunk_start + 1).unwrap_or(u64::MAX);
+            let chunk_len = u64::try_from(chunk.len()).unwrap_or(u64::MAX);
+            if chunk_len < expected_chunk_len {
+                // Nothing delivered yet is a plain miss so fast_slow can fall through.
+                let code = if chunk.is_empty() && delivered == 0 {
+                    Code::NotFound
+                } else {
+                    Code::Internal
+                };
+                return Err(make_err!(
+                    code,
+                    "Short read from Redis store for digest {key:?}: expected {} bytes from offset {}, key held {} bytes, got {} bytes (chunk at {}..={} returned {} of {})",
+                    expected_len,
+                    offset,
+                    blob_len,
+                    delivered + chunk_len,
+                    chunk_start,
+                    chunk_end,
+                    chunk_len,
+                    expected_chunk_len,
+                ));
             }
 
-            // We received a full chunk's worth of data, so write it...
+            delivered += chunk_len;
             writer
                 .send(chunk)
                 .await
                 .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+
+            if chunk_end == data_end {
+                break; // Delivered the whole window.
+            }
 
             // ...and go grab the next chunk.
             chunk_start = chunk_end + 1;
@@ -1364,40 +1438,6 @@ where
                     - 1,
                 data_end,
             );
-        }
-
-        // If we didn't write any data, check if the key exists, if not return a NotFound error.
-        // This is required by spec.
-        if writer.get_bytes_written() == 0 {
-            // We're supposed to read 0 bytes, so just check if the key exists.
-            let exists: bool = {
-                let mut attempt: u32 = 0;
-                loop {
-                    attempt += 1;
-                    match client.connection_manager.exists(encoded_key).await {
-                        Ok(v) => break v,
-                        Err(err)
-                            if attempt < MAX_REDIS_RETRY_ATTEMPTS
-                                && is_retryable_redis_error(&err) =>
-                        {
-                            client.reconnect(&self.connection_manager).await?;
-                            sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
-                        }
-                        Err(err) => {
-                            return Err(
-                                Error::from(err).append("In RedisStore::get_part::zero_exists")
-                            );
-                        }
-                    }
-                }
-            };
-
-            if !exists {
-                return Err(make_err!(
-                    Code::NotFound,
-                    "Data not found in Redis store for digest: {key:?}"
-                ));
-            }
         }
 
         writer

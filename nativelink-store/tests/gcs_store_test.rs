@@ -210,12 +210,18 @@ async fn get_part_not_found_not_retried_by_default() -> Result<(), Error> {
     assert_eq!(err.code, Code::NotFound, "Expected NotFound error");
 
     // Even with a retry budget configured, NotFound must not consume it
-    // unless explicitly opted in via `retry_on_errors`.
+    // unless explicitly opted in via `retry_on_errors`. The miss is seen on
+    // the size lookup that precedes the content read.
     let call_counts = mock_ops.get_call_counts();
     assert_eq!(
-        call_counts.read_calls.load(Ordering::Relaxed),
+        call_counts.metadata_calls.load(Ordering::Relaxed),
         1,
-        "read_object_content should not be retried on NotFound by default"
+        "read_object_metadata should not be retried on NotFound by default"
+    );
+    assert_eq!(
+        call_counts.read_calls.load(Ordering::Relaxed),
+        0,
+        "read_object_content should not be attempted for a missing object"
     );
 
     Ok(())
@@ -254,12 +260,13 @@ async fn get_part_retries_not_found_when_opted_in() -> Result<(), Error> {
     );
 
     // With NotFound in `retry_on_errors`, the read should be attempted
-    // once plus `max_retries` more times before giving up.
+    // once plus `max_retries` more times before giving up. The miss is seen
+    // on the size lookup that precedes the content read.
     let call_counts = mock_ops.get_call_counts();
     assert_eq!(
-        call_counts.read_calls.load(Ordering::Relaxed),
+        call_counts.metadata_calls.load(Ordering::Relaxed),
         3,
-        "read_object_content should be retried on NotFound when opted in"
+        "read_object_metadata should be retried on NotFound when opted in"
     );
 
     Ok(())
@@ -551,6 +558,127 @@ async fn get_part_with_range() -> Result<(), Error> {
         *read_requests[0].1,
         Some(11),
         "Expected end offset to be Some(11)"
+    );
+
+    Ok(())
+}
+
+// An HTTP body that ends before the object does used to be forwarded as a
+// clean EOF; the caller then took the truncated object as the whole blob.
+// With no retry budget the shortfall must surface as an error naming it.
+#[nativelink_test]
+async fn get_part_errors_on_short_body() -> Result<(), Error> {
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store_with_retry(
+        mock_ops.clone(),
+        Retry {
+            max_retries: 0,
+            delay: 0.001,
+            jitter: 0.0,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 11)?;
+    let store_key: StoreKey = to_store_key(digest);
+    let object_path = create_object_path(&store_key);
+    mock_ops
+        .add_object(&object_path, b"hello world".to_vec())
+        .await;
+    // Every content read returns at most 5 bytes of the 11 requested.
+    mock_ops.set_truncate_reads_to(5);
+
+    let (mut tx, _rx) = make_buf_channel_pair();
+    let store_clone = store.clone();
+    let get_part_fut = nativelink_util::spawn!("get_part_task", async move {
+        store_clone.get_part(store_key, &mut tx, 0, None).await
+    });
+
+    let err = get_part_fut.await?.unwrap_err();
+    assert_eq!(err.code, Code::Internal, "{err:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("Short read from GCS store")
+            && message.contains("expected 11 bytes, body ended after 5 bytes"),
+        "Error must name the expected and the received length: {message}",
+    );
+
+    let call_counts = mock_ops.get_call_counts();
+    assert_eq!(
+        call_counts.metadata_calls.load(Ordering::Relaxed),
+        1,
+        "the object size is looked up once per get_part"
+    );
+    assert_eq!(
+        call_counts.read_calls.load(Ordering::Relaxed),
+        1,
+        "no retry budget: one content read"
+    );
+
+    Ok(())
+}
+
+// With a retry budget, a short body resumes from the bytes already delivered
+// until the whole object has been sent.
+#[nativelink_test]
+async fn get_part_resumes_after_short_body() -> Result<(), Error> {
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store_with_retry(
+        mock_ops.clone(),
+        Retry {
+            max_retries: 3,
+            delay: 0.001,
+            jitter: 0.0,
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    let digest = DigestInfo::try_new(VALID_HASH1, 11)?;
+    let store_key: StoreKey = to_store_key(digest);
+    let object_path = create_object_path(&store_key);
+    mock_ops
+        .add_object(&object_path, b"hello world".to_vec())
+        .await;
+    mock_ops.set_truncate_reads_to(5);
+
+    let (mut tx, mut rx) = make_buf_channel_pair();
+    let store_clone = store.clone();
+    let store_key_clone = store_key.clone();
+    let handle = nativelink_util::spawn!("get_part_task", async move {
+        store_clone
+            .get_part(store_key_clone, &mut tx, 0, None)
+            .await
+    });
+
+    let received_data =
+        match tokio::time::timeout(Duration::from_secs(5), rx.consume(Some(100))).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "Timeout waiting for data"
+                ));
+            }
+        };
+    handle.await??;
+
+    assert_eq!(
+        received_data.as_ref(),
+        b"hello world",
+        "Resumed reads must deliver the whole object exactly once"
+    );
+    let call_counts = mock_ops.get_call_counts();
+    assert_eq!(
+        call_counts.metadata_calls.load(Ordering::Relaxed),
+        1,
+        "the object size is looked up once per get_part"
+    );
+    assert_eq!(
+        call_counts.read_calls.load(Ordering::Relaxed),
+        3,
+        "5 + 5 + 1 bytes: three content reads"
     );
 
     Ok(())

@@ -180,6 +180,18 @@ async fn upload_and_get_data() -> Result<(), Error> {
             Ok(vec![Value::Int(2), Value::Boolean(true)]),
         ),
         // Retrieve the data from the real key.
+        // get_part learns the stored length before streaming.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![
+                Value::Int(data.len().try_into().unwrap_or(i64::MAX)),
+                Value::Int(1),
+            ]),
+        ),
         MockCmd::new(
             redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
             Ok(Value::BulkString(b"14".to_vec())),
@@ -409,6 +421,18 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
                 .arg(real_key.clone()),
             Ok(vec![Value::Int(2), Value::Boolean(true)]),
         ),
+        // get_part learns the stored length before streaming.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![
+                Value::Int(data.len().try_into().unwrap_or(i64::MAX)),
+                Value::Int(1),
+            ]),
+        ),
         MockCmd::new(
             redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
             Ok(Value::BulkString(b"14".to_vec())),
@@ -510,6 +534,18 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
                 Value::Int(1),
             ]),
         ),
+        // get_part learns the stored length before streaming.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![
+                Value::Int(data.len().try_into().unwrap_or(i64::MAX)),
+                Value::Int(1),
+            ]),
+        ),
         MockCmd::new(
             // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
             // the actual call should be from `0..=(READ_CHUNK_SIZE - 1)`.
@@ -600,6 +636,18 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
                 .arg(real_key.clone()),
             Ok(vec![Value::Int(2), Value::Int(1)]),
         ),
+        // get_part learns the stored length before streaming.
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![
+                Value::Int(data.len().try_into().unwrap_or(i64::MAX)),
+                Value::Int(1),
+            ]),
+        ),
         MockCmd::new(
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
@@ -676,15 +724,107 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     let packed_hash_hex = format!("{digest}");
     let real_key = packed_hash_hex;
 
+    let commands = vec![MockCmd::with_values(
+        redis::pipe()
+            .cmd("STRLEN")
+            .arg(real_key.clone())
+            .cmd("EXISTS")
+            .arg(real_key),
+        Ok(vec![Value::Int(0), Value::Int(0)]),
+    )];
+
+    let store = make_mock_store(commands).await;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(
+        result.as_ref().unwrap_err().code,
+        Code::NotFound,
+        "{result:?}"
+    );
+
+    Ok(())
+}
+
+// A key evicted between two GETRANGE chunks used to end the stream with a
+// clean EOF after the first chunk; the caller then took a truncated value as
+// the whole blob. The store must fail the read and name the shortfall.
+#[nativelink_test]
+async fn get_part_errors_when_key_vanishes_mid_read() -> Result<(), Error> {
+    let data = Bytes::from(vec![7u8; DEFAULT_READ_CHUNK_SIZE * 3]);
+    let digest = DigestInfo::try_new(VALID_HASH1, data.len() as u64)?;
+    let real_key = format!("{digest}");
+
     let commands = vec![
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![
+                Value::Int(data.len().try_into().unwrap_or(i64::MAX)),
+                Value::Int(1),
+            ]),
+        ),
         MockCmd::new(
             redis::cmd("GETRANGE")
                 .arg(real_key.clone())
                 .arg(0)
-                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
+                .arg((DEFAULT_READ_CHUNK_SIZE - 1).try_into().unwrap_or(i64::MAX)),
+            Ok(Value::BulkString(
+                data.slice(..DEFAULT_READ_CHUNK_SIZE).to_vec(),
+            )),
+        ),
+        // The key is evicted here: GETRANGE on a missing key returns "".
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key)
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX))
+                .arg(
+                    (DEFAULT_READ_CHUNK_SIZE * 2 - 1)
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
             Ok(Value::BulkString(vec![])),
         ),
-        MockCmd::new(redis::cmd("EXISTS").arg(real_key), Ok(Value::Int(0))),
+    ];
+
+    let store = make_mock_store(commands).await;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    let err = result.as_ref().unwrap_err();
+    assert_eq!(err.code, Code::Internal, "{result:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("Short read from Redis store")
+            && message.contains(&format!("expected {} bytes", data.len()))
+            && message.contains(&format!("got {DEFAULT_READ_CHUNK_SIZE} bytes")),
+        "Error must name the digest, the expected and the received length: {message}",
+    );
+
+    Ok(())
+}
+
+// A key that vanishes before the first chunk is a plain miss, so a fast_slow
+// caller can fall through to its slow store.
+#[nativelink_test]
+async fn get_part_reports_not_found_when_key_vanishes_before_first_chunk() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let real_key = format!("{digest}");
+
+    let commands = vec![
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![Value::Int(2), Value::Int(1)]),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
+            Ok(Value::BulkString(vec![])),
+        ),
     ];
 
     let store = make_mock_store(commands).await;
@@ -694,6 +834,107 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
         result.as_ref().unwrap_err().code,
         Code::NotFound,
         "{result:?}"
+    );
+
+    Ok(())
+}
+
+// A GETRANGE chunk that comes back non-empty but shorter than the window
+// means the value was replaced by a shorter one after the length was read.
+#[nativelink_test]
+async fn get_part_errors_when_chunk_is_shorter_than_window() -> Result<(), Error> {
+    let data = Bytes::from(vec![9u8; DEFAULT_READ_CHUNK_SIZE * 2]);
+    let digest = DigestInfo::try_new(VALID_HASH1, data.len() as u64)?;
+    let real_key = format!("{digest}");
+
+    let commands = vec![
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![
+                Value::Int(data.len().try_into().unwrap_or(i64::MAX)),
+                Value::Int(1),
+            ]),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg((DEFAULT_READ_CHUNK_SIZE - 1).try_into().unwrap_or(i64::MAX)),
+            Ok(Value::BulkString(
+                data.slice(..DEFAULT_READ_CHUNK_SIZE).to_vec(),
+            )),
+        ),
+        // The value now holds only 1.5 chunks: the second chunk is short.
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key)
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX))
+                .arg(
+                    (DEFAULT_READ_CHUNK_SIZE * 2 - 1)
+                        .try_into()
+                        .unwrap_or(i64::MAX),
+                ),
+            Ok(Value::BulkString(
+                data.slice(..DEFAULT_READ_CHUNK_SIZE / 2).to_vec(),
+            )),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    let err = result.as_ref().unwrap_err();
+    assert_eq!(err.code, Code::Internal, "{result:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains(&format!("expected {} bytes", data.len()))
+            && message.contains(&format!("got {} bytes", DEFAULT_READ_CHUNK_SIZE * 3 / 2)),
+        "Error must name the expected and the received length: {message}",
+    );
+
+    Ok(())
+}
+
+// A populate stream that ends before the announced ExactSize must be rejected
+// before the temp key is renamed in: otherwise the short value is served as
+// the whole blob on every later read.
+#[nativelink_test]
+async fn update_rejects_stream_shorter_than_exact_size() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 4)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+
+    // Only the chunk append is expected: no STRLEN, no RENAME.
+    let commands = vec![MockCmd::new(
+        redis::cmd("SETRANGE")
+            .arg(&temp_key)
+            .arg(0)
+            .arg(data.to_vec()),
+        Ok(Value::Int(0)),
+    )];
+
+    let store = make_mock_store(commands).await;
+
+    let (mut tx, rx) = make_buf_channel_pair();
+    let (result, send_result) = tokio::join!(
+        store.update(digest, rx, UploadSizeInfo::ExactSize(4)),
+        async {
+            tx.send(data.clone()).await?;
+            tx.send_eof()
+        },
+    );
+    send_result?;
+    let err = result.as_ref().unwrap_err();
+    assert_eq!(err.code, Code::InvalidArgument, "{result:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("expected 4 bytes, stream ended after 2 bytes"),
+        "Error must name the expected and the received length: {message}",
     );
 
     Ok(())
