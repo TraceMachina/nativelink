@@ -1,6 +1,7 @@
 ---
 title: "The Inaugural RE API Fellow"
 tags: ["announcements", "remote-execution", "robotics", "biology", "semiconductors"]
+image: /assets/re-api-fellow-fig1-action-lifecycle.jpg
 slug: re-api-fellow
 pubDate: 2026-09-08
 readTime: 8 minutes
@@ -24,6 +25,11 @@ In this essay we want to introduce the RE API and why it matters for innovation,
 
 The [Remote Execution API](https://github.com/bazelbuild/remote-apis) is a small, open protocol, built on gRPC and Protocol Buffers, that describes how a client hands a unit of work to a remote machine and gets the result back. The client describes an *action*: the command, the environment, and the exact inputs, each identified by the cryptographic hash of its content. The server checks whether it has already run that action. If it has, the result comes back from cache. If not, the server schedules the work, runs it, and stores the result against the hash. Same inputs, same outputs, every time, on any machine.
 
+<figure>
+  <img src="/assets/re-api-fellow-fig1-action-lifecycle.jpg" alt="The action lifecycle: a client sends a hashed action payload; a cache hit returns the stored result, a cache miss is scheduled, executed on a worker, stored against the digest, and returned" />
+  <figcaption>Fig. 1. The action lifecycle. The hash of the command, environment, and inputs decides whether the work runs or comes back from cache.</figcaption>
+</figure>
+
 Bazel and Buck2 use this to build large software fast, and NativeLink supports both, along with CMake, Siso, and BuildStream. But read the protocol again and you'll notice it never says "compiler." An action is any deterministic transformation of bytes into bytes. A physics simulation is an action. A protein-folding run is an action. A place-and-route job on a chip design is an action. Once work is described this way, it can be cached, distributed, deduplicated, and reproduced by anyone holding the same inputs. It is DRY (don't repeat yourself) applied to computation itself. That is what the RE API offers innovation: a way to make expensive computation cheap to repeat and straightforward to verify. Most of science is expensive to repeat, and a great deal of it has proven hard to reproduce.
 
 ## Autonomous robotics
@@ -34,9 +40,9 @@ A robotics stack is a stew of C++, Python, CUDA, ROS packages, simulators, and f
 
 ## Biology
 
-Trace Machina's CEO is an Oxford- and Imperial-trained computational biologist, so this is where the argument gets personal for a second time. The joke in every lab, wet or dry, is that a pipeline works until the postdoc who wrote it leaves. Sequencing runs, alignments, molecular dynamics, and now models that predict what happens when you perturb a protein all depend on exact versions of tools, reference data, and parameters. Change one, and the result quietly changes with it.
+Trace Machina's CEO, Sumon, is an Oxford- and Imperial-trained Biochemist and computational biologist, so this is where the argument gets personal for a second time. The joke in every lab, wet or dry, is that a pipeline works until the postdoc who wrote it leaves. Sequencing runs, alignments, molecular dynamics, and now models that predict what happens when you perturb a protein all depend on exact versions of tools, reference data, and parameters. Change one, and the result quietly changes with it. Biology is also dynamic, and since lab work is so expensive having a model of the cell which takes into account experimental perturbations to make predictions wouldn't just make lab work reproducible but also simulatable. We are excited by projects like [Flybody](https://github.com/TuragaLab/flybody) that turn connectome experiments into a MuJoCo compatible simulation environment, which can be instrumented in CI.
 
-Biology teams were never asked to adopt CI, and frankly, most CI tools would have wrecked their workflows. What they need is the property underneath CI, content-addressed and reproducible execution, applied to data sizes that make a software monorepo look small. NativeLink's content-addressed storage and chunk-level deduplication were built for exactly that. When a lab can rerun an analysis from two years ago, bit for bit, and know the answer only changed because the biology changed, we have done our job.
+In Bioinformatics or perturbation modelling, Biology teams were never asked to adopt CI, and frankly, most CI tools would have wrecked their workflows. What they need is the property underneath CI, content-addressed and reproducible execution, applied to data sizes that make a software monorepo look small, like virtual cell artifacts. NativeLink's content-addressed storage and chunk-level deduplication were built for exactly that. When a lab can rerun an analysis from two years ago, bit for bit, and know the answer only changed because the biology changed, we have done our job.
 
 ## Electrical engineering
 
@@ -54,9 +60,19 @@ Here is our honest situation. We are seven people — and growing — across Tai
 
 That is why we are creating the RE API Fellowship. The fellow is not an intern and not a support engineer. They are the person we trust to represent NativeLink in the RE community and to carry the RE API into fields that have never heard of it. We need someone who can sit in a working-group discussion about schema design in the morning, talk with a fluid dynamics group about their solver in the afternoon, and see that those are the same conversation.
 
+<figure>
+  <img src="/assets/re-api-fellow-fig2-protocol-never-says-compiler.jpg" alt="Four columns for software, robotics, biology, and silicon, each with a command, inputs, and output, showing that any deterministic transformation of bytes into bytes is an action" />
+  <figcaption>Fig. 2. The protocol never says "compiler." Software, robotics, biology, and silicon are the same shape of action.</figcaption>
+</figure>
+
 The people we picture are unusual combinations. Someone who cares about the Navier–Stokes equations and dabbles in compilers. Someone who has worked on protein perturbation and on distributed systems. Someone who thinks about policy evaluation and about schema design. These are rarely the same person, and that is the point. If you are a current graduate student or a recent graduate and you recognize yourself in any of those pairings, we want to talk. Our only hard requirement is that you live, primarily, in one of the three places where we work: Taiwan, London, or San Francisco.
 
-A few practical details. The fellowship is a one-year term, with an option to extend for a second year if you love the work. It is a paid position, and we will be paying an incredibly competitive salary for the research fellow: we are asking for a rare person and intend to pay the price.
+<figure>
+  <img src="/assets/re-api-fellow-fig3-overlap-hiring.jpg" alt="Three Venn diagrams labeled Navier–Stokes and compilers, protein perturbation and distributed systems, and policy evaluation and schema design, with the caption that the fellow lives in the overlap" />
+  <figcaption>Fig. 3. The overlap we are hiring for. Three pairings we would take seriously; the fellow lives in the intersection.</figcaption>
+</figure>
+
+A few practical details. The fellowship is a one-year term, with an option to extend for a second year if you love the work. It is a paid position, and we will be paying an incredibly competitive stipend for the research fellow: we are asking for a rare person and intend to pay the price.
 
 As the fellow, you will:
 
