@@ -7,8 +7,6 @@ pubDate: 2026-09-08
 readTime: 8 minutes
 ---
 
-*By Marcus Eagan and Sumon Sadhu*
-
 When people first see the open source [NativeLink repository](https://github.com/TraceMachina/nativelink) on GitHub, they think about CI: continuous integration, the practice of building and testing software every time someone pushes a change. It's a fair assumption. Most people associate us with [Bazel](https://bazel.build), and most Bazel users think CI when they think about what Bazel is for.
 
 The association was incomplete. When we started, before we had incorporated our scientific computing parent, Trace Machina, we only supported pure software teams, usually building browsers or applications. Shortly thereafter we started working with robotics, biology, and semiconductor teams, and they shared three characteristics that set them apart from our software customers:
@@ -40,7 +38,7 @@ A robotics stack is a stew of C++, Python, CUDA, ROS packages, simulators, and f
 
 ## Biology
 
-Trace Machina's CEO, Sumon, is an Oxford- and Imperial-trained Biochemist and computational biologist, so this is where the argument gets personal for a second time. The joke in every lab, wet or dry, is that a pipeline works until the postdoc who wrote it leaves. Sequencing runs, alignments, molecular dynamics, and now models that predict what happens when you perturb a protein all depend on exact versions of tools, reference data, and parameters. Change one, and the result quietly changes with it. Biology is also dynamic, and since lab work is so expensive having a model of the cell which takes into account experimental perturbations to make predictions wouldn't just make lab work reproducible but also simulatable. We are excited by projects like [Flybody](https://github.com/TuragaLab/flybody) that turn connectome experiments into a MuJoCo compatible simulation environment, which can be instrumented in CI.
+Trace Machina's CEO, Sumon, is an Oxford- and Imperial-trained Biochemist and computational biologist, so this is where the argument gets personal for a second time. The joke in every lab, wet or dry, is that a pipeline works until the postdoc who wrote it leaves. Sequencing runs, alignments, molecular dynamics, and now models that predict what happens when you perturb a protein all depend on exact versions of tools, reference data, and parameters. Change one, and the result quietly changes with it. Biology is also dynamic, and since lab work is so expensive having a model of the cell which takes into account experimental perturbations to make predictions wouldn't just make lab work reproducible but also simulatable. 
 
 In Bioinformatics or perturbation modelling, Biology teams were never asked to adopt CI, and frankly, most CI tools would have wrecked their workflows. What they need is the property underneath CI, content-addressed and reproducible execution, applied to data sizes that make a software monorepo look small, like virtual cell artifacts. NativeLink's content-addressed storage and chunk-level deduplication were built for exactly that. When a lab can rerun an analysis from two years ago, bit for bit, and know the answer only changed because the biology changed, we have done our job.
 
