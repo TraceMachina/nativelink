@@ -15,6 +15,20 @@ Should you wish to work on an issue, please claim it first by commenting on
 the GitHub issue that you want to work on it. This is to prevent duplicated
 efforts from contributors on the same issue.
 
+## Benchmarks
+
+To catch performance regressions early in NativeLink's [RBE](https://bazel.build/remote/rbe) implementation, we maintain daily benchmarks in a separate repo: 
+- [`nativelink-rbe-benchmarks`](https://github.com/ayewo/nativelink-rbe-benchmarks)
+
+The use cases that are benchmarked include:
+- build with remote cache only;
+- build with remote cache and execution.
+
+At the end of each daily run of the benchmarks, the results of each commit up to the most recent commit are analyzed by a GitHub Actions workflow using an open source [Change Point Detection](https://en.wikipedia.org/wiki/Change_point_detection) (CPD) tool, currently [Apache Otava](https://github.com/apache/otava). 
+
+Another workflow triggers the publishing to GitHub Pages of an Astro static site visualizing the benchmark results: 
+- https://ayewo.github.io/nativelink-rbe-benchmarks/
+
 ## Git setup
 
 NativeLink has a somewhat specific contribution process to ensure consistent
