@@ -41,7 +41,7 @@ use nativelink_config::stores::CommonObjectSpec;
 // when in a retryable wrapper. Always prefer Code::Aborted or another
 // retryable code over Code::InvalidArgument or make_input_err!().
 // ie: Don't import make_input_err!() to help prevent this.
-use nativelink_error::{Code, make_err};
+use nativelink_error::{Code, Error, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use nativelink_util::fs;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -58,8 +58,7 @@ pub struct TlsClient {
 }
 
 impl TlsClient {
-    #[must_use]
-    pub fn new(common: &CommonObjectSpec) -> Self {
+    pub fn new(common: &CommonObjectSpec) -> Result<Self, Error> {
         Self::new_with_http_support(common, common.insecure_allow_http)
     }
 
@@ -67,15 +66,23 @@ impl TlsClient {
     ///
     /// The default credential chain uses plain HTTP for link-local metadata
     /// services, including the EKS Pod Identity, ECS, and EC2 providers.
-    #[must_use]
-    pub fn new_for_credentials(common: &CommonObjectSpec) -> Self {
+    pub fn new_for_credentials(common: &CommonObjectSpec) -> Result<Self, Error> {
         Self::new_with_http_support(common, true)
     }
 
-    fn new_with_http_support(common: &CommonObjectSpec, allow_http: bool) -> Self {
+    fn new_with_http_support(common: &CommonObjectSpec, allow_http: bool) -> Result<Self, Error> {
         install_default_rustls_crypto_provider();
 
-        let connector_with_roots = HttpsConnectorBuilder::new().with_platform_verifier();
+        let connector_with_roots = HttpsConnectorBuilder::new()
+            .try_with_platform_verifier()
+            .map_err(|e| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Failed to load CA root certificates for the TLS client: {e}. \
+                     Mount a CA bundle into the container and point SSL_CERT_FILE \
+                     or SSL_CERT_DIR at it."
+                )
+            })?;
 
         let connector_with_schemes = if allow_http {
             connector_with_roots.https_or_http()
@@ -89,7 +96,7 @@ impl TlsClient {
             connector_with_schemes.enable_http1().enable_http2().build()
         };
 
-        Self::with_https_connector(common, connector)
+        Ok(Self::with_https_connector(common, connector))
     }
 
     pub fn with_https_connector(

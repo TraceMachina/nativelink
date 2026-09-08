@@ -46,7 +46,7 @@ impl R2Store {
         let aws_spec = Self::build_aws_spec(spec);
         let jitter_fn = spec.common.retry.make_jitter_fn();
 
-        let http_client = TlsClient::new(&spec.common.clone());
+        let http_client = TlsClient::new(&spec.common.clone())?;
         let endpoint = Self::derive_endpoint(spec);
 
         let mut config_loader = aws_config::defaults(BehaviorVersion::latest())
