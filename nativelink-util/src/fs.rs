@@ -184,6 +184,14 @@ pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
         .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))
 }
 /// Acquire a permit from the open file semaphore and call a raw function.
+///
+/// `f` runs on the blocking pool, so it must be *purely* blocking `std::fs`
+/// work. It must never `block_on` an async operation: `tokio::fs` is itself
+/// implemented with `spawn_blocking`, so a nested `block_on` needs a second
+/// pool thread while already holding one. Enough concurrent callers then park
+/// every pool thread on inner tasks that can never be scheduled, freezing all
+/// `fs::` operations in the process. Use [`get_permit`] plus a direct `.await`
+/// for anything already async (see [`read_dir`], [`symlink`]).
 #[inline]
 pub async fn call_with_permit<F, T>(f: F) -> Result<T, Error>
 where
@@ -435,15 +443,13 @@ impl AsMut<tokio::fs::ReadDir> for ReadDir {
 
 pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
     let path = path.as_ref().to_owned();
-    let (permit, inner) = call_with_permit(move |permit| {
-        Ok((
-            permit,
-            tokio::runtime::Handle::current()
-                .block_on(tokio::fs::read_dir(path))
-                .map_err(Into::<Error>::into)?,
-        ))
-    })
-    .await?;
+    // Deliberately NOT `call_with_permit`: `tokio::fs::read_dir` is already
+    // async, so it must be awaited directly rather than `block_on`ed from a
+    // blocking-pool thread. See `call_with_permit` for why.
+    let permit = get_permit().await?;
+    let inner = tokio::fs::read_dir(path)
+        .await
+        .map_err(Into::<Error>::into)?;
     Ok(ReadDir { permit, inner })
 }
 
