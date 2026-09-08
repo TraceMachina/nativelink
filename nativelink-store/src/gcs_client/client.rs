@@ -14,6 +14,7 @@
 
 use core::fmt::{Debug, Formatter};
 use core::future::Future;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,7 +34,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_util::buf_channel::DropCloserReadHalf;
 use rand::Rng;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use crate::common_s3_utils::install_default_rustls_crypto_provider;
 use crate::gcs_client::types::{
@@ -106,6 +107,9 @@ pub struct GcsClient {
     client: Client,
     resumable_chunk_size: usize,
     semaphore: Arc<Semaphore>,
+    max_connections: usize,
+    permit_wait_timeout: Option<Duration>,
+    permit_waiters: AtomicUsize,
 }
 
 impl GcsClient {
@@ -172,11 +176,12 @@ impl GcsClient {
             .multipart_max_concurrent_uploads
             .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
 
-        Ok(Self {
+        Ok(Self::with_client(
             client,
             resumable_chunk_size,
-            semaphore: Arc::new(Semaphore::new(max_connections)),
-        })
+            max_connections,
+            spec,
+        ))
     }
 
     /// Create a mock GCS client for testing
@@ -191,11 +196,61 @@ impl GcsClient {
             .multipart_max_concurrent_uploads
             .unwrap_or(DEFAULT_CONCURRENT_UPLOADS);
 
-        Ok(Self {
+        Ok(Self::with_client(
+            client,
+            resumable_chunk_size,
+            max_connections,
+            spec,
+        ))
+    }
+
+    fn with_client(
+        client: Client,
+        resumable_chunk_size: usize,
+        max_connections: usize,
+        spec: &ExperimentalGcsSpec,
+    ) -> Self {
+        Self {
             client,
             resumable_chunk_size,
             semaphore: Arc::new(Semaphore::new(max_connections)),
-        })
+            max_connections,
+            permit_wait_timeout: (spec.permit_wait_timeout_s > 0)
+                .then(|| Duration::from_secs(spec.permit_wait_timeout_s)),
+            permit_waiters: AtomicUsize::new(0),
+        }
+    }
+
+    /// Acquire a connection permit, giving up after `permit_wait_timeout` when
+    /// one is configured. Expiry is `FailedPrecondition` so that neither the
+    /// store `Retrier` nor `upload_from_reader` re-queues the request behind
+    /// the same saturated semaphore.
+    async fn acquire_permit(&self) -> Result<OwnedSemaphorePermit, Error> {
+        let acquire = self.semaphore.clone().acquire_owned();
+        let Some(wait_timeout) = self.permit_wait_timeout else {
+            return acquire.await.map_err(|e| {
+                Error::from_std_err(Code::Internal, &e)
+                    .append("Failed to acquire connection permit")
+            });
+        };
+
+        self.permit_waiters.fetch_add(1, Ordering::Relaxed);
+        let result = timeout(wait_timeout, acquire).await;
+        // The previous value still counts this request, which is what an
+        // operator reading the error wants to know: how deep the queue was.
+        let waiters = self.permit_waiters.fetch_sub(1, Ordering::Relaxed);
+        match result {
+            Ok(Ok(permit)) => Ok(permit),
+            Ok(Err(e)) => Err(Error::from_std_err(Code::Internal, &e)
+                .append("Failed to acquire connection permit")),
+            Err(_) => Err(make_err!(
+                Code::FailedPrecondition,
+                "Waited {}s for a GCS connection permit ({} permits, {} waiters queued)",
+                wait_timeout.as_secs(),
+                self.max_connections,
+                waiters,
+            )),
+        }
     }
 
     /// Generic method to execute operations with connection limiting
@@ -204,9 +259,7 @@ impl GcsClient {
         F: FnOnce() -> Fut + Send,
         Fut: Future<Output = Result<T, Error>> + Send,
     {
-        let permit = self.semaphore.acquire().await.map_err(|e| {
-            Error::from_std_err(Code::Internal, &e).append("Failed to acquire connection permit")
-        })?;
+        let permit = self.acquire_permit().await?;
 
         let result = operation().await;
         drop(permit);
@@ -384,7 +437,9 @@ impl Debug for GcsClient {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GcsClient")
             .field("resumable_chunk_size", &self.resumable_chunk_size)
-            .field("max_connections", &self.semaphore.available_permits())
+            .field("max_connections", &self.max_connections)
+            .field("available_permits", &self.semaphore.available_permits())
+            .field("permit_wait_timeout", &self.permit_wait_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -456,9 +511,7 @@ impl GcsOperations for GcsClient {
             }
         }
 
-        let permit = self.semaphore.clone().acquire_owned().await.map_err(|e| {
-            Error::from_std_err(Code::Internal, &e).append("Failed to acquire connection permit")
-        })?;
+        let permit = self.acquire_permit().await?;
         let request = GetObjectRequest {
             bucket: object_path.bucket.clone(),
             object: object_path.path.clone(),

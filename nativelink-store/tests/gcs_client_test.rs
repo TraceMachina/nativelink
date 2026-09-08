@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{StreamExt, join};
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::gcs_client::client::GcsOperations;
 use nativelink_store::gcs_client::mocks::MockGcsOperations;
@@ -624,5 +624,166 @@ async fn test_gcs_client_error_mapping() -> Result<(), Error> {
     let err = client.read_object_metadata(&object_path).await.unwrap_err();
     assert_eq!(err.code, Code::Unknown);
 
+    Ok(())
+}
+
+/// A `GcsClient` with a single connection permit that is already held by a
+/// request the fake server never answers, so every further request queues on
+/// the semaphore. Later connections get a plain `404` so a request that does
+/// obtain a permit fails with `NotFound` rather than the permit expiry.
+struct HeldPermitFixture {
+    client: Arc<nativelink_store::gcs_client::GcsClient>,
+    hung_request: nativelink_util::task::JoinHandleDropGuard<
+        Result<Option<nativelink_store::gcs_client::GcsObject>, Error>,
+    >,
+}
+
+async fn held_permit_fixture(permit_wait_timeout_s: u64) -> HeldPermitFixture {
+    use nativelink_config::stores::ExperimentalGcsSpec;
+    use nativelink_store::gcs_client::GcsClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (first_accepted_tx, first_accepted_rx) = tokio::sync::oneshot::channel();
+    nativelink_util::background_spawn!("held_permit_gcs_server", async move {
+        // Never answered and never dropped, so its request keeps the permit.
+        let (_held_socket, _) = listener.accept().await.unwrap();
+        first_accepted_tx.send(()).unwrap();
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // Read the request first: closing a socket with unread bytes resets
+            // the connection on Windows instead of delivering the response.
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            while !request.ends_with(b"\r\n\r\n") && socket.read(&mut byte).await.unwrap_or(0) == 1
+            {
+                request.push(byte[0]);
+            }
+            drop(
+                socket
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    .await,
+            );
+            drop(socket.shutdown().await);
+        }
+    });
+
+    let mut spec = ExperimentalGcsSpec {
+        read_timeout_s: 60,
+        permit_wait_timeout_s,
+        ..Default::default()
+    };
+    spec.common.multipart_max_concurrent_uploads = Some(1);
+    let client = Arc::new(GcsClient::new_mock(&spec, format!("http://127.0.0.1:{port}")).unwrap());
+
+    let hung_client = client.clone();
+    let hung_request = nativelink_util::spawn!("held_permit_gcs_request", async move {
+        let object_path = ObjectPath::new(BUCKET_NAME.to_string(), "held-object");
+        hung_client.read_object_metadata(&object_path).await
+    });
+    // The server only accepts once the hung request holds the permit.
+    first_accepted_rx.await.unwrap();
+
+    HeldPermitFixture {
+        client,
+        hung_request,
+    }
+}
+
+#[nativelink_test]
+async fn permit_wait_timeout_fails_fast_with_failed_precondition() -> Result<(), Error> {
+    const WAIT_S: u64 = 1;
+    let fixture = held_permit_fixture(WAIT_S).await;
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+
+    let start = tokio::time::Instant::now();
+    let err = fixture
+        .client
+        .read_object_metadata(&object_path)
+        .await
+        .unwrap_err();
+    let elapsed = start.elapsed();
+
+    assert_eq!(err.code, Code::FailedPrecondition, "got {err:?}");
+    assert_eq!(
+        err.messages,
+        vec!["Waited 1s for a GCS connection permit (1 permits, 1 waiters queued)".to_string()],
+        "error should name the bound, the permit count and the queue depth"
+    );
+    assert!(
+        elapsed >= core::time::Duration::from_secs(WAIT_S),
+        "returned before the wait bound: {elapsed:?}"
+    );
+    assert!(
+        elapsed < core::time::Duration::from_secs(5),
+        "took far longer than the wait bound: {elapsed:?}"
+    );
+
+    drop(fixture.hung_request);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn permit_wait_timeout_bounds_streaming_reads() -> Result<(), Error> {
+    let fixture = held_permit_fixture(1).await;
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+
+    let err = fixture
+        .client
+        .read_object_content(&object_path, 0, None)
+        .await
+        .err()
+        .expect("expected the permit wait to expire");
+    assert_eq!(err.code, Code::FailedPrecondition, "got {err:?}");
+
+    drop(fixture.hung_request);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn permit_wait_timeout_succeeds_when_permit_frees_in_time() -> Result<(), Error> {
+    let fixture = held_permit_fixture(5).await;
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+
+    let waiting_client = fixture.client.clone();
+    let waiting = nativelink_util::spawn!("waiting_gcs_request", async move {
+        waiting_client.read_object_metadata(&object_path).await
+    });
+    // Release the permit well inside the bound by aborting the hung request.
+    tokio::time::sleep(core::time::Duration::from_millis(200)).await;
+    drop(fixture.hung_request);
+
+    // The fake server answers every later connection with a bare 404, so a
+    // request that got its permit inside the bound surfaces the server's
+    // answer, not the permit expiry.
+    let err = waiting
+        .await
+        .map_err(|e| make_err!(Code::Internal, "{e}"))?
+        .unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "got {err:?}");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn permit_wait_unbounded_by_default() -> Result<(), Error> {
+    let fixture = held_permit_fixture(0).await;
+    let object_path = ObjectPath::new(BUCKET_NAME.to_string(), OBJECT_PATH);
+
+    // With the default of 0 the request queues behind the held permit for as
+    // long as it takes, so it must still be pending well after a bounded
+    // client would have failed.
+    let waited = tokio::time::timeout(
+        core::time::Duration::from_millis(1500),
+        fixture.client.read_object_metadata(&object_path),
+    )
+    .await;
+    assert!(
+        waited.is_err(),
+        "expected request to still be waiting, got {waited:?}"
+    );
+
+    drop(fixture.hung_request);
     Ok(())
 }
