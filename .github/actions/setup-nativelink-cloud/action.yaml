@@ -193,6 +193,10 @@ runs:
             # Plain (non-config) line so it also beats the nix-generated
             # nativelink.bazelrc on lanes that run under nix develop.
             echo "common --remote_upload_local_results=false"
+            # BEP uploads profiles and test logs independently of action-cache
+            # uploads. The PR key has cache_read + bep_write, so leave those
+            # files local while still sending the complete build-event stream.
+            echo "common --experimental_build_event_upload_strategy=local"
           fi
           # Both headers from the same variable: a truncated BES key once
           # caused silent 401s while the cache header kept working.
