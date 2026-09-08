@@ -483,3 +483,9 @@ PDKs
 rules_omniverse
 [Ss]tochasticity
 Sumon
+Biochemist
+Bioinformatics
+Flybody
+MuJoCo
+connectome
+simulatable
