@@ -67,6 +67,7 @@ const KNOWN_MAP_KEYS = new Set([
   // `scripts/lib/schema-to-mdx.mjs` to expand that spec, after which these
   // should be deleted.
   "sas_url", // nativelink-config/src/stores.rs:1233
+  "simple_upload_threshold", // nativelink-config/src/stores.rs:1286
 ]);
 
 const IGNORE_MARKER = "lint-snippets: ignore";
