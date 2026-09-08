@@ -1048,6 +1048,30 @@ pub struct LocalWorkerConfig {
     #[serde(default)]
     pub experimental_active_input_leases: bool,
 
+    /// Reuse immutable input directories through read-only bind mounts on Linux.
+    /// The worker prepares each selected subtree once per REAPI `Directory`
+    /// digest in the directory cache, then mounts it into each action instead of
+    /// recreating its filesystem entries.
+    ///
+    /// Paths are relative to the action input root, for example `["out/x/sdk"]`.
+    /// They must be nonempty, canonical, and non-overlapping. Absolute paths,
+    /// empty path components, and `.`/`..` components are rejected.
+    /// Requires `directory_cache`, `use_namespaces: true`, and
+    /// `use_mount_namespace: true`.
+    ///
+    /// Actions declaring overlapping outputs, working inside a selected subtree,
+    /// or using a persistent worker fall back to ordinary materialization.
+    /// Output paths reached through symlink aliases cannot be checked for
+    /// overlap. Use this only with trusted workloads that do not modify the
+    /// selected trees; read-only input mounts are not a security boundary.
+    ///
+    /// Cache entries remain pinned until action cleanup and may temporarily
+    /// exceed the cache's eviction budget. Leave headroom on the underlying disk.
+    ///
+    /// Default: [] (disabled)
+    #[serde(default)]
+    pub experimental_readonly_input_mounts: Vec<String>,
+
     /// Whether to use namespaces to isolate the execution. This is only available
     /// on Linux. It is highly recommended as it avoids a number of issues with
     /// zombie processes and also provides additional hermeticity. If explicitly set

@@ -301,6 +301,7 @@ impl Drop for OwnedFd {
 fn perform_remount(
     root_action_directory: &core::ffi::CStr,
     action_directory: &core::ffi::CStr,
+    input_mounts: &[ReadOnlyBindMount],
 ) -> Result<(), Error> {
     // Make the mount namespace private to avoid changes propagating back to the host.
     // SAFETY: mount is async-signal-safe. We pass a null pointer for the source and valid
@@ -317,6 +318,12 @@ fn perform_remount(
     {
         return Err(Error::last_os_error());
     }
+
+    // Install inputs while cache paths are still visible. The recursive action
+    // bind below preserves these mounts when its parent is masked. Resolving
+    // sources here also keeps them in this mount namespace, unlike descriptors
+    // opened by the parent before unshare.
+    mount_readonly_inputs(input_mounts)?;
 
     // Bind mount the action directory to itself to "save" its current contents before
     // we mask its parent.
@@ -391,6 +398,96 @@ fn perform_remount(
     Ok(())
 }
 
+/// Paths for a bind mount, allocated in the parent before the pre-exec hook.
+/// The caller must pin the cache entry until the action exits and its mounts are released.
+#[derive(Debug)]
+pub struct ReadOnlyBindMount {
+    source: std::ffi::CString,
+    target: std::ffi::CString,
+    remount_flags: libc::c_ulong,
+}
+
+impl ReadOnlyBindMount {
+    pub fn new(source: &std::path::Path, target: &std::path::Path) -> Result<Self, Error> {
+        use std::os::unix::ffi::OsStrExt;
+
+        // Linux statvfs flag, not exposed by the libc crate on musl.
+        const ST_RELATIME: libc::c_ulong = 0x1000;
+
+        // The child changes its working directory before running pre-exec.
+        let source = std::path::absolute(source)?;
+        let target = std::path::absolute(target)?;
+        let source = std::ffi::CString::new(source.as_os_str().as_bytes())?;
+        let mut stats = core::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: the source is a valid C string and stats is writable storage.
+        if unsafe { libc::statvfs(source.as_ptr(), stats.as_mut_ptr()) } != 0 {
+            return Err(Error::last_os_error());
+        }
+        // SAFETY: statvfs initialized the structure on success.
+        let flags = unsafe { stats.assume_init() }.f_flag;
+        let mut remount_flags =
+            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV;
+        // A user namespace cannot clear inherited locked mount flags. Preserve
+        // execute and atime restrictions while adding read-only protection.
+        for (stat_flag, mount_flag) in [
+            (libc::ST_NOEXEC, libc::MS_NOEXEC),
+            (libc::ST_NOATIME, libc::MS_NOATIME),
+            (libc::ST_NODIRATIME, libc::MS_NODIRATIME),
+            (ST_RELATIME, libc::MS_RELATIME),
+        ] {
+            if flags & stat_flag != 0 {
+                remount_flags |= mount_flag;
+            }
+        }
+        Ok(Self {
+            source,
+            target: std::ffi::CString::new(target.as_os_str().as_bytes())?,
+            remount_flags,
+        })
+    }
+}
+
+/// Installs prepared input trees inside the private mount namespace, before
+/// masking the action root.
+///
+/// Call only from the child's pre-exec hook: all strings and flags are
+/// prepared beforehand, and this function uses only mount syscalls and errno.
+/// Failure aborts the spawn rather than executing against empty placeholders.
+fn mount_readonly_inputs(mounts: &[ReadOnlyBindMount]) -> Result<(), Error> {
+    for mount in mounts {
+        // SAFETY: both paths are valid, preallocated C strings; the source
+        // cache entry is kept alive by the action through its cleanup.
+        if unsafe {
+            libc::mount(
+                mount.source.as_ptr(),
+                mount.target.as_ptr(),
+                core::ptr::null(),
+                libc::MS_BIND,
+                core::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(Error::last_os_error());
+        }
+        // MS_RDONLY on the initial bind is ignored by Linux; remount the
+        // action's bind explicitly. This leaves the worker's cache mount alone.
+        // SAFETY: this modifies only the bind in the child's private namespace.
+        if unsafe {
+            libc::mount(
+                core::ptr::null(),
+                mount.target.as_ptr(),
+                core::ptr::null(),
+                mount.remount_flags,
+                core::ptr::null(),
+            )
+        } != 0
+        {
+            return Err(Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// A hook for a `Command::spawn` to create the process in a new namespace.
 /// This creates a stub process that the Command points at which forwards
 /// SIGKILL to the actual process in the new user, PID, UTS and IPC
@@ -403,6 +500,22 @@ pub fn configure_namespace(
     root_action_directory: &core::ffi::CStr,
     action_directory: &core::ffi::CStr,
 ) -> std::io::Result<()> {
+    configure_namespace_with_input_mounts(mount, root_action_directory, action_directory, &[])
+}
+
+/// Like `configure_namespace`, with prepared immutable input trees. Mounts are
+/// installed only after making the namespace private, and before masking the
+/// action root. All paths must be allocated and cache entries pinned by the
+/// parent. This function is async-signal-safe.
+pub fn configure_namespace_with_input_mounts(
+    mount: bool,
+    root_action_directory: &core::ffi::CStr,
+    action_directory: &core::ffi::CStr,
+    input_mounts: &[ReadOnlyBindMount],
+) -> std::io::Result<()> {
+    if !mount && !input_mounts.is_empty() {
+        return Err(Error::from_raw_os_error(libc::EINVAL));
+    }
     // SAFETY: It is always safe to call geteuid on Posix.
     let uid = unsafe { libc::geteuid() };
     // SAFETY: It is always safe to call getegid on Posix.
@@ -444,7 +557,7 @@ pub fn configure_namespace(
 
     // Configure the mount namespace if enabled.
     if mount {
-        perform_remount(root_action_directory, action_directory).unwrap();
+        perform_remount(root_action_directory, action_directory, input_mounts)?;
     }
 
     // Set hostname to "nativelink" to ensure reproducibility.

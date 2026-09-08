@@ -171,6 +171,22 @@ impl Drop for EntryPin {
     }
 }
 
+/// A prepared tree held against eviction for the lifetime of this handle.
+/// A cache hit can return this handle without walking or recreating the tree.
+/// Consumers must expose the prepared tree read-only.
+#[derive(Debug)]
+pub struct PreparedDirectory {
+    path: PathBuf,
+    size: u64,
+    pin: EntryPin,
+}
+
+impl PreparedDirectory {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// Drop guard for an in-progress temp construction tree: if the owning
 /// future is dropped before [`Self::disarm`] (cancellation — e.g.
 /// `buffer_unordered` drops sibling constructions on the first error), the
@@ -441,6 +457,35 @@ impl DirectoryCache {
         Ok(hit)
     }
 
+    /// Acquires a reusable tree without copying it to an action workspace.
+    /// The returned handle must outlive every mount or other use of its path.
+    pub async fn prepare_for_mount(
+        &self,
+        digest: DigestInfo,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
+        self.maybe_log_summary();
+        acquire_digest(lease, &digest);
+        if let Some(prepared) = self.acquire_entry(&digest).await {
+            return Ok(prepared);
+        }
+        let lock = {
+            let mut locks = self.construction_locks.lock().await;
+            locks
+                .entry(digest)
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+        let result = if let Some(prepared) = self.acquire_entry(&digest).await {
+            Ok(prepared)
+        } else {
+            self.construct_entry(digest, None, true, lease).await
+        };
+        self.forget_construction_lock(&digest).await;
+        result
+    }
+
     /// Core get-or-create flow shared by root materializations
     /// ([`Self::get_or_create`]) and, with `experimental_subtree_caching`
     /// enabled, subtree materializations (`create_subdirectory`). Returns
@@ -466,7 +511,7 @@ impl DirectoryCache {
         acquire_digest(lease, &digest);
 
         // Fast path: serve from an existing entry.
-        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await {
+        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
             return Ok((true, size));
         }
 
@@ -491,10 +536,8 @@ impl DirectoryCache {
         let _guard = construction_lock.lock().await;
 
         // Run the construction/materialization under the per-digest guard,
-        // then drop the per-digest mutex from the stampede map regardless of
-        // outcome so it cannot grow unbounded. The guard (`_guard`) is still
-        // held until the end of this function — `forget_construction_lock`
-        // only unmaps the Arc; any waiter already cloned it before blocking.
+        // then remove its lock from the map if no other callers are waiting.
+        // Waiters must keep sharing this flight even if construction failed.
         let result = self
             .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease)
             .await;
@@ -516,40 +559,51 @@ impl DirectoryCache {
     /// case the dead entry has been invalidated (removed + tombstoned, so it
     /// cannot fail every future request forever) and the possibly partially
     /// populated destination cleared, so the caller can construct fresh.
+    /// If another caller still holds the entry, return the error without
+    /// invalidating it: that caller may be using its tree through a mount.
     async fn try_materialize_from_cache(
         &self,
         digest: &DigestInfo,
         dest_path: &Path,
-    ) -> Option<u64> {
-        let (cache_path, size, pin) = self.acquire_entry(digest).await?;
+    ) -> Result<Option<u64>, Error> {
+        let Some(PreparedDirectory {
+            path: cache_path,
+            size,
+            pin,
+        }) = self.acquire_entry(digest).await
+        else {
+            return Ok(None);
+        };
         debug!(?digest, ?cache_path, "Directory cache HIT");
         match hardlink_directory_tree(&cache_path, dest_path).await {
             Ok(method) => {
                 drop(pin);
                 self.record_clone_method(method);
-                Some(size)
+                Ok(Some(size))
             }
             Err(e) => {
+                if !self.invalidate_entry(digest, &pin).await {
+                    return Err(e).err_tip(|| "Cannot rebuild a directory while it is in use");
+                }
                 warn!(
                     ?digest,
                     error = ?e,
                     "Failed to hardlink from cache, invalidating entry and reconstructing"
                 );
-                self.invalidate_entry(digest, &pin).await;
                 drop(pin);
                 // The failed walk may have partially populated the
                 // destination; clear it so the reconstruction starts clean
                 // (`hardlink_directory_tree` refuses an existing destination
                 // and `create_file` fails on leftovers).
                 Self::remove_tree_best_effort(dest_path).await;
-                None
+                Ok(None)
             }
         }
     }
 
     /// The cache-miss body, run while holding the per-digest construction
-    /// guard. Split out so `get_or_create_entry` can unconditionally clean up
-    /// the construction-lock map entry afterwards on every exit path.
+    /// guard. Split out so `get_or_create_entry` can retire an unused
+    /// construction lock after either success or failure.
     /// `protos` and `prefetch_on_miss` are documented on
     /// [`Self::get_or_create_entry`].
     async fn construct_and_materialize(
@@ -564,10 +618,28 @@ impl DirectoryCache {
         // we waited on the construction lock. If the entry turns out to be
         // damaged it is invalidated and we fall through to rebuild it fresh
         // (exactly once — we hold the construction lock).
-        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await {
+        if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await? {
             return Ok((true, size));
         }
 
+        let prepared = self
+            .construct_entry(digest, protos, prefetch_on_miss, lease)
+            .await?;
+        let method = hardlink_directory_tree(prepared.path(), dest_path)
+            .await
+            .err_tip(|| "Failed to hardlink newly cached directory")?;
+        self.record_clone_method(method);
+        Ok((false, prepared.size))
+    }
+
+    /// Constructs and publishes a pinned entry, without copying it elsewhere.
+    async fn construct_entry(
+        &self,
+        digest: DigestInfo,
+        protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<PreparedDirectory, Error> {
         // Construct the directory into a UNIQUE temp path first, then
         // atomically publish it to the canonical `cache_root/<digest>` path
         // via rename. Constructing at the canonical path directly would
@@ -632,11 +704,9 @@ impl DirectoryCache {
         // the expensive filesystem deletion is dispatched off the lock so
         // eviction I/O never serializes other callers.
         //
-        // The new entry is inserted pre-pinned. The hardlink-to-destination
-        // below runs unlocked, and a concurrent caller for an unrelated
-        // digest could otherwise pick this brand-new entry as an eviction
-        // victim and delete its tree mid-hardlink. Dropping the pin releases
-        // it once the hardlink is done.
+        // Publish already pinned: a concurrent insertion must not evict the
+        // tree before its caller has finished copying or mounting it. The
+        // returned handle keeps the pin alive for the entire use.
         let ref_count = Arc::new(AtomicUsize::new(1));
         let pin = EntryPin {
             ref_count: Arc::clone(&ref_count),
@@ -666,14 +736,11 @@ impl DirectoryCache {
         };
         Self::dispatch_evictions(tombstones);
 
-        // Hardlink to destination (unlocked). The entry is pinned so it
-        // cannot be evicted from under this hardlink.
-        let result = hardlink_directory_tree(&cache_path, dest_path).await;
-        drop(pin);
-        let method = result.err_tip(|| "Failed to hardlink newly cached directory")?;
-        self.record_clone_method(method);
-
-        Ok((false, size))
+        Ok(PreparedDirectory {
+            path: cache_path,
+            size,
+            pin,
+        })
     }
 
     /// Removes a cache entry whose on-disk tree failed to materialize
@@ -686,17 +753,24 @@ impl DirectoryCache {
     /// attempt: invalidation is skipped if the map now holds a DIFFERENT
     /// entry for this digest (single-flight already rebuilt it), identified
     /// by refcount-handle pointer identity.
-    async fn invalidate_entry(&self, digest: &DigestInfo, pin: &EntryPin) {
+    /// Returns `false` if another caller still pins the entry.
+    async fn invalidate_entry(&self, digest: &DigestInfo, pin: &EntryPin) -> bool {
         let tombstones = {
             let mut cache = self.cache.write().await;
             let is_same_entry = cache
                 .get(digest)
                 .is_some_and(|m| Arc::ptr_eq(&m.ref_count, &pin.ref_count));
             if !is_same_entry {
-                return;
+                return true;
+            }
+            // The failed materialization owns one pin. Other pins may belong
+            // to mounted actions, whose source must not be renamed or deleted.
+            // Holding the write lock prevents new pins during this check.
+            if pin.ref_count.load(Ordering::SeqCst) > 1 {
+                return false;
             }
             let Some(metadata) = cache.remove(digest) else {
-                return;
+                return true;
             };
             self.map_entries.fetch_sub(1, Ordering::Relaxed);
             self.map_size_bytes
@@ -704,6 +778,7 @@ impl DirectoryCache {
             self.tombstone_victims(vec![metadata.path]).await
         };
         Self::dispatch_evictions(tombstones);
+        true
     }
 
     /// Best-effort `remove_dir_all` that treats `NotFound` as success and
@@ -762,39 +837,42 @@ impl DirectoryCache {
     }
 
     /// If `digest` is cached, pins it against eviction and returns a
-    /// snapshot of its on-disk path, its recorded size, and the RAII pin.
+    /// handle holding its on-disk path, recorded size, and the RAII pin.
     /// Runs under the cache READ lock — the refcount and LRU timestamp are
     /// atomics, so hits do not serialize on the write lock. The increment is
     /// race-free against eviction because eviction requires the write lock,
     /// which excludes every read-lock holder: an entry with an outstanding
     /// pin is always observed with a non-zero count by `evict_lru`.
-    async fn acquire_entry(&self, digest: &DigestInfo) -> Option<(PathBuf, u64, EntryPin)> {
+    async fn acquire_entry(&self, digest: &DigestInfo) -> Option<PreparedDirectory> {
         let cache = self.cache.read().await;
         let metadata = cache.get(digest)?;
         metadata
             .last_access
             .store(unix_nanos_now(), Ordering::Relaxed);
         metadata.ref_count.fetch_add(1, Ordering::SeqCst);
-        Some((
-            metadata.path.clone(),
-            metadata.size,
-            EntryPin {
+        Some(PreparedDirectory {
+            path: metadata.path.clone(),
+            size: metadata.size,
+            pin: EntryPin {
                 ref_count: Arc::clone(&metadata.ref_count),
             },
-        ))
+        })
     }
 
-    /// Drops the per-digest construction mutex from the stampede map once
-    /// construction (or the post-construction recheck) for `digest` is done.
-    /// Without this the map grows unbounded over the worker's lifetime.
-    ///
-    /// Safe to call while holding the construction guard: a concurrent waiter
-    /// already cloned the `Arc<Mutex>` before blocking, so removing the map
-    /// entry only prevents *future* callers from joining this exact mutex —
-    /// they will create a fresh one, re-check the cache, find the entry, and
-    /// take the fast hardlink path. It never causes a redundant construct.
+    /// Removes an idle construction lock after the last caller finishes.
+    /// Keep it mapped while another caller owns an `Arc`: after a failed
+    /// construction that caller may retry before a cache entry exists, and
+    /// giving new callers a different mutex would allow concurrent publication
+    /// to the same path. The map lock prevents new clones during this check.
     async fn forget_construction_lock(&self, digest: &DigestInfo) {
-        self.construction_locks.lock().await.remove(digest);
+        let mut locks = self.construction_locks.lock().await;
+        // The map and this function's caller each own one strong reference.
+        if locks
+            .get(digest)
+            .is_some_and(|lock| Arc::strong_count(lock) == 2)
+        {
+            locks.remove(digest);
+        }
     }
 
     /// Constructs a directory from the CAS at the given path and returns the
@@ -2313,6 +2391,79 @@ mod tests {
         let dest = temp_dir.path().join("dest");
         assert!(!cache.get_or_create(dir_digest, &dest).await?);
         assert!(dest.join("test.txt").exists());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn queued_construction_retry_excludes_new_requests() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (store, digest) = setup_test_store(&temp_dir).await;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        // Reproduce a failed constructor handing its lock to a waiting retry.
+        // No entry has been published yet, so new requests must join
+        // that same flight rather than race to replace the same cache path.
+        let constructor = Arc::new(Mutex::new(()));
+        cache
+            .construction_locks
+            .lock()
+            .await
+            .insert(digest, constructor.clone());
+        let retry = constructor.clone();
+        let retry_guard = retry.lock().await;
+        cache.forget_construction_lock(&digest).await;
+        drop(constructor);
+
+        let dest = temp_dir.path().join("dest");
+        let request = cache.get_or_create(digest, &dest);
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), request.as_mut())
+                .await
+                .is_err(),
+            "a new request bypassed an existing construction retry"
+        );
+        drop(retry_guard);
+        drop(retry);
+        assert!(!request.await?);
+        assert!(dest.join("test.txt").exists());
+        assert!(cache.construction_locks.lock().await.is_empty());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn failed_materialization_preserves_mounted_entry() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (store, digest) = setup_test_store(&temp_dir).await;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        let prepared = cache.prepare_for_mount(digest, None).await?;
+        // An invalid destination must not invalidate another action's mount.
+        let dest = temp_dir.path().join("dest");
+        fs::write(&dest, b"not a directory").await?;
+        assert!(cache.get_or_create(digest, &dest).await.is_err());
+        let cached = cache.acquire_entry(&digest).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&prepared.pin.ref_count, &cached.pin.ref_count),
+            "failed materialization replaced a pinned mount source"
+        );
+        assert!(prepared.path().join("test.txt").exists());
+        drop(cached);
+        drop(prepared);
+        fs::remove_file(&dest).await?;
+        assert!(cache.get_or_create(digest, &dest).await?);
         Ok(())
     }
 }
