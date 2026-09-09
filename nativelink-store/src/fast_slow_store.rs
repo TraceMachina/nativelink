@@ -64,6 +64,8 @@ pub struct FastSlowStore {
     slow_direction: StoreDirection,
     /// See [`FastSlowSpec::bypass_dedup_threshold_bytes`].
     bypass_dedup_threshold_bytes: u64,
+    /// See [`FastSlowSpec::trust_fast_store_for_has`].
+    trust_fast_store_for_has: bool,
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
@@ -166,6 +168,7 @@ impl FastSlowStore {
             slow_direction: spec.slow_direction,
             // 0 (default) disables the bypass entirely (always dedup).
             bypass_dedup_threshold_bytes: spec.bypass_dedup_threshold_bytes,
+            trust_fast_store_for_has: spec.trust_fast_store_for_has,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
@@ -204,6 +207,34 @@ impl FastSlowStore {
         self.bypass_dedup_threshold_bytes != 0
             && Self::digest_size_bytes(key)
                 .is_some_and(|size| size >= self.bypass_dedup_threshold_bytes)
+    }
+
+    /// Asks the slow store only about the keys still unresolved in
+    /// `results` and writes its answers back into the matching slots. Used
+    /// by `has_with_results` when a fast-store hit is trusted as existence.
+    async fn has_in_slow_store_for_misses(
+        &self,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        let (miss_indexes, miss_keys): (Vec<usize>, Vec<StoreKey<'_>>) = keys
+            .iter()
+            .zip(results.iter())
+            .enumerate()
+            .filter(|(_, (_, result))| result.is_none())
+            .map(|(i, (key, _))| (i, key.borrow()))
+            .unzip();
+        if miss_keys.is_empty() {
+            return Ok(());
+        }
+        let mut slow_results = vec![None; miss_keys.len()];
+        self.slow_store
+            .has_with_results(&miss_keys, &mut slow_results)
+            .await?;
+        for (i, size) in miss_indexes.into_iter().zip(slow_results) {
+            results[i] = size;
+        }
+        Ok(())
     }
 
     pub const fn fast_store(&self) -> &Store {
@@ -479,8 +510,18 @@ impl StoreDriver for FastSlowStore {
             return self.fast_store.has_with_results(key, results).await;
         }
 
-        // Check with the slow store first.
-        self.slow_store.has_with_results(key, results).await?;
+        if self.trust_fast_store_for_has {
+            self.fast_store.has_with_results(key, results).await?;
+            self.has_in_slow_store_for_misses(key, results).await?;
+        } else {
+            // NOTE: By default we intentionally *NEVER* check the fast store,
+            // this is to ensure that we re-upload data to the slow store if
+            // it only exists in the fast store.  This does not affect workers
+            // as they do not check existence through `has` and instead go
+            // direct to loading the data which bypasses the check and will
+            // load from the fast store if it does not exist in the slow store.
+            self.slow_store.has_with_results(key, results).await?;
+        }
 
         // Check for any in-flight requests to the slow store next.
         let mut in_flight_futs = FuturesUnordered::new();
@@ -501,13 +542,6 @@ impl StoreDriver for FastSlowStore {
         while let Some((i, size)) = in_flight_futs.next().await {
             results[i] = size;
         }
-
-        // NOTE: We intentionally *NEVER* check the fast store, this is to
-        // ensure that we re-upload data to the slow store if it only exists
-        // in the fast store.  This does not affect workers as they do not
-        // check existence through `has` and instead go direct to loading the
-        // data which bypasses the check and will load from the fast store if
-        // it does not exist in the slow store.
 
         Ok(())
     }
