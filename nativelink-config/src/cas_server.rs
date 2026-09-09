@@ -1067,6 +1067,28 @@ pub struct LocalWorkerConfig {
     /// error.
     /// Default: False.
     pub use_mount_namespace: Option<bool>,
+
+    /// Whether to give each action a private, empty `/tmp` by mounting a fresh
+    /// tmpfs over it inside the action's mount namespace. This stops concurrent
+    /// actions from colliding on predictable paths under `/tmp` and keeps state
+    /// from leaking between actions through `/tmp`. Anything an action writes
+    /// there is discarded when the action finishes.
+    ///
+    /// This is only available on Linux and requires `use_mount_namespace` to be
+    /// true. If explicitly set to true without `use_mount_namespace` the worker
+    /// will exit with an error. Set it to false to keep the host's `/tmp`
+    /// visible to actions, for example when a tool they need lives there.
+    ///
+    /// Note: the private `/tmp` is memory backed, so what an action writes there
+    /// counts against the worker's memory rather than its disk.
+    ///
+    /// If `/tmp` does not exist on the worker, for example in a minimal
+    /// container image, there is nothing for actions to collide on, so the
+    /// default is False there and a warning is logged at startup.
+    ///
+    /// Default: True when `use_mount_namespace` is true and `/tmp` exists,
+    /// otherwise False.
+    pub isolate_tmp: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

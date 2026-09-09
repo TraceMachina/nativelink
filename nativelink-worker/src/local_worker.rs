@@ -668,31 +668,46 @@ pub async fn new_local_worker(
     };
 
     #[cfg(target_os = "linux")]
-    let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
-        if *use_namespaces
-            && !crate::namespace_utils::namespaces_supported(
-                config.use_mount_namespace.unwrap_or_default(),
-            )
-        {
-            return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+    let use_namespaces = {
+        let use_mount_namespace = config.use_mount_namespace.unwrap_or_default();
+        // A private /tmp is part of the mount isolation unless explicitly
+        // turned off. A worker without a /tmp, such as a minimal container
+        // image, has nothing for actions to collide on, so the default is
+        // off there instead of failing to start.
+        let isolate_tmp = config.isolate_tmp.unwrap_or_else(|| {
+            let has_tmp = std::path::Path::new("/tmp").is_dir();
+            if use_mount_namespace && !has_tmp {
+                warn!("/tmp does not exist on this worker, so actions will not get a private /tmp");
+            }
+            use_mount_namespace && has_tmp
+        });
+        if isolate_tmp && !use_mount_namespace {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "isolate_tmp requires use_mount_namespace to be true"
+            ));
         }
-        if !*use_namespaces {
-            crate::running_actions_manager::UseNamespaces::No
-        } else if config.use_mount_namespace.unwrap_or_default() {
-            crate::running_actions_manager::UseNamespaces::YesAndMount
+        if let Some(use_namespaces) = &config.use_namespaces {
+            if *use_namespaces
+                && !crate::namespace_utils::namespaces_supported(use_mount_namespace, isolate_tmp)
+            {
+                return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+            }
+            if !*use_namespaces {
+                crate::running_actions_manager::UseNamespaces::No
+            } else if use_mount_namespace {
+                crate::running_actions_manager::UseNamespaces::YesAndMount { isolate_tmp }
+            } else {
+                crate::running_actions_manager::UseNamespaces::Yes
+            }
+        } else if use_mount_namespace {
+            return Err(make_err!(
+                Code::Unavailable,
+                "Mount namespaces not supported"
+            ));
         } else {
-            crate::running_actions_manager::UseNamespaces::Yes
+            crate::running_actions_manager::UseNamespaces::No
         }
-    } else if config
-        .use_mount_namespace
-        .is_some_and(core::convert::identity)
-    {
-        return Err(make_err!(
-            Code::Unavailable,
-            "Mount namespaces not supported"
-        ));
-    } else {
-        crate::running_actions_manager::UseNamespaces::No
     };
 
     #[cfg(not(target_os = "linux"))]
@@ -710,6 +725,13 @@ pub async fn new_local_worker(
         return Err(make_err!(
             Code::Unavailable,
             "Mount namespaces not supported on non-Linux OSes"
+        ));
+    }
+    #[cfg(not(target_os = "linux"))]
+    if config.isolate_tmp.is_some_and(core::convert::identity) {
+        return Err(make_err!(
+            Code::Unavailable,
+            "isolate_tmp is not supported on non-Linux OSes"
         ));
     }
 
