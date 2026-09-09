@@ -485,6 +485,19 @@ pub trait StoreLike: Send + Sync + Sized + Unpin + 'static {
             .has_with_results(digests, results)
     }
 
+    /// Hints that `keys` are first-in-line eviction candidates. See
+    /// [`StoreDriver::demote_keys`] for details.
+    #[inline]
+    fn demote_keys<'a>(
+        &'a self,
+        keys: &'a [StoreKey<'a>],
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+        if keys.is_empty() {
+            return future::ready(Ok(())).boxed();
+        }
+        self.as_store_driver_pin().demote_keys(keys)
+    }
+
     /// List all the keys in the store that are within the given range.
     /// `handler` is called for each key in the range. If `handler` returns
     /// false, the listing is stopped.
@@ -649,6 +662,17 @@ pub trait StoreDriver:
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error>;
+
+    /// Hints that `keys` hold reproducible derived data (e.g. CDC chunk
+    /// blobs after a successful `SpliceBlob`) that should be first in line
+    /// for eviction. Implementations with an eviction order move the
+    /// entries to the least-recently-used position; the default is a
+    /// no-op. This never deletes data and never fires removal callbacks —
+    /// it is purely an eviction-ordering hint, so wrapper stores that do
+    /// not forward it simply leave the ordering unchanged.
+    async fn demote_keys(self: Pin<&Self>, _keys: &[StoreKey<'_>]) -> Result<(), Error> {
+        Ok(())
+    }
 
     /// See: [`StoreLike::list`] for details.
     async fn list(

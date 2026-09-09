@@ -66,6 +66,7 @@ rust_test_suite(
         "tests/bytestream_server_test.rs",
         "tests/capabilities_server_test.rs",
         "tests/cas_server_test.rs",
+        "tests/cas_splice_eviction_test.rs",
         "tests/execution_server_test.rs",
         "tests/fastcdc_conformance_test.rs",
         "tests/fetch_server_test.rs",

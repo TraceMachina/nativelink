@@ -45,7 +45,7 @@ use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::spawn_blocking;
-use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use opentelemetry::context::FutureExt;
 use prost::Message;
 use tokio_util::io::StreamReader;
@@ -969,6 +969,10 @@ impl CasServer {
                 blob_digest.size_bytes()
             ));
         }
+        let chunk_keys: Vec<StoreKey> = chunk_digests
+            .iter()
+            .map(|chunk_digest| StoreKey::Digest(*chunk_digest))
+            .collect();
 
         // One round of existence checks: the chunks (which also touches
         // them, best-effort extending their lifetimes), the blob, and the
@@ -994,6 +998,13 @@ impl CasServer {
             self.chunking_metrics
                 .splice_already_exists
                 .fetch_add(1, Ordering::Relaxed);
+            // The existence check above promoted the chunks in the eviction
+            // order; undo that — the assembled blob exists, so the chunks
+            // remain reproducible dedup hints (mirrors the demotion in the
+            // assembly path below).
+            if let Err(err) = store.demote_keys(&chunk_keys).await {
+                debug!(?err, "Failed to demote chunk keys after no-op splice");
+            }
             return Ok(Response::new(SpliceBlobResponse {
                 blob_digest: Some(blob_digest.into()),
             }));
@@ -1017,6 +1028,7 @@ impl CasServer {
         let verification_failed_ref = &verification_failed;
         let (tx, rx) = make_buf_channel_pair();
         let send_store = store.clone();
+        let demote_store = store.clone();
         // `tx` is moved into the future so that an early error return drops
         // it without an EOF, which aborts the in-flight store update instead
         // of leaving it waiting for more data.
@@ -1074,6 +1086,19 @@ impl CasServer {
                         .collect::<Vec<_>>()
                         .join(" / ")
                 ));
+            }
+            // Every chunk's content is now consumed (hashed and handed to
+            // the store update), so the chunks are once again reproducible
+            // dedup hints. Demote them to the front of the eviction order
+            // BEFORE the EOF releases the assembled blob for commit: the
+            // commit's own eviction pass must prefer evicting chunks over
+            // unrelated primary blobs. Without this, chunked uploads store
+            // every large blob twice (freshly-promoted chunks + assembled
+            // blob) and can push still-referenced small blobs out of a
+            // size-capped store. Best-effort: a demote failure must not
+            // fail the splice.
+            if let Err(err) = demote_store.demote_keys(&chunk_keys).await {
+                debug!(?err, "Failed to demote chunk keys in splice_blob");
             }
             tx.send_eof()
                 .err_tip(|| "Failed to send EOF in splice_blob")?;

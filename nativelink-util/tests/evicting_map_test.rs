@@ -1294,3 +1294,66 @@ async fn snapshot_display_info() -> Result<(), Error> {
     );
     Ok(())
 }
+
+#[nativelink_test]
+async fn demote_moves_entry_to_eviction_front() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 3,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let digest_a = DigestInfo::try_new(HASH1, 0)?;
+    let digest_b = DigestInfo::try_new(HASH2, 0)?;
+    let digest_c = DigestInfo::try_new(HASH3, 0)?;
+    let digest_d = DigestInfo::try_new(HASH4, 0)?;
+    evicting_map.insert(digest_a, Bytes::new().into()).await;
+    evicting_map.insert(digest_b, Bytes::new().into()).await;
+    evicting_map.insert(digest_c, Bytes::new().into()).await;
+
+    // Promote A (order oldest-first is now B, C, A), then demote C so it
+    // becomes the eviction candidate despite being recently inserted.
+    evicting_map.get(&digest_a).await;
+    evicting_map.demote([&digest_c]);
+
+    // Inserting D must now evict the demoted C, not B.
+    evicting_map.insert(digest_d, Bytes::new().into()).await;
+
+    let keys = [digest_a, digest_b, digest_c, digest_d];
+    let mut results = [None, None, None, None];
+    evicting_map
+        .sizes_for_keys(keys.iter(), &mut results, true /* peek */)
+        .await;
+    assert_eq!(results[0], Some(0), "Expected A to survive");
+    assert_eq!(results[1], Some(0), "Expected B to survive");
+    assert_eq!(results[2], None, "Expected demoted C to be evicted");
+    assert_eq!(results[3], Some(0), "Expected D to survive");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn demote_absent_key_is_noop() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy::default(),
+        MockInstantWrapped::default(),
+    );
+    let digest_a = DigestInfo::try_new(HASH1, 0)?;
+    let absent = DigestInfo::try_new(HASH2, 0)?;
+    evicting_map.insert(digest_a, Bytes::new().into()).await;
+
+    evicting_map.demote([&absent]);
+
+    let mut results = [None];
+    evicting_map
+        .sizes_for_keys([&digest_a], &mut results, true /* peek */)
+        .await;
+    assert_eq!(
+        results[0],
+        Some(0),
+        "Expected A untouched by absent-key demote"
+    );
+    Ok(())
+}

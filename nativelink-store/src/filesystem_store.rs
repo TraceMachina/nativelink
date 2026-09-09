@@ -1823,6 +1823,15 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         Ok(())
     }
 
+    async fn demote_keys(self: Pin<&Self>, keys: &[StoreKey<'_>]) -> Result<(), Error> {
+        let own_keys = keys
+            .iter()
+            .map(|sk| sk.borrow().into_owned())
+            .collect::<Vec<_>>();
+        self.evicting_map.demote(own_keys.iter());
+        Ok(())
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
