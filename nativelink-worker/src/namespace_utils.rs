@@ -83,8 +83,18 @@ const NS_ERROR_TYPE_MASK: i32 = 0x3; // 11 - i.e. NS_ERROR_TYPE_BITS lowest bits
 
 /// Determines whether the namespaces provided by this module are supported
 /// on the currently running system by forking a process and trying to enter
-/// it into the new namespaces.
-pub fn namespaces_supported(mount: bool) -> bool {
+/// it into the new namespaces. When `mount` is set the mount namespace is
+/// checked as well, and when `isolate_tmp` is also set the check includes
+/// mounting a private tmpfs over `/tmp`.
+pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
+    if isolate_tmp && !mount {
+        error!("Namespaces: isolating /tmp requires a mount namespace");
+        return false;
+    }
+    if isolate_tmp && !std::path::Path::new("/tmp").is_dir() {
+        error!("Namespaces: isolating /tmp requires /tmp to exist and be a directory");
+        return false;
+    }
     // SAFETY: Posix requires that geteuid is always successful.
     let uid = unsafe { libc::geteuid() };
     let uid_map = format!("{uid} {uid} 1\n");
@@ -114,13 +124,21 @@ pub fn namespaces_supported(mount: bool) -> bool {
                                 libc::MS_REC | libc::MS_PRIVATE,
                                 core::ptr::null(),
                             )
-                        } == 0
+                        } != 0
                         {
-                            exit(0);
+                            // SAFETY: We just called a libc function that failed (-1).
+                            let errno = unsafe { *libc::__errno_location() };
+                            exit(
+                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
+                            );
                         }
-                        // SAFETY: We just called a libc function that failed (-1).
-                        let errno = unsafe { *libc::__errno_location() };
-                        exit((NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS));
+                        if isolate_tmp && let Err(err) = mount_tmpfs(c"/tmp") {
+                            let errno = err.raw_os_error().unwrap_or(libc::EIO);
+                            exit(
+                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
+                            );
+                        }
+                        exit(0);
                     }
                     Err(uid_map_err) => {
                         exit(
@@ -298,7 +316,59 @@ impl Drop for OwnedFd {
     }
 }
 
+/// Mount a fresh, empty tmpfs over the given directory in an
+/// async-signal-safe manner.
+fn mount_tmpfs(target: &core::ffi::CStr) -> Result<(), Error> {
+    // SAFETY: mount is async-signal-safe. The filesystem type and target are valid C-strings.
+    if unsafe {
+        libc::mount(
+            c"tmpfs".as_ptr(),
+            target.as_ptr(),
+            c"tmpfs".as_ptr(),
+            0,
+            core::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Create a directory and any missing parents in an async-signal-safe
+/// manner, like `mkdir -p`. Components that already exist are skipped, so
+/// this is a no-op for a path that is already present.
+fn mkdir_p_signal_safe(path: &core::ffi::CStr) -> Result<(), Error> {
+    let bytes = path.to_bytes();
+    // Leave room for the NUL that terminates each prefix.
+    let mut buffer = [0u8; libc::PATH_MAX as usize];
+    if bytes.len() >= buffer.len() {
+        return Err(Error::from_raw_os_error(libc::ENAMETOOLONG));
+    }
+    buffer[..bytes.len()].copy_from_slice(bytes);
+    // Start at 1 so a leading '/' is never treated as an empty component.
+    for i in 1..=bytes.len() {
+        if i < bytes.len() && buffer[i] != b'/' {
+            continue;
+        }
+        // Temporarily terminate the path here so just this prefix is created.
+        buffer[i] = 0;
+        // SAFETY: mkdir is async-signal-safe and the buffer is NUL-terminated at i.
+        if unsafe { libc::mkdir(buffer.as_ptr().cast(), 0o777) } != 0 {
+            let err = Error::last_os_error();
+            if err.raw_os_error() != Some(libc::EEXIST) {
+                return Err(err);
+            }
+        }
+        if i < bytes.len() {
+            buffer[i] = b'/';
+        }
+    }
+    Ok(())
+}
+
 fn perform_remount(
+    isolate_tmp: bool,
     root_action_directory: &core::ffi::CStr,
     action_directory: &core::ffi::CStr,
 ) -> Result<(), Error> {
@@ -342,20 +412,21 @@ fn perform_remount(
     }
     let fd = OwnedFd(fd);
 
-    // Mask the root action directory with a tmpfs to ensure sibling directories aren't visible.
-    // SAFETY: mount is async-signal-safe. The filesystem type and target are valid C-strings.
-    if unsafe {
-        libc::mount(
-            c"tmpfs".as_ptr(),
-            root_action_directory.as_ptr(),
-            c"tmpfs".as_ptr(),
-            0,
-            core::ptr::null(),
-        )
-    } != 0
-    {
-        return Err(Error::last_os_error());
+    if isolate_tmp {
+        // Give the action a private, empty /tmp so concurrent actions can't
+        // collide on predictable paths there and nothing leaks between
+        // actions through it. This has to happen before the root action
+        // directory is masked: if that directory lives under /tmp the new
+        // tmpfs hides it, so its path is recreated inside the tmpfs and the
+        // action directory itself is restored below from the saved file
+        // descriptor. When the root action directory lives elsewhere every
+        // component already exists and the mkdir is a no-op.
+        mount_tmpfs(c"/tmp")?;
+        mkdir_p_signal_safe(root_action_directory)?;
     }
+
+    // Mask the root action directory with a tmpfs to ensure sibling directories aren't visible.
+    mount_tmpfs(root_action_directory)?;
 
     // Recreate the specific operation's directory inside the empty tmpfs.
     // SAFETY: mkdir is async-signal-safe and the path is a valid C-string.
@@ -396,10 +467,16 @@ fn perform_remount(
 /// SIGKILL to the actual process in the new user, PID, UTS and IPC
 /// namespaces.  Pass this function to `CommandBuilder::pre_exec`.
 ///
+/// When `mount` is set the process also gets its own mount namespace in
+/// which the root action directory is masked so sibling actions are not
+/// visible. When `isolate_tmp` is additionally set, `/tmp` is replaced with
+/// a private, empty tmpfs that lives only as long as the action.
+///
 /// This function is async-signal-safe and has no external locks or
 /// memory allocations.
 pub fn configure_namespace(
     mount: bool,
+    isolate_tmp: bool,
     root_action_directory: &core::ffi::CStr,
     action_directory: &core::ffi::CStr,
 ) -> std::io::Result<()> {
@@ -444,7 +521,7 @@ pub fn configure_namespace(
 
     // Configure the mount namespace if enabled.
     if mount {
-        perform_remount(root_action_directory, action_directory).unwrap();
+        perform_remount(isolate_tmp, root_action_directory, action_directory)?;
     }
 
     // Set hostname to "nativelink" to ensure reproducibility.
