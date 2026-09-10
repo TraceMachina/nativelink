@@ -10,6 +10,10 @@ description: >-
   switch is revoking the public key server-side.
 
 inputs:
+  attribution-url:
+    description: NativeLink GitHub App origin used to attribute each CI build.
+    required: false
+    default: ''
   api-key:
     description: >-
       NativeLink Cloud API key. Empty (fork PRs have no secrets) disables the
@@ -76,6 +80,12 @@ inputs:
     default: debian:bookworm-slim
 
 outputs:
+  attribution-config:
+    description: Temporary credential file; mount only as a BuildKit secret.
+    value: ${{ steps.attribution.outputs.attribution-config }}
+  attribution-wrapper:
+    description: Per-invocation wrapper for container builds.
+    value: ${{ steps.attribution.outputs.attribution-wrapper }}
   enabled:
     description: "'true' when a user.bazelrc was written, else 'false'."
     value: ${{ steps.configure.outputs.enabled }}
@@ -207,5 +217,14 @@ runs:
         write_ci_metadata
 
         echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "bes-enabled=true" >> "$GITHUB_OUTPUT"
         # Deliberately do not echo the endpoints: the claim base is a secret.
         echo "NativeLink Cloud enabled: mode=${NL_MODE} exec=${exec_enabled}"
+
+    - name: Enable GitHub build attribution
+      id: attribution
+      if: steps.configure.outputs.bes-enabled == 'true'
+      uses: TraceMachina/nativelink-action/attribution@7c6a05ecd8d0093508c5cbc7db8165fb3edd73f9
+      with:
+        attribution_url: ${{ inputs.attribution-url }}
+        bazelrc: user.bazelrc

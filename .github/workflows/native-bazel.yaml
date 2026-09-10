@@ -15,9 +15,6 @@ on:
 
 permissions: read-all
 
-env:
-  NATIVELINK_GITHUB_APP_URL: https://github-app.staging.scdev.nativelink.net
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -69,6 +66,7 @@ jobs:
       - name: Setup NativeLink Cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
+          attribution-url: ${{ secrets.NATIVELINK_GITHUB_APP_URL }}
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
@@ -89,21 +87,21 @@ jobs:
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
             if [ "${{ matrix.bazel_version }}" == "8.7.0" ]; then
               # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
-              python3 .github/actions/setup-nativelink-cloud/run_bazel.py test //... \
+              bazel test //... \
                 --lockfile_mode=off \
                 --extra_toolchains=@rust_toolchains//:all \
                 --verbose_failures
             else
-              python3 .github/actions/setup-nativelink-cloud/run_bazel.py test //... \
+              bazel test //... \
                 --lockfile_mode=error \
                 --extra_toolchains=@rust_toolchains//:all \
                 --verbose_failures
             fi
           elif [ "$RUNNER_OS" == "Windows" ]; then
             bazel \
-              --lockfile_mode=error \
-              --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
+              --output_user_root="${RUNNER_TEMP}/bazel" \
               test \
+              --lockfile_mode=error \
               --config=windows \
               //... \
               --verbose_failures
@@ -145,6 +143,7 @@ jobs:
       - name: Setup NativeLink Cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
+          attribution-url: ${{ secrets.NATIVELINK_GITHUB_APP_URL }}
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
@@ -159,7 +158,7 @@ jobs:
 
       - name: Run Store tester with sentinel
         run: |
-          python3 .github/actions/setup-nativelink-cloud/run_bazel.py run //:redis_store_tester \
+          bazel run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode sentinel --mode sequential
@@ -170,7 +169,7 @@ jobs:
 
       - name: Run Store tester with standard
         run: |
-          python3 .github/actions/setup-nativelink-cloud/run_bazel.py run //:redis_store_tester \
+          bazel run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode standard --mode sequential
@@ -181,7 +180,7 @@ jobs:
 
       - name: Run Store tester with cluster
         run: |
-          python3 .github/actions/setup-nativelink-cloud/run_bazel.py run //:redis_store_tester \
+          bazel run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode cluster --mode sequential

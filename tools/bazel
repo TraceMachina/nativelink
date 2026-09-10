@@ -1,0 +1,12 @@
+#!/bin/bash
+# Bazelisk calls this hook from plain CI, nix develop, and the Docker builder.
+# BAZEL_REAL is supplied by Bazelisk, preserving the workspace's Bazel version.
+set -euo pipefail
+
+if [[ -n "${NATIVELINK_BAZEL_WRAPPER:-}" && -s "${NATIVELINK_BAZEL_WRAPPER}" &&
+      -n "${NATIVELINK_ATTRIBUTION_CONFIG:-}" && -s "${NATIVELINK_ATTRIBUTION_CONFIG}" ]]; then
+    export NATIVELINK_BAZEL_REAL="$BAZEL_REAL"
+    exec python3 "$NATIVELINK_BAZEL_WRAPPER" "$@"
+fi
+
+exec "$BAZEL_REAL" "$@"

@@ -87,6 +87,9 @@ jobs:
   #       ' 2>&1 | ( ! grep '         PASSED in ' ) # If we get PASSED without (cache) it means there's a cache issue.
 
   integration-tests:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -95,8 +98,10 @@ jobs:
         actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
     - name: Setup NativeLink Cloud
+      id: nl
       uses: ./.github/actions/setup-nativelink-cloud
       with:
+        attribution-url: ${{ secrets.NATIVELINK_GITHUB_APP_URL }}
         ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
         claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
         bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
@@ -122,6 +127,8 @@ jobs:
           ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
         secret-files: |
           nativelink-bazelrc=user.bazelrc
+          nativelink-attribution-config=${{ steps.nl.outputs.attribution-config || '/dev/null' }}
+          nativelink-attribution-wrapper=${{ steps.nl.outputs.attribution-wrapper || '/dev/null' }}
         load: true # This brings the build into `docker images` from buildx.
         tags: trace_machina/nativelink:latest
 
