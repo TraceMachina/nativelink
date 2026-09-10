@@ -21,6 +21,9 @@ concurrency:
 
 jobs:
   unit-tests:
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -57,9 +60,13 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-${{ matrix.os }}-bazel-${{ matrix.bazel_version }}
 
+      - name: Test build attribution client
+        run: python3 -m unittest discover -s .github/actions/setup-nativelink-cloud
+
       - name: Setup NativeLink Cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
+          attribution-url: ${{ secrets.NATIVELINK_GITHUB_APP_URL }}
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
@@ -92,9 +99,9 @@ jobs:
             fi
           elif [ "$RUNNER_OS" == "Windows" ]; then
             bazel \
-              --lockfile_mode=error \
-              --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
+              --output_user_root="${RUNNER_TEMP}/bazel" \
               test \
+              --lockfile_mode=error \
               --config=windows \
               //... \
               --verbose_failures
@@ -104,6 +111,9 @@ jobs:
           fi
 
   redis-store-tester:
+    permissions:
+      contents: read
+      id-token: write
     name: Redis store tester
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -127,9 +137,13 @@ jobs:
           repository-cache: true
           disk-cache: ${{ github.workflow }}-ubuntu-24.04
 
+      - name: Test build attribution client
+        run: python3 -m unittest discover -s .github/actions/setup-nativelink-cloud
+
       - name: Setup NativeLink Cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
+          attribution-url: ${{ secrets.NATIVELINK_GITHUB_APP_URL }}
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}

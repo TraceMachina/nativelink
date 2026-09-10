@@ -10,6 +10,10 @@ description: >-
   switch is revoking the public key server-side.
 
 inputs:
+  attribution-url:
+    description: NativeLink GitHub App origin used to attribute each CI build.
+    required: false
+    default: ''
   api-key:
     description: >-
       NativeLink Cloud API key. Empty (fork PRs have no secrets) disables the
@@ -76,6 +80,12 @@ inputs:
     default: debian:bookworm-slim
 
 outputs:
+  attribution-config:
+    description: Temporary credential file; mount only as a BuildKit secret.
+    value: ${{ steps.attribution.outputs.attribution-config }}
+  attribution-wrapper:
+    description: Per-invocation wrapper for container builds.
+    value: ${{ steps.attribution.outputs.attribution-wrapper }}
   enabled:
     description: "'true' when a user.bazelrc was written, else 'false'."
     value: ${{ steps.configure.outputs.enabled }}
@@ -193,6 +203,10 @@ runs:
             # Plain (non-config) line so it also beats the nix-generated
             # nativelink.bazelrc on lanes that run under nix develop.
             echo "common --remote_upload_local_results=false"
+            # BEP uploads profiles and test logs independently of action-cache
+            # uploads. The PR key has cache_read + bep_write, so leave those
+            # files local while still sending the complete build-event stream.
+            echo "common --experimental_build_event_upload_strategy=local"
           fi
           # Both headers from the same variable: a truncated BES key once
           # caused silent 401s while the cache header kept working.
@@ -203,5 +217,14 @@ runs:
         write_ci_metadata
 
         echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "bes-enabled=true" >> "$GITHUB_OUTPUT"
         # Deliberately do not echo the endpoints: the claim base is a secret.
         echo "NativeLink Cloud enabled: mode=${NL_MODE} exec=${exec_enabled}"
+
+    - name: Enable GitHub build attribution
+      id: attribution
+      if: steps.configure.outputs.bes-enabled == 'true'
+      uses: TraceMachina/nativelink-action/attribution@7c6a05ecd8d0093508c5cbc7db8165fb3edd73f9
+      with:
+        attribution_url: ${{ inputs.attribution-url }}
+        bazelrc: user.bazelrc

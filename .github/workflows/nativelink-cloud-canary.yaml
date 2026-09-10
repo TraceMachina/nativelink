@@ -20,6 +20,9 @@ concurrency:
 
 jobs:
   cache-canary:
+    permissions:
+      contents: read
+      id-token: write
     name: Remote cache canary
     runs-on: ubuntu-24.04
     # Also the queue-forever tripwire once an RBE leg is added.
@@ -41,6 +44,7 @@ jobs:
         id: nl
         uses: ./.github/actions/setup-nativelink-cloud
         with:
+          attribution-url: ${{ secrets.NATIVELINK_GITHUB_APP_URL }}
           # The canary ignores vars.NATIVELINK_CI_MODE on purpose: it must
           # prove the cloud path is healthy while regular lanes are still
           # dark. With no secrets configured (or on fork PRs) it no-ops.
