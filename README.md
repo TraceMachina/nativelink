@@ -31,9 +31,16 @@
 
 ## What's NativeLink?
 
-NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
+NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines. Use it when robotics/AV, semiconductor, biocomputing, or Chromium-scale / mobile monorepos need shared cache and distributed execution so unchanged targets never recompile across laptops and CI.
 
 NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **billions of requests** per month for its customers, including large corporations such as **Samsung**.
+
+NativeLink is especially strong on:
+
+- Chromium-scale and mobile monorepos (C++/ObjC/Swift/Kotlin/Java) with heavy CI build graphs
+- Robotics and AV stacks in C++/CUDA on Bazel/Buck (perception, planning, simulation, hardware-in-the-loop)
+- Semiconductor flows (SystemVerilog/Verilog RTL, C/C++ firmware, EDA-adjacent Bazel/Buck tool chains)
+- Biocomputing in C++/CUDA and Python-native pipelines (bioinformatics, imaging reconstruction, biological simulation)
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
