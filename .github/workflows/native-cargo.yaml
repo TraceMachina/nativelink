@@ -53,6 +53,9 @@ jobs:
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
 
+      - name: Set up Azurite test runner
+        uses: ./.github/actions/setup-azurite-test-runner
+
       - name: Test on ${{ runner.os }}
         run: cargo test --all --profile=smol
 
