@@ -63,8 +63,17 @@ const DEFAULT_BUFF_SIZE: usize = 32 * 1024;
 // Default block size of all major filesystems is 4KB
 const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024;
 
-pub const STR_FOLDER: &str = "s";
-pub const DIGEST_FOLDER: &str = "d";
+pub const STR_FOLDER_V1: &str = "s";
+pub const DIGEST_FOLDER_V1: &str = "d";
+
+pub const STR_FOLDER_V2: &str = "s2";
+pub const DIGEST_FOLDER_V2: &str = "d2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Version {
+    V1,
+    V2,
+}
 
 /// Suffix for the sibling directory that holds per-digest read-only
 /// **executable** (0o555) variants of CAS blobs (see
@@ -135,6 +144,7 @@ pub struct EncodedFilePath {
     path_type: PathType,
     key: StoreKey<'static>,
     generation: Generation,
+    version: Version,
 }
 
 impl EncodedFilePath {
@@ -145,6 +155,7 @@ impl EncodedFilePath {
             self.shared_context.as_ref(),
             &self.key,
             self.generation,
+            self.version,
         )
     }
 }
@@ -155,13 +166,14 @@ fn get_file_path_raw<'a>(
     shared_context: &SharedContext,
     key: &StoreKey<'a>,
     generation: Generation,
+    version: Version,
 ) -> Cow<'a, OsStr> {
     let folder = match path_type {
         PathType::Content => &shared_context.content_path,
         PathType::Temp => &shared_context.temp_path,
         PathType::Custom(path) => return Cow::Borrowed(path),
     };
-    Cow::Owned(to_full_path_from_key(folder, key, generation))
+    Cow::Owned(to_full_path_from_key(folder, key, generation, version))
 }
 
 impl Drop for EncodedFilePath {
@@ -220,11 +232,22 @@ impl Drop for EncodedFilePath {
 /// Previously, only the string representation of the [`DigestInfo`] was
 /// used with no prefix
 #[inline]
-fn to_full_path_from_key(folder: &str, key: &StoreKey<'_>, generation: Generation) -> OsString {
-    match key {
-        StoreKey::Str(str) => format!("{folder}/{STR_FOLDER}/{str}-{generation}"),
-        StoreKey::Digest(digest_info) => {
-            format!("{folder}/{DIGEST_FOLDER}/{digest_info}-{generation}")
+fn to_full_path_from_key(
+    folder: &str,
+    key: &StoreKey<'_>,
+    generation: Generation,
+    version: Version,
+) -> OsString {
+    match (key, version) {
+        (StoreKey::Str(str), Version::V2) => {
+            format!("{folder}/{STR_FOLDER_V2}/{str}-{generation}")
+        }
+        (StoreKey::Str(str), Version::V1) => format!("{folder}/{STR_FOLDER_V1}/{str}"),
+        (StoreKey::Digest(digest_info), Version::V2) => {
+            format!("{folder}/{DIGEST_FOLDER_V2}/{digest_info}-{generation}")
+        }
+        (StoreKey::Digest(digest_info), Version::V1) => {
+            format!("{folder}/{DIGEST_FOLDER_V1}/{digest_info}")
         }
     }
     .into()
@@ -650,7 +673,7 @@ async fn prepare_executable_dir(content_path: &str) -> Result<bool, Error> {
     }
 
     let executable_dir = format!("{content_path}{EXECUTABLE_DIR_SUFFIX}");
-    let executable_digest_dir = format!("{executable_dir}/{DIGEST_FOLDER}");
+    let executable_digest_dir = format!("{executable_dir}/{DIGEST_FOLDER_V2}");
     spawn_blocking!("filesystem_store_prepare_executable_dir", move || {
         match std::fs::remove_dir_all(&executable_dir) {
             Ok(()) => {}
@@ -710,6 +733,7 @@ impl LenEntry for FileEntryImpl {
             &encoded_file_path.shared_context.temp_path,
             &new_key,
             encoded_file_path.generation,
+            encoded_file_path.version,
         );
 
         if let Err(err) = fs::rename(&from_path, &to_path).await {
@@ -769,7 +793,14 @@ fn digest_from_filename(file_name: &str) -> Result<DigestInfo, Error> {
     DigestInfo::try_new(hash, size)
 }
 
-pub fn key_and_generation_from_file(
+fn key_from_file_v1(file_name: &str, file_type: FileType) -> Result<StoreKey<'_>, Error> {
+    match file_type {
+        FileType::String => Ok(StoreKey::new_str(file_name)),
+        FileType::Digest => digest_from_filename(file_name).map(StoreKey::Digest),
+    }
+}
+
+pub fn key_and_generation_from_file_v2(
     file_name: &str,
     file_type: FileType,
 ) -> Result<(StoreKey<'_>, Generation), Error> {
@@ -797,19 +828,24 @@ async fn add_files_to_cache<Fe: FileEntry>(
     shared_context: &Arc<SharedContext>,
     block_size: u64,
     rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    migrate: bool,
 ) -> Result<Generation, Error> {
     #[expect(clippy::too_many_arguments)]
     async fn process_entry<Fe: FileEntry>(
         evicting_map: &FsEvictingMap<'_, Fe>,
         file_name: &str,
         file_type: FileType,
+        version: Version,
         atime: SystemTime,
         data_size: u64,
         block_size: u64,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
     ) -> Result<Generation, Error> {
-        let (key, generation) = key_and_generation_from_file(file_name, file_type)?;
+        let (key, generation) = match version {
+            Version::V1 => (key_from_file_v1(file_name, file_type)?, Generation::new(0)),
+            Version::V2 => key_and_generation_from_file_v2(file_name, file_type)?,
+        };
 
         let file_entry = Fe::create(
             data_size,
@@ -819,6 +855,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 path_type: PathType::Content,
                 key: key.borrow().into_owned(),
                 generation,
+                version,
             }),
         );
         let time_since_anchor = if let Ok(d) = anchor_time.duration_since(atime) {
@@ -849,17 +886,22 @@ async fn add_files_to_cache<Fe: FileEntry>(
         // Note: In Dec 2024 this is for backwards compatibility with the old
         // way files were stored on disk. Previously all files were in a single
         // folder regardless of the StoreKey type. This allows old versions of
-        // nativelink file layout to be upgraded at startup time.
+        // nativelink file version to be upgraded at startup time.
         // This logic can be removed once more time has passed.
         let read_dir = folder.map_or_else(
             || format!("{}/", shared_context.content_path),
             |folder| format!("{}/{folder}/", shared_context.content_path),
         );
 
-        let (_permit, dir_handle) = fs::read_dir(read_dir)
-            .await
-            .err_tip(|| "Failed opening content directory for iterating in filesystem store")?
-            .into_inner();
+        let (_permit, dir_handle) = match fs::read_dir(read_dir).await {
+            Ok(dir_handle) => dir_handle.into_inner(),
+            Err(err) if err.code == Code::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(err).err_tip(
+                    || "Failed opening content directory for iterating in filesystem store",
+                );
+            }
+        };
 
         let read_dir_stream = ReadDirStream::new(dir_handle);
         read_dir_stream
@@ -870,9 +912,16 @@ async fn add_files_to_cache<Fe: FileEntry>(
                     .metadata()
                     .await
                     .err_tip(|| "Failed to get metadata in filesystem store")?;
-                // We need to filter out folders - we do not want to try to cache the s and d folders.
-                let is_file =
-                    metadata.is_file() || !(file_name == STR_FOLDER || file_name == DIGEST_FOLDER);
+                // We need to filter out folders - we do not want to try to cache
+                // the per-version key folders.
+                let is_file = metadata.is_file()
+                    || ![
+                        STR_FOLDER_V2,
+                        DIGEST_FOLDER_V2,
+                        STR_FOLDER_V1,
+                        DIGEST_FOLDER_V1,
+                    ]
+                    .contains(&file_name.as_str());
                 // Using access time is not perfect, but better than random. We do not update the
                 // atime when a file is actually "touched", we rely on whatever the filesystem does
                 // when we read the file (usually update on read).
@@ -892,71 +941,75 @@ async fn add_files_to_cache<Fe: FileEntry>(
             .await
     }
 
+    /// Best effort: a failure leaves the source where it is, so the loader
+    /// still picks it up and a later startup retries.
+    fn migrate_file(
+        from_file: &OsStr,
+        to_file: &OsStr,
+        rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+    ) {
+        if let Err(err) = rename_fn(from_file, to_file) {
+            warn!(?from_file, ?to_file, ?err, "Failed to migrate file");
+        } else {
+            debug!(?from_file, ?to_file, "Migrated file");
+        }
+    }
+
     /// Note: In Dec 2024 this is for backwards compatibility with the old
     /// way files were stored on disk. Previously all files were in a single
-    /// folder regardless of the [`StoreKey`] type. This moves files from the old cache
-    /// location to the new cache location, under [`DIGEST_FOLDER`].
-    async fn move_old_cache(
+    /// folder regardless of the [`StoreKey`] type.
+    async fn migrate_old_cache_1(
         shared_context: &Arc<SharedContext>,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<(), Error> {
         let file_infos = read_files(None, shared_context).await?;
-
         let from_path = &shared_context.content_path;
-
-        let to_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
+        let to_path = format!("{}/{DIGEST_FOLDER_V2}", shared_context.content_path);
 
         for (file_name, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
-            let from_file: OsString = format!("{from_path}/{file_name}").into();
-            let to_file: OsString = format!("{to_path}/{file_name}").into();
-
-            if let Err(err) = rename_fn(&from_file, &to_file) {
-                warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
-            } else {
-                debug!(?from_file, ?to_file, "Renamed file (old cache)",);
-            }
+            migrate_file(
+                &OsString::from(format!("{from_path}/{file_name}")),
+                &OsString::from(format!("{to_path}/{file_name}-0")),
+                rename_fn,
+            );
         }
         Ok(())
     }
 
-    async fn move_old_cache_2(
+    /// Moves [`Version::V1`] folders into [`Version::V2`].
+    async fn migrate_old_cache_2(
         shared_context: &Arc<SharedContext>,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<(), Error> {
-        let file_infos = read_files(Some(DIGEST_FOLDER), shared_context).await?;
-        let folder_path = format!("{}/{DIGEST_FOLDER}", shared_context.content_path);
+        for (legacy_folder, folder) in [
+            (DIGEST_FOLDER_V1, DIGEST_FOLDER_V2),
+            (STR_FOLDER_V1, STR_FOLDER_V2),
+        ] {
+            let file_infos = read_files(Some(legacy_folder), shared_context).await?;
+            let from_path = format!("{}/{legacy_folder}", shared_context.content_path);
+            let to_path = format!("{}/{folder}", shared_context.content_path);
 
-        for (file_name, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
-            if file_name.matches('-').count() != 1 {
-                continue;
-            }
-
-            let from_file: OsString = format!("{folder_path}/{file_name}").into();
-            let to_file: OsString = format!("{folder_path}/{file_name}-0").into();
-
-            if let Err(err) = rename_fn(&from_file, &to_file) {
-                warn!(?from_file, ?to_file, ?err, "Failed to rename file",);
-            } else {
-                debug!(?from_file, ?to_file, "Renamed file (old cache)",);
+            for (file_name, _, _, _) in file_infos.into_iter().filter(|x| x.3) {
+                migrate_file(
+                    &OsString::from(format!("{from_path}/{file_name}")),
+                    &OsString::from(format!("{to_path}/{file_name}-0")),
+                    rename_fn,
+                );
             }
         }
-
         Ok(())
     }
 
-    async fn add_files_to_cache<Fe: FileEntry>(
+    async fn add_folder_to_cache<Fe: FileEntry>(
         evicting_map: &FsEvictingMap<'_, Fe>,
         anchor_time: &SystemTime,
         shared_context: &Arc<SharedContext>,
         block_size: u64,
         folder: &str,
+        file_type: FileType,
+        version: Version,
     ) -> Result<Generation, Error> {
         let file_infos = read_files(Some(folder), shared_context).await?;
-        let file_type = match folder {
-            STR_FOLDER => FileType::String,
-            DIGEST_FOLDER => FileType::Digest,
-            _ => panic!("Invalid folder type"),
-        };
 
         let path_root = format!("{}/{folder}", shared_context.content_path);
 
@@ -967,6 +1020,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 evicting_map,
                 &file_name,
                 file_type,
+                version,
                 atime,
                 data_size,
                 block_size,
@@ -989,41 +1043,45 @@ async fn add_files_to_cache<Fe: FileEntry>(
         Ok(Generation::new(max_generation))
     }
 
-    move_old_cache(shared_context, rename_fn).await?;
+    if migrate {
+        migrate_old_cache_1(shared_context, rename_fn).await?;
+        migrate_old_cache_2(shared_context, rename_fn).await?;
+    }
 
-    move_old_cache_2(shared_context, rename_fn).await?;
+    let mut max_generation = 0;
+    for (folder, file_type, version) in [
+        (DIGEST_FOLDER_V1, FileType::Digest, Version::V1),
+        (STR_FOLDER_V1, FileType::String, Version::V1),
+        (DIGEST_FOLDER_V2, FileType::Digest, Version::V2),
+        (STR_FOLDER_V2, FileType::String, Version::V2),
+    ] {
+        let generation = add_folder_to_cache(
+            evicting_map,
+            anchor_time,
+            shared_context,
+            block_size,
+            folder,
+            file_type,
+            version,
+        )
+        .await?;
+        max_generation = cmp::max(max_generation, generation.inner());
+    }
 
-    let max_digest_generation = add_files_to_cache(
-        evicting_map,
-        anchor_time,
-        shared_context,
-        block_size,
-        DIGEST_FOLDER,
-    )
-    .await?;
-
-    let max_str_generation = add_files_to_cache(
-        evicting_map,
-        anchor_time,
-        shared_context,
-        block_size,
-        STR_FOLDER,
-    )
-    .await?;
-
-    Ok(Generation::new(
-        cmp::max(max_digest_generation.inner(), max_str_generation.inner()) + 1,
-    ))
+    Ok(Generation::new(max_generation + 1))
 }
 
 async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
     async fn prune_temp_inner(temp_path: &str, subpath: &str) -> Result<(), Error> {
-        let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{subpath}"))
-            .await
-            .err_tip(
-                || "Failed opening temp directory to prune partial downloads in filesystem store",
-            )?
-            .into_inner();
+        let (_permit, dir_handle) = match fs::read_dir(format!("{temp_path}/{subpath}")).await {
+            Ok(dir_handle) => dir_handle.into_inner(),
+            Err(err) if err.code == Code::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err).err_tip(|| {
+                    "Failed opening temp directory to prune partial downloads in filesystem store"
+                });
+            }
+        };
 
         let mut read_dir_stream = ReadDirStream::new(dir_handle);
         while let Some(dir_entry) = read_dir_stream.next().await {
@@ -1035,8 +1093,14 @@ async fn prune_temp_path(temp_path: &str) -> Result<(), Error> {
         Ok(())
     }
 
-    prune_temp_inner(temp_path, STR_FOLDER).await?;
-    prune_temp_inner(temp_path, DIGEST_FOLDER).await?;
+    for folder in [
+        STR_FOLDER_V2,
+        DIGEST_FOLDER_V2,
+        STR_FOLDER_V1,
+        DIGEST_FOLDER_V1,
+    ] {
+        prune_temp_inner(temp_path, folder).await?;
+    }
     Ok(())
 }
 
@@ -1162,7 +1226,7 @@ impl RemoveItemCallback for ExecutableVariantRemover {
                 return;
             };
             let variant_path = format!(
-                "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
+                "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
                 self.content_path
             );
             match fs::remove_file(&variant_path).await {
@@ -1230,13 +1294,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         spec: &FilesystemSpec,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<Arc<Self>, Error> {
-        async fn create_subdirs(path: &str) -> Result<(), Error> {
-            fs::create_dir_all(format!("{path}/{STR_FOLDER}"))
-                .await
-                .err_tip(|| format!("Failed to create directory {path}/{STR_FOLDER}"))?;
-            fs::create_dir_all(format!("{path}/{DIGEST_FOLDER}"))
-                .await
-                .err_tip(|| format!("Failed to create directory {path}/{DIGEST_FOLDER}"))
+        async fn create_subdirs(path: &str) -> bool {
+            let mut writable = true;
+            for folder in [STR_FOLDER_V2, DIGEST_FOLDER_V2] {
+                let dir = format!("{path}/{folder}");
+                if let Err(err) = fs::create_dir_all(&dir).await {
+                    warn!(%dir, ?err, "Failed to create directory; continuing without it and assuming read-only volume");
+                    writable = false;
+                }
+            }
+            writable
         }
 
         let now = SystemTime::now();
@@ -1247,8 +1314,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         // Create temp and content directories and the s and d subdirectories.
 
-        create_subdirs(&spec.temp_path).await?;
-        create_subdirs(&spec.content_path).await?;
+        let temp_dirs_writable = create_subdirs(&spec.temp_path).await;
+        let content_dirs_writable = create_subdirs(&spec.content_path).await;
+        // Nothing to migrate into; skip the scan rather than warn per file.
+        let migrate = temp_dirs_writable && content_dirs_writable;
 
         // Executable-variant directory: a sibling of `content_path` holding
         // per-digest 0o555 copies used as hardlink sources for executable
@@ -1297,6 +1366,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             &shared_context,
             block_size,
             rename_fn,
+            migrate,
         )
         .await?;
         prune_temp_path(&shared_context.temp_path).await?;
@@ -1370,7 +1440,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     #[cfg(unix)]
     fn executable_variant_path(&self, digest: &DigestInfo) -> OsString {
         format!(
-            "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER}/{digest}",
+            "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
             self.shared_context.content_path
         )
         .into()
@@ -1754,6 +1824,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 encoded_file_path.shared_context.as_ref(),
                 &key,
                 encoded_file_path.generation,
+                encoded_file_path.version,
             );
 
             let from_path = encoded_file_path.get_file_path();
@@ -1902,6 +1973,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 path_type: PathType::Temp,
                 key: temp_key,
                 generation: self.get_and_update_generation(),
+                version: Version::V2,
             },
         )
         .await
@@ -2063,6 +2135,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 path_type: PathType::Custom(path),
                 key: key.borrow().into_owned(),
                 generation: self.get_and_update_generation(),
+                version: Version::V2,
             }),
         );
         // We are done with the file, if we hold a reference to the file here, it could

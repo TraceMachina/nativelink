@@ -31,8 +31,9 @@ use nativelink_config::stores::{EvictionPolicy, FilesystemSpec};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
-    DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    STR_FOLDER, check_duplicate_files, key_and_generation_from_file, make_temp_key,
+    DIGEST_FOLDER_V1, DIGEST_FOLDER_V2, EncodedFilePath, FileEntry, FileEntryImpl, FileType,
+    FilesystemStore, STR_FOLDER_V1, STR_FOLDER_V2, check_duplicate_files,
+    key_and_generation_from_file_v2, make_temp_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
@@ -241,8 +242,8 @@ async fn find_content_file(
     key: &StoreKey<'_>,
 ) -> Result<Option<OsString>, Error> {
     let (folder, prefix) = match key {
-        StoreKey::Digest(digest) => (DIGEST_FOLDER, format!("{digest}-")),
-        StoreKey::Str(name) => (STR_FOLDER, format!("{name}-")),
+        StoreKey::Digest(digest) => (DIGEST_FOLDER_V2, format!("{digest}-")),
+        StoreKey::Str(name) => (STR_FOLDER_V2, format!("{name}-")),
     };
     let (_permit, dir_handle) = fs::read_dir(format!("{content_path}/{folder}"))
         .await
@@ -272,7 +273,7 @@ async fn content_file_exists(content_path: &str, key: &StoreKey<'_>) -> Result<b
 
 /// Helper function to ensure there are no temporary or content files left.
 async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{DIGEST_FOLDER}"))
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{DIGEST_FOLDER_V2}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -287,7 +288,7 @@ async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
         );
     }
 
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{STR_FOLDER}"))
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{STR_FOLDER_V2}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -299,6 +300,37 @@ async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
         panic!(
             "No files should exist in temp directory, found: {}",
             path.display()
+        );
+    }
+    Ok(())
+}
+
+async fn list_file_names(dir: &str) -> Result<Vec<String>, Error> {
+    let (_permit, dir_handle) = fs::read_dir(dir)
+        .await
+        .err_tip(|| format!("Failed opening {dir}"))?
+        .into_inner();
+    let mut names = Vec::new();
+    let mut read_dir_stream = ReadDirStream::new(dir_handle);
+    while let Some(dir_entry) = read_dir_stream.next().await {
+        names.push(dir_entry?.file_name().to_string_lossy().into_owned());
+    }
+    names.sort();
+    Ok(names)
+}
+
+async fn assert_entries_readable(store: &FilesystemStore) -> Result<(), Error> {
+    for (key, value) in LEGACY_STR_ENTRIES {
+        let store_key = StoreKey::new_str(key);
+        assert_eq!(
+            store.has(store_key.borrow()).await?,
+            Some(value.len() as u64),
+            "string key {key} should be resident"
+        );
+        assert_eq!(
+            store.get_part_unchunked(store_key, 0, None).await?,
+            Bytes::from(value),
+            "string key {key} should map to its own contents"
         );
     }
     Ok(())
@@ -519,7 +551,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     {
         // Now ensure we only have 1 file in our temp path - we know it is a digest.
-        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER_V2}"))
             .await
             .err_tip(|| "Failed opening temp directory")?
             .into_inner();
@@ -620,7 +652,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
 
     {
         // Now ensure we only have 1 file in our temp path - we know it is a digest.
-        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER_V2}"))
             .await
             .err_tip(|| "Failed opening temp directory")?
             .into_inner();
@@ -713,7 +745,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
         fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
             block_on(file_entry.get_file_path_locked(move |path_str| async move {
                 let path = Path::new(&path_str);
-                let (digest, _generation) = key_and_generation_from_file(
+                let (digest, _generation) = key_and_generation_from_file_v2(
                     path.file_name().unwrap().to_str().unwrap(),
                     FileType::Digest,
                 )
@@ -773,7 +805,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
         loop {
             yield_fn().await?;
             // Now ensure we only have 1 file in our temp path - we know it is a digest.
-            let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+            let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER_V2}"))
                 .await?
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(dir_handle);
@@ -1191,7 +1223,7 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
     // Ensure the entry we inserted was properly flagged as moved (from temp -> content dir).
     new_file_entry
         .get_file_path_locked(move |file_path| async move {
-            let expected_prefix = format!("{content_path}/{DIGEST_FOLDER}/{digest}-");
+            let expected_prefix = format!("{content_path}/{DIGEST_FOLDER_V2}/{digest}-");
             assert!(
                 file_path.to_string_lossy().starts_with(&expected_prefix),
                 "expected {file_path:?} to be a content file for {digest}"
@@ -1551,7 +1583,7 @@ async fn add_too_early_files() -> Result<(), Error> {
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
-    let demo_file_folder = format!("{content_path}/s");
+    let demo_file_folder = format!("{content_path}/{STR_FOLDER_V2}");
     fs::create_dir_all(&demo_file_folder).await?;
     let demo_file_path = format!("{demo_file_folder}/foo-0");
     std::fs::write(&demo_file_path, "demo text")
@@ -1769,7 +1801,7 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
         store.get_executable_hardlink_source(&digest).await?;
     }
 
-    let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER}");
+    let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER_V2}");
     fs::set_permissions(
         &executable_digest_dir,
         std::fs::Permissions::from_mode(0o555),
@@ -1820,7 +1852,7 @@ async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
     );
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER}/{digest1}"));
+    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest1}"));
     store.get_executable_hardlink_source(&digest1).await?;
     fs::metadata(&variant_path)
         .await
@@ -1875,7 +1907,7 @@ async fn deferred_write_error_does_not_emplace_truncated_file() -> Result<(), Er
 
     assert!(result.is_err(), "deferred write error must surface");
 
-    let ghosts = std::fs::read_dir(format!("{content_path}/{DIGEST_FOLDER}"))?
+    let ghosts = std::fs::read_dir(format!("{content_path}/{DIGEST_FOLDER_V2}"))?
         .filter_map(Result::ok)
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect::<Vec<String>>();
@@ -2089,7 +2121,7 @@ async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<()
 
     // Remove the temp dir so rename's destination parent is gone (ENOENT)
     // while the source content file is perfectly intact.
-    fs::remove_dir_all(format!("{temp_path}/{DIGEST_FOLDER}")).await?;
+    fs::remove_dir_all(format!("{temp_path}/{DIGEST_FOLDER_V2}")).await?;
 
     file_entry.unref().await;
 
@@ -2349,5 +2381,299 @@ async fn reupload_after_completed_unref_is_readable() -> Result<(), Error> {
         VALUE1.as_bytes(),
         "the re-uploaded blob should be readable"
     );
+    Ok(())
+}
+
+/// Legacy `s/` entries, one per way `-` can appear in an arbitrary string key.
+const LEGACY_STR_ENTRIES: [(&str, &str); 4] = [
+    ("foo", "no hyphen"),
+    ("foo-bar", "embedded hyphen"),
+    ("foo-1", "numeric suffix"),
+    ("foo-bar-12345", "hyphens and a numeric suffix"),
+];
+
+#[nativelink_test]
+async fn upgrade_from_v1_folders_stamps_generation_on_all_keys() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    fs::create_dir_all(format!("{content_path}/{DIGEST_FOLDER_V1}")).await?;
+
+    for (key, value) in LEGACY_STR_ENTRIES {
+        std::fs::write(format!("{content_path}/{STR_FOLDER_V1}/{key}"), value)
+            .err_tip(|| format!("writing legacy string entry {key}"))?;
+    }
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    std::fs::write(
+        format!("{content_path}/{DIGEST_FOLDER_V1}/{digest}"),
+        VALUE1,
+    )?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+
+    assert_entries_readable(&store).await?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        Bytes::from(VALUE1),
+        "the legacy digest entry should survive the upgrade"
+    );
+
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+        vec!["foo-0", "foo-1-0", "foo-bar-0", "foo-bar-12345-0"],
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{DIGEST_FOLDER_V2}")).await?,
+        vec![format!("{digest}-0")],
+    );
+    for legacy_folder in [STR_FOLDER_V1, DIGEST_FOLDER_V1] {
+        assert_eq!(
+            list_file_names(&format!("{content_path}/{legacy_folder}")).await?,
+            Vec::<String>::new(),
+            "{legacy_folder} should be drained by a successful migration"
+        );
+    }
+
+    Ok(())
+}
+
+/// The pre-Dec-2024 layout kept every blob directly under `content_path`, so
+/// both migrations must run, in order.
+#[nativelink_test]
+async fn upgrade_from_flat_layout_moves_digests_then_stamps_generation() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(&content_path).await?;
+
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    std::fs::write(format!("{content_path}/{digest1}"), VALUE1)?;
+    std::fs::write(format!("{content_path}/{digest2}"), VALUE2)?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+
+    assert_eq!(
+        store.get_part_unchunked(digest1, 0, None).await?,
+        Bytes::from(VALUE1),
+    );
+    assert_eq!(
+        store.get_part_unchunked(digest2, 0, None).await?,
+        Bytes::from(VALUE2),
+    );
+
+    let mut expected = vec![format!("{digest1}-0"), format!("{digest2}-0")];
+    expected.sort();
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{DIGEST_FOLDER_V2}")).await?,
+        expected,
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    fs::create_dir_all(format!("{content_path}/{DIGEST_FOLDER_V1}")).await?;
+
+    for (key, value) in LEGACY_STR_ENTRIES {
+        std::fs::write(format!("{content_path}/{STR_FOLDER_V1}/{key}"), value)?;
+    }
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    std::fs::write(
+        format!("{content_path}/{DIGEST_FOLDER_V1}/{digest}"),
+        VALUE1,
+    )?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    assert_entries_readable(&store).await?;
+    let after_upgrade = list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?;
+    drop(store);
+    wait_for_no_open_files().await?;
+
+    for restart in 1..=2 {
+        let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?;
+        assert_entries_readable(&store)
+            .await
+            .err_tip(|| format!("after restart {restart}"))?;
+        assert_eq!(
+            store.get_part_unchunked(digest, 0, None).await?,
+            Bytes::from(VALUE1),
+        );
+        assert_eq!(
+            list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+            after_upgrade,
+            "restart {restart} renamed already-migrated files"
+        );
+        assert_eq!(
+            list_file_names(&format!("{content_path}/{DIGEST_FOLDER_V2}")).await?,
+            vec![format!("{digest}-0")],
+        );
+        drop(store);
+        wait_for_no_open_files().await?;
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn generations_assigned_after_upgrade_survive_restart() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    std::fs::write(format!("{content_path}/{STR_FOLDER_V1}/foo-1"), "legacy")?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    store
+        .update_oneshot(StoreKey::new_str("foo-1"), VALUE1.into())
+        .await?;
+    store
+        .update_oneshot(StoreKey::new_str("bar"), VALUE2.into())
+        .await?;
+    drop(store);
+    wait_for_no_open_files().await?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str("foo-1"), 0, None)
+            .await?,
+        Bytes::from(VALUE1),
+        "the rewritten entry should replace the migrated legacy one"
+    );
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str("bar"), 0, None)
+            .await?,
+        Bytes::from(VALUE2),
+    );
+    assert_eq!(
+        store.has(StoreKey::new_str("foo")).await?,
+        None,
+        "`foo-1` must never be read back as key `foo` with generation 1"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn partial_migration_stays_readable_and_retries_next_startup() -> Result<(), Error> {
+    const STUCK_KEY: &str = "stuck";
+    const MOVED_KEY: &str = "moved";
+    static BLOCK_MIGRATION: AtomicBool = AtomicBool::new(true);
+
+    fn rename_fn(from: &OsStr, to: &OsStr) -> Result<(), std::io::Error> {
+        if BLOCK_MIGRATION.load(Ordering::Acquire)
+            && from
+                .to_string_lossy()
+                .ends_with(&format!("/{STR_FOLDER_V1}/{STUCK_KEY}"))
+        {
+            return Err(std::io::Error::other("migration blocked by test"));
+        }
+        std::fs::rename(from, to)
+    }
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    std::fs::write(
+        format!("{content_path}/{STR_FOLDER_V1}/{STUCK_KEY}"),
+        VALUE1,
+    )?;
+    std::fs::write(
+        format!("{content_path}/{STR_FOLDER_V1}/{MOVED_KEY}"),
+        VALUE2,
+    )?;
+
+    let spec = FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    };
+
+    let store =
+        FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(&spec, rename_fn).await?;
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str(STUCK_KEY), 0, None)
+            .await?,
+        Bytes::from(VALUE1),
+        "a file that failed to migrate must still be served from where it sits"
+    );
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str(MOVED_KEY), 0, None)
+            .await?,
+        Bytes::from(VALUE2),
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V1}")).await?,
+        vec![STUCK_KEY.to_string()],
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+        vec![format!("{MOVED_KEY}-0")],
+    );
+    drop(store);
+    wait_for_no_open_files().await?;
+
+    BLOCK_MIGRATION.store(false, Ordering::Release);
+    let store =
+        FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(&spec, rename_fn).await?;
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V1}")).await?,
+        Vec::<String>::new(),
+        "the retry should drain the legacy folder"
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+        vec![format!("{MOVED_KEY}-0"), format!("{STUCK_KEY}-0")],
+    );
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str(STUCK_KEY), 0, None)
+            .await?,
+        Bytes::from(VALUE1),
+    );
+
     Ok(())
 }
