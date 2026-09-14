@@ -695,6 +695,16 @@ where
             .await
     }
 
+    /// Same as `insert()`, but allows for a conditional to be applied to the
+    /// entry before insertion in an atomic fashion.
+    pub async fn insert_if<F>(&self, key: K, data: T, cond: F) -> (bool, Option<T>)
+    where
+        F: FnOnce(&T, &T) -> bool + Send,
+    {
+        self.insert_with_time_if(key, data, cond, self.elapsed_seconds())
+            .await
+    }
+
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
         let (items_to_unref, removal_futures) = {
@@ -714,6 +724,43 @@ where
             })
             .collect();
         futures.collect::<Vec<_>>().await.into_iter().next()
+    }
+
+    pub async fn insert_with_time_if<F>(
+        &self,
+        key: K,
+        data: T,
+        cond: F,
+        seconds_since_anchor: i32,
+    ) -> (bool, Option<T>)
+    where
+        F: FnOnce(&T, &T) -> bool + Send,
+    {
+        let (items_to_unref, removal_futures) = {
+            let mut state = self.state.lock();
+
+            state.touch_evictable(key.borrow());
+            if let Some(old_entry) = state.lru.get(key.borrow())
+                && !cond(&old_entry.data, &data)
+            {
+                return (false, None);
+            }
+
+            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+        };
+
+        let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        while futures.next().await.is_some() {}
+
+        // Unref items outside of lock
+        let futures: FuturesUnordered<_> = items_to_unref
+            .into_iter()
+            .map(|item| async move {
+                item.unref().await;
+                item
+            })
+            .collect();
+        (true, futures.collect::<Vec<_>>().await.into_iter().next())
     }
 
     /// Same as `insert()`, but optimized for multiple inserts.

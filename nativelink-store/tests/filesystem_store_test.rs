@@ -32,7 +32,7 @@ use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER_V1, DIGEST_FOLDER_V2, EncodedFilePath, FileEntry, FileEntryImpl, FileType,
-    FilesystemStore, STR_FOLDER_V1, STR_FOLDER_V2, check_duplicate_files,
+    FilesystemStore, Generation, STR_FOLDER_V1, STR_FOLDER_V2, check_duplicate_files,
     key_and_generation_from_file_v2, make_temp_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -90,11 +90,17 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hook
 }
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<Hooks> {
-    fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
+    fn create(
+        data_size: u64,
+        block_size: u64,
+        generation: Generation,
+        encoded_file_path: RwLock<EncodedFilePath>,
+    ) -> Self {
         Self {
             inner: Some(FileEntryImpl::create(
                 data_size,
                 block_size,
+                generation,
                 encoded_file_path,
             )),
             _phantom: PhantomData,
@@ -103,11 +109,12 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
 
     async fn make_and_open_file(
         block_size: u64,
+        generation: Generation,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(Self, fs::FileSlot, OsString), Error> {
         Hooks::on_make_and_open(&encoded_file_path).await?;
         let (inner, file_slot, path) =
-            FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
+            FileEntryImpl::make_and_open_file(block_size, generation, encoded_file_path).await?;
         Ok((
             Self {
                 inner: Some(inner),
@@ -132,6 +139,10 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
 
     fn get_encoded_file_path(&self) -> &RwLock<EncodedFilePath> {
         self.inner.as_ref().unwrap().get_encoded_file_path()
+    }
+
+    fn generation(&self) -> Generation {
+        self.inner.as_ref().unwrap().generation()
     }
 
     async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot>, Error> {

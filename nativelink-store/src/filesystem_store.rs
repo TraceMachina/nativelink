@@ -114,7 +114,7 @@ enum PathType {
     Custom(OsString),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Generation(u64);
 
 impl Generation {
@@ -255,15 +255,24 @@ fn to_full_path_from_key(
 
 pub trait FileEntry: LenEntry + Send + Sync + Debug + 'static {
     /// Responsible for creating the underlying `FileEntry`.
-    fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self;
+    fn create(
+        data_size: u64,
+        block_size: u64,
+        generation: Generation,
+        encoded_file_path: RwLock<EncodedFilePath>,
+    ) -> Self;
 
     /// Creates a (usually) temp file, opens it and returns the path to the temp file.
     fn make_and_open_file(
         block_size: u64,
+        generation: Generation,
         encoded_file_path: EncodedFilePath,
     ) -> impl Future<Output = Result<(Self, FileSlot, OsString), Error>> + Send
     where
         Self: Sized;
+
+    /// Returns the file generation.
+    fn generation(&self) -> Generation;
 
     /// Returns the underlying size of the data in bytes
     fn data_size(&self) -> u64;
@@ -305,6 +314,7 @@ pub struct FileEntryImpl {
     block_size: u64,
     // We lock around this as it gets rewritten when we move between temp and content types
     encoded_file_path: RwLock<EncodedFilePath>,
+    generation: Generation,
 }
 
 impl FileEntryImpl {
@@ -314,11 +324,17 @@ impl FileEntryImpl {
 }
 
 impl FileEntry for FileEntryImpl {
-    fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
+    fn create(
+        data_size: u64,
+        block_size: u64,
+        generation: Generation,
+        encoded_file_path: RwLock<EncodedFilePath>,
+    ) -> Self {
         Self {
             data_size,
             block_size,
             encoded_file_path,
+            generation,
         }
     }
 
@@ -327,6 +343,7 @@ impl FileEntry for FileEntryImpl {
     /// try to cleanup the file as well during `drop()`.
     async fn make_and_open_file(
         block_size: u64,
+        generation: Generation,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(Self, FileSlot, OsString), Error> {
         let temp_full_path = encoded_file_path.get_file_path().to_os_string();
@@ -355,6 +372,7 @@ impl FileEntry for FileEntryImpl {
             <Self as FileEntry>::create(
                 0, /* Unknown yet, we will fill it in later */
                 block_size,
+                generation,
                 RwLock::new(encoded_file_path),
             ),
             temp_file_result,
@@ -364,6 +382,10 @@ impl FileEntry for FileEntryImpl {
 
     fn data_size(&self) -> u64 {
         self.data_size
+    }
+
+    fn generation(&self) -> Generation {
+        self.generation
     }
 
     fn data_size_mut(&mut self) -> &mut u64 {
@@ -850,6 +872,7 @@ async fn add_files_to_cache<Fe: FileEntry>(
         let file_entry = Fe::create(
             data_size,
             block_size,
+            generation,
             RwLock::new(EncodedFilePath {
                 shared_context: shared_context.clone(),
                 path_type: PathType::Content,
@@ -870,9 +893,10 @@ async fn add_files_to_cache<Fe: FileEntry>(
             Duration::ZERO
         };
         evicting_map
-            .insert_with_time(
+            .insert_with_time_if(
                 key.into_owned().into(),
                 Arc::new(file_entry),
+                |present_entry, new_entry| present_entry.generation() < new_entry.generation(),
                 i32::try_from(time_since_anchor.as_secs()).unwrap_or(i32::MAX),
             )
             .await;
@@ -1804,9 +1828,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 return Ok(());
             }
 
-            evicting_map
-                .insert(key.borrow().into_owned().into(), entry.clone())
+            let (inserted, _) = evicting_map
+                .insert_if(
+                    key.borrow().into_owned().into(),
+                    entry.clone(),
+                    |present_entry, new_entry| present_entry.generation() < new_entry.generation(),
+                )
                 .await;
+            if !inserted {
+                // A newer generation of this key is already resident. The file is
+                // still in the temp dir, so `drop()` cleans it up.
+                info!(%key, "Newer generation already emplaced, dropping");
+                return Ok(());
+            }
 
             // The insert might have resulted in an eviction/unref so we need to check
             // it still exists in there. But first, get the lock...
@@ -1966,13 +2000,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         &self,
         temp_key: StoreKey<'static>,
     ) -> Result<(Fe, FileSlot, OsString), Error> {
+        let generation = self.get_and_update_generation();
+
         Fe::make_and_open_file(
             self.block_size,
+            generation,
             EncodedFilePath {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Temp,
                 key: temp_key,
-                generation: self.get_and_update_generation(),
+                generation,
                 version: Version::V2,
             },
         )
@@ -2127,14 +2164,16 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
             // don't need to add, because zero length files are just assumed to exist
             return Ok((0, None));
         }
+        let generation = self.get_and_update_generation();
         let entry = Fe::create(
             file_size,
             self.block_size,
+            generation,
             RwLock::new(EncodedFilePath {
                 shared_context: self.shared_context.clone(),
                 path_type: PathType::Custom(path),
                 key: key.borrow().into_owned(),
-                generation: self.get_and_update_generation(),
+                generation,
                 version: Version::V2,
             }),
         );
