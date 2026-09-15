@@ -44,14 +44,27 @@ stores: [
 
 Create the parent directory and start NativeLink. The store scans
 `content_path` on boot and adopts every file whose name parses as a store key
-(`<hash>-<size>` under `d/`, or a plain string key under `s/`); a file whose
+and generation (`<hash>-<size>-<generation>` under `d2/`, or
+`<key>-<generation>` under `s2/`); a file whose
 name does not parse is deleted. The scan reads metadata, not content, so it does not check
 that bytes still match their digest. That scan is what makes the cache survive
 restarts, and it is also why boot time grows with the number of cached
 objects.
 
+The generation gives each upload its own file. Eviction of an older upload
+can finish after a replacement arrives without moving the replacement's file.
+If several generations survive a shutdown, startup keeps the newest generation
+for each key, subject to the eviction policy.
+
+Startup migrates the earlier `d/` and `s/` layout, and the older flat digest
+layout, into the new directories. A file that cannot be moved remains readable
+from its original location, and migration is retried on the next startup.
+Earlier NativeLink versions cannot read the new layout; use a separate cache
+directory when rolling back to an earlier version.
+
 <SourceLink file="nativelink-config/src/stores.rs" symbol="FilesystemSpec" />
 <SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="add_files_to_cache" />
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="emplace_file" />
 
 ## The two paths [#the-two-paths]
 
@@ -159,7 +172,7 @@ a cache hit.
 
 <VerifyBlock>
 
-- Files appear under `content_path/d/` named `<hash>-<size>` while a build
+- Files appear under `content_path/d2/` named `<hash>-<size>-<generation>` while a build
   runs.
 - `temp_path` is empty when no upload is in flight, and empty after a restart.
 - `du -sh` on `content_path` stabilises near `max_bytes` rather than growing
@@ -171,6 +184,21 @@ a cache hit.
 ## When it doesn't work [#when-it-doesnt-work]
 
 <Accordions>
+
+<Accordion title="The index contains a file that is missing from disk" id="index-file-missing-from-disk">
+
+An upload that encounters a missing file during duplicate comparison removes
+the stale index entry and stores the uploaded content. A read removes only the
+entry whose file was missing. In a `fast_slow` composition, that read can fall
+through to the slow store and refill the fast tier.
+
+Repeated missing-file warnings after recovery suggest that files are still
+being removed outside the store. Check for external cleanup of `content_path`.
+
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="check_duplicate_files" />
+<SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="get_part" />
+
+</Accordion>
 
 <Accordion title="The disk filled up" id="the-disk-filled-up">
 
