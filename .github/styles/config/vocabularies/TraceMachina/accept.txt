@@ -6,6 +6,7 @@ Astro
 Bazel
 Bazelisk
 [Bb]oolean
+[Bb]iocomputing
 [Kk]eyless
 Sigstore
 Cloudflare
@@ -485,3 +486,9 @@ rules_omniverse
 Sumon
 [Uu]nreviewed
 npm
+Biochemist
+Bioinformatics
+Flybody
+MuJoCo
+connectome
+simulatable

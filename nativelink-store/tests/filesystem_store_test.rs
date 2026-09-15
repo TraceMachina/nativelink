@@ -31,8 +31,9 @@ use nativelink_config::stores::{EvictionPolicy, FilesystemSpec};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
-    DIGEST_FOLDER, EncodedFilePath, FileEntry, FileEntryImpl, FileType, FilesystemStore,
-    STR_FOLDER, check_duplicate_files, key_from_file, make_temp_key,
+    DIGEST_FOLDER_V1, DIGEST_FOLDER_V2, EncodedFilePath, FileEntry, FileEntryImpl, FileType,
+    FilesystemStore, Generation, STR_FOLDER_V1, STR_FOLDER_V2, check_duplicate_files,
+    key_and_generation_from_file_v2, make_temp_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
@@ -69,6 +70,12 @@ trait FileEntryHooks {
         core::future::ready(Ok(()))
     }
     fn on_unref<Fe: FileEntry>(_entry: &Fe) {}
+    fn on_unref_async<Fe: FileEntry>(_entry: &Fe) -> impl Future<Output = ()> + Send {
+        core::future::ready(())
+    }
+    fn on_read_error() -> impl Future<Output = ()> + Send {
+        core::future::ready(())
+    }
     fn on_drop<Fe: FileEntry>(_entry: &Fe) {}
 }
 
@@ -86,11 +93,17 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> Debug for TestFileEntry<Hook
 }
 
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<Hooks> {
-    fn create(data_size: u64, block_size: u64, encoded_file_path: RwLock<EncodedFilePath>) -> Self {
+    fn create(
+        data_size: u64,
+        block_size: u64,
+        generation: Generation,
+        encoded_file_path: RwLock<EncodedFilePath>,
+    ) -> Self {
         Self {
             inner: Some(FileEntryImpl::create(
                 data_size,
                 block_size,
+                generation,
                 encoded_file_path,
             )),
             _phantom: PhantomData,
@@ -99,11 +112,12 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
 
     async fn make_and_open_file(
         block_size: u64,
+        generation: Generation,
         encoded_file_path: EncodedFilePath,
     ) -> Result<(Self, fs::FileSlot, OsString), Error> {
         Hooks::on_make_and_open(&encoded_file_path).await?;
         let (inner, file_slot, path) =
-            FileEntryImpl::make_and_open_file(block_size, encoded_file_path).await?;
+            FileEntryImpl::make_and_open_file(block_size, generation, encoded_file_path).await?;
         Ok((
             Self {
                 inner: Some(inner),
@@ -130,12 +144,21 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         self.inner.as_ref().unwrap().get_encoded_file_path()
     }
 
+    fn generation(&self) -> Generation {
+        self.inner.as_ref().unwrap().generation()
+    }
+
     async fn read_file_part(&self, offset: u64, length: u64) -> Result<Take<fs::FileSlot>, Error> {
-        self.inner
+        let result = self
+            .inner
             .as_ref()
             .unwrap()
             .read_file_part(offset, length)
-            .await
+            .await;
+        if result.is_err() {
+            Hooks::on_read_error().await;
+        }
+        result
     }
 
     async fn get_file_path_locked<
@@ -165,6 +188,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<H
 
     async fn unref(&self) {
         Hooks::on_unref(self);
+        Hooks::on_unref_async(self).await;
         self.inner.as_ref().unwrap().unref().await;
     }
 }
@@ -231,9 +255,44 @@ async fn wait_for_no_open_files() -> Result<(), Error> {
     Ok(())
 }
 
+/// Find a file backing `key` in the content directory.
+async fn find_content_file(
+    content_path: &str,
+    key: &StoreKey<'_>,
+) -> Result<Option<OsString>, Error> {
+    let (folder, prefix) = match key {
+        StoreKey::Digest(digest) => (DIGEST_FOLDER_V2, format!("{digest}-")),
+        StoreKey::Str(name) => (STR_FOLDER_V2, format!("{name}-")),
+    };
+    let (_permit, dir_handle) = fs::read_dir(format!("{content_path}/{folder}"))
+        .await
+        .err_tip(|| "Failed opening content directory")?
+        .into_inner();
+    let mut read_dir_stream = ReadDirStream::new(dir_handle);
+    while let Some(dir_entry) = read_dir_stream.next().await {
+        let dir_entry = dir_entry?;
+        if dir_entry.file_name().to_string_lossy().starts_with(&prefix) {
+            return Ok(Some(dir_entry.path().into_os_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// As [`find_content_file`], erroring when nothing backs `key`.
+async fn content_file_path(content_path: &str, key: &StoreKey<'_>) -> Result<OsString, Error> {
+    find_content_file(content_path, key)
+        .await?
+        .err_tip(|| format!("No content file for {key:?} under {content_path}"))
+}
+
+/// Whether the content directory holds a file for `key`.
+async fn content_file_exists(content_path: &str, key: &StoreKey<'_>) -> Result<bool, Error> {
+    Ok(find_content_file(content_path, key).await?.is_some())
+}
+
 /// Helper function to ensure there are no temporary or content files left.
 async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{DIGEST_FOLDER}"))
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{DIGEST_FOLDER_V2}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -248,7 +307,7 @@ async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
         );
     }
 
-    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{STR_FOLDER}"))
+    let (_permit, temp_dir_handle) = fs::read_dir(format!("{storage_path}/{STR_FOLDER_V2}"))
         .await
         .err_tip(|| "Failed opening temp directory")?
         .into_inner();
@@ -260,6 +319,37 @@ async fn check_storage_dir_empty(storage_path: &str) -> Result<(), Error> {
         panic!(
             "No files should exist in temp directory, found: {}",
             path.display()
+        );
+    }
+    Ok(())
+}
+
+async fn list_file_names(dir: &str) -> Result<Vec<String>, Error> {
+    let (_permit, dir_handle) = fs::read_dir(dir)
+        .await
+        .err_tip(|| format!("Failed opening {dir}"))?
+        .into_inner();
+    let mut names = Vec::new();
+    let mut read_dir_stream = ReadDirStream::new(dir_handle);
+    while let Some(dir_entry) = read_dir_stream.next().await {
+        names.push(dir_entry?.file_name().to_string_lossy().into_owned());
+    }
+    names.sort();
+    Ok(names)
+}
+
+async fn assert_entries_readable(store: &FilesystemStore) -> Result<(), Error> {
+    for (key, value) in LEGACY_STR_ENTRIES {
+        let store_key = StoreKey::new_str(key);
+        assert_eq!(
+            store.has(store_key.borrow()).await?,
+            Some(value.len() as u64),
+            "string key {key} should be resident"
+        );
+        assert_eq!(
+            store.get_part_unchunked(store_key, 0, None).await?,
+            Bytes::from(value),
+            "string key {key} should map to its own contents"
         );
     }
     Ok(())
@@ -374,10 +464,10 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
 
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest1}"));
     {
         // Check to ensure our file exists where it should and content matches.
-        let data = read_file_contents(&expected_file_name).await?;
+        let content_file = content_file_path(&content_path, &StoreKey::Digest(digest1)).await?;
+        let data = read_file_contents(&content_file).await?;
         assert_eq!(
             &data[..],
             VALUE1.as_bytes(),
@@ -389,8 +479,9 @@ async fn temp_files_get_deleted_on_replace_test() -> Result<(), Error> {
     store.update_oneshot(digest1, VALUE2.into()).await?;
 
     {
-        // Check to ensure our file now has new content.
-        let data = read_file_contents(&expected_file_name).await?;
+        // Replacing the content publishes a new generation, so re-discover it.
+        let content_file = content_file_path(&content_path, &StoreKey::Digest(digest1)).await?;
+        let data = read_file_contents(&content_file).await?;
         assert_eq!(
             &data[..],
             VALUE2.as_bytes(),
@@ -479,7 +570,7 @@ async fn file_continues_to_stream_on_content_replace_test() -> Result<(), Error>
 
     {
         // Now ensure we only have 1 file in our temp path - we know it is a digest.
-        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER_V2}"))
             .await
             .err_tip(|| "Failed opening temp directory")?
             .into_inner();
@@ -580,7 +671,7 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
 
     {
         // Now ensure we only have 1 file in our temp path - we know it is a digest.
-        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+        let (_permit, temp_dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER_V2}"))
             .await
             .err_tip(|| "Failed opening temp directory")?
             .into_inner();
@@ -673,7 +764,7 @@ async fn eviction_on_insert_calls_unref_once() -> Result<(), Error> {
         fn on_unref<Fe: FileEntry>(file_entry: &Fe) {
             block_on(file_entry.get_file_path_locked(move |path_str| async move {
                 let path = Path::new(&path_str);
-                let digest = key_from_file(
+                let (digest, _generation) = key_and_generation_from_file_v2(
                     path.file_name().unwrap().to_str().unwrap(),
                     FileType::Digest,
                 )
@@ -733,7 +824,7 @@ async fn rename_on_insert_fails_due_to_filesystem_error_proper_cleanup_happens()
         loop {
             yield_fn().await?;
             // Now ensure we only have 1 file in our temp path - we know it is a digest.
-            let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER}"))
+            let (_permit, dir_handle) = fs::read_dir(format!("{temp_path}/{DIGEST_FOLDER_V2}"))
                 .await?
                 .into_inner();
             let mut read_dir_stream = ReadDirStream::new(dir_handle);
@@ -1136,24 +1227,41 @@ async fn update_file_future_drops_before_rename() -> Result<(), Error> {
             // Give a little time for background/kernel threads to run.
             sleep(Duration::from_millis(1)).await;
         }
+        assert_eq!(
+            store.get_part_unchunked(digest, 0, None).await?,
+            VALUE1.as_bytes(),
+            "the old generation must remain readable until the rename completes",
+        );
         // Writing these out explicitly so users know this is what we are testing.
         // Note: The order they are dropped matters.
         drop(update_fut);
         drop(rename_pause_request_lock);
     }
-    // Grab the newly inserted item in our store.
-    let new_file_entry = store.get_file_entry_for_digest(&digest).await?;
-    assert!(
-        !Arc::ptr_eq(&first_file_entry, &new_file_entry),
-        "Expected file entries to not be the same"
+    // Cancellation must not stop the background publish. The index changes
+    // only once the rename has completed.
+    let new_file_entry = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let entry = store.get_file_entry_for_digest(&digest).await?;
+            if !Arc::ptr_eq(&first_file_entry, &entry) {
+                return Ok::<_, Error>(entry);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled upload did not finish publishing")?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        VALUE2.as_bytes()
     );
 
     // Ensure the entry we inserted was properly flagged as moved (from temp -> content dir).
     new_file_entry
         .get_file_path_locked(move |file_path| async move {
-            assert_eq!(
-                file_path,
-                OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"))
+            let expected_prefix = format!("{content_path}/{DIGEST_FOLDER_V2}/{digest}-");
+            assert!(
+                file_path.to_string_lossy().starts_with(&expected_prefix),
+                "expected {file_path:?} to be a content file for {digest}"
             );
             Ok(())
         })
@@ -1183,7 +1291,7 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
 
     store.update_oneshot(digest, VALUE1.into()).await?;
 
-    let stored_file_path = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let stored_file_path = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
     std::fs::remove_file(stored_file_path)?;
 
     let get_part_res = store.get_part_unchunked(digest, 0, None).await;
@@ -1198,7 +1306,8 @@ async fn deleted_file_removed_from_store() -> Result<(), Error> {
         .await
         .unwrap();
 
-    let stored_file_path = OsString::from(format!("{content_path}/{STR_FOLDER}/{STRING_NAME}"));
+    let stored_file_path =
+        content_file_path(&content_path, &StoreKey::new_str(STRING_NAME)).await?;
     std::fs::remove_file(stored_file_path)?;
 
     let string_digest_get_part_res = store.get_part_unchunked(string_key, 0, None).await;
@@ -1345,7 +1454,7 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
         original_inode
     };
 
-    let expected_file_name = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let expected_file_name = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
     // Content blobs are stored read-only (0o444), so they cannot be opened for
     // write (`fs::create_file` opens read+write+truncate). Stat the path
     // directly to read the inode instead of opening the file.
@@ -1509,9 +1618,9 @@ async fn add_too_early_files() -> Result<(), Error> {
     let content_path = make_temp_path("content_path");
     let temp_path = make_temp_path("temp_path");
 
-    let demo_file_folder = format!("{content_path}/s");
+    let demo_file_folder = format!("{content_path}/{STR_FOLDER_V2}");
     fs::create_dir_all(&demo_file_folder).await?;
-    let demo_file_path = format!("{demo_file_folder}/foo");
+    let demo_file_path = format!("{demo_file_folder}/foo-0");
     std::fs::write(&demo_file_path, "demo text")
         .err_tip(|| format!("writing to {demo_file_path}"))?;
     debug!(%demo_file_path, "demo file path");
@@ -1535,7 +1644,7 @@ async fn add_too_early_files() -> Result<(), Error> {
     .err_tip(|| "during FileSystemStore::new")?;
 
     assert!(logs_contain(
-        "File access time newer than FilesystemStore start time file_name=foo atime=20"
+        "File access time newer than FilesystemStore start time file_name=foo-0 atime=20"
     ));
 
     Ok(())
@@ -1619,7 +1728,7 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
     store.update_oneshot(digest, VALUE1.into()).await?;
 
     // The CAS blob itself is stored read-only 0o444.
-    let blob_path = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let blob_path = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
     let blob_meta = fs::metadata(&blob_path).await?;
     assert_eq!(
         blob_meta.mode() & 0o777,
@@ -1727,7 +1836,7 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
         store.get_executable_hardlink_source(&digest).await?;
     }
 
-    let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER}");
+    let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER_V2}");
     fs::set_permissions(
         &executable_digest_dir,
         std::fs::Permissions::from_mode(0o555),
@@ -1778,7 +1887,7 @@ async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
     );
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER}/{digest1}"));
+    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest1}"));
     store.get_executable_hardlink_source(&digest1).await?;
     fs::metadata(&variant_path)
         .await
@@ -1833,7 +1942,7 @@ async fn deferred_write_error_does_not_emplace_truncated_file() -> Result<(), Er
 
     assert!(result.is_err(), "deferred write error must surface");
 
-    let ghosts = std::fs::read_dir(format!("{content_path}/{DIGEST_FOLDER}"))?
+    let ghosts = std::fs::read_dir(format!("{content_path}/{DIGEST_FOLDER_V2}"))?
         .filter_map(Result::ok)
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect::<Vec<String>>();
@@ -1942,6 +2051,236 @@ async fn detect_same_key_different_contents() -> Result<(), Error> {
     Ok(())
 }
 
+/// An upload must repair a stale index entry instead of failing the duplicate
+/// comparison with ENOENT. Cover both digest and arbitrary string keys.
+#[nativelink_test]
+async fn upload_self_heals_map_disk_divergence() -> Result<(), Error> {
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    for key in [
+        StoreKey::Digest(DigestInfo::try_new(HASH1, VALUE1.len())?),
+        StoreKey::new_str("upload-with-missing-file-123"),
+    ] {
+        store.update_oneshot(key.borrow(), VALUE1.into()).await?;
+        let stale_entry = store.get_evicting_map().get(&key).await.unwrap();
+        stale_entry
+            .get_file_path_locked(|path| async move { fs::remove_file(path).await })
+            .await?;
+        assert_eq!(store.has(key.borrow()).await?, Some(VALUE1.len() as u64));
+
+        store.update_oneshot(key.borrow(), VALUE1.into()).await?;
+        let replacement = store.get_evicting_map().get(&key).await.unwrap();
+        assert!(!Arc::ptr_eq(&stale_entry, &replacement));
+        assert_eq!(
+            store.get_part_unchunked(key, 0, None).await?,
+            VALUE1.as_bytes(),
+        );
+    }
+    assert!(logs_contain("Map/disk divergence in check_duplicate_files"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn stale_read_does_not_remove_replacement_upload() -> Result<(), Error> {
+    static READ_FAILED: Semaphore = Semaphore::const_new(0);
+    static RESUME_READ: Semaphore = Semaphore::const_new(0);
+
+    struct GatedReadHooks;
+    impl FileEntryHooks for GatedReadHooks {
+        async fn on_read_error() {
+            READ_FAILED.add_permits(1);
+            RESUME_READ.acquire().await.unwrap().forget();
+        }
+    }
+
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let store = FilesystemStore::<TestFileEntry<GatedReadHooks>>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    store
+        .get_file_entry_for_digest(&digest)
+        .await?
+        .get_file_path_locked(|path| async move { fs::remove_file(path).await })
+        .await?;
+    let reading_store = store.clone();
+    let read = spawn!("stale_read", async move {
+        reading_store.get_part_unchunked(digest, 0, None).await
+    });
+    tokio::time::timeout(Duration::from_secs(5), READ_FAILED.acquire())
+        .await
+        .expect("read never reached the missing file")
+        .unwrap()
+        .forget();
+
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let replacement = store.get_file_entry_for_digest(&digest).await?;
+    RESUME_READ.add_permits(1);
+    assert_eq!(read.await.unwrap().unwrap_err().code, Code::NotFound);
+    assert!(Arc::ptr_eq(
+        &replacement,
+        &store.get_file_entry_for_digest(&digest).await?,
+    ));
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        VALUE1.as_bytes(),
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn duplicate_comparison_checks_every_byte_and_empty_files() -> Result<(), Error> {
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    let key = StoreKey::new_str("duplicate-boundaries");
+    // The old loop underflowed for empty files and skipped the last byte for
+    // files whose length was one more than a full comparison chunk.
+    for size in [0, 1, 16 * 1024 + 1] {
+        let original = Bytes::from(vec![b'a'; size]);
+        store.update_oneshot(key.borrow(), original.clone()).await?;
+        store.update_oneshot(key.borrow(), original.clone()).await?;
+        let mut replacement = original.to_vec();
+        if let Some(last) = replacement.last_mut() {
+            *last = b'b';
+        }
+        let replacement = Bytes::from(replacement);
+        store
+            .update_oneshot(key.borrow(), replacement.clone())
+            .await?;
+        assert_eq!(
+            store.get_part_unchunked(key.borrow(), 0, None).await?,
+            replacement
+        );
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn failed_publish_preserves_previous_generation() -> Result<(), Error> {
+    static FAIL_RENAME: AtomicBool = AtomicBool::new(false);
+    fn rename_fn(from: &OsStr, to: &OsStr) -> Result<(), std::io::Error> {
+        if FAIL_RENAME.load(Ordering::Acquire) {
+            return Err(std::io::Error::other("publish blocked by test"));
+        }
+        std::fs::rename(from, to)
+    }
+
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            ..Default::default()
+        },
+        rename_fn,
+    )
+    .await?;
+    let key = StoreKey::new_str("replace-me");
+    store.update_oneshot(key.borrow(), VALUE1.into()).await?;
+    FAIL_RENAME.store(true, Ordering::Release);
+    assert!(
+        store
+            .update_oneshot(key.borrow(), VALUE2.into())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store.get_part_unchunked(key, 0, None).await?,
+        VALUE1.as_bytes()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn older_upload_finishing_last_does_not_replace_newer_generation() -> Result<(), Error> {
+    static STARTED: Semaphore = Semaphore::const_new(0);
+    struct StartedHooks;
+    impl FileEntryHooks for StartedHooks {
+        async fn on_make_and_open(_path: &EncodedFilePath) -> Result<(), Error> {
+            STARTED.add_permits(1);
+            Ok(())
+        }
+    }
+
+    let content_path = make_temp_path("content_path");
+    let store = FilesystemStore::<TestFileEntry<StartedHooks>>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    let older_store = store.clone();
+    let upload = spawn!("older_upload", async move {
+        older_store
+            .update("key", rx, UploadSizeInfo::ExactSize(VALUE1.len() as u64))
+            .await
+    });
+    tx.send(VALUE1.into()).await?;
+    tokio::time::timeout(Duration::from_secs(5), STARTED.acquire())
+        .await
+        .expect("first upload never started")
+        .unwrap()
+        .forget();
+    store.update_oneshot("key", VALUE2.into()).await?;
+    tx.send_eof()?;
+    upload.await.unwrap()?;
+    assert_eq!(
+        store.get_part_unchunked("key", 0, None).await?,
+        VALUE2.as_bytes()
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+        vec!["key-2"],
+        "the rejected generation must be retired from the content directory",
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[nativelink_test]
+async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    store.update_oneshot(digest, VALUE1.into()).await?;
+    let entry = store.get_file_entry_for_digest(&digest).await?;
+    entry
+        .get_file_path_locked(|path| async move {
+            fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).await
+        })
+        .await?;
+    let result = store.update_oneshot(digest, VALUE1.into()).await;
+    entry
+        .get_file_path_locked(|path| async move {
+            fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).await
+        })
+        .await?;
+    assert_eq!(result.unwrap_err().code, Code::PermissionDenied);
+    assert!(Arc::ptr_eq(
+        &entry,
+        &store.get_file_entry_for_digest(&digest).await?
+    ));
+    Ok(())
+}
+
 /// Map/disk divergence (map says present, file is gone) must surface as a
 /// recoverable warn and remove the stale entry — not a fatal error.
 #[nativelink_test]
@@ -1960,7 +2299,7 @@ async fn get_part_on_map_disk_divergence_warns_and_removes_entry() -> Result<(),
     store.update_oneshot(digest, VALUE1.into()).await?;
 
     // Delete the backing file out from under the still-present map entry.
-    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let content_file = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
     fs::remove_file(&content_file).await?;
 
     let err = store
@@ -2009,7 +2348,7 @@ async fn unref_is_idempotent_when_file_already_gone() -> Result<(), Error> {
     store.update_oneshot(digest, VALUE1.into()).await?;
     let file_entry = store.get_file_entry_for_digest(&digest).await?;
 
-    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let content_file = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
     fs::remove_file(&content_file).await?;
 
     // First unref: rename hits ENOENT (benign) and flips the entry to Temp.
@@ -2047,7 +2386,7 @@ async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<()
 
     // Remove the temp dir so rename's destination parent is gone (ENOENT)
     // while the source content file is perfectly intact.
-    fs::remove_dir_all(format!("{temp_path}/{DIGEST_FOLDER}")).await?;
+    fs::remove_dir_all(format!("{temp_path}/{DIGEST_FOLDER_V2}")).await?;
 
     file_entry.unref().await;
 
@@ -2060,7 +2399,7 @@ async fn unref_does_not_orphan_content_file_when_temp_dir_missing() -> Result<()
         "an intact content file must not take the benign vanished-source path"
     );
     // The content file must still exist — not orphaned by a wrong Temp flip.
-    let content_file = OsString::from(format!("{content_path}/{DIGEST_FOLDER}/{digest}"));
+    let content_file = content_file_path(&content_path, &StoreKey::Digest(digest)).await?;
     assert_eq!(
         read_file_contents(&content_file).await?,
         VALUE1.as_bytes(),
@@ -2138,5 +2477,557 @@ async fn concurrent_upload_burst_round_trip_test() -> Result<(), Error> {
             "blob {i} missing after restart"
         );
     }
+    Ok(())
+}
+
+/// Regression test. Operations on the eviction map (add/removal) can run at different times
+/// w.r.t. moving files on a filesystem. In the past, file names contained only the digest and size.
+///
+/// The following happened in past.
+/// - An entry was evicted from the map. The removal fs task was scheduled.
+/// - Meanwhile, a client reuploads the file. A new entry is added to the map, and the file is moved
+///   into the cache on the filesystem.
+/// - Now the fs removal task runs, removing the file on the filesystem, leaving an entry in the map.
+///
+/// This was mitigated by making file names unique using a generation counter.
+#[nativelink_test]
+async fn stale_unref_must_not_delete_reuploaded_file() -> Result<(), Error> {
+    static UNREF_GATE: Semaphore = Semaphore::const_new(0);
+
+    struct GatedUnrefHooks;
+    impl FileEntryHooks for GatedUnrefHooks {
+        async fn on_unref_async<Fe: FileEntry>(entry: &Fe) {
+            if entry.len() == VALUE1.len() as u64 {
+                let _permit = UNREF_GATE
+                    .acquire()
+                    .await
+                    .expect("unref gate closed unexpectedly");
+            }
+        }
+    }
+
+    // Sized apart from VALUE1 so the hook can tell the two unrefs apart.
+    let other_value = "y".repeat(64);
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, other_value.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = Arc::new(
+        FilesystemStore::<TestFileEntry<GatedUnrefHooks>>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+    assert!(
+        content_file_exists(&content_path, &StoreKey::Digest(digest1)).await?,
+        "digest1 should be on disk after its upload"
+    );
+
+    // Evict digest1, suspending its unref before the rename.
+    let evicting_store = store.clone();
+    let eviction = spawn!("stale_unref_eviction", async move {
+        evicting_store
+            .update_oneshot(digest2, other_value.into())
+            .await
+    });
+    while store.has(digest1).await?.is_some() {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        content_file_exists(&content_path, &StoreKey::Digest(digest1)).await?,
+        "digest1's file should outlive its map entry until unref runs"
+    );
+
+    // The client sees the blob as missing and re-uploads it.
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+    assert_eq!(
+        store.has(digest1).await?,
+        Some(VALUE1.len() as u64),
+        "the re-uploaded blob should be resident"
+    );
+    assert_eq!(
+        store.get_part_unchunked(digest1, 0, None).await?,
+        VALUE1.as_bytes(),
+        "the re-uploaded blob should be readable"
+    );
+
+    // Let the evicted entry finish its unref.
+    UNREF_GATE.add_permits(1);
+    eviction
+        .await
+        .expect("eviction task panicked")
+        .err_tip(|| "Failed to insert digest2")?;
+
+    assert!(
+        content_file_exists(&content_path, &StoreKey::Digest(digest1)).await?,
+        "stale cleanup deleted the re-uploaded file for {digest1}"
+    );
+    assert_eq!(
+        store.get_part_unchunked(digest1, 0, None).await?,
+        VALUE1.as_bytes(),
+        "the re-uploaded blob should still be readable after the stale unref"
+    );
+    Ok(())
+}
+
+/// Control for [`stale_unref_must_not_delete_reuploaded_file`]: the same
+/// evict-then-reupload sequence, with a difference that `unref()` is allowed to
+/// finish before the reupload rather than after it.
+#[nativelink_test]
+async fn reupload_after_completed_unref_is_readable() -> Result<(), Error> {
+    static UNREF_GATE: Semaphore = Semaphore::const_new(0);
+
+    struct GatedUnrefHooks;
+    impl FileEntryHooks for GatedUnrefHooks {
+        async fn on_unref_async<Fe: FileEntry>(entry: &Fe) {
+            if entry.len() == VALUE1.len() as u64 {
+                let _permit = UNREF_GATE
+                    .acquire()
+                    .await
+                    .expect("unref gate closed unexpectedly");
+            }
+        }
+    }
+
+    let other_value = "y".repeat(64);
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, other_value.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = Arc::new(
+        FilesystemStore::<TestFileEntry<GatedUnrefHooks>>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+
+    // Same eviction, drained fully before the client re-uploads.
+    let evicting_store = store.clone();
+    let eviction = spawn!("completed_unref_eviction", async move {
+        evicting_store
+            .update_oneshot(digest2, other_value.into())
+            .await
+    });
+    while store.has(digest1).await?.is_some() {
+        tokio::task::yield_now().await;
+    }
+    UNREF_GATE.add_permits(1);
+    eviction
+        .await
+        .expect("eviction task panicked")
+        .err_tip(|| "Failed to insert digest2")?;
+
+    // No stale unref is outstanding by the time this lands.
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+    assert!(
+        content_file_exists(&content_path, &StoreKey::Digest(digest1)).await?,
+        "the re-uploaded file should be on disk for {digest1}"
+    );
+    assert_eq!(
+        store.get_part_unchunked(digest1, 0, None).await?,
+        VALUE1.as_bytes(),
+        "the re-uploaded blob should be readable"
+    );
+    Ok(())
+}
+
+/// Legacy `s/` entries, one per way `-` can appear in an arbitrary string key.
+const LEGACY_STR_ENTRIES: [(&str, &str); 4] = [
+    ("foo", "no hyphen"),
+    ("foo-bar", "embedded hyphen"),
+    ("foo-1", "numeric suffix"),
+    ("foo-bar-12345", "hyphens and a numeric suffix"),
+];
+
+#[nativelink_test]
+async fn upgrade_from_v1_folders_stamps_generation_on_all_keys() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    fs::create_dir_all(format!("{content_path}/{DIGEST_FOLDER_V1}")).await?;
+
+    for (key, value) in LEGACY_STR_ENTRIES {
+        std::fs::write(format!("{content_path}/{STR_FOLDER_V1}/{key}"), value)
+            .err_tip(|| format!("writing legacy string entry {key}"))?;
+    }
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    std::fs::write(
+        format!("{content_path}/{DIGEST_FOLDER_V1}/{digest}"),
+        VALUE1,
+    )?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+
+    assert_entries_readable(&store).await?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        Bytes::from(VALUE1),
+        "the legacy digest entry should survive the upgrade"
+    );
+
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+        vec!["foo-0", "foo-1-0", "foo-bar-0", "foo-bar-12345-0"],
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{DIGEST_FOLDER_V2}")).await?,
+        vec![format!("{digest}-0")],
+    );
+    for legacy_folder in [STR_FOLDER_V1, DIGEST_FOLDER_V1] {
+        assert_eq!(
+            list_file_names(&format!("{content_path}/{legacy_folder}")).await?,
+            Vec::<String>::new(),
+            "{legacy_folder} should be drained by a successful migration"
+        );
+    }
+
+    Ok(())
+}
+
+/// The pre-Dec-2024 layout kept every blob directly under `content_path`, so
+/// both migrations must run, in order.
+#[nativelink_test]
+async fn upgrade_from_flat_layout_moves_digests_then_stamps_generation() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(&content_path).await?;
+
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    std::fs::write(format!("{content_path}/{digest1}"), VALUE1)?;
+    std::fs::write(format!("{content_path}/{digest2}"), VALUE2)?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+
+    assert_eq!(
+        store.get_part_unchunked(digest1, 0, None).await?,
+        Bytes::from(VALUE1),
+    );
+    assert_eq!(
+        store.get_part_unchunked(digest2, 0, None).await?,
+        Bytes::from(VALUE2),
+    );
+
+    let mut expected = vec![format!("{digest1}-0"), format!("{digest2}-0")];
+    expected.sort();
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{DIGEST_FOLDER_V2}")).await?,
+        expected,
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    fs::create_dir_all(format!("{content_path}/{DIGEST_FOLDER_V1}")).await?;
+
+    for (key, value) in LEGACY_STR_ENTRIES {
+        std::fs::write(format!("{content_path}/{STR_FOLDER_V1}/{key}"), value)?;
+    }
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    std::fs::write(
+        format!("{content_path}/{DIGEST_FOLDER_V1}/{digest}"),
+        VALUE1,
+    )?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    assert_entries_readable(&store).await?;
+    let after_upgrade = list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?;
+    drop(store);
+    wait_for_no_open_files().await?;
+
+    for restart in 1..=2 {
+        let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?;
+        assert_entries_readable(&store)
+            .await
+            .err_tip(|| format!("after restart {restart}"))?;
+        assert_eq!(
+            store.get_part_unchunked(digest, 0, None).await?,
+            Bytes::from(VALUE1),
+        );
+        assert_eq!(
+            list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+            after_upgrade,
+            "restart {restart} renamed already-migrated files"
+        );
+        assert_eq!(
+            list_file_names(&format!("{content_path}/{DIGEST_FOLDER_V2}")).await?,
+            vec![format!("{digest}-0")],
+        );
+        drop(store);
+        wait_for_no_open_files().await?;
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn generations_assigned_after_upgrade_survive_restart() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    std::fs::write(format!("{content_path}/{STR_FOLDER_V1}/foo-1"), "legacy")?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    store
+        .update_oneshot(StoreKey::new_str("foo-1"), VALUE1.into())
+        .await?;
+    store
+        .update_oneshot(StoreKey::new_str("bar"), VALUE2.into())
+        .await?;
+    drop(store);
+    wait_for_no_open_files().await?;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str("foo-1"), 0, None)
+            .await?,
+        Bytes::from(VALUE1),
+        "the rewritten entry should replace the migrated legacy one"
+    );
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str("bar"), 0, None)
+            .await?,
+        Bytes::from(VALUE2),
+    );
+    assert_eq!(
+        store.has(StoreKey::new_str("foo")).await?,
+        None,
+        "`foo-1` must never be read back as key `foo` with generation 1"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn startup_keeps_newest_generation_and_advances_counter() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let dir = format!("{content_path}/{STR_FOLDER_V2}");
+    fs::create_dir_all(&dir).await?;
+    // Simulate a crash with multiple generations left on disk. Use creation
+    // order opposite to generation order to avoid depending on directory order.
+    std::fs::write(format!("{dir}/key-100"), VALUE2)?;
+    std::fs::write(format!("{dir}/key-3"), VALUE1)?;
+    let spec = FilesystemSpec {
+        content_path,
+        temp_path,
+        block_size: 1,
+        ..Default::default()
+    };
+    let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+    assert_eq!(
+        store.get_part_unchunked("key", 0, None).await?,
+        VALUE2.as_bytes()
+    );
+    assert_eq!(list_file_names(&dir).await?, vec!["key-100"]);
+    store.update_oneshot("key", VALUE1.into()).await?;
+    assert_eq!(list_file_names(&dir).await?, vec!["key-101"]);
+    drop(store);
+    wait_for_no_open_files().await?;
+    let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
+    assert_eq!(
+        store.get_part_unchunked("key", 0, None).await?,
+        VALUE1.as_bytes()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn failed_flat_migration_remains_readable() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    fs::create_dir_all(&content_path).await?;
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    std::fs::write(format!("{content_path}/{digest}"), VALUE1)?;
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path,
+            temp_path: make_temp_path("temp_path"),
+            ..Default::default()
+        },
+        |_, _| Err(std::io::Error::other("migration blocked by test")),
+    )
+    .await?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        VALUE1.as_bytes()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn replacing_unmigrated_entry_retires_legacy_file() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let legacy_dir = format!("{content_path}/{STR_FOLDER_V1}");
+    fs::create_dir_all(&legacy_dir).await?;
+    let legacy_file = format!("{legacy_dir}/key");
+    std::fs::write(&legacy_file, VALUE1)?;
+    let store = FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(
+        &FilesystemSpec {
+            content_path,
+            temp_path: make_temp_path("temp_path"),
+            ..Default::default()
+        },
+        |from, to| {
+            if from.to_string_lossy().ends_with("/s/key") {
+                return Err(std::io::Error::other("migration blocked by test"));
+            }
+            std::fs::rename(from, to)
+        },
+    )
+    .await?;
+    store.update_oneshot("key", VALUE2.into()).await?;
+    assert_eq!(
+        store.get_part_unchunked("key", 0, None).await?,
+        VALUE2.as_bytes()
+    );
+    assert!(
+        !Path::new(&legacy_file).exists(),
+        "retired legacy content must not reappear after restart"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn partial_migration_stays_readable_and_retries_next_startup() -> Result<(), Error> {
+    const STUCK_KEY: &str = "stuck";
+    const MOVED_KEY: &str = "moved";
+    static BLOCK_MIGRATION: AtomicBool = AtomicBool::new(true);
+
+    fn rename_fn(from: &OsStr, to: &OsStr) -> Result<(), std::io::Error> {
+        if BLOCK_MIGRATION.load(Ordering::Acquire)
+            && from
+                .to_string_lossy()
+                .ends_with(&format!("/{STR_FOLDER_V1}/{STUCK_KEY}"))
+        {
+            return Err(std::io::Error::other("migration blocked by test"));
+        }
+        std::fs::rename(from, to)
+    }
+
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    fs::create_dir_all(format!("{content_path}/{STR_FOLDER_V1}")).await?;
+    std::fs::write(
+        format!("{content_path}/{STR_FOLDER_V1}/{STUCK_KEY}"),
+        VALUE1,
+    )?;
+    std::fs::write(
+        format!("{content_path}/{STR_FOLDER_V1}/{MOVED_KEY}"),
+        VALUE2,
+    )?;
+
+    let spec = FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    };
+
+    let store =
+        FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(&spec, rename_fn).await?;
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str(STUCK_KEY), 0, None)
+            .await?,
+        Bytes::from(VALUE1),
+        "a file that failed to migrate must still be served from where it sits"
+    );
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str(MOVED_KEY), 0, None)
+            .await?,
+        Bytes::from(VALUE2),
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V1}")).await?,
+        vec![STUCK_KEY.to_string()],
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+        vec![format!("{MOVED_KEY}-0")],
+    );
+    drop(store);
+    wait_for_no_open_files().await?;
+
+    BLOCK_MIGRATION.store(false, Ordering::Release);
+    let store =
+        FilesystemStore::<FileEntryImpl>::new_with_timeout_and_rename_fn(&spec, rename_fn).await?;
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V1}")).await?,
+        Vec::<String>::new(),
+        "the retry should drain the legacy folder"
+    );
+    assert_eq!(
+        list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?,
+        vec![format!("{MOVED_KEY}-0"), format!("{STUCK_KEY}-0")],
+    );
+    assert_eq!(
+        store
+            .get_part_unchunked(StoreKey::new_str(STUCK_KEY), 0, None)
+            .await?,
+        Bytes::from(VALUE1),
+    );
+
     Ok(())
 }
