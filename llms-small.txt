@@ -2160,7 +2160,8 @@ your disk, with eviction that actually runs. **Time:** fifteen minutes.
 
 Create the parent directory and start NativeLink. The store scans
 `content_path` on boot and adopts every file whose name parses as a store key
-(`<hash>-<size>` under `d/`, or a plain string key under `s/`); a file whose
+and generation (`<hash>-<size>-<generation>` under `d2/`, or
+`<key>-<generation>` under `s2/`); a file whose
 name does not parse is deleted. The scan reads metadata, not content, so it does not check
 that bytes still match their digest.
 
@@ -2194,9 +2195,10 @@ or object store cannot supply them.
 
 ## When it doesn't work
 
-The store has no `eviction_policy`, or has one with `max_bytes: 0`. Both mean
-"never evict". Add a real limit and restart; the boot scan will bring the
-store back under the limit.
+An upload that encounters a missing file during duplicate comparison removes
+the stale index entry and stores the uploaded content. A read removes only the
+entry whose file was missing. In a `fast_slow` composition, that read can fall
+through to the slow store and refill the fast tier.
 
 # https://docs.nativelink.com/how-to/stores/s3-and-compatible
 

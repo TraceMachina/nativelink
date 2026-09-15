@@ -142,7 +142,8 @@ export function AskAi({
   className,
 }: AskAiProps) {
   const q = encodeURIComponent(prompt);
-  const base = siteUrl.replace(/\/+$/, "");
+  let base = siteUrl;
+  while (base.endsWith("/")) base = base.slice(0, -1);
   const chip = cn(
     "inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-surface text-foreground",
     "transition-colors hover:border-brand/50 hover:bg-surface-elevated hover:text-brand",
