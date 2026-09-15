@@ -15,6 +15,42 @@ Should you wish to work on an issue, please claim it first by commenting on
 the GitHub issue that you want to work on it. This is to prevent duplicated
 efforts from contributors on the same issue.
 
+## AI-assisted contributions
+
+NativeLink builds infrastructure for coding agents, so we won't pretend they
+don't write code. Agents are welcome contributors when a person stands behind
+the change. Four rules, in the spirit of the projects whose contribution
+culture we admire:
+
+1. **You must understand your change.** Using an agent to write code is fine;
+   interrogate it about the codebase until you grasp every edge case and
+   effect of the diff. Submitting code you cannot explain is not fine. A
+   reviewer may ask about any line, and "the agent wrote it" is not an answer.
+2. **Disclose it.** The pull request template has an "AI assistance" section.
+   Say which tools helped and how much: none, autocomplete, an agent drafted
+   it and you reworked it, an agent wrote it and you reviewed every line.
+   "None" is a complete answer. The section is required, and the PR template
+   check asks for it.
+3. **No slop.** Unreviewed generated code, generated issue or discussion text
+   that no person edited, and generated media (artwork, video, audio) are
+   closed without review. Write issues and comments in your own voice;
+   generated prose runs long, sounds confident, and often misses the point.
+   Repeated submissions of this kind cost the ability to contribute.
+4. **Agents follow `AGENTS.md`.** It maps the repository, names the checks,
+   and says which document must follow which change. An agent working here
+   runs the same checks a person would before opening a pull request, and
+   never opens one on its own initiative.
+
+Maintainers use agents at their discretion; the difference is that they have
+already shown they understand the code. None of this is an anti-AI stance.
+Review attention is the scarcest resource an open project has, and generated
+text made it cheap to produce contributions that look finished and are not.
+The rules keep the reviewer's time for changes a person is answerable for.
+
+Everything the repository offers an agent (the `llms.txt` files at the
+repository root and the skills under `.claude/skills/`) is listed at
+https://nativelink.com/agents and in [`AGENTS.md`](AGENTS.md).
+
 ## Git setup
 
 NativeLink has a somewhat specific contribution process to ensure consistent

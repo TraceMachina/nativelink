@@ -1,4 +1,11 @@
-import { FinalCTA, SiteFooter, SiteHeader, ThemeProvider, themeInitScript } from "@nativelink/ui";
+import {
+  FinalCTA,
+  SiteFooter,
+  SiteHeader,
+  ThemeProvider,
+  ThemeSwitch,
+  themeInitScript,
+} from "@nativelink/ui";
 import { GoogleTagManager } from "@next/third-parties/google";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
@@ -44,7 +51,10 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             secondaryLabel="See pricing"
             secondaryHref="/pricing"
           />
-          <SiteFooter />
+          <SiteFooter
+            askAi={{ siteUrl: "https://nativelink.com" }}
+            themeControl={<ThemeSwitch />}
+          />
         </ThemeProvider>
       </body>
     </html>

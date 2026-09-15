@@ -34,3 +34,13 @@ behaves differently on an existing deployment than on a fresh one.
 
 "Low. Pure refactor, covered by existing tests." is a fine answer when it is
 true. -->
+
+## AI assistance
+
+<!-- Which AI tools helped with this change, if any, and how much: none,
+autocomplete, an agent drafted it and you reworked it, an agent wrote it and
+you reviewed every line. "None" is a complete answer.
+
+The rule behind the question is in CONTRIBUTING.md, under "AI-assisted
+contributions": you must understand your change well enough to answer for
+any line of it. Disclosure is how a reviewer knows where to look hardest. -->
