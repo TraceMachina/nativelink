@@ -53,6 +53,10 @@ in {
       # Menlo Security case-study figures on the marketing site.
       "web/apps/web/public/assets/menlo-security-build-time-comparison.jpg"
       "web/apps/web/public/assets/menlo-security-kubernetes-topology.jpg"
+      # RE API Fellow figures on the marketing site.
+      "web/apps/web/public/assets/re-api-fellow-fig1-action-lifecycle.jpg"
+      "web/apps/web/public/assets/re-api-fellow-fig2-protocol-never-says-compiler.jpg"
+      "web/apps/web/public/assets/re-api-fellow-fig3-overlap-hiring.jpg"
     ];
     name = "forbid-binary-files";
     types = ["binary"];
