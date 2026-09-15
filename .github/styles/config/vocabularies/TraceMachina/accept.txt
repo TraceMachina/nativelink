@@ -6,6 +6,7 @@ Astro
 Bazel
 Bazelisk
 [Bb]oolean
+[Bb]iocomputing
 [Kk]eyless
 Sigstore
 Cloudflare
@@ -488,3 +489,9 @@ npm
 Ulf
 Yannic
 Staudt
+Biochemist
+Bioinformatics
+Flybody
+MuJoCo
+connectome
+simulatable
