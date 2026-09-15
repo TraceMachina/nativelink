@@ -3,6 +3,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0](https://github.com/TraceMachina/nativelink/compare/v1.6.7..v1.7.0) - 2026-09-15
+
+### Major changes
+
+Filesystem-store uploads now use generation-specific filenames, preventing
+delayed eviction from removing a newer upload. Uploads also repair index entries
+whose files are missing, and corrupt fetch-store entries return an error instead
+of panicking.
+
+### Migration and rollback
+
+New filesystem-store files use `d2/<hash>-<size>-<generation>` and
+`s2/<key>-<generation>`. Writable startup migrates existing cache files. Failed
+migrations remain readable and retry at the next startup.
+
+Earlier NativeLink versions cannot read the new directories. Plan rollback with a
+separate cache directory or a cache rebuild. See the
+[filesystem-store guide](https://docs.nativelink.com/how-to/stores/filesystem) for
+details.
+
+### 🐛 Bug Fixes
+
+- Fix filesystem eviction races and recover missing cache files ([#2762](https://github.com/TraceMachina/nativelink/issues/2762)) - ([a9c7bae](https://github.com/TraceMachina/nativelink/commit/a9c7baebad4b86d8f82c2c21dd2e548e9f9f32c9))
+- don't panic on a corrupt fetch-store entry in FetchServer ([#2760](https://github.com/TraceMachina/nativelink/issues/2760)) - ([b3cbb7b](https://github.com/TraceMachina/nativelink/commit/b3cbb7bcd5e21b692cdded930803159d4f11ba76))
+
+### 📚 Documentation
+
+- Add figures and Biology updates to the RE API Fellow post ([#2755](https://github.com/TraceMachina/nativelink/issues/2755)) - ([63c5f09](https://github.com/TraceMachina/nativelink/commit/63c5f094206b732b1012c80f122fdc5f61f58de2))
+- *(config-reference)* regenerate for NativeLink v1.6.7 ([#2746](https://github.com/TraceMachina/nativelink/issues/2746)) - ([76392b5](https://github.com/TraceMachina/nativelink/commit/76392b556171292fc300cc262614d427b7ab6dc1))
+- Remove the byline from the RE API Fellow post ([#2754](https://github.com/TraceMachina/nativelink/issues/2754)) - ([59c9d6b](https://github.com/TraceMachina/nativelink/commit/59c9d6b71d7081c83e6a027efc4c5181cd5b821a))
+- Say stipend instead of salary in the RE API Fellow post ([#2752](https://github.com/TraceMachina/nativelink/issues/2752)) - ([d6bfd56](https://github.com/TraceMachina/nativelink/commit/d6bfd562a66783ec6d29af0bfc71bd8d7f023be3))
+- Announce the inaugural RE API Fellow ([#2749](https://github.com/TraceMachina/nativelink/issues/2749)) - ([df8ffcd](https://github.com/TraceMachina/nativelink/commit/df8ffcd50d928fba913e225121e6a4514fc7a47a))
+
 ## [1.6.7](https://github.com/TraceMachina/nativelink/compare/v1.6.6..v1.6.7) - 2026-09-07
 
 ### ⛰️  Features
