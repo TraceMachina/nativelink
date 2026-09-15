@@ -439,12 +439,15 @@ dev shell), then:
 cd web
 bun install
 
-# Live dev server for just the docs at http://localhost:3001/docs
+# Live dev server for just the docs at http://localhost:3001
 bun dev:docs
 
-# Production build + preview of the docs app
-bun --filter @nativelink/docs build
-bun --filter @nativelink/docs start   # serves the build on port 3001
+# Production build + preview of both apps, the successor to the old
+# `rm -r dist && bun run build` and `bun preview`. DOCS_URL is baked into
+# the marketing app's /docs redirect at build time.
+DOCS_URL=http://localhost:3001 bun run build
+bun --filter @nativelink/web start    # nativelink.com build on port 3000
+bun --filter @nativelink/docs start   # docs build on port 3001
 ```
 
 Docs content is MDX under `web/apps/docs/content/docs/`. Every page needs
