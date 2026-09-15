@@ -6,6 +6,7 @@ Astro
 Bazel
 Bazelisk
 [Bb]oolean
+[Bb]iocomputing
 [Kk]eyless
 Sigstore
 Cloudflare
