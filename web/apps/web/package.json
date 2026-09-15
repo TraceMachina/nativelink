@@ -27,9 +27,10 @@
   },
   "private": true,
   "scripts": {
-    "build": "next build",
+    "build": "bun scripts/gen-llms.ts && next build",
     "clean": "rm -rf .next .turbo",
-    "dev": "next dev --port 3000",
+    "dev": "bun scripts/gen-llms.ts && next dev --port 3000",
+    "gen:llms": "bun scripts/gen-llms.ts",
     "lint": "biome check .",
     "start": "next start --port 3000",
     "typecheck": "tsc --noEmit"

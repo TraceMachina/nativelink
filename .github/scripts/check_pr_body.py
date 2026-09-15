@@ -13,12 +13,19 @@ markdown suitable for posting as a comment.
 import re
 import sys
 
-# Each section a reviewer cannot reconstruct from the diff or from CI.
-REQUIRED_SECTIONS = ("What and why", "How was this verified?", "Risk")
-
-# Long enough to rule out "n/a" and "see title", short enough that one real
-# sentence clears it.
-MIN_SECTION_CHARS = 40
+# Each section a reviewer cannot reconstruct from the diff or from CI, with
+# the least content that counts as filled in.
+REQUIRED_SECTIONS = (
+    # Long enough to rule out "n/a" and "see title", short enough that one
+    # real sentence clears it.
+    ("What and why", 40),
+    ("How was this verified?", 40),
+    ("Risk", 40),
+    # "None" is a complete and honest answer, so the bar is only that the
+    # question was answered at all. CONTRIBUTING.md, "AI-assisted
+    # contributions", is the rule this section exists for.
+    ("AI assistance", 4),
+)
 
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
@@ -41,16 +48,16 @@ def check(body: str) -> list[str]:
         return ["The description is empty. Please fill in the template."]
 
     problems = []
-    for heading in REQUIRED_SECTIONS:
+    for heading, min_chars in REQUIRED_SECTIONS:
         content = section_body(body, heading)
         if content is None:
             problems.append(
                 f"**{heading}** is missing. Please keep the template's headings."
             )
-        elif len(content) < MIN_SECTION_CHARS:
+        elif len(content) < min_chars:
             problems.append(
                 f"**{heading}** needs a bit more detail "
-                f"({len(content)} characters, {MIN_SECTION_CHARS} expected)."
+                f"({len(content)} characters, {min_chars} expected)."
             )
     return problems
 
@@ -74,8 +81,9 @@ def main() -> int:
     print(
         "\nEdit the description and this check re-runs on its own. "
         "The sections exist because they are the parts a reviewer cannot get "
-        "from the diff: why the change is needed, how you know it works, and "
-        "what breaks if it is wrong."
+        "from the diff: why the change is needed, how you know it works, "
+        "what breaks if it is wrong, and which AI tools helped (\"None\" is "
+        "a complete answer)."
     )
     return 1
 

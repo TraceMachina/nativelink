@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import { cn } from "../lib/cn";
+import { AskAi, type AskAiProps } from "./ask-ai";
 import { Logo } from "./logo";
 
 interface FooterColumn {
@@ -10,6 +12,11 @@ interface SiteFooterProps {
   columns?: FooterColumn[];
   tagline?: string;
   className?: string;
+  /** The "Ask AI" row. Pass `false` to leave it out. */
+  askAi?: Pick<AskAiProps, "prompt" | "siteUrl"> | false;
+  /** A client-side theme control (typically `<ThemeSwitch />`) rendered
+   *  inside the Ask AI row. The footer itself stays a server component. */
+  themeControl?: ReactNode;
 }
 
 const defaultColumns: FooterColumn[] = [
@@ -19,6 +26,7 @@ const defaultColumns: FooterColumn[] = [
       { label: "Product", href: "/product" },
       { label: "Pricing", href: "/pricing" },
       { label: "Docs", href: "/docs" },
+      { label: "For agents", href: "/agents" },
       { label: "Enterprise", href: "https://enterprise.nativelink.com" },
     ],
   },
@@ -81,6 +89,8 @@ export function SiteFooter({
   columns = defaultColumns,
   tagline = "High-performance remote build cache and execution. Open source. Self-host or run on our cloud.",
   className,
+  askAi = {},
+  themeControl,
 }: SiteFooterProps) {
   const year = new Date().getFullYear();
   return (
@@ -90,9 +100,7 @@ export function SiteFooter({
           <a href="/" aria-label="NativeLink — home" className="inline-flex">
             <Logo size="md" />
           </a>
-          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">
-            {tagline}
-          </p>
+          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">{tagline}</p>
         </div>
 
         {columns.map((col) => (
@@ -116,8 +124,15 @@ export function SiteFooter({
             </ul>
           </nav>
         ))}
-
       </div>
+
+      {askAi !== false ? (
+        <div className="border-t border-border/60">
+          <div className="mx-auto w-full max-w-[1200px] px-6 py-10">
+            <AskAi {...askAi} themeControl={themeControl} />
+          </div>
+        </div>
+      ) : null}
 
       <div className="border-t border-border/60">
         <div className="mx-auto flex w-full max-w-[1200px] flex-col items-start justify-between gap-4 px-6 py-6 sm:flex-row sm:items-center">
@@ -147,7 +162,6 @@ export function SiteFooter({
               </a>
             ))}
           </div>
-
         </div>
       </div>
     </footer>
