@@ -64,8 +64,9 @@ pub trait LenEntry: 'static {
     /// program safely shutting down and calling the Drop method on each object,
     /// which if you are deleting items you may not want to do.
     /// It is undefined behavior to have `unref()` called more than once.
-    /// During the execution of `unref()` no items can be added or removed to/from
-    /// the `EvictionMap` globally (including inside `unref()`).
+    /// Runs outside the map lock. Another task may insert a replacement for
+    /// the same key before this call finishes; cleanup must only affect the
+    /// removed entry's resources.
     #[inline]
     fn unref(&self) -> impl Future<Output = ()> + Send {
         core::future::ready(())
@@ -695,10 +696,45 @@ where
             .await
     }
 
+    /// Same as `insert()`, but allows for a conditional to be applied to the
+    /// entry before insertion in an atomic fashion.
+    pub async fn insert_if<F>(&self, key: K, data: T, cond: F) -> (bool, Option<T>)
+    where
+        F: FnOnce(&T, &T) -> bool + Send,
+    {
+        self.insert_with_time_if(key, data, cond, self.elapsed_seconds())
+            .await
+    }
+
     /// Returns the replaced item if any.
     pub async fn insert_with_time(&self, key: K, data: T, seconds_since_anchor: i32) -> Option<T> {
+        self.insert_with_time_if(key, data, |_, _| true, seconds_since_anchor)
+            .await
+            .1
+    }
+
+    /// Conditional insertion with an explicit timestamp. The predicate runs
+    /// under the map lock; a rejected value is left for the caller to clean up.
+    pub async fn insert_with_time_if<F>(
+        &self,
+        key: K,
+        data: T,
+        cond: F,
+        seconds_since_anchor: i32,
+    ) -> (bool, Option<T>)
+    where
+        F: FnOnce(&T, &T) -> bool + Send,
+    {
         let (items_to_unref, removal_futures) = {
             let mut state = self.state.lock();
+
+            state.touch_evictable(key.borrow());
+            if let Some(old_entry) = state.lru.get(key.borrow())
+                && !cond(&old_entry.data, &data)
+            {
+                return (false, None);
+            }
+
             self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
         };
 
@@ -713,7 +749,7 @@ where
                 item
             })
             .collect();
-        futures.collect::<Vec<_>>().await.into_iter().next()
+        (true, futures.collect::<Vec<_>>().await.into_iter().next())
     }
 
     /// Same as `insert()`, but optimized for multiple inserts.
