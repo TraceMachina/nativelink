@@ -6,6 +6,7 @@ export { Logo } from "./components/logo";
 export { Badge, badgeVariants, type BadgeProps } from "./components/badge";
 export { Divider } from "./components/divider";
 export { SiteHeader, type NavLink } from "./components/site-header";
+export { isCurrentNavHref, normalizeNavPath } from "./lib/nav";
 export { SiteFooter } from "./components/site-footer";
 export { Eyebrow } from "./components/eyebrow";
 export { Stat, StatGrid } from "./components/stat";

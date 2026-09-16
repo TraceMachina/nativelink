@@ -1,9 +1,10 @@
-import { FinalCTA, SiteFooter, SiteHeader, ThemeProvider, themeInitScript } from "@nativelink/ui";
+import { FinalCTA, SiteFooter, ThemeProvider, themeInitScript } from "@nativelink/ui";
 import { GoogleTagManager } from "@next/third-parties/google";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { AppSiteHeader } from "../components/site-header";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -31,7 +32,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <GoogleTagManager gtmId="GTM-NNLLRWGB" />
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         <ThemeProvider>
-          <SiteHeader />
+          <AppSiteHeader />
           <main id="main" className="flex-1">
             {children}
           </main>
