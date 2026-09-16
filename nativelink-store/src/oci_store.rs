@@ -55,7 +55,7 @@ impl OciStore {
         I: InstantWrapper,
         NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
     {
-        Self::new_with_http_client(spec, TlsClient::new(&spec.common.clone()), now_fn).await
+        Self::new_with_http_client(spec, TlsClient::new(&spec.common.clone())?, now_fn).await
     }
 
     /// Builds the store with a caller-supplied HTTP client. Production uses

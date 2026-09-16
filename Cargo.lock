@@ -2926,7 +2926,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "async-lock",
  "axum",
@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2976,7 +2976,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "base64 0.22.1",
  "mongodb",
@@ -3000,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3029,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "derive_more 2.1.0",
  "prost",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "either",
  "nativelink-util",
@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3091,7 +3091,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3214,7 +3214,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3277,7 +3277,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.6.7"
+version = "1.7.0"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -4214,9 +4214,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.34"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a9586e9ee2b4f8fab52a0048ca7334d7024eef48e2cb9407e3497bb7cab7fa7"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -4277,9 +4277,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
