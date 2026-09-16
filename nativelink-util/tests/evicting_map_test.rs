@@ -1107,6 +1107,41 @@ impl LenEntry for CountedUnref {
     }
 }
 
+#[nativelink_test]
+async fn conditional_insert_preserves_resident_and_cleans_up_replaced_entry() -> Result<(), Error> {
+    let map = EvictingMap::<DigestInfo, DigestInfo, CountedUnref, MockInstantWrapped>::new(
+        &EvictionPolicy::default(),
+        MockInstantWrapped::default(),
+    );
+    let key = DigestInfo::try_new(HASH1, 0)?;
+    let unrefs = Arc::new(AtomicU64::new(0));
+    let entry = |size| CountedUnref {
+        size,
+        unref_count: unrefs.clone(),
+    };
+    let (inserted, _) = map
+        .insert_if(key, entry(2), |old, new| old.size < new.size)
+        .await;
+    assert!(inserted);
+    let (inserted, _) = map
+        .insert_if(key, entry(1), |old, new| old.size < new.size)
+        .await;
+    assert!(!inserted);
+    assert_eq!(map.size_for_key(&key).await, Some(2));
+    assert_eq!(unrefs.load(Ordering::SeqCst), 0);
+
+    let (inserted, replaced) = map
+        .insert_if(key, entry(3), |old, new| old.size < new.size)
+        .await;
+    assert!(inserted);
+    assert_eq!(replaced.unwrap().size, 2);
+    assert_eq!(map.size_for_key(&key).await, Some(3));
+    assert_eq!(unrefs.load(Ordering::SeqCst), 1);
+    assert!(map.remove(&key).await);
+    assert_eq!(unrefs.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
 // Contract: a read of a fresh, present key must not call `unref()` on
 // any other entry. Regression guard against an earlier implementation
 // that ran the full eviction loop inside `get()` when `should_evict`

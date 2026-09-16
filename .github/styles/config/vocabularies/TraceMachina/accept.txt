@@ -6,6 +6,7 @@ Astro
 Bazel
 Bazelisk
 [Bb]oolean
+[Bb]iocomputing
 [Kk]eyless
 Sigstore
 Cloudflare
@@ -479,3 +480,13 @@ workspace's
 upload's
 else's
 rebalances
+PDKs
+rules_omniverse
+[Ss]tochasticity
+Sumon
+Biochemist
+Bioinformatics
+Flybody
+MuJoCo
+connectome
+simulatable
