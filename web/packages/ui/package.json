@@ -33,9 +33,6 @@
     "./site-footer": "./src/components/site-footer.tsx",
     "./site-header": "./src/components/site-header.tsx",
     "./stat": "./src/components/stat.tsx",
-    "./theme-provider": "./src/components/theme-provider.tsx",
-    "./theme-switch": "./src/components/theme-switch.tsx",
-    "./theme-toggle": "./src/components/theme-toggle.tsx",
     "./video-embed": "./src/components/video-embed.tsx"
   },
   "peerDependencies": {

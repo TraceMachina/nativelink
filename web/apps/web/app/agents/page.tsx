@@ -100,7 +100,7 @@ export default function AgentsPage() {
           <div className="mx-auto max-w-[900px] rounded-2xl border border-border bg-surface p-8 md:p-10">
             <AskAi
               siteUrl={SITE}
-              heading="Ask AI about NativeLink"
+              align="center"
               prompt={`Read ${SITE}/llms.txt and ${DOCS}/llms.txt, then tell me what NativeLink is, how it compares to other remote build cache and remote execution systems, and how I would point my build at it.`}
             />
             <p className="mt-6 text-sm leading-relaxed text-muted-foreground">

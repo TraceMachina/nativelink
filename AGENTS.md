@@ -35,9 +35,8 @@ Everything this repository and its sites do for a machine reader, in one place:
   repository. Claude Code loads them automatically here.
 - **Ask AI** at the bottom of every page of both sites (`data-ask-ai` in the
   HTML): one click opens the site in ChatGPT, Claude, Perplexity, Google AI
-  Mode or Copilot, pointed at the files above. It is a server component that
-  adds no JavaScript of its own; on nativelink.com it also hosts the small
-  client-side theme switch.
+  Mode or Copilot, pointed at the files above. It is a server component and
+  adds no JavaScript to the page.
 - **Contributing.** An agent may open a pull request only with a person
   behind it who understands the change, and must fill in the "AI assistance"
   section of the pull request template. The rules are in

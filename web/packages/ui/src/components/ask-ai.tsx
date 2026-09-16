@@ -5,10 +5,9 @@ import { cn } from "../lib/cn";
  * The "Ask AI" block: one-click hand-off of this site to a hosted assistant,
  * plus the three machine-readable corpus files every page of the site serves.
  *
- * It renders on the server (no hooks), so a client-only control such as the
- * theme switch is passed in through `themeControl` rather than imported here.
- * Everything carries a `data-ask-ai` attribute so a crawler can find the
- * block without parsing prose.
+ * It renders on the server (no hooks) and ships no JavaScript. Everything
+ * carries a `data-ask-ai` attribute so a crawler can find the block without
+ * parsing prose.
  */
 
 export interface AskAiProps {
@@ -17,9 +16,9 @@ export interface AskAiProps {
   /** Absolute origin whose llms files to link, e.g. "https://nativelink.com".
    *  Defaults to site-relative links, which is right on either site. */
   siteUrl?: string;
-  /** Rendered as a third row, typically a ThemeSwitch. */
-  themeControl?: ReactNode;
   heading?: string;
+  /** `center` for a footer or a hero card; `start` inside left-aligned prose. */
+  align?: "start" | "center";
   /** `sm` is for the bottom of a docs page; `md` for footers and sections. */
   size?: "sm" | "md";
   className?: string;
@@ -136,13 +135,14 @@ function Icon({ children, size }: { children: ReactNode; size: number }) {
 export function AskAi({
   prompt = DEFAULT_PROMPT,
   siteUrl = "",
-  themeControl,
-  heading = "Ask AI",
+  heading = "Ask AI about this page",
   size = "md",
+  align = "start",
   className,
 }: AskAiProps) {
   const q = encodeURIComponent(prompt);
-  const base = siteUrl.replace(/\/+$/, "");
+  let base = siteUrl;
+  while (base.endsWith("/")) base = base.slice(0, -1);
   const chip = cn(
     "inline-flex cursor-pointer items-center gap-2 rounded-xl border border-border bg-surface text-foreground",
     "transition-colors hover:border-brand/50 hover:bg-surface-elevated hover:text-brand",
@@ -151,10 +151,20 @@ export function AskAi({
   );
 
   return (
-    <div data-ask-ai className={cn("flex flex-col gap-4", className)}>
+    <div
+      data-ask-ai
+      className={cn(
+        "flex flex-col gap-4",
+        align === "center" && "items-center text-center",
+        className,
+      )}
+    >
       <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{heading}</p>
 
-      <ul className="flex flex-wrap gap-2" aria-label="Open this site in an AI assistant">
+      <ul
+        className={cn("flex flex-wrap gap-2", align === "center" && "justify-center")}
+        aria-label="Open this site in an AI assistant"
+      >
         {assistants.map((a) => (
           <li key={a.name}>
             <a
@@ -172,7 +182,10 @@ export function AskAi({
         ))}
       </ul>
 
-      <ul className="flex flex-wrap gap-2" aria-label="Machine-readable copies of this site">
+      <ul
+        className={cn("flex flex-wrap gap-2", align === "center" && "justify-center")}
+        aria-label="Machine-readable copies of this site"
+      >
         {files.map((f) => (
           <li key={f.name}>
             <a
@@ -187,8 +200,6 @@ export function AskAi({
           </li>
         ))}
       </ul>
-
-      {themeControl ? <div className="flex">{themeControl}</div> : null}
     </div>
   );
 }

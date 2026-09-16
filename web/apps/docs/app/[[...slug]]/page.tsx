@@ -28,7 +28,6 @@ export default async function Page(props: {
        *  Sits between the body and the auto-rendered prev/next footer. */}
       <AskAi
         size="sm"
-        heading="Ask AI about this page"
         siteUrl={DOCS_URL}
         prompt={`Read ${DOCS_URL}/llms.txt, then explain this NativeLink documentation page and answer my questions about it: ${pageUrl}`}
         className="not-prose mt-12 mb-8 border-t border-border pt-8"

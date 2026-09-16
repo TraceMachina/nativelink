@@ -13,15 +13,8 @@ export { VideoEmbed, YouTubeEmbed } from "./components/video-embed";
 export { FinalCTA } from "./components/final-cta";
 export { FAQ, type FAQItem } from "./components/faq";
 export { Reveal } from "./components/reveal";
-export {
-  ThemeProvider,
-  useTheme,
-  themeInitScript,
-  type Theme,
-  type ThemePreference,
-} from "./components/theme-provider";
+export { ThemeProvider, useTheme, themeInitScript, type Theme } from "./components/theme-provider";
 export { ThemeToggle } from "./components/theme-toggle";
-export { ThemeSwitch } from "./components/theme-switch";
 export { AskAi, type AskAiProps } from "./components/ask-ai";
 export { Counter } from "./components/counter";
 export { Marquee } from "./components/marquee";
