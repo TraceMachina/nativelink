@@ -31,6 +31,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
+use opentelemetry::KeyValue;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -863,6 +864,13 @@ pub trait StoreDriver:
 
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
+
+    /// Starts reporting this store's size and entry count as `cache.size`
+    /// and `cache.entries` under `attrs`. Returns `false` for a store that
+    /// does not track its own size, which then reports nothing.
+    fn enable_cache_size_metrics(&self, _attrs: &[KeyValue]) -> bool {
+        false
+    }
 
     fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error>;
 }

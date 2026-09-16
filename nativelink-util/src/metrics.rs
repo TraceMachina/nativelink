@@ -503,6 +503,26 @@ pub struct CacheMetrics {
     pub cache_entry_size: metrics::Histogram<u64>,
 }
 
+/// Records entries entering a cache, for `cache.size` and `cache.entries`.
+pub fn record_cache_entries_added(bytes: u64, entries: u64, attrs: &[KeyValue]) {
+    CACHE_METRICS.cache_size.add(saturating_i64(bytes), attrs);
+    CACHE_METRICS
+        .cache_entries
+        .add(saturating_i64(entries), attrs);
+}
+
+/// Records entries leaving a cache, whether evicted, replaced or deleted.
+pub fn record_cache_entries_removed(bytes: u64, entries: u64, attrs: &[KeyValue]) {
+    CACHE_METRICS.cache_size.add(-saturating_i64(bytes), attrs);
+    CACHE_METRICS
+        .cache_entries
+        .add(-saturating_i64(entries), attrs);
+}
+
+fn saturating_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 /// Global remote execution metrics instruments.
 pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
     let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());

@@ -28,11 +28,13 @@ use futures::stream::FuturesUnordered;
 use lru::LruCache;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_metric::MetricsComponent;
+use opentelemetry::KeyValue;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::instant_wrapper::InstantWrapper;
+use crate::metrics::{record_cache_entries_added, record_cache_entries_removed};
 use crate::metrics_utils::{Counter, CounterWithTime};
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone)]
@@ -134,6 +136,9 @@ struct State<
 
     _key_type: PhantomData<Q>,
     remove_callbacks: Vec<C>,
+    /// Attributes to report `cache.size` and `cache.entries` under. `None`
+    /// until a `cache_metrics` wrapper enables it for this map.
+    cache_size_attrs: Option<Vec<KeyValue>>,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -248,6 +253,9 @@ impl<
             self.leased_bytes -= eviction_item.data.len();
         }
         self.sum_store_size -= eviction_item.data.len();
+        if let Some(attrs) = &self.cache_size_attrs {
+            record_cache_entries_removed(eviction_item.data.len(), 1, attrs);
+        }
         if replaced {
             self.replaced_items.inc();
             self.replaced_bytes.add(eviction_item.data.len());
@@ -399,6 +407,7 @@ where
                 lifetime_inserted_bytes: Counter::default(),
                 _key_type: PhantomData,
                 remove_callbacks: Vec::new(),
+                cache_size_attrs: None,
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -406,6 +415,22 @@ where
             max_seconds: config.max_seconds.try_into().unwrap_or(i32::MAX),
             max_count: config.max_count,
         }
+    }
+
+    /// Reports this map's size and entry count as `cache.size` and
+    /// `cache.entries` under `attrs`, starting from what it already holds.
+    /// Only the first call takes effect, so a map is never counted twice.
+    pub fn enable_cache_size_metrics(&self, attrs: Vec<KeyValue>) {
+        let mut state = self.state.lock();
+        if state.cache_size_attrs.is_some() {
+            return;
+        }
+        record_cache_entries_added(
+            state.sum_store_size,
+            u64::try_from(state.lru.len()).unwrap_or(u64::MAX),
+            &attrs,
+        );
+        state.cache_size_attrs = Some(attrs);
     }
 
     // Only used for tests
@@ -869,6 +894,9 @@ where
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
+            if let Some(attrs) = &state.cache_size_attrs {
+                record_cache_entries_added(new_item_size, 1, attrs);
+            }
         }
 
         // Perform eviction after all insertions

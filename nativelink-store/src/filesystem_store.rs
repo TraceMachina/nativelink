@@ -2309,6 +2309,11 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         registry.register_indicator(self);
     }
 
+    fn enable_cache_size_metrics(&self, attrs: &[opentelemetry::KeyValue]) -> bool {
+        self.evicting_map.enable_cache_size_metrics(attrs.to_vec());
+        true
+    }
+
     fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         self.evicting_map
             .add_remove_callback(RemoveCallbackHolder::new(callback));
