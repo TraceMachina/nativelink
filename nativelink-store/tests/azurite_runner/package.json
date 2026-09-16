@@ -1,0 +1,7 @@
+{
+  "name": "nativelink-azurite-test-runner",
+  "dependencies": {
+    "azurite": "3.36.0"
+  },
+  "private": true
+}
