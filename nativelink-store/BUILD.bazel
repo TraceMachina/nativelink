@@ -150,6 +150,7 @@ rust_test_suite(
         "tests/shard_store_test.rs",
         "tests/size_partitioning_store_test.rs",
         "tests/store_manager_test.rs",
+        "tests/tls_client_no_roots_test.rs",
         "tests/verify_store_test.rs",
     ],
     compile_data = [
