@@ -2779,3 +2779,75 @@ async fn update_sets_no_ttl_by_default() -> Result<(), Error> {
     store.update_oneshot(digest, data).await?;
     Ok(())
 }
+
+/// Counting must not read any documents. `search_by_index_prefix` has to
+/// `LOAD` the data and version of every match and page through them, so using
+/// it to answer "how many" makes the cost grow with the number of matches; on
+/// the scheduler's queued/completed indexes that is the whole action body of
+/// every action, repeatedly. `count_by_index_prefix` asks `RediSearch` for the
+/// total instead, which is why this test pins the command shape.
+#[nativelink_test]
+async fn test_count_by_index_prefix_asks_for_the_total_only() -> Result<(), Error> {
+    let store = make_mock_store(vec![MockCmd::new(
+        redis::cmd("FT.SEARCH")
+            .arg("test:_content_prefix_sort_key_3e762c15")
+            .arg("@content_prefix:{ Searchable }")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(0)
+            .arg("TIMEOUT")
+            .arg(10000),
+        Ok(Value::Array(vec![Value::Int(42)])),
+    )])
+    .await;
+
+    let count = store
+        .count_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to count by index")?;
+
+    assert_eq!(count, 42);
+    Ok(())
+}
+
+/// The same reply under RESP3, which answers with a map rather than an array.
+#[nativelink_test]
+async fn test_count_by_index_prefix_reads_a_resp3_reply() -> Result<(), Error> {
+    let store = make_mock_store(vec![MockCmd::new(
+        redis::cmd("FT.SEARCH")
+            .arg("test:_content_prefix_sort_key_3e762c15")
+            .arg("@content_prefix:{ Searchable }")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(0)
+            .arg("TIMEOUT")
+            .arg(10000),
+        Ok(Value::Map(vec![
+            (
+                Value::SimpleString("attributes".to_string()),
+                Value::Array(vec![]),
+            ),
+            (
+                Value::SimpleString("total_results".to_string()),
+                Value::Int(7),
+            ),
+            (
+                Value::SimpleString("results".to_string()),
+                Value::Array(vec![]),
+            ),
+        ])),
+    )])
+    .await;
+
+    let count = store
+        .count_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to count by index")?;
+
+    assert_eq!(count, 7);
+    Ok(())
+}

@@ -557,7 +557,8 @@ impl SchedulerStoreDecodeTo for SearchStateToAwaitedAction {
 }
 
 /// Counts the actions in a state. Uses the same index as
-/// [`SearchStateToAwaitedAction`] but skips decoding each action.
+/// [`SearchStateToAwaitedAction`], but only ever as a `count_by_index_prefix`
+/// argument, so the store returns a total and never reads the actions.
 struct CountActionsInState(&'static str);
 impl SchedulerIndexProvider for CountActionsInState {
     const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
@@ -566,12 +567,6 @@ impl SchedulerIndexProvider for CountActionsInState {
     type Versioned = TrueValue;
     fn index_value(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.0)
-    }
-}
-impl SchedulerStoreDecodeTo for CountActionsInState {
-    type DecodeOutput = ();
-    fn decode(_version: i64, _data: Bytes) -> Result<Self::DecodeOutput, Error> {
-        Ok(())
     }
 }
 
@@ -596,17 +591,10 @@ async fn report_active_counts<S: SchedulerStore>(
     reported: &mut [Option<i64>; COUNTED_STATES.len()],
 ) {
     for ((state, stage), last) in COUNTED_STATES.iter().zip(reported.iter_mut()) {
-        let count = match store
-            .search_by_index_prefix(CountActionsInState(get_state_prefix(*state)))
+        let count = store
+            .count_by_index_prefix(CountActionsInState(get_state_prefix(*state)))
             .await
-        {
-            Ok(stream) => {
-                stream
-                    .try_fold(0i64, |count, ()| async move { Ok(count + 1) })
-                    .await
-            }
-            Err(err) => Err(err),
-        };
+            .map(|count| i64::try_from(count).unwrap_or(i64::MAX));
         match count {
             // The first pass records even a zero, so every stage has a series
             // and an empty queue reads as 0 rather than no data.
@@ -741,7 +729,7 @@ where
     now_fn: NowFn,
     operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
-    _active_count_spawn: JoinHandleDropGuard<()>,
+    _active_count_spawn: Option<JoinHandleDropGuard<()>>,
     retain_completed_for: Duration,
     client_keepalive_ttl: Duration,
     worker_registry: Option<SharedWorkerRegistry>,
@@ -761,6 +749,7 @@ where
         operation_id_creator: F,
         retain_completed_for_s: u32,
         client_action_timeout_s: u64,
+        enable_active_action_count_metric: bool,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -791,17 +780,22 @@ where
                 }
             }
         );
-        let weak_store = Arc::downgrade(&store);
-        let active_count_spawn = spawn!("store_awaited_action_db_active_count", async move {
-            let mut reported = [None; COUNTED_STATES.len()];
-            loop {
-                // Wait first, so constructing the db never searches the store.
-                tokio::time::sleep(ACTIVE_COUNT_REFRESH_INTERVAL).await;
-                let Some(store) = weak_store.upgrade() else {
-                    return;
-                };
-                report_active_counts(store.as_ref(), &mut reported).await;
-            }
+        // Off by default: counting queries the same store that serves action
+        // scheduling, once per interval per replica, so it is opt-in rather
+        // than a cost every deployment pays for a metric it may not read.
+        let active_count_spawn = enable_active_action_count_metric.then(|| {
+            let weak_store = Arc::downgrade(&store);
+            spawn!("store_awaited_action_db_active_count", async move {
+                let mut reported = [None; COUNTED_STATES.len()];
+                loop {
+                    // Wait first, so constructing the db never queries the store.
+                    tokio::time::sleep(ACTIVE_COUNT_REFRESH_INTERVAL).await;
+                    let Some(store) = weak_store.upgrade() else {
+                        return;
+                    };
+                    report_active_counts(store.as_ref(), &mut reported).await;
+                }
+            })
         });
         Ok(Self {
             store,

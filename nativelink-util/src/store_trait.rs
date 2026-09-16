@@ -947,6 +947,15 @@ pub trait SchedulerStore: Send + Sync + 'static {
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
         <K as SchedulerStoreDecodeTo>::DecodeOutput: Send;
 
+    /// Counts the keys in the store matching the given index prefix.
+    ///
+    /// Unlike `search_by_index_prefix` this never fetches the entries, so the
+    /// cost does not grow with the number of matches. Callers that only need
+    /// a total, such as reporting queue depth, should use this.
+    fn count_by_index_prefix<K>(&self, index: K) -> impl Future<Output = Result<u64, Error>> + Send
+    where
+        K: SchedulerIndexProvider + Send;
+
     /// Returns data for the provided key with the given version if
     /// `StoreKeyProvider::Versioned` is `TrueValue`.
     fn get_and_decode<K>(

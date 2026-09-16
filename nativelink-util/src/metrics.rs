@@ -503,23 +503,17 @@ pub struct CacheMetrics {
     pub cache_entry_size: metrics::Histogram<u64>,
 }
 
-/// Records entries entering a cache, for `cache.size` and `cache.entries`.
-pub fn record_cache_entries_added(bytes: u64, entries: u64, attrs: &[KeyValue]) {
-    CACHE_METRICS.cache_size.add(saturating_i64(bytes), attrs);
-    CACHE_METRICS
-        .cache_entries
-        .add(saturating_i64(entries), attrs);
+/// Records a net change in a cache's contents, for `cache.size` and
+/// `cache.entries`. Deltas are signed: entries leaving a cache, whether
+/// evicted, replaced or deleted, pass negative values.
+pub fn record_cache_entries_delta(size_delta: i64, entries_delta: i64, attrs: &[KeyValue]) {
+    CACHE_METRICS.cache_size.add(size_delta, attrs);
+    CACHE_METRICS.cache_entries.add(entries_delta, attrs);
 }
 
-/// Records entries leaving a cache, whether evicted, replaced or deleted.
-pub fn record_cache_entries_removed(bytes: u64, entries: u64, attrs: &[KeyValue]) {
-    CACHE_METRICS.cache_size.add(-saturating_i64(bytes), attrs);
-    CACHE_METRICS
-        .cache_entries
-        .add(-saturating_i64(entries), attrs);
-}
-
-fn saturating_i64(value: u64) -> i64 {
+/// Converts a size to the signed type the cache instruments take, clamping
+/// rather than wrapping on a value too large to represent.
+pub fn saturating_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 

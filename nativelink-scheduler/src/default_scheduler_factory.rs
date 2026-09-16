@@ -175,6 +175,7 @@ async fn simple_scheduler_factory(
                 } else {
                     spec.client_action_timeout_s
                 },
+                spec.enable_active_action_count_metric,
             )
             .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;

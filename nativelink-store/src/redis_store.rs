@@ -69,6 +69,7 @@ use uuid::Uuid;
 use crate::cas_utils::is_zero_digest;
 use crate::redis_utils::{
     FtAggregateCursor, FtAggregateOptions, FtCreateOptions, SearchSchema, ft_aggregate, ft_create,
+    ft_search_count,
 };
 
 /// The default size of the read chunk when reading data from Redis.
@@ -2381,6 +2382,52 @@ where
                     .err_tip(|| "In RedisStore::search_by_index_prefix::decode"),
             )
         }))
+    }
+
+    async fn count_by_index_prefix<K>(&self, index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        let index_value = index.index_value();
+        try_sanitize(index_value.as_ref())
+            .then_some(())
+            .err_tip(|| {
+                format!("In RedisStore::count_by_index_prefix::try_sanitize - {index_value:?}")
+            })?;
+        let index_name = format!(
+            "{}",
+            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+        );
+        let query = if index_value.is_empty() {
+            "*".to_string()
+        } else {
+            format!("@{}:{{ {} }}", K::INDEX_NAME, index_value)
+        };
+
+        let (connection_manager, connect_id) = self.connection_manager.get_connection().await?;
+        // Same failover handling as search_by_index_prefix: a demoted master
+        // answers READONLY and a dead one drops the connection, both meaning the
+        // master moved. Unlike that path this never creates the index; counting
+        // is a read-only observer and the matching loop owns index creation.
+        match ft_search_count(connection_manager, index_name.clone(), query.clone()).await {
+            Err(err) if is_retryable_redis_error(&err) => {
+                let (connection_manager, _connect_id) =
+                    self.connection_manager.reconnect(connect_id).await?;
+                ft_search_count(connection_manager, index_name.clone(), query)
+                    .await
+                    .map_err(Error::from)
+                    .err_tip(|| {
+                        format!(
+                            "Error with reconnected ft_search_count in RedisStore::count_by_index_prefix({index_name})"
+                        )
+                    })
+            }
+            result => result.map_err(Error::from).err_tip(|| {
+                format!(
+                    "Error with ft_search_count in RedisStore::count_by_index_prefix({index_name})"
+                )
+            }),
+        }
     }
 
     async fn get_and_decode<K>(
