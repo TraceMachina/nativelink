@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { cn } from "../lib/cn";
 import { AskAi, type AskAiProps } from "./ask-ai";
 import { Logo } from "./logo";
@@ -14,9 +13,6 @@ interface SiteFooterProps {
   className?: string;
   /** The "Ask AI" row. Pass `false` to leave it out. */
   askAi?: Pick<AskAiProps, "prompt" | "siteUrl"> | false;
-  /** A client-side theme control (typically `<ThemeSwitch />`) rendered
-   *  inside the Ask AI row. The footer itself stays a server component. */
-  themeControl?: ReactNode;
 }
 
 const defaultColumns: FooterColumn[] = [
@@ -90,7 +86,6 @@ export function SiteFooter({
   tagline = "High-performance remote build cache and execution. Open source. Self-host or run on our cloud.",
   className,
   askAi = {},
-  themeControl,
 }: SiteFooterProps) {
   const year = new Date().getFullYear();
   return (
@@ -129,7 +124,7 @@ export function SiteFooter({
       {askAi !== false ? (
         <div className="border-t border-border/60">
           <div className="mx-auto w-full max-w-[1200px] px-6 py-10">
-            <AskAi {...askAi} themeControl={themeControl} />
+            <AskAi {...askAi} align="center" />
           </div>
         </div>
       ) : null}

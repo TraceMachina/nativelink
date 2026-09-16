@@ -27,12 +27,17 @@ resolving after the heading is reworded.
 ```bash
 cd web
 bun install
-bun dev:docs        # docs only: http://localhost:3001/docs
+bun dev:docs        # docs only: http://localhost:3001
+
+# A production build of both apps, served the way Vercel serves them
+DOCS_URL=http://localhost:3001 bun run build
+bun --filter @nativelink/web start    # http://localhost:3000
+bun --filter @nativelink/docs start   # http://localhost:3001
 ```
 
 Edit any `.mdx` file under `apps/docs/content/docs/` and the dev server picks
 it up on save. To preview the marketing site and the docs together (the
-marketing app rewrites `/docs` to the docs app in dev), run `bun dev` and use
+marketing app redirects `/docs` to the docs app in dev), run `bun dev` and use
 `http://localhost:3000/docs`.
 
 <Callout type="info" title="`web/` is not part of the Bazel build">

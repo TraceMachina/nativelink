@@ -278,6 +278,58 @@ function truncateBlock(block, max) {
 }
 
 /**
+ * Remove MDX component tags (`<Callout …>`, `</Callout>`, `<SourceLink … />`)
+ * and keep their inner text. A tag starts with `<`, an optional `/`, and a
+ * capital letter, and runs to the first `>` that is not inside a quoted
+ * attribute value or a `{…}` expression. A single left-to-right pass, so the
+ * cost is linear in the page; an unterminated tag is left as it is.
+ */
+function stripComponentTags(text) {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "<") {
+      out += text[i];
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    if (text[j] === "/") j += 1;
+    if (!/[A-Z]/.test(text[j] ?? "")) {
+      out += "<";
+      i += 1;
+      continue;
+    }
+    let closed = -1;
+    while (j < text.length) {
+      const ch = text[j];
+      if (ch === ">") {
+        closed = j;
+        break;
+      }
+      if (ch === '"' || ch === "'") {
+        const end = text.indexOf(ch, j + 1);
+        if (end === -1) break;
+        j = end + 1;
+      } else if (ch === "{") {
+        const end = text.indexOf("}", j + 1);
+        if (end === -1) break;
+        j = end + 1;
+      } else {
+        j += 1;
+      }
+    }
+    if (closed === -1) {
+      out += "<";
+      i += 1;
+      continue;
+    }
+    i = closed + 1;
+  }
+  return out;
+}
+
+/**
  * Abridge one page body for `llms-small.txt`.
  *
  * Keeps every heading (without its explicit anchor) and the first prose block
@@ -290,12 +342,12 @@ function truncateBlock(block, max) {
  * the full corpus.
  */
 function abridgeBody(body, blocksPerSection = 1, blockChars = 420) {
-  const text = cleanBody(body)
-    .replace(/^[ \t]*```[^\n]*\n[\s\S]*?^[ \t]*```[ \t]*$/gm, "")
-    .replace(/<NextStep\b[\s\S]*?<\/NextStep>/g, "")
-    .replace(/<Prerequisites\b[\s\S]*?<\/Prerequisites>/g, "")
-    .replace(/<\/?[A-Z][\w.]*\b(?:"[^"]*"|'[^']*'|\{[^}]*\}|[^>])*\/?>/g, "")
-    .replace(/^(#{1,6} .*?)\s*\[#[^\]]+\][ \t]*$/gm, "$1");
+  const text = stripComponentTags(
+    cleanBody(body)
+      .replace(/^[ \t]*```[^\n]*\n[\s\S]*?^[ \t]*```[ \t]*$/gm, "")
+      .replace(/<NextStep\b[\s\S]*?<\/NextStep>/g, "")
+      .replace(/<Prerequisites\b[\s\S]*?<\/Prerequisites>/g, ""),
+  ).replace(/^(#{1,6} .*?)\s*\[#[^\]]+\][ \t]*$/gm, "$1");
 
   const out = [];
   let kept = 0;
