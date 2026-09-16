@@ -97,6 +97,7 @@ impl R2Store {
             region: "auto".to_string(),
             bucket: spec.bucket.clone(),
             common: spec.common.clone(),
+            ..Default::default()
         }
     }
 }
