@@ -25,7 +25,7 @@ use nativelink_proto::build::bazel::remote::asset::v1::{
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use nativelink_proto::google::rpc::Status as GoogleStatus;
 use nativelink_service::fetch_server::FetchServer;
-use nativelink_service::remote_asset_proto::RemoteAssetArtifact;
+use nativelink_service::remote_asset_proto::{RemoteAssetArtifact, RemoteAssetQuery};
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::store_trait::StoreLike;
@@ -113,6 +113,47 @@ async fn test_fetch_blob() -> Result<(), Status> {
             }),
             digest_function: 0
         }
+    );
+    Ok(())
+}
+
+/// A corrupt store entry must return an error, not panic.
+#[nativelink_test]
+async fn test_fetch_blob_corrupt_store_entry_returns_error() -> Result<(), Status> {
+    let store_manager = make_store_manager().await?;
+    let instance_name = "foo_instance_name".to_string();
+    let fs = FetchServer::new(
+        &[WithInstanceName {
+            instance_name: instance_name.clone(),
+            config: FetchConfig {
+                fetch_store: String::from("test_fetch_store"),
+            },
+        }],
+        &store_manager,
+    )
+    .expect("FetchServer config error");
+
+    let query = RemoteAssetQuery::new("http://1234".to_owned(), vec![]);
+    let digest = query.digest();
+    let fetch_store = store_manager.get_store("test_fetch_store").unwrap();
+    fetch_store
+        .update_oneshot(digest, bytes::Bytes::from_static(&[0xFF, 0xFF, 0xFF]))
+        .await
+        .unwrap();
+
+    let result = fs
+        .fetch_blob(Request::new(FetchBlobRequest {
+            instance_name,
+            timeout: None,
+            oldest_content_accepted: None,
+            uris: vec!["http://1234".to_owned()],
+            qualifiers: vec![],
+            digest_function: 0,
+        }))
+        .await;
+    assert!(
+        result.is_err(),
+        "corrupt store entry should return an error, not panic: {result:?}"
     );
     Ok(())
 }
