@@ -23,12 +23,13 @@ use aws_config::default_provider::credentials;
 use aws_config::provider_config::ProviderConfig;
 use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
+use aws_sdk_s3::config::{Credentials, Region};
 use aws_sdk_s3::operation::create_multipart_upload::CreateMultipartUploadOutput;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::primitives::ByteStream; // SdkBody
 use aws_sdk_s3::types::builders::{CompletedMultipartUploadBuilder, CompletedPartBuilder};
+use aws_smithy_runtime_api::client::http::HttpClient as SmithyHttpClient;
 use aws_smithy_types::body::SdkBody;
 use futures::future::FusedFuture;
 use futures::stream::{FuturesUnordered, unfold};
@@ -107,34 +108,75 @@ where
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
     pub async fn new(spec: &ExperimentalAwsSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+        Self::new_with_http_clients(
+            spec,
+            TlsClient::new(&spec.common.clone())?,
+            TlsClient::new_for_credentials(&spec.common)?,
+            now_fn,
+        )
+        .await
+    }
+
+    /// Builds the store with caller-supplied HTTP clients. Production uses
+    /// [`Self::new`] (which injects a [`TlsClient`]); tests inject a mock (e.g.
+    /// `StaticReplayClient`) to exercise wire behavior such as endpoint
+    /// overrides and path-style addressing without a live bucket.
+    pub async fn new_with_http_clients<C>(
+        spec: &ExperimentalAwsSpec,
+        http_client: C,
+        credential_http_client: C,
+        now_fn: NowFn,
+    ) -> Result<Arc<Self>, Error>
+    where
+        C: SmithyHttpClient + Clone + 'static,
+    {
         let jitter_fn = spec.common.retry.make_jitter_fn();
         let s3_client = {
-            let http_client = TlsClient::new(&spec.common.clone())?;
-            let credential_http_client = TlsClient::new_for_credentials(&spec.common)?;
+            let region = Region::new(Cow::Owned(spec.region.clone()));
 
-            let credential_provider = credentials::DefaultCredentialsChain::builder()
-                .configure(
-                    ProviderConfig::without_region()
-                        .with_region(Some(Region::new(Cow::Owned(spec.region.clone()))))
-                        .with_http_client(credential_http_client),
-                )
-                .build()
-                .await;
-
-            let config = aws_config::defaults(BehaviorVersion::latest())
-                .credentials_provider(credential_provider)
+            let loader = aws_config::defaults(BehaviorVersion::latest())
                 .app_name(AppName::new("nativelink").expect("valid app name"))
                 .timeout_config(
                     aws_config::timeout::TimeoutConfig::builder()
                         .connect_timeout(Duration::from_secs(15))
                         .build(),
                 )
-                .region(Region::new(Cow::Owned(spec.region.clone())))
-                .http_client(http_client)
-                .load()
-                .await;
+                .region(region.clone())
+                .http_client(http_client);
 
-            Client::new(&config)
+            let loader = if let Some(key_id) = &spec.access_key_id
+                && let Some(secret) = &spec.secret_access_key
+            {
+                loader.credentials_provider(Credentials::new(
+                    key_id,
+                    secret,
+                    None,
+                    None,
+                    "s3-explicit",
+                ))
+            } else {
+                loader.credentials_provider(
+                    credentials::DefaultCredentialsChain::builder()
+                        .configure(
+                            ProviderConfig::without_region()
+                                .with_region(Some(region))
+                                .with_http_client(credential_http_client),
+                        )
+                        .build()
+                        .await,
+                )
+            };
+
+            let config = loader.load().await;
+
+            let mut config_builder =
+                aws_sdk_s3::config::Builder::from(&config).force_path_style(spec.force_path_style);
+
+            if let Some(endpoint) = &spec.endpoint {
+                config_builder = config_builder.endpoint_url(endpoint);
+            }
+
+            Client::from_conf(config_builder.build())
         };
         Self::new_with_client_and_jitter(spec, s3_client, jitter_fn, now_fn)
     }

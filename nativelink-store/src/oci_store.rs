@@ -139,6 +139,7 @@ impl OciStore {
             region: spec.region.clone(),
             bucket: spec.bucket.clone(),
             common: spec.common.clone(),
+            ..Default::default()
         }
     }
 }
