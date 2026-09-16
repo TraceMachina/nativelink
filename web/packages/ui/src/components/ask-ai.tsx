@@ -24,10 +24,31 @@ export interface AskAiProps {
   className?: string;
 }
 
-const DEFAULT_PROMPT =
-  "Read https://nativelink.com/llms.txt and https://docs.nativelink.com/llms.txt, then tell me " +
-  "what NativeLink is, how it compares to other remote build cache and remote execution " +
-  "systems, and how I would point my build at it.";
+/**
+ * The question the footer and the agents page open with. It points the
+ * assistant at the corpus, asks for the product's features rather than a
+ * comparison, then steers the conversation from the reader's own use case
+ * towards a configuration and deployment for it. A deployment shared by more
+ * than one developer exercises the Business Source Licensed modules (metrics
+ * cannot be switched off), so the prompt routes that case to the pricing
+ * inbox rather than letting the assistant guess.
+ */
+export function askAiPrompt(
+  siteUrl = "https://nativelink.com",
+  docsUrl = "https://docs.nativelink.com",
+): string {
+  return [
+    `Read ${siteUrl}/llms.txt and ${docsUrl}/llms.txt first.`,
+    "Then explain what NativeLink is and what it can do: the remote build cache, remote",
+    "execution, the store backends it supports, and the build tools it connects to.",
+    "Ask me about my use case (which build tool, how many developers, where it will run, and",
+    "whether I need caching only or execution too), then recommend a configuration and",
+    "deployment for it, citing the matching documentation pages.",
+    "If more than one developer will share the deployment, tell me that its metrics and",
+    "persistent-worker modules are Business Source Licensed and that I should email",
+    "contact@nativelink.com for Enterprise pricing on them.",
+  ].join(" ");
+}
 
 /** Where a query lands for each assistant. Every one of these accepts a `q`
  *  parameter that pre-fills the first message. */
@@ -133,7 +154,7 @@ function Icon({ children, size }: { children: ReactNode; size: number }) {
 }
 
 export function AskAi({
-  prompt = DEFAULT_PROMPT,
+  prompt = askAiPrompt(),
   siteUrl = "",
   heading = "Ask AI about this page",
   size = "md",

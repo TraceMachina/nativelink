@@ -1,4 +1,4 @@
-import { AskAi, Badge, Button, Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { AskAi, Badge, Button, Eyebrow, Reveal, Section, askAiPrompt } from "@nativelink/ui";
 
 export const metadata = {
   title: "For agents",
@@ -98,14 +98,11 @@ export default function AgentsPage() {
       <Section width="default" className="pb-20">
         <Reveal>
           <div className="mx-auto max-w-[900px] rounded-2xl border border-border bg-surface p-8 md:p-10">
-            <AskAi
-              siteUrl={SITE}
-              align="center"
-              prompt={`Read ${SITE}/llms.txt and ${DOCS}/llms.txt, then tell me what NativeLink is, how it compares to other remote build cache and remote execution systems, and how I would point my build at it.`}
-            />
+            <AskAi siteUrl={SITE} align="center" prompt={askAiPrompt(SITE, DOCS)} />
             <p className="mt-6 text-sm leading-relaxed text-muted-foreground">
               Each button opens a hosted assistant with a prompt that points it at the llms files
-              first, so its answer starts from what this site actually says. The same block sits in
+              first, so its answer starts from what this site actually says, then asks about your
+              build and your team and works towards a configuration for them. The same block sits in
               the footer of every page here, and at the bottom of every documentation page with a
               prompt for that page.
             </p>
