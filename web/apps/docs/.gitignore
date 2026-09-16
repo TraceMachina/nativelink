@@ -13,4 +13,5 @@ content/docs/reference/changelog.md
 # (runs as part of `dev` and `build`). Committing them would create a second
 # source of truth for the sidebar, which is the thing they exist to prevent.
 public/llms.txt
+public/llms-small.txt
 public/llms-full.txt

@@ -484,6 +484,8 @@ PDKs
 rules_omniverse
 [Ss]tochasticity
 Sumon
+[Uu]nreviewed
+npm
 Biochemist
 Bioinformatics
 Flybody

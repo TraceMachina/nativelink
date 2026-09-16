@@ -45,7 +45,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             secondaryLabel="See pricing"
             secondaryHref="/pricing"
           />
-          <SiteFooter />
+          <SiteFooter askAi={{ siteUrl: "https://nativelink.com" }} />
         </ThemeProvider>
       </body>
     </html>

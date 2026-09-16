@@ -48,6 +48,27 @@ NativeLink is especially strong on:
   </a>
 </p>
 
+## 🤖 For AI agents and intelligent collaborators
+
+NativeLink is built to be read by agents as well as people:
+
+- [`llms.txt`](llms.txt), [`llms-small.txt`](llms-small.txt) and
+  [`llms-full.txt`](llms-full.txt) at the repository root are the website, the
+  blog and the documentation at three sizes; they are the files served at
+  [nativelink.com/llms.txt](https://nativelink.com/llms.txt). The docs serve
+  their own three at [docs.nativelink.com/llms.txt](https://docs.nativelink.com/llms.txt),
+  which the root copies fold in.
+- [`AGENTS.md`](AGENTS.md) is the map of the code for an agent changing it.
+- [`.claude/skills/`](.claude/skills) carries installable skills, including
+  [`migrate-to-bazelmod`](.claude/skills/migrate-to-bazelmod).
+- Every page of [nativelink.com](https://nativelink.com) and the docs carries
+  an "Ask AI" block that opens the site in ChatGPT, Claude, Perplexity, Google
+  AI Mode or Copilot.
+- Contributing with an agent is welcome when a person stands behind the
+  change; see [`CONTRIBUTING.md`](CONTRIBUTING.md#ai-assisted-contributions).
+
+The full list is at [nativelink.com/agents](https://nativelink.com/agents).
+
 ## 🔑 Key Features
 
 1. **Advanced Build Cache**:
