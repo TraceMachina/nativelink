@@ -2216,6 +2216,11 @@ from the standard AWS chain (environment variables, the shared credentials
 file, the EC2/ECS/EKS instance or task role), so nothing secret goes in the
 config.
 
+### Other services that speak S3
+
+The `aws` provider reaches any S3-compatible service, not only AWS. Four
+optional fields cover the difference:
+
 ## Cloudflare R2
 
 R2 has no regions from the client's point of view: the endpoint is derived
