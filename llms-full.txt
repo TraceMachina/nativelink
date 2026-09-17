@@ -9475,6 +9475,25 @@ config.
 and the Action Cache `ac/` rather than provisioning two buckets; lifecycle
 rules can then treat them differently.
 
+### Other services that speak S3 [#other-services-that-speak-s3]
+
+The `aws` provider reaches any S3-compatible service, not only AWS. Four
+optional fields cover the difference:
+
+| Field | Set it when |
+| --- | --- |
+| `endpoint` | The service is not AWS. Give it the service URL, such as `https://s3.example.com` |
+| `force_path_style` | The service addresses objects as `{endpoint}/{bucket}/{key}` rather than `{bucket}.{endpoint}/{key}`. Most self-hosted implementations do |
+| `access_key_id` | The credentials are not ones the AWS chain would find |
+| `secret_access_key` | As above. Set both or neither, and prefer `${VAR}` expansion over a secret in the file |
+
+Set `region` even when the endpoint is not AWS: it is the SigV4 signing region,
+and the service has to agree with the value you pick.
+
+A plain `http://` endpoint needs `insecure_allow_http` as well, from
+[the shared options](#the-options-all-three-share). It turns off transport
+encryption for the whole store, so keep it to local testing.
+
 <SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalAwsSpec" />
 
 ## Cloudflare R2 [#cloudflare-r2]
