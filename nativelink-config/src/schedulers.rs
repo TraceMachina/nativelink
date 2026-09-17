@@ -135,6 +135,22 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub client_action_timeout_s: u64,
 
+    /// Periodically count the actions in each stage and report them as the
+    /// `execution.active.count` metric.
+    ///
+    /// Only has an effect when scheduler state lives in a store, which today
+    /// means Redis; the in-memory scheduler always maintains this count because
+    /// it already holds the state in process. The count is a query against the
+    /// scheduler store every 15 seconds from every scheduler replica, so it
+    /// adds load to the same backend that serves action scheduling. Leave it
+    /// off unless you want the metric.
+    ///
+    /// Every replica reports the same store-wide totals, so aggregate the
+    /// series across replicas with `max`, not `sum`.
+    /// Default: false
+    #[serde(default)]
+    pub enable_active_action_count_metric: bool,
+
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
     /// Default: 5 seconds

@@ -57,6 +57,7 @@ rust_library(
         "src/redis_utils/ft_aggregate.rs",
         "src/redis_utils/ft_create.rs",
         "src/redis_utils/ft_cursor_read.rs",
+        "src/redis_utils/ft_search_count.rs",
         "src/redis_utils/mod.rs",
         "src/ref_store.rs",
         "src/s3_store.rs",

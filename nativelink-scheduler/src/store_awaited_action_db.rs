@@ -28,6 +28,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::{EXECUTION_METRICS, EXECUTION_STAGE, ExecutionStage};
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
@@ -35,6 +36,7 @@ use nativelink_util::store_trait::{
     SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, TrueValue,
 };
 use nativelink_util::task::JoinHandleDropGuard;
+use opentelemetry::KeyValue;
 use tokio::sync::Notify;
 use tracing::{error, warn};
 
@@ -51,6 +53,27 @@ const MAX_RETRIES_FOR_CLIENT_KEEPALIVE: u32 = 8;
 
 /// Use separate non-versioned Redis key for client keepalives.
 const USE_SEPARATE_CLIENT_KEEPALIVE_KEY: bool = true;
+
+/// How often the actions in each stage are recounted for
+/// `execution.active.count`.
+const ACTIVE_COUNT_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Every stage the store indexes, with the label it is reported under.
+const COUNTED_STATES: [(SortedAwaitedActionState, ExecutionStage); 4] = [
+    (
+        SortedAwaitedActionState::CacheCheck,
+        ExecutionStage::CacheCheck,
+    ),
+    (SortedAwaitedActionState::Queued, ExecutionStage::Queued),
+    (
+        SortedAwaitedActionState::Executing,
+        ExecutionStage::Executing,
+    ),
+    (
+        SortedAwaitedActionState::Completed,
+        ExecutionStage::Completed,
+    ),
+];
 
 enum OperationSubscriberState<Sub> {
     Unsubscribed,
@@ -533,12 +556,62 @@ impl SchedulerStoreDecodeTo for SearchStateToAwaitedAction {
     }
 }
 
+/// Counts the actions in a state. Uses the same index as
+/// [`SearchStateToAwaitedAction`], but only ever as a `count_by_index_prefix`
+/// argument, so the store returns a total and never reads the actions.
+struct CountActionsInState(&'static str);
+impl SchedulerIndexProvider for CountActionsInState {
+    const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
+    const INDEX_NAME: &'static str = "state";
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    type Versioned = TrueValue;
+    fn index_value(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.0)
+    }
+}
+
 const fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
     match state {
         SortedAwaitedActionState::CacheCheck => "cache_check",
         SortedAwaitedActionState::Queued => "queued",
         SortedAwaitedActionState::Executing => "executing",
         SortedAwaitedActionState::Completed => "completed",
+    }
+}
+
+/// Reports how many actions the store holds in each stage as
+/// `execution.active.count`.
+///
+/// The store is shared, so every scheduler replica reports the same totals:
+/// aggregate across replicas with `max`, not `sum`. Recording the change since
+/// the last pass, rather than adding and subtracting per transition, keeps the
+/// count right across restarts and for transitions another replica made.
+async fn report_active_counts<S: SchedulerStore>(
+    store: &S,
+    reported: &mut [Option<i64>; COUNTED_STATES.len()],
+) {
+    for ((state, stage), last) in COUNTED_STATES.iter().zip(reported.iter_mut()) {
+        let count = store
+            .count_by_index_prefix(CountActionsInState(get_state_prefix(*state)))
+            .await
+            .map(|count| i64::try_from(count).unwrap_or(i64::MAX));
+        match count {
+            // The first pass records even a zero, so every stage has a series
+            // and an empty queue reads as 0 rather than no data.
+            Ok(count) if *last != Some(count) => {
+                EXECUTION_METRICS.execution_active_count.add(
+                    count - last.unwrap_or(0),
+                    &[KeyValue::new(EXECUTION_STAGE, *stage)],
+                );
+                *last = Some(count);
+            }
+            Ok(_) => {}
+            Err(err) => warn!(
+                ?err,
+                ?stage,
+                "Failed to count actions for execution.active.count"
+            ),
+        }
     }
 }
 
@@ -656,6 +729,7 @@ where
     now_fn: NowFn,
     operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
+    _active_count_spawn: Option<JoinHandleDropGuard<()>>,
     retain_completed_for: Duration,
     client_keepalive_ttl: Duration,
     worker_registry: Option<SharedWorkerRegistry>,
@@ -675,6 +749,7 @@ where
         operation_id_creator: F,
         retain_completed_for_s: u32,
         client_action_timeout_s: u64,
+        enable_active_action_count_metric: bool,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -705,11 +780,29 @@ where
                 }
             }
         );
+        // Off by default: counting queries the same store that serves action
+        // scheduling, once per interval per replica, so it is opt-in rather
+        // than a cost every deployment pays for a metric it may not read.
+        let active_count_spawn = enable_active_action_count_metric.then(|| {
+            let weak_store = Arc::downgrade(&store);
+            spawn!("store_awaited_action_db_active_count", async move {
+                let mut reported = [None; COUNTED_STATES.len()];
+                loop {
+                    // Wait first, so constructing the db never queries the store.
+                    tokio::time::sleep(ACTIVE_COUNT_REFRESH_INTERVAL).await;
+                    let Some(store) = weak_store.upgrade() else {
+                        return;
+                    };
+                    report_active_counts(store.as_ref(), &mut reported).await;
+                }
+            })
+        });
         Ok(Self {
             store,
             now_fn,
             operation_id_creator,
             _pull_task_change_subscriber_spawn: pull_task_change_subscriber,
+            _active_count_spawn: active_count_spawn,
             retain_completed_for: Duration::from_secs(retain_completed_for_s.into()),
             client_keepalive_ttl: Duration::from_secs(client_action_timeout_s),
             worker_registry: None,
