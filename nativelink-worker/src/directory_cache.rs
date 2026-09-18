@@ -491,10 +491,8 @@ impl DirectoryCache {
         let _guard = construction_lock.lock().await;
 
         // Run the construction/materialization under the per-digest guard,
-        // then drop the per-digest mutex from the stampede map regardless of
-        // outcome so it cannot grow unbounded. The guard (`_guard`) is still
-        // held until the end of this function — `forget_construction_lock`
-        // only unmaps the Arc; any waiter already cloned it before blocking.
+        // then remove its lock from the map if no other callers are waiting.
+        // Waiters must keep sharing this flight even if construction failed.
         let result = self
             .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease)
             .await;
@@ -548,8 +546,8 @@ impl DirectoryCache {
     }
 
     /// The cache-miss body, run while holding the per-digest construction
-    /// guard. Split out so `get_or_create_entry` can unconditionally clean up
-    /// the construction-lock map entry afterwards on every exit path.
+    /// guard. Split out so `get_or_create_entry` can retire an unused
+    /// construction lock after either success or failure.
     /// `protos` and `prefetch_on_miss` are documented on
     /// [`Self::get_or_create_entry`].
     async fn construct_and_materialize(
@@ -784,17 +782,20 @@ impl DirectoryCache {
         ))
     }
 
-    /// Drops the per-digest construction mutex from the stampede map once
-    /// construction (or the post-construction recheck) for `digest` is done.
-    /// Without this the map grows unbounded over the worker's lifetime.
-    ///
-    /// Safe to call while holding the construction guard: a concurrent waiter
-    /// already cloned the `Arc<Mutex>` before blocking, so removing the map
-    /// entry only prevents *future* callers from joining this exact mutex —
-    /// they will create a fresh one, re-check the cache, find the entry, and
-    /// take the fast hardlink path. It never causes a redundant construct.
+    /// Removes an idle construction lock after the last caller finishes.
+    /// Keep it mapped while another caller owns an `Arc`: after a failed
+    /// construction that caller may retry before a cache entry exists, and
+    /// giving new callers a different mutex would allow concurrent publication
+    /// to the same path. The map lock prevents new clones during this check.
     async fn forget_construction_lock(&self, digest: &DigestInfo) {
-        self.construction_locks.lock().await.remove(digest);
+        let mut locks = self.construction_locks.lock().await;
+        // The map and this function's caller each own one strong reference.
+        if locks
+            .get(digest)
+            .is_some_and(|lock| Arc::strong_count(lock) == 2)
+        {
+            locks.remove(digest);
+        }
     }
 
     /// Constructs a directory from the CAS at the given path and returns the
@@ -2313,6 +2314,49 @@ mod tests {
         let dest = temp_dir.path().join("dest");
         assert!(!cache.get_or_create(dir_digest, &dest).await?);
         assert!(dest.join("test.txt").exists());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn queued_construction_retry_excludes_new_requests() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (store, digest) = setup_test_store(&temp_dir).await;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        // Reproduce a failed constructor handing its lock to a waiting retry.
+        // No entry has been published yet, so new requests must join
+        // that same flight rather than race to replace the same cache path.
+        let constructor = Arc::new(Mutex::new(()));
+        cache
+            .construction_locks
+            .lock()
+            .await
+            .insert(digest, constructor.clone());
+        let retry = constructor.clone();
+        let retry_guard = retry.lock().await;
+        cache.forget_construction_lock(&digest).await;
+        drop(constructor);
+
+        let dest = temp_dir.path().join("dest");
+        let request = cache.get_or_create(digest, &dest);
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), request.as_mut())
+                .await
+                .is_err(),
+            "a new request bypassed an existing construction retry"
+        );
+        drop(retry_guard);
+        drop(retry);
+        assert!(!request.await?);
+        assert!(dest.join("test.txt").exists());
+        assert!(cache.construction_locks.lock().await.is_empty());
         Ok(())
     }
 }
