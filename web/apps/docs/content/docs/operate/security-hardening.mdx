@@ -299,9 +299,11 @@ uid-remapping sandbox; it is a process-reaping and hermeticity mechanism. PID
 namespacing means orphaned children die with the action instead of leaking;
 IPC and UTS namespacing means actions cannot see each other's semaphores or
 hostname (the hostname is set to `nativelink`). With `use_mount_namespace`
-the flag list also gains `CLONE_NEWNS`, and the worker's own root action
-directory is masked so one action cannot see another's tree; the rest of the
-host filesystem stays visible.
+the flag list also gains `CLONE_NEWNS`, the worker's own root action
+directory is masked so one action cannot see another's tree, and `/tmp` is
+replaced with a private, empty tmpfs so actions cannot collide on, or leak
+state through, predictable paths there (`isolate_tmp: false` keeps the host's
+`/tmp` visible); the rest of the host filesystem stays visible.
 
 Note what is absent from that flag list: **`CLONE_NEWNET`**. No network
 namespace is created. An action has the worker's full network access, including to port

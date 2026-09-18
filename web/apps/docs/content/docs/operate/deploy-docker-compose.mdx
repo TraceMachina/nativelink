@@ -168,8 +168,9 @@ nativelink_executor:
 which need `CLONE_NEWUSER`/`CLONE_NEWNS`, hence the flag. Note what this buys
 and what it does not: namespaces here are a hermeticity and process-reaping
 mechanism, not a security boundary. Actions still run as the worker's own uid
-through an identity uid map, still see the host filesystem, and still have
-network access to every NativeLink port. A privileged container running
+through an identity uid map, still see the host filesystem apart from a
+private `/tmp`, and still have network access to every NativeLink port. A
+privileged container running
 arbitrary build actions is a lateral-movement primitive.
 [Security hardening](/operate/security-hardening#the-sandbox-is-not-a-security-boundary)
 covers what the sandbox actually does.

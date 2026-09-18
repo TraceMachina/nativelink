@@ -88,9 +88,14 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn use_namespaces() -> nativelink_worker::running_actions_manager::UseNamespaces {
-        if namespace_utils::namespaces_supported(true) {
-            nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount
-        } else if namespace_utils::namespaces_supported(false) {
+        // Keep the host's /tmp visible here: several tests stage wrappers and
+        // payloads under the temp dir, which is /tmp outside of Bazel. The
+        // private /tmp has its own dedicated test below.
+        if namespace_utils::namespaces_supported(true, false) {
+            nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
+                isolate_tmp: false,
+            }
+        } else if namespace_utils::namespaces_supported(false, false) {
             nativelink_worker::running_actions_manager::UseNamespaces::Yes
         } else {
             nativelink_worker::running_actions_manager::UseNamespaces::No
@@ -4507,6 +4512,135 @@ exit 1
         assert_eq!(
             pid, pgrp,
             "spawned process should be its own process-group leader (pid={pid} pgrp={pgrp})"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn isolate_tmp_gives_action_a_private_tmp() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        if !namespace_utils::namespaces_supported(true, true) {
+            return Ok(());
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                execution_configuration: ExecutionConfiguration::default(),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                use_namespaces:
+                    nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
+                        isolate_tmp: true,
+                    },
+            })?);
+
+        // A file in the host's /tmp must be invisible to the action, and the
+        // action's own scratch file in /tmp must never reach the host, while
+        // outputs in the work directory still get uploaded.
+        let unique = format!(
+            "{}_{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        );
+        let host_tmp_file = format!("/tmp/nativelink_test_host_{unique}");
+        let scratch_file = format!("/tmp/nativelink_test_scratch_{unique}");
+        tokio::fs::write(&host_tmp_file, "host").await?;
+
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "test ! -e {host_tmp_file} && echo scratch > {scratch_file} && test -f {scratch_file} && echo ok > out.txt"
+                ),
+            ],
+            output_paths: vec!["out.txt".to_string()],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
+            ..Default::default()
+        };
+        let operation_id = OperationId::default().to_string();
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let action_result = run_action(running_action_impl.clone()).await;
+        tokio::fs::remove_file(&host_tmp_file).await?;
+        let action_result = action_result?;
+        assert_eq!(
+            action_result.exit_code, 0,
+            "action should neither see the host's /tmp nor fail to write its own"
+        );
+        assert_eq!(
+            action_result.output_files.len(),
+            1,
+            "out.txt should have been uploaded from the work directory"
+        );
+        assert_eq!(
+            action_result.output_files[0].name_or_path,
+            NameOrPath::Path("out.txt".to_string())
+        );
+        assert!(
+            tokio::fs::metadata(&scratch_file).await.is_err(),
+            "the action's /tmp scratch file leaked to the host"
         );
         Ok(())
     }
