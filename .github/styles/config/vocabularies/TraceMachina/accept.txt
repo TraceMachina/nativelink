@@ -6,6 +6,7 @@ Astro
 Bazel
 Bazelisk
 [Bb]oolean
+[Bb]iocomputing
 [Kk]eyless
 Sigstore
 Cloudflare
@@ -483,6 +484,8 @@ PDKs
 rules_omniverse
 [Ss]tochasticity
 Sumon
+[Uu]nreviewed
+npm
 Biochemist
 Bioinformatics
 Flybody

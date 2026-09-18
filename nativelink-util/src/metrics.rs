@@ -503,6 +503,20 @@ pub struct CacheMetrics {
     pub cache_entry_size: metrics::Histogram<u64>,
 }
 
+/// Records a net change in a cache's contents, for `cache.size` and
+/// `cache.entries`. Deltas are signed: entries leaving a cache, whether
+/// evicted, replaced or deleted, pass negative values.
+pub fn record_cache_entries_delta(size_delta: i64, entries_delta: i64, attrs: &[KeyValue]) {
+    CACHE_METRICS.cache_size.add(size_delta, attrs);
+    CACHE_METRICS.cache_entries.add(entries_delta, attrs);
+}
+
+/// Converts a size to the signed type the cache instruments take, clamping
+/// rather than wrapping on a value too large to represent.
+pub fn saturating_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 /// Global remote execution metrics instruments.
 pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
     let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());

@@ -154,6 +154,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         move || WORKER_OPERATION_ID.into(),
         60,
         60,
+        false,
     )
     .await
     .unwrap();
@@ -264,6 +265,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         move || worker_operation_id_clone.lock().clone().into(),
         60,
         60,
+        false,
     )
     .await
     .unwrap();
@@ -422,6 +424,7 @@ async fn test_outdated_version() -> Result<(), Error> {
         move || worker_operation_id_clone.lock().clone().into(),
         60,
         60,
+        false,
     )
     .await
     .unwrap();
@@ -498,6 +501,7 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
         move || worker_operation_id_clone.lock().clone().into(),
         60,
         60,
+        false,
     )
     .await
     .unwrap();
@@ -558,6 +562,7 @@ async fn add_action_attaches_ttl_to_cid_mapping() -> Result<(), Error> {
         move || WORKER_OPERATION_ID.into(),
         60,
         60,
+        false,
     )
     .await
     .unwrap();
@@ -627,6 +632,7 @@ async fn an_update_against_a_vanished_record_leaves_nothing_behind() -> Result<(
         move || worker_operation_id_clone.lock().clone().into(),
         60,
         60,
+        false,
     )
     .await
     .unwrap();

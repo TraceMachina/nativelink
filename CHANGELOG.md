@@ -3,6 +3,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.1](https://github.com/TraceMachina/nativelink/compare/v1.7.0..v1.7.1) - 2026-09-17
+
+### ⛰️  Features
+
+- Emit cache size and entries, and keep active action counts for Redis schedulers ([#2772](https://github.com/TraceMachina/nativelink/issues/2772)) - ([f42cc42](https://github.com/TraceMachina/nativelink/commit/f42cc42ec5e56442bd933eb7656ca04589b680c4))
+
+### 🐛 Bug Fixes
+
+- fix active counts when a client disappears ([#2765](https://github.com/TraceMachina/nativelink/issues/2765)) - ([0c41992](https://github.com/TraceMachina/nativelink/commit/0c41992c421b8931e9e636af69418ddb157cb030))
+- Sign GCS service-account JWTs with aws-lc-rs [SECURITY] ([#2734](https://github.com/TraceMachina/nativelink/issues/2734)) - ([5b330a8](https://github.com/TraceMachina/nativelink/commit/5b330a806decb2672f1b8a0c4214ff019a607386))
+
+### 📚 Documentation
+
+- Empower AI systems ([#2766](https://github.com/TraceMachina/nativelink/issues/2766)) - ([de28784](https://github.com/TraceMachina/nativelink/commit/de28784d54beb035f21b9cbcaf32b672f56641d9))
+- Enhance NativeLink description with use cases ([#2759](https://github.com/TraceMachina/nativelink/issues/2759)) - ([5d6e287](https://github.com/TraceMachina/nativelink/commit/5d6e287dea9953b98791ccc0daface150167b4ab))
+
+### 🧪 Testing & CI
+
+- Let the S3 store address S3-compatible endpoints ([#2768](https://github.com/TraceMachina/nativelink/issues/2768)) - ([acb3a7c](https://github.com/TraceMachina/nativelink/commit/acb3a7c71a18c57ae9a3a67778a0b893a8f5d74d))
+- Navbar active state ([#2744](https://github.com/TraceMachina/nativelink/issues/2744)) - ([3de455d](https://github.com/TraceMachina/nativelink/commit/3de455deec4cc9809027b92325c1f66bd82c9605))
+- Return an error when TlsClient cannot load CA root certificates ([#2748](https://github.com/TraceMachina/nativelink/issues/2748)) - ([6def321](https://github.com/TraceMachina/nativelink/commit/6def321d069a112cfc43721a4aba3128fbebb13f))
+
+### ⚙️ Miscellaneous
+
+- Steer the Ask AI prompt towards the reader's use case ([#2769](https://github.com/TraceMachina/nativelink/issues/2769)) - ([84a0e4e](https://github.com/TraceMachina/nativelink/commit/84a0e4eae65ac60e159816c59bfba83cdef90676))
+
 ## [1.7.0](https://github.com/TraceMachina/nativelink/compare/v1.6.7..v1.7.0) - 2026-09-15
 
 ### Major changes

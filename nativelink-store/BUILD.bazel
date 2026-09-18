@@ -1,3 +1,4 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
 load(
     "@rules_rust//rust:defs.bzl",
     "rust_doc",
@@ -5,6 +6,20 @@ load(
     "rust_library",
     "rust_test",
     "rust_test_suite",
+)
+
+# Definitions for the glibc-only symbol names AWS-LC ends up referencing when
+# it is linked against musl (see aws_lc_musl_shims.c). Empty everywhere else.
+# Linked into aws-lc-sys through the crate annotation in MODULE.bazel;
+# `alwayslink` keeps the objects wherever the archive lands on the link line.
+cc_library(
+    name = "aws_lc_musl_shims",
+    srcs = select({
+        "@local-remote-execution//libc:musl": ["aws_lc_musl_shims.c"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:public"],
+    alwayslink = True,
 )
 
 rust_library(
@@ -42,6 +57,7 @@ rust_library(
         "src/redis_utils/ft_aggregate.rs",
         "src/redis_utils/ft_create.rs",
         "src/redis_utils/ft_cursor_read.rs",
+        "src/redis_utils/ft_search_count.rs",
         "src/redis_utils/mod.rs",
         "src/ref_store.rs",
         "src/s3_store.rs",
@@ -150,6 +166,7 @@ rust_test_suite(
         "tests/shard_store_test.rs",
         "tests/size_partitioning_store_test.rs",
         "tests/store_manager_test.rs",
+        "tests/tls_client_no_roots_test.rs",
         "tests/verify_store_test.rs",
     ],
     compile_data = [

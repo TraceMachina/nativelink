@@ -414,6 +414,16 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     }
                     debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
+                    // A removed operation has no later stage transition to
+                    // decrement its active count. This also covers clients
+                    // that disappear while an action is still executing.
+                    let stage_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_STAGE,
+                        ExecutionStage::from(&awaited_action.state().stage),
+                    )];
+                    EXECUTION_METRICS
+                        .execution_active_count
+                        .add(-1, &stage_attrs);
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
                         ActionUniqueQualifier::Cacheable(action_key) => {

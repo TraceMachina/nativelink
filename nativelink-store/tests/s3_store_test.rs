@@ -926,3 +926,132 @@ async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
     mock_client.assert_requests_match(&[]);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Endpoint, addressing style and checksum behavior. These drive the store
+// through `new_with_http_clients` so the SDK client is built from the spec,
+// rather than handed in ready-made as the tests above do.
+// ---------------------------------------------------------------------------
+
+const CUSTOM_ENDPOINT: &str = "https://s3.example.com";
+
+// Coerces the function item to a plain fn pointer matching the store type.
+const NOW_FN: fn() -> MockInstantWrapped = MockInstantWrapped::default;
+
+fn compatible_endpoint_spec(force_path_style: bool) -> ExperimentalAwsSpec {
+    ExperimentalAwsSpec {
+        region: REGION.to_string(),
+        bucket: BUCKET_NAME.to_string(),
+        endpoint: Some(CUSTOM_ENDPOINT.to_string()),
+        force_path_style,
+        access_key_id: Some("AKIDTEST".to_string()),
+        secret_access_key: Some("SECRETTEST".to_string()),
+        ..Default::default()
+    }
+}
+
+async fn store_with(
+    spec: &ExperimentalAwsSpec,
+    mock: StaticReplayClient,
+) -> Result<Arc<S3Store<fn() -> MockInstantWrapped>>, Error> {
+    S3Store::new_with_http_clients(spec, mock.clone(), mock, NOW_FN).await
+}
+
+fn ok_replay_client() -> StaticReplayClient {
+    StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder().body(SdkBody::empty()).unwrap(),
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .body(SdkBody::empty())
+            .unwrap(),
+    )])
+}
+
+#[nativelink_test]
+async fn force_path_style_puts_the_bucket_in_the_path() -> Result<(), Error> {
+    const DATA: &[u8] = b"hello-path-style";
+    let mock = ok_replay_client();
+    let store = store_with(&compatible_endpoint_spec(true), mock.clone()).await?;
+
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?,
+            DATA.into(),
+        )
+        .await?;
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one PutObject request");
+    let want_prefix = format!(
+        "{CUSTOM_ENDPOINT}/{BUCKET_NAME}/{VALID_HASH1}-{}",
+        DATA.len()
+    );
+    assert!(
+        reqs[0].uri().starts_with(&want_prefix),
+        "expected path-style URL starting with {want_prefix}, got {}",
+        reqs[0].uri()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn endpoint_defaults_to_virtual_hosted_addressing() -> Result<(), Error> {
+    const DATA: &[u8] = b"hello-virtual-hosted";
+    let mock = ok_replay_client();
+    let store = store_with(&compatible_endpoint_spec(false), mock.clone()).await?;
+
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?,
+            DATA.into(),
+        )
+        .await?;
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one PutObject request");
+    let want_prefix = format!(
+        "https://{BUCKET_NAME}.s3.example.com/{VALID_HASH1}-{}",
+        DATA.len()
+    );
+    assert!(
+        reqs[0].uri().starts_with(&want_prefix),
+        "expected virtual-hosted URL starting with {want_prefix}, got {}",
+        reqs[0].uri()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn single_put_lets_the_sdk_own_the_checksum() -> Result<(), Error> {
+    const DATA: &[u8] = b"hello-checksum";
+    let mock = ok_replay_client();
+    let store = store_with(&compatible_endpoint_spec(true), mock.clone()).await?;
+
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?,
+            DATA.into(),
+        )
+        .await?;
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one PutObject request");
+    let headers = reqs[0].headers();
+
+    assert!(
+        headers.get("x-amz-sdk-checksum-algorithm").is_some(),
+        "expected the SDK to select a checksum algorithm"
+    );
+    let trailer = headers.get("x-amz-trailer").unwrap_or_default();
+    assert!(
+        trailer.starts_with("x-amz-checksum-"),
+        "expected the SDK to append a checksum trailer, got {trailer:?}"
+    );
+    assert!(
+        headers
+            .iter()
+            .all(|(name, _)| !name.starts_with("x-amz-checksum-")),
+        "the store must not write a checksum header itself"
+    );
+    Ok(())
+}

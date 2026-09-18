@@ -105,6 +105,13 @@ impl SchedulerStore for FakeSchedulerStore {
         std::future::ready(Ok(stream::empty()))
     }
 
+    async fn count_by_index_prefix<K>(&self, _index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        Ok(0)
+    }
+
     async fn get_and_decode<K>(
         &self,
         _key: K,
@@ -211,6 +218,7 @@ impl SchedulerSubscriptionManager for PendingSubscriptionManager {
 /// is meant to absorb.
 struct EventuallyVisibleStore {
     search_calls: Arc<AtomicUsize>,
+    count_calls: Arc<AtomicUsize>,
     empty_for: usize,
     encoded_action: Bytes,
 }
@@ -220,6 +228,7 @@ impl EventuallyVisibleStore {
         let encoded = serde_json::to_vec(action).expect("serialize AwaitedAction for fake store");
         Self {
             search_calls: Arc::new(AtomicUsize::new(0)),
+            count_calls: Arc::new(AtomicUsize::new(0)),
             empty_for,
             encoded_action: Bytes::from(encoded),
         }
@@ -272,6 +281,14 @@ impl SchedulerStore for EventuallyVisibleStore {
         std::future::ready(Ok(stream::iter(items)))
     }
 
+    async fn count_by_index_prefix<K>(&self, _index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        self.count_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(0)
+    }
+
     async fn get_and_decode<K>(
         &self,
         _key: K,
@@ -285,6 +302,7 @@ impl SchedulerStore for EventuallyVisibleStore {
 
 async fn build_db(
     store: Arc<EventuallyVisibleStore>,
+    enable_active_action_count_metric: bool,
 ) -> StoreAwaitedActionDb<
     EventuallyVisibleStore,
     fn() -> OperationId,
@@ -296,9 +314,17 @@ async fn build_db(
     }
     let now_fn: fn() -> MockInstantWrapped = MockInstantWrapped::default;
     let op_id_fn: fn() -> OperationId = new_op_id;
-    StoreAwaitedActionDb::new(store, Arc::new(Notify::new()), now_fn, op_id_fn, 60, 60)
-        .await
-        .expect("construct test db")
+    StoreAwaitedActionDb::new(
+        store,
+        Arc::new(Notify::new()),
+        now_fn,
+        op_id_fn,
+        60,
+        60,
+        enable_active_action_count_metric,
+    )
+    .await
+    .expect("construct test db")
 }
 
 #[nativelink_test]
@@ -309,7 +335,7 @@ async fn try_subscribe_retries_once_on_miss_then_returns_existing() -> Result<()
         /* empty_for = */ 1, &action,
     ));
     let counter = store.search_calls.clone();
-    let db = build_db(store).await;
+    let db = build_db(store, false).await;
 
     let result = db
         .try_subscribe(
@@ -341,7 +367,7 @@ async fn try_subscribe_returns_none_after_two_consecutive_misses() -> Result<(),
         &action,
     ));
     let counter = store.search_calls.clone();
-    let db = build_db(store).await;
+    let db = build_db(store, false).await;
 
     let result = db
         .try_subscribe(
@@ -371,7 +397,7 @@ async fn try_subscribe_skips_lookup_for_uncacheable_qualifier() -> Result<(), Er
         /* empty_for = */ 0, &action,
     ));
     let counter = store.search_calls.clone();
-    let db = build_db(store).await;
+    let db = build_db(store, false).await;
 
     let uncacheable = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
         instance_name: INSTANCE_NAME.to_string(),
@@ -440,7 +466,7 @@ async fn recreated_after(
     let store = Arc::new(EventuallyVisibleStore::new(
         /* empty_for = */ 0, &action,
     ));
-    let mut db = build_db(store).await;
+    let mut db = build_db(store, false).await;
     if let Some(registry) = registry {
         db.set_worker_registry(registry);
     }
@@ -473,7 +499,7 @@ async fn joins_an_executing_action_whose_worker_is_ours_and_alive() -> Result<()
     let store = Arc::new(EventuallyVisibleStore::new(
         /* empty_for = */ 0, &action,
     ));
-    let mut db = build_db(store).await;
+    let mut db = build_db(store, false).await;
     db.set_worker_registry(registry.clone());
 
     // The action's shared timestamp stays put while the worker keeps
@@ -559,6 +585,40 @@ async fn falls_back_to_the_timestamp_when_there_is_no_registry() -> Result<(), E
     assert!(
         recreated,
         "without a registry there is nothing better than the timestamp, so behaviour is unchanged",
+    );
+    Ok(())
+}
+
+/// Counting the actions in each stage queries the scheduler store on a timer,
+/// from every replica, against the same backend that serves scheduling. A
+/// deployment that does not read `execution.active.count` should not pay for
+/// it, so the work only happens when it is asked for.
+#[nativelink_test(start_paused = true)]
+async fn active_action_count_only_queries_the_store_when_enabled() -> Result<(), Error> {
+    let action = make_existing_awaited_action();
+
+    let off_store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let off_counts = off_store.count_calls.clone();
+    let _off_db = build_db(off_store, false).await;
+    tokio::time::sleep(Duration::from_mins(1)).await;
+    assert_eq!(
+        off_counts.load(Ordering::SeqCst),
+        0,
+        "the store must not be queried at all while the metric is disabled",
+    );
+
+    let on_store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let on_counts = on_store.count_calls.clone();
+    let _on_db = build_db(on_store, true).await;
+    tokio::time::sleep(Duration::from_mins(1)).await;
+    assert!(
+        on_counts.load(Ordering::SeqCst) >= 4,
+        "enabling it should count every stage at least once a minute, got {}",
+        on_counts.load(Ordering::SeqCst),
     );
     Ok(())
 }
