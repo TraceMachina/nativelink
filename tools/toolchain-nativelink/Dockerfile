@@ -21,7 +21,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # Get Ubuntu packages
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
     gcc=4:13.2.0-7ubuntu1 \
-    g++=4:13.2.0-7ubuntu1 \
+    g++=4:14.2.0-1 \
     python3=3.12.3-0ubuntu2.1 \
     curl=8.5.0-2ubuntu10.11 \
     ca-certificates=20240203 \
