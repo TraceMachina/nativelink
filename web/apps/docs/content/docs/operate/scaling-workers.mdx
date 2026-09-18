@@ -1,0 +1,430 @@
+---
+title: Scaling workers
+description: How much work one worker should take, how many workers you need, which signal tells you, and how to let something else make the decision, including the parts NativeLink does not enforce for you.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you have a worker pool serving real builds and the queue is
+either backing up or sitting idle. **What you'll have at the end:** a sized
+worker, a scaling signal you trust, and either a manual playbook or an
+autoscaler wired to it. **Time:** an afternoon for the manual version, longer if
+you're building the autoscaling path.
+
+<Prerequisites>
+  A worker pool serving real builds.
+</Prerequisites>
+
+[Run multiple workers](/how-to/run-multiple-workers) is how you get from one
+worker to several. This page is about the questions that come next: how much
+work each one should take, how many you need, and who decides.
+
+## Two axes, and only one of them is a NativeLink knob [#two-axes-and-only-one-of-them-is-a-nativelink-knob]
+
+Capacity has a vertical axis (how many actions one worker runs at once) and a
+horizontal axis (how many workers exist). NativeLink has a field for the first.
+It has nothing at all for the second, by design: a worker is a process that
+dials the scheduler and announces itself, so "more workers" means "start more
+processes," and whatever starts processes for you is the thing that scales.
+
+Start with the vertical axis, because it changes what the horizontal one costs.
+
+## Sizing one worker [#sizing-one-worker]
+
+The knob is `max_inflight_tasks` on the worker's config.
+
+```json5
+workers: [{
+  local: {
+    name: "compile_worker",
+    max_inflight_tasks: 16,
+    // ...
+  },
+}],
+```
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="LocalWorkerConfig" />
+
+Three things about it are not what most people assume, and each has bitten
+somebody.
+
+**The default is `0`, and `0` means unlimited.** An unconfigured worker will
+accept as many concurrent actions as the scheduler sends it. That is fine on a
+small pool and a genuinely bad time on a large one, because the failure mode is
+not a queue; it's memory exhaustion or an out-of-file-descriptors error partway
+through a build. Set it explicitly.
+
+**It is enforced on the scheduler, not on the worker.** The worker sends the
+number when it registers; the scheduler tracks how many actions each worker is
+holding and stops assigning past the limit. The worker itself has no admission
+check and will run whatever it is handed. In normal operation this distinction
+is invisible. It matters if you ever run two schedulers against one worker, or
+if you're reasoning about what protects the host: the answer is the scheduler's
+bookkeeping, and nothing else.
+
+<SourceLink file="nativelink-scheduler/src/worker.rs" symbol="Worker" />
+
+**`cpu_count` does not limit anything on the worker.** This is the one that
+surprises people most. The `cpu_count` platform property, usually populated
+with `query_cmd: "nproc"` in the shipped examples, is *advertising*. It tells
+the scheduler what to match against. It does not throttle execution, and the
+worker derives no concurrency from the host's CPU count at all. Declare
+`cpu_count: 64` on a four-core box and the scheduler will happily route
+64-core actions to it.
+
+<Callout type="warn" title="`cpu_count` and `max_inflight_tasks` are unrelated">
+  One is what the scheduler matches on; the other is what the scheduler counts.
+  If your actions declare `cpu_count` as a `minimum` requirement, that number is
+  consumable (the scheduler subtracts it on assignment and restores it on
+  completion), so it does bound concurrency indirectly. But it does so only for
+  actions that declare it. `max_inflight_tasks` is the bound that applies to
+  everything.
+</Callout>
+
+A reasonable starting point is `max_inflight_tasks` at roughly the host's core
+count for compile-shaped work, then adjusted by observation: if per-action
+durations climb as the number in flight rises, you're oversubscribed; if the
+host sits at half its CPU with a deep queue, you're undersubscribed.
+
+## The ceilings you hit before you expect to [#the-ceilings-you-hit-before-you-expect-to]
+
+A worker sized generously runs into limits that are not on the worker config,
+and they're worth knowing before you go hunting.
+
+**File descriptors.** NativeLink holds a process-wide semaphore over open files,
+defaulting to **24,576**. Every action materializing inputs and writing outputs
+draws from it. Raise it with `max_open_files` under `global` (the shipped
+Kubernetes worker config sets 524,288) and raise the OS limit to match, or the
+semaphore will let through more than the kernel allows.
+
+<SourceLink file="nativelink-util/src/fs.rs" symbol="DEFAULT_OPEN_FILE_LIMIT" />
+
+**gRPC connections to the CAS.** The `grpc` store's `connections_per_endpoint`
+defaults to **1**. One HTTP/2 connection multiplexes streams well up to a point
+and then becomes the bottleneck, and on a worker running dozens of actions
+against a remote CAS that point arrives early. This is the first knob to reach
+for when a worker's CPU is idle and its actions are slow.
+
+**Store-level concurrency caps.** `max_concurrent_writes`,
+`max_concurrent_requests`, and Redis's `connection_pool_size` (default 3) all
+sit between the worker and its bytes. A worker that scales up without these
+scaling with it just queues internally.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
+
+**One `work_directory` per worker process, always.** The worker **purges its
+work directory on startup**. Two workers pointed at the same path means the
+second one to start deletes the first one's in-flight state. On a shared host,
+give each worker its own path; in containers this is free.
+
+## The signal to scale on [#the-signal-to-scale-on]
+
+Not CPU. Worker CPU tells you whether a machine is busy; it cannot tell you
+whether there is work waiting that nobody is doing, and that's the only question
+an autoscaler needs answered.
+
+The signal is **queue depth**: actions in the `queued` stage rather than
+`executing`. NativeLink emits `execution.active.count` as an up-down counter
+attributed by `execution.stage`, which reaches Prometheus as
+`nativelink_execution_active_count` after the OTLP collector's Prometheus
+exporter adds its `nativelink` namespace.
+
+<SourceLink file="nativelink-util/src/metrics.rs" symbol="EXECUTION_METRICS" />
+
+The shipped recording rule is:
+
+```yaml
+- record: nativelink:queue_depth
+  expr: |
+    sum by (instance_name, execution_priority) (
+      nativelink_execution_active_count{execution_stage="queued"}
+    )
+```
+
+That's the series to scale on. Three caveats before you copy it into production.
+
+**Queue depth is a derived series, not a metric the binary emits.** No
+metric name exists that an HPA can target directly. You scale on the recording rule, read
+through an external-metrics adapter.
+
+**The example alert's window is wrong for autoscaling.** The shipped
+`NativeLinkQueueBacklog` alert fires on a queue over 100 sustained for 15
+minutes. That is a correct alert ("you are chronically undersized") and a
+terrible autoscaling trigger. An HPA wants a window in the tens of seconds. Use
+the alert for paging and a much shorter window for scaling.
+
+**The repository disagrees with itself about worker utilization.**
+`nativelink:worker_utilization` is defined one way in
+`deployment-examples/metrics/prometheus-recording-rules.yml` and differently in
+the inline rules inside `prometheus-config.yaml`, and the Kubernetes alert uses
+a third expression. `nativelink:actions_per_worker` is also misnamed; it
+records a per-worker sum, not an average. Scale on queue depth, which is
+unambiguous, and treat the utilization series as a dashboard aid rather than a
+control input.
+
+<Callout type="warn" title="The Redis scheduler backend emits no queue metric">
+  `execution.active.count` comes from the in-memory awaited-action store only.
+  If you have moved the scheduler to `experimental_backend` with Redis, the
+  signal this whole page depends on is not being emitted. Confirm which backend
+  you're on before you design an autoscaler around it.
+</Callout>
+
+## Scaling out [#scaling-out]
+
+<Steps>
+
+<li>
+
+**Set `max_inflight_tasks` explicitly on every worker** and confirm it took
+effect by watching per-worker action counts during a busy build. Leaving it at
+the default means the horizontal axis is being tuned against an unbounded
+vertical one, and nothing you measure will be stable.
+
+</li>
+
+<li>
+
+**Get `nativelink:queue_depth` onto a dashboard** and watch it through a normal
+day. You are looking for its shape: how deep it goes at peak, how long it stays
+there, and how quickly it drains. That shape is what sizing decisions are made
+against.
+
+</li>
+
+<li>
+
+**Find your per-worker throughput.** With a stable pool size, divide actions
+completed by workers by time. This is the number that converts "the queue is 400
+deep" into "I need N more workers," and it is workload-specific enough that
+nobody else's figure helps.
+
+</li>
+
+<li>
+
+**Scale manually first, on a written rule.** Something as plain as "if queue
+depth exceeds 200 for two minutes, add four workers; if it's under 20 for ten
+minutes, remove two" is enough. Run it by hand for a week. You will learn more
+about your build's shape than from any amount of upfront design, and you'll have
+the thresholds an autoscaler needs.
+
+</li>
+
+<li>
+
+**Then automate that rule.** On Kubernetes, an HPA on the external metric backed
+by `nativelink:queue_depth`, plus a cluster autoscaler or Karpenter underneath
+so pods have somewhere to land. Elsewhere, whatever your platform's equivalent
+is. The rule you validated by hand becomes the policy.
+[The reference deployment](/operate/autoscaling-reference) is that assembled end
+to end, including the parts the shipped manifests are missing.
+
+</li>
+
+<li>
+
+**Move the fleet to spot capacity once retries are proven.** A worker that
+disappears mid-action has its work requeued with its affinity cleared, so
+interruption is a cost rather than an incident. Verify that in a staging pool by
+killing a worker mid-build before you rely on it in production.
+
+</li>
+
+<li>
+
+**Wire the drain endpoint to your interruption notice.** For shutdowns you get
+warning about (spot termination, node upgrades), call the scheduler's admin
+endpoint so the worker finishes what it holds and takes nothing new:
+
+```
+POST {admin_path}/scheduler/{scheduler_name}/set_drain_worker/{worker_id}/1
+```
+
+The route's second segment is the scheduler's `name` from the `schedulers`
+list (`MAIN_SCHEDULER` in the shipped configs), not the REAPI instance name,
+and the `admin` service has to be enabled on a listener for the route to
+exist at all. Nothing in the repository wires this up for you. It is a short
+script, and it's the difference between a clean scale-in and a burst of
+retried actions.
+
+<SourceLink file="src/bin/nativelink.rs" symbol="set_drain_worker" />
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Queue depth rises under load and returns to near zero afterwards, rather than
+  sitting at a floor; a floor means you are permanently undersized.
+- Adding workers visibly shortens the queue's drain time. If it doesn't, the
+  bottleneck is the CAS or the network, not worker count.
+- Per-action durations stay flat as the pool grows. Durations that climb with
+  pool size mean the workers are contending for something shared.
+- Killing a worker mid-build produces retried actions and a successful build,
+  not a failed one.
+- Scale-in does not coincide with a spike in retried actions. If it does, the
+  drain hook isn't being called.
+
+</VerifyBlock>
+
+## What the repository actually ships [#what-the-repository-actually-ships]
+
+Being explicit, because the gap is larger than the docs elsewhere imply.
+
+**`deployment-examples/docker-compose/docker-compose-multi-worker.yml`** defines
+three worker services. They are copy-pasted and identical apart from a
+`WORKER_NAME` and a private data volume each: same config file, same shared
+CAS volume, two CPUs and 2 GB each. It has no `deploy.replicas` and no
+heterogeneity. A fourth worker means pasting a fourth block.
+
+**`deployment-examples/docker-compose/test-multi-worker-simple.json5`** is a
+genuinely different pattern worth knowing about: **three workers inside one
+process**, as three entries in the `workers` array of a single config. One
+binary, one config file, three registrations with the scheduler. It's a useful
+shape for a machine you want to subdivide, and it is not the same thing as three
+containers.
+
+**`kubernetes/components/worker/worker.yaml`** sets `replicas: 3`. The `lre-cc`
+and `lre-rs` overlays patch it to 1. The `siso-chromium` overlay does not patch
+it, so it inherits 3, which looks unintentional.
+
+**No HorizontalPodAutoscaler, KEDA `ScaledObject`, or VPA exists anywhere in
+the repository for NativeLink.** The single HPA in the tree scales the
+OpenTelemetry collector. No heterogeneous-pool example exists in
+`nativelink-config/examples/` either; every shipped worker example is a single
+homogeneous pool. The autoscaling path on this page is one you assemble from
+standard Kubernetes parts; the recording rules are the raw material, not a
+finished artifact.
+
+## Backpressure, when a worker needs to stop [#backpressure-when-a-worker-needs-to-stop]
+
+One mechanism lets a worker refuse work without being removed:
+`experimental_precondition_script`. It runs before every action, and a non-zero
+exit produces a `ResourceExhausted` error. The scheduler requeues the action
+without counting it as an attempt, and marks the worker `is_paused` **only if
+that worker still has other actions in flight**; the pause clears as soon as
+one of them completes. An idle worker whose script fails is never paused: it
+keeps its registration and is handed the action again on the next
+matching pass, and rejects it again.
+
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="preconditions_met" />
+<SourceLink file="nativelink-scheduler/src/api_worker_scheduler.rs" symbol="update_action" />
+
+This is the hook for host-level conditions the scheduler cannot see: disk
+filling, a shared license pool exhausted, a GPU in a bad state. It costs a
+process spawn per action, so keep the script trivial. And note the
+`experimental_` prefix: it is not covered by stability guarantees.
+
+## Heterogeneous pools [#heterogeneous-pools]
+
+One scheduler can route to pools of different shapes; the mechanism is platform
+properties, and it is covered in full on
+[platform properties](/remote-execution/platform-properties). The scaling point
+is narrower: **each pool is a separate scaling unit with its own queue-depth
+series**, because `nativelink:queue_depth` groups by instance and priority, not
+by which pool could serve the work.
+
+If you scale a mixed fleet on one aggregate number, a backlog of GPU actions
+will scale up your compile pool and change nothing. Either split the recording
+rule by the property that distinguishes the pools, or run a scheduler instance
+per pool. The second is blunter and easier to reason about.
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Queue depth is high but workers are not busy" id="queue-depth-is-high-but-workers-are-not-busy">
+
+Actions are queued that no worker matches. This is nearly always a platform
+property mismatch: an action declaring something no worker advertises, or a
+scheduler key configured as `priority` (which constrains nothing) when it should
+be `exact` or `minimum`. Adding workers will not help. Check the scheduler's
+worker-match logging, and see
+[platform properties](/remote-execution/platform-properties).
+[Troubleshooting](/operate/troubleshooting#actions-queue-forever-and-workers-sit-idle)
+has the log lines that distinguish "nothing matches" from "everything is busy",
+and why a bad property *value* hangs where a bad property *name* errors.
+
+</Accordion>
+
+<Accordion title="Adding workers doesn't make builds faster" id="adding-workers-doesnt-make-builds-faster">
+
+The bottleneck is downstream. Workers pull inputs from and push outputs to the
+CAS, so a saturated CAS or a saturated network means more workers just wait in a
+different place. Check CAS latency as you scale, and check
+`connections_per_endpoint` on the workers' `grpc` store; the default of 1 makes
+a single connection the ceiling.
+
+</Accordion>
+
+<Accordion title="Workers keep being marked dead and their actions requeued" id="workers-keep-being-marked-dead-and-their-actions-requeued">
+
+`worker_timeout_s` defaults to **5 seconds**, checked once a second. That is a
+short leash and it is deliberate (fast detection means fast requeue), but a
+worker whose host is briefly starved, or whose network hiccups, will be evicted.
+If you see churn without actual failures, raise it. The cost of raising it is a
+longer stall before a genuinely dead worker's actions are retried.
+
+</Accordion>
+
+<Accordion title="Setting `max_job_retries: 0` didn't stop retries" id="setting-max_job_retries-0-didnt-stop-retries">
+
+A configured `0` is read as unset and falls back to the default of **3**. The
+field cannot express "never retry" through that field. If an action must not be
+retried, that has to be handled above NativeLink.
+
+</Accordion>
+
+<Accordion title="A long action fails with an invalid-argument error about timeouts" id="a-long-action-fails-with-an-invalid-argument-error-about-timeouts">
+
+`max_action_timeout_s` on the worker defaults to **20 minutes**, and a client
+requesting a longer timeout is **rejected outright** rather than clamped down to
+the maximum. Long link steps and EDA runs need this raised on the worker before
+the client asks for it. (The field also accepts the older spelling
+`max_action_timeout`.)
+
+</Accordion>
+
+<Accordion title="Workers exhaust file descriptors under load" id="workers-exhaust-file-descriptors-under-load">
+
+The process-wide open-file semaphore defaults to 24,576, which a worker running
+many concurrent actions over a filesystem store will reach. Raise `max_open_files`
+under `global`, and raise the OS `nofile` limit to at least match; the
+semaphore does not know what the kernel will allow.
+
+</Accordion>
+
+<Accordion title="Scale-in causes a burst of failed or retried actions" id="scale-in-causes-a-burst-of-failed-or-retried-actions">
+
+Workers are being killed with work in flight. The drain endpoint exists for
+exactly this and nothing calls it automatically. Wire it to your platform's
+pre-shutdown hook, and give the pod a termination grace period long enough for a
+typical action to finish.
+
+</Accordion>
+
+<Accordion title="Two workers on one host behave erratically" id="two-workers-on-one-host-behave-erratically">
+
+Check they do not share a `work_directory`. The worker purges that directory at
+startup, so a restart of one worker destroys the other's state. Each worker
+process needs its own.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/operate/scaling-cas" title="Scaling the CAS">
+  The other half of capacity: composing the store graph, sizing eviction, and
+  why a second CAS process is harder than a second worker.
+</NextStep>
+
+<NextStep href="/operate/troubleshooting" kind="aside" title="Troubleshooting">
+  The full symptom-to-cause index, including the failures that produce no error
+  string at all.
+</NextStep>
+
+<NextStep href="/operate/observability" kind="aside" title="Observability">
+  Getting `execution.active.count` out of the binary and into something an
+  autoscaler can query, which is the prerequisite for everything above.
+</NextStep>

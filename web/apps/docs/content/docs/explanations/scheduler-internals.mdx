@@ -1,0 +1,293 @@
+---
+title: Scheduler internals
+description: Action merging, the awaited-action database, how a worker is chosen, and what happens when an action fails.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone tuning a scheduler, debugging an action that
+queued forever, or wondering why two identical builds did not share work.
+**What you'll have at the end:** the merge rule, the ordering rule, the
+matching rule, and the retry rule, each of which has at least one
+counter-intuitive edge. **Time:** twenty-five minutes.
+
+The scheduler's job sounds small: take actions from clients, give them to
+workers. Almost all of its complexity comes from three questions it has to
+answer that the protocol does not specify: when are two actions the same
+one, which of the queued actions goes next, and what does "this failed" mean.
+
+## No `ActionScheduler` trait exists [#there-is-no-actionscheduler-trait]
+
+If you go looking for one (and older material about NativeLink will send you
+looking) you will not find it. The abstraction is split by *who is asking*,
+into three traits in
+<SourceLink file="nativelink-util/src/operation_state_manager.rs" symbol="operation_state_manager.rs" />:
+
+**`ClientStateManager`** is the client's view: submit an action, subscribe to
+its progress. **`WorkerStateManager`** is the worker's view: report that an
+operation changed state. **`MatchingEngineStateManager`** is the matcher's
+view: list actions that could be dispatched, assign one to a worker.
+
+Two more sit beside them: `WorkerScheduler`, which owns worker lifecycle, and
+`KnownPlatformPropertyProvider`, which is how the capabilities service learns
+which platform property keys an instance's scheduler knows about.
+
+The split is what allows the whole state layer to be swapped:
+`SimpleSchedulerStateManager` implements all three traits and is generic over
+an `AwaitedActionDb`, which is either `MemoryAwaitedActionDb` or the
+store-backed `StoreAwaitedActionDb` used for Redis. It is also why "the
+scheduler" in configuration can be a stack (the `cache_lookup` decorator is
+optional, and none of the shipped example configs use it):
+
+<Mermaid>{`graph TD
+  client["Client<br/>Execute"]
+  cl["CacheLookupScheduler<br/>(decorator)"]
+  ac["Action cache"]
+  ss["SimpleScheduler"]
+  me["Matching engine"]
+  sm["State manager<br/>in-memory or Redis"]
+  wk["Worker"]
+  client --> cl
+  cl -->|"lookup"| ac
+  ac -->|"hit: never enters the queue"| client
+  cl -->|"miss"| ss
+  ss --> sm
+  me --> sm
+  me -->|"assign"| wk
+  wk -->|"state updates"| sm
+`}</Mermaid>
+
+The decorator in front is why a cache hit never appears in queue depth, and
+why `ActionStage::CacheCheck` is never emitted by the scheduler crate.
+
+## When are two actions the same action? [#when-are-two-actions-the-same-action]
+
+Two clients asking for the same work should wait on one execution. The key
+that decides this is `ActionUniqueKey`, and it has exactly three fields:
+instance name, digest function, and the action digest.
+
+That key is wrapped in `ActionUniqueQualifier`, which is either `Cacheable`
+or `Uncacheable`. Only the `Cacheable` variant merges.
+
+Three things people expect to be in that key and are not:
+
+**No salt exists.** A comment in the source refers to one; the struct has no
+such field. If you need two textually identical actions to be distinct, the
+difference has to be in the action itself.
+
+**`do_not_cache` is never read.** The REAPI flag exists on the message and
+NativeLink parses it, but no code in the repository branches on it. Setting
+it does not stop a result being written.
+
+**The flag that actually matters is `skip_cache_lookup`,** and its effect is
+asymmetric in a way worth stating plainly: it disables the cache **read**,
+and it disables **merging**, but it does **not** disable the cache
+**write**. An action submitted with `skip_cache_lookup` runs on its own,
+ignoring any existing result, and then overwrites that result.
+
+<Callout type="info" title="Why that asymmetry is the useful one">
+  It is exactly what you want for "re-run this and fix the cache": force a
+  real execution, and let everyone else benefit from the answer. If it also
+  suppressed the write, the poisoned entry you were trying to replace would
+  survive.
+</Callout>
+
+## Ordering is one 64-bit integer [#ordering-is-one-64-bit-integer]
+
+`AwaitedActionSortKey` packs the entire queue ordering into a single `u64`:
+the upper 32 bits are the priority (shifted from `i32` into unsigned range so
+byte order matches numeric order), and the lower 32 bits are the insertion
+timestamp in whole seconds XORed with `u32::MAX`.
+
+The XOR is what makes an *earlier* timestamp sort *higher*, so the rule falls
+out of the encoding: **priority dominates absolutely, and ties break in
+favour of the action that arrived first**, at one-second resolution; actions
+inserted within the same second are ordered by operation ID, which is
+effectively arbitrary. It has no aging, no starvation
+guard, and no fairness across clients. A client that submits everything at
+priority 1000 will starve a client at priority 0 indefinitely, and nothing in
+the scheduler will intervene.
+
+Priority is a contract between the people sharing a cluster, enforced
+socially. If you need it enforced mechanically, that has to happen in front
+of the scheduler.
+
+## Two state enums, and one that never appears [#two-state-enums-and-one-that-never-appears]
+
+`ActionStage` is the wire-facing state a client sees.
+`SortedAwaitedActionState` is the database index state the scheduler sorts
+on. They overlap but are not the same, and conflating them while reading the
+source is a reliable way to get lost.
+
+Notably: **`ActionStage::CacheCheck` is never produced by the scheduler
+crate.** It exists in the protocol, but by the time an action reaches the
+scheduler the cache lookup has already happened in the decorator in front of
+it; see [where an action's path forks](/explanations/architecture-deep-dive#where-an-actions-path-forks).
+A client waiting to observe `CacheCheck` will wait forever.
+
+## Matching is first-fit over an LRU [#matching-is-first-fit-over-an-lru]
+
+The matching engine walks the queue in sort order, and for each action looks
+for the first worker that satisfies the action's platform properties. The
+source still carries an `O(n*m)` TODO in
+<SourceLink file="nativelink-scheduler/src/simple_scheduler.rs" symbol="SimpleScheduler" />,
+but the walk is narrowed first: a `WorkerCapabilityIndex` (an inverted index
+over `Exact` and `Priority` properties) produces the candidate set, and only
+that set is scanned in LRU order, checking availability and `Minimum`
+values per worker.
+<SourceLink file="nativelink-scheduler/src/worker_capability_index.rs" symbol="WorkerCapabilityIndex" />
+
+For clusters of tens or low hundreds of workers this is not the bottleneck.
+It is worth knowing about before you plan for thousands.
+
+`allocation_strategy` is a smaller knob than its name suggests: it chooses
+**which end of the LRU the scan starts from**, and nothing else. Starting
+from the least-recently-used end spreads load; starting from the
+most-recently-used end packs work onto hot workers and leaves the rest idle
+long enough to be scaled down. Neither is a bin-packing algorithm.
+
+### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
+
+Every property key a worker advertises has a declared type:
+
+| Type | Meaning |
+| --- | --- |
+| `Exact` | The action's value must equal the worker's |
+| `Minimum` | The worker's value must be at least the action's, **and is consumed** |
+| `Priority` | The worker must have the key; its value is not compared (the source marks value-based preference as a TODO) |
+| `Ignore` | Accepted and disregarded |
+
+A *worker* announcing a property key the scheduler does not know is rejected
+at connect time. An *action* naming an unknown key is not rejected at
+submission: the key is only translated during the matching pass, where it
+produces an `Unknown platform property` error that is logged, and the action
+stays queued. That is the harder of the two to diagnose, so if an action
+sits in the queue with workers idle, check the scheduler log for that
+message before anything else.
+<SourceLink file="nativelink-scheduler/src/platform_property_manager.rs" symbol="make_prop_value" />
+
+`Minimum` is the one that changes how you think about a worker. Its value is
+**decremented when an action is dispatched and restored when the action
+completes**; see
+<SourceLink file="nativelink-scheduler/src/worker.rs" symbol="Worker" />. A
+worker advertising `cores: 16` is not saying "I am a 16-core machine, send me
+anything"; it is a pool of 16 units that actions draw down and return. That
+is the mechanism behind running several actions concurrently on one worker,
+and it is why getting the advertised number wrong oversubscribes the machine
+rather than queueing.
+
+[Platform properties](/remote-execution/platform-properties) covers this from
+the configuration side.
+
+## Retries, and what "failed" means [#retries-and-what-failed-means]
+
+The attempt counter is incremented by two different events, with different
+rules.
+
+**`UpdateWithError` increments the attempt count, unless the error is
+`ResourceExhausted`.** Backpressure is free. A worker saying "I am too busy"
+does not spend one of the action's lives, which is what makes it safe for a
+worker to shed load.
+
+**`UpdateWithDisconnect` always increments.** A worker that vanishes mid-action
+always costs an attempt. Without this, an action that reliably OOM-kills its
+worker would retry forever, taking a worker down each time.
+
+The limit is checked as `attempts > max_job_retries`, strictly, so the
+default of `3` permits **four** total executions. That off-by-one is in the
+name: three *retries* after one initial attempt.
+
+<Callout type="warn" title="Final failure is not an RPC error">
+  When an action exhausts its retries, the client receives
+  `ActionStage::Completed` with `ActionResult.error` set: a *successful* RPC
+  describing a failed action. A client that only inspects the gRPC status will
+  read this as a clean completion. This is what the REAPI specifies, and it
+  is the single most common source of "the build passed but nothing was
+  built" reports.
+</Callout>
+
+### Two timeouts with very different defaults [#two-timeouts-with-very-different-defaults]
+
+`max_action_executing_timeout_s` **defaults to `0`, which means disabled.**
+It is not the only guard against a hung action: the worker kills the process
+when the action's own timeout (or the worker's `max_action_timeout_s`, 20
+minutes by default) elapses, and the scheduler re-queues an executing action
+whose worker stops sending updates for `worker_timeout_s`. What this knob
+adds is a ceiling for the case where the worker is alive and heartbeating
+but sends no update for a specific action; with it disabled, that case has no
+ceiling. On a shared cluster it is worth setting.
+
+`client_action_timeout_s` defaults to 60. If no client is listening for that
+long, the action is killed with `DeadlineExceeded`. This is a deliberate
+anti-orphan measure (a client that pressed Ctrl-C should not leave work
+running), but it also means a client that disconnects and reconnects slowly
+can lose work it expected to still be running.
+
+## Who writes the action cache entry? [#who-writes-the-action-cache-entry]
+
+Not the scheduler. **The worker writes the action cache entry, and it does so
+before telling the scheduler that the action finished.** The ordering is what
+guarantees that a client which observes completion and then queries the cache
+finds the result there.
+
+What gets written depends on the exit code, via `should_cache_result` in
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="RunningActionsManager" />.
+With the defaults, a **successful** action's result goes to the action cache
+(`SuccessOnly`), and a **failed** action's result goes to the historical
+results store (`FailuresOnly`) instead. A non-zero exit code is not an error
+in the REAPI sense (it is a legitimate, cacheable outcome), but by default
+NativeLink keeps it out of the action cache so that a failing compile is
+re-attempted rather than replayed.
+
+## Where the exact truth lives [#where-the-exact-truth-lives]
+
+Every scheduler field and default is in the generated
+[scheduler configuration reference](/reference/nativelink-config#namedschedulerconfig).
+For the operational levers, see [tuning](/operate/tuning).
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="Why did two identical builds not share work?" id="why-no-merge">
+    Check the three fields in the merge key first: instance name, digest
+    function, action digest. A different instance name is the usual answer,
+    and the second most common is one client sending `skip_cache_lookup`,
+    which opts that action out of merging entirely.
+  </Accordion>
+  <Accordion title="My queue depth is zero but clients are waiting. Why?" id="queue-depth-zero">
+    Cache hits never enter the queue; on a Bazel client they are answered by
+    `GetActionResult` before `Execute` is ever sent, and with a `cache_lookup`
+    scheduler they are answered by the decorator in front of the queue. If
+    clients are genuinely waiting with an empty queue, look at whether the
+    `Execute` calls are being rejected up front (missing inputs return
+    `FAILED_PRECONDITION`) rather than queued.
+  </Accordion>
+  <Accordion title="What does the Redis backend change?" id="redis-backend-differences">
+    It swaps the state layer for one backed by RediSearch indexes with
+    optimistic concurrency. Two consequences: `Code::Aborted` from an internal
+    operation means "reload and retry", not "failed"; it is the normal
+    outcome of a version conflict. And action merging becomes best-effort,
+    because there is a small window where a just-written action is not yet
+    visible to the index; a short retry narrows it but does not close it. Two
+    identical actions submitted within milliseconds of each other may both
+    run.
+  </Accordion>
+  <Accordion title="Is fallback_match_interval_s just a safety net?" id="fallback-match-interval">
+    Not with the Redis backend. Matching there is driven by pub-sub with this
+    interval as a poll fallback, and pub-sub delivery is not guaranteed, so
+    the interval is load-bearing, and raising it raises worst-case dispatch
+    latency directly. It defaults to five seconds.
+  </Accordion>
+  <Accordion title="Can I stop one team starving another?" id="priority-starvation">
+    Not inside the scheduler. Ordering is priority-dominant with no aging and
+    no per-client fairness, so a client submitting everything at high priority
+    will starve everyone below it. Enforcement has to sit in front of the
+    scheduler: separate instance names with separate schedulers, or an
+    admission layer that normalises priority.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/explanations/worker-execution" title="Worker execution">
+  What the worker does with an action once the scheduler hands it over,
+  including exactly how much isolation you are and are not getting.
+</NextStep>

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::{Code, Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, group,
 };
@@ -75,6 +75,11 @@ impl PlatformPropertyManager {
     /// Given a specific key and value, returns the translated `PlatformPropertyValue`. This will
     /// automatically convert any strings to the type-value pairs of `PlatformPropertyValue` based
     /// on the configuration passed into the `PlatformPropertyManager` constructor.
+    ///
+    /// Keys that are not declared in the configuration become
+    /// `PlatformPropertyValue::Unknown` and are matched dynamically: workers
+    /// that declare the key must match the value exactly, workers that do not
+    /// declare the key are not restricted by it.
     pub fn make_prop_value(&self, key: &str, value: &str) -> Result<PlatformPropertyValue, Error> {
         if let Some(prop_type) = self.known_properties.get(key) {
             return match prop_type {
@@ -91,6 +96,6 @@ impl PlatformPropertyManager {
                 PropertyType::Ignore => Ok(PlatformPropertyValue::Ignore(value.to_string())),
             };
         }
-        Err(make_input_err!("Unknown platform property '{}'", key))
+        Ok(PlatformPropertyValue::Unknown(value.to_string()))
     }
 }

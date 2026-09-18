@@ -1,4 +1,5 @@
 import { cn } from "../lib/cn";
+import { AskAi, type AskAiProps } from "./ask-ai";
 import { Logo } from "./logo";
 
 interface FooterColumn {
@@ -10,6 +11,8 @@ interface SiteFooterProps {
   columns?: FooterColumn[];
   tagline?: string;
   className?: string;
+  /** The "Ask AI" row. Pass `false` to leave it out. */
+  askAi?: Pick<AskAiProps, "prompt" | "siteUrl"> | false;
 }
 
 const defaultColumns: FooterColumn[] = [
@@ -19,6 +22,7 @@ const defaultColumns: FooterColumn[] = [
       { label: "Product", href: "/product" },
       { label: "Pricing", href: "/pricing" },
       { label: "Docs", href: "/docs" },
+      { label: "For agents", href: "/agents" },
       { label: "Enterprise", href: "https://enterprise.nativelink.com" },
     ],
   },
@@ -26,6 +30,7 @@ const defaultColumns: FooterColumn[] = [
     title: "Company",
     links: [
       { label: "About", href: "/company" },
+      { label: "Careers", href: "/careers" },
       { label: "Community", href: "/community" },
       { label: "Resources", href: "/resources" },
       { label: "Contact", href: "/contact" },
@@ -35,8 +40,7 @@ const defaultColumns: FooterColumn[] = [
     title: "Legal",
     links: [
       { label: "Terms & Privacy", href: "/terms" },
-      { label: "Compliance", href: "/compliance" },
-      { label: "Security", href: "mailto:security@nativelink.com" },
+      { label: "Security", href: "/security" },
     ],
   },
 ];
@@ -66,7 +70,7 @@ const socialLinks = [
   },
   {
     label: "Email",
-    href: "mailto:contact@nativelink.com",
+    href: "mailto:contact@tracemachina.com",
     icon: (
       <path
         d="M3 7 L12 13 L21 7 M3 7 v10 a1 1 0 0 0 1 1 h16 a1 1 0 0 0 1 -1 V7 a1 1 0 0 0 -1 -1 H4 a1 1 0 0 0 -1 1 Z"
@@ -81,6 +85,7 @@ export function SiteFooter({
   columns = defaultColumns,
   tagline = "High-performance remote build cache and execution. Open source. Self-host or run on our cloud.",
   className,
+  askAi = {},
 }: SiteFooterProps) {
   const year = new Date().getFullYear();
   return (
@@ -90,9 +95,7 @@ export function SiteFooter({
           <a href="/" aria-label="NativeLink — home" className="inline-flex">
             <Logo size="md" />
           </a>
-          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">
-            {tagline}
-          </p>
+          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">{tagline}</p>
         </div>
 
         {columns.map((col) => (
@@ -116,8 +119,15 @@ export function SiteFooter({
             </ul>
           </nav>
         ))}
-
       </div>
+
+      {askAi !== false ? (
+        <div className="border-t border-border/60">
+          <div className="mx-auto w-full max-w-[1200px] px-6 py-10">
+            <AskAi {...askAi} align="center" />
+          </div>
+        </div>
+      ) : null}
 
       <div className="border-t border-border/60">
         <div className="mx-auto flex w-full max-w-[1200px] flex-col items-start justify-between gap-4 px-6 py-6 sm:flex-row sm:items-center">
@@ -147,7 +157,6 @@ export function SiteFooter({
               </a>
             ))}
           </div>
-
         </div>
       </div>
     </footer>

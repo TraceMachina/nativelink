@@ -43,9 +43,15 @@ impl MaybeNamespacedChild {
             // self.child.std_child().send_signal(Signal::SIGTERM)?;
             // return self.child.wait().await.map(|_| ());
             if let Some(pid) = self.child.id() {
+                let pid_t: libc::pid_t = pid.try_into().map_err(|e| {
+                    Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("pid larger than pid_t type ({pid}): {e}"),
+                    )
+                })?;
                 // SAFETY: pid is valid as provided by the wrapper and we are
                 // sending a signal to the namespaced stub.
-                unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+                unsafe { libc::kill(pid_t, libc::SIGTERM) };
                 return self.child.wait().await.map(|_| ());
             }
         }
@@ -111,13 +117,10 @@ pub fn namespaces_supported(mount: bool) -> bool {
                         } == 0
                         {
                             exit(0);
-                        } else {
-                            // SAFETY: We just called a libc function that failed (-1).
-                            let errno = unsafe { *libc::__errno_location() };
-                            exit(
-                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
-                            );
                         }
+                        // SAFETY: We just called a libc function that failed (-1).
+                        let errno = unsafe { *libc::__errno_location() };
+                        exit((NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS));
                     }
                     Err(uid_map_err) => {
                         exit(
@@ -126,11 +129,10 @@ pub fn namespaces_supported(mount: bool) -> bool {
                         );
                     }
                 }
-            } else {
-                // SAFETY: We just called a libc function that failed (-1).
-                let errno = unsafe { *libc::__errno_location() };
-                exit((NamespaceErrorType::Unshare as i32) | (errno << NS_ERROR_TYPE_BITS));
             }
+            // SAFETY: We just called a libc function that failed (-1).
+            let errno = unsafe { *libc::__errno_location() };
+            exit((NamespaceErrorType::Unshare as i32) | (errno << NS_ERROR_TYPE_BITS));
         }
         pid if pid > 0 => {
             let mut status = 0;

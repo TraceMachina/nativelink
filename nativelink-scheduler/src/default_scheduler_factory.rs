@@ -167,6 +167,15 @@ async fn simple_scheduler_factory(
                 now_fn,
                 Default::default,
                 spec.retain_completed_for_s,
+                // Same normalisation SimpleScheduler applies, so the
+                // keepalive stops being kept exactly when the timeout that
+                // reads it comes due.
+                if spec.client_action_timeout_s == 0 {
+                    crate::simple_scheduler::DEFAULT_CLIENT_ACTION_TIMEOUT_S
+                } else {
+                    spec.client_action_timeout_s
+                },
+                spec.enable_active_action_count_metric,
             )
             .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;

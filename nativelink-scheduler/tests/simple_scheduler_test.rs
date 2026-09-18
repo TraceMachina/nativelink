@@ -36,7 +36,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
     event, request_event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
+    ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
+    update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -1069,12 +1070,12 @@ impl AwaitedActionSubscriber for MockAwaitedActionSubscriber {
         unreachable!();
     }
 
-    async fn borrow(&self) -> Result<AwaitedAction, Error> {
-        Ok(AwaitedAction::new(
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> {
+        std::future::ready(Ok(AwaitedAction::new(
             OperationId::default(),
             make_base_action_info(SystemTime::UNIX_EPOCH, DigestInfo::zero_digest()),
             MockSystemTime::now().into(),
-        ))
+        )))
     }
 }
 
@@ -1131,10 +1132,11 @@ impl AwaitedActionDb for RxMockAwaitedAction {
             .expect("Could not receive msg in mpsc")
     }
 
-    async fn get_all_awaited_actions(
+    fn get_all_awaited_actions(
         &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        Ok(futures::stream::empty())
+    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>>
+    {
+        std::future::ready(Ok(futures::stream::empty()))
     }
 
     async fn get_by_operation_id(
@@ -1729,8 +1731,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
         // Our request should have sent an error back.
         assert!(
             update_action_result.is_err(),
-            "Expected error, got: {:?}",
-            &update_action_result
+            "Expected error, got: {update_action_result:?}",
         );
         let err = update_action_result.unwrap_err();
         assert!(
@@ -2790,6 +2791,81 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
     Ok(())
 }
 
+/// Regression test: a finished operation whose client entry is dropped late
+/// (e.g. evicted after the retain window) must not remove the
+/// action-key entry claimed by a newer operation for the same action,
+/// otherwise later requests stop deduplicating onto the live operation.
+#[nativelink_test]
+async fn late_client_drop_does_not_orphan_replacement_operation() -> Result<(), Error> {
+    const NO_EVENT_ACTION_TIMEOUT: Duration = Duration::from_mins(1);
+
+    let task_change_notify = Arc::new(Notify::new());
+    let awaited_action_db = memory_awaited_action_db_factory(
+        0, // Use the default retain_completed_for_s (60s).
+        &task_change_notify,
+        MockInstantWrapped::default,
+    );
+    let action_info = make_base_action_info(make_system_time(0), DigestInfo::new([99u8; 32], 512));
+
+    // Client 1 creates operation A for the action key.
+    let client1_id = OperationId::default();
+    let subscriber1 = awaited_action_db
+        .add_action(
+            client1_id.clone(),
+            action_info.clone(),
+            NO_EVENT_ACTION_TIMEOUT,
+        )
+        .await?;
+    let mut awaited_action_a = subscriber1.borrow().await?;
+    let operation_id_a = awaited_action_a.operation_id().clone();
+
+    // Operation A finishes, releasing its action-key entry.
+    let mut completed_state = awaited_action_a.state().as_ref().clone();
+    completed_state.stage = ActionStage::Completed(ActionResult::default());
+    awaited_action_a.worker_set_state(Arc::new(completed_state), make_system_time(1));
+    awaited_action_db
+        .update_awaited_action(awaited_action_a)
+        .await?;
+
+    // Let the client 1 entry go stale past the retain window without dropping
+    // the subscriber, mimicking a client that vanished without cleanup.
+    MockClock::advance(Duration::from_mins(2));
+
+    // Client 2 requests the same action; the key is free, so a new operation B
+    // claims it. Inserting client 2 also evicts the stale client 1 entry,
+    // queueing the ClientDroppedOperation cleanup for operation A.
+    let client2_id = OperationId::default();
+    let subscriber2 = awaited_action_db
+        .add_action(
+            client2_id.clone(),
+            action_info.clone(),
+            NO_EVENT_ACTION_TIMEOUT,
+        )
+        .await?;
+    let operation_id_b = subscriber2.borrow().await?.operation_id().clone();
+    assert_ne!(operation_id_a, operation_id_b);
+
+    // Let the background event task process client 1's drop. The cleanup of
+    // finished operation A must leave operation B's action-key entry alone.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+
+    // Client 3 requesting the same action must join operation B instead of
+    // creating a third operation.
+    let client3_id = OperationId::default();
+    let subscriber3 = awaited_action_db
+        .add_action(client3_id.clone(), action_info, NO_EVENT_ACTION_TIMEOUT)
+        .await?;
+    let operation_id_c = subscriber3.borrow().await?.operation_id().clone();
+    assert_eq!(operation_id_b, operation_id_c);
+
+    assert!(!logs_contain("out of sync"));
+    assert!(!logs_contain("should have had the unique_key"));
+
+    Ok(())
+}
+
 /// Wraps a real `AwaitedActionDb`, but hides queued actions from
 /// `get_range_of_actions` while `suppress_queued_searches` is set. This
 /// simulates an eventually consistent backend (e.g. Redis), where a
@@ -3008,6 +3084,338 @@ async fn fallback_match_interval_disabled_leaves_hidden_action_queued() -> Resul
         msg_for_worker.update,
         Some(update_for_worker::Update::StartAction(_))
     ));
+
+    Ok(())
+}
+
+/// Regression test: when the worker reports an action finished but the
+/// state-manager update fails because the operation was already completed
+/// (e.g. the client-timeout sweep marked it `DeadlineExceeded` while the
+/// worker was still executing it), the worker's platform properties must
+/// still be restored. They used to leak, permanently shrinking the worker's
+/// capacity until no action could match it.
+#[nativelink_test]
+async fn failed_final_update_does_not_leak_worker_capacity() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            // Large retain window so the stale client entry is not evicted:
+            // the operation must still exist (as finished) when the worker
+            // reports, since a missing operation is tolerated by the state
+            // manager and would not reproduce the leak.
+            100_000,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    // The worker has a single cpu slot, so one leaked slot is enough to make
+    // it unmatchable.
+    let mut rx_from_worker = setup_new_worker(
+        &scheduler,
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(1),
+        )])),
+    )
+    .await?;
+
+    let platform_properties = HashMap::from([("cpu_count".to_string(), "1".to_string())]);
+
+    // Action 1 is assigned to the worker, consuming the only slot.
+    let _action1_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([1u8; 32], 512),
+        platform_properties.clone(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => start_execute.operation_id,
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+
+    // The client stops sending keepalives past client_action_timeout_s, then
+    // a sweep over all operations times the executing operation out, marking
+    // it Completed(DeadlineExceeded) while the worker still runs it.
+    MockClock::advance(Duration::from_mins(2));
+    drop(
+        scheduler
+            .filter_operations(OperationFilter::default())
+            .await?
+            .collect::<Vec<_>>()
+            .await,
+    );
+    assert!(logs_contain(
+        "Operation timed out having no more clients listening"
+    ));
+
+    // Action 2 queues: the worker's only slot is still held by action 1.
+    let _action2_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([2u8; 32], 512),
+        platform_properties,
+        make_system_time(2),
+    )
+    .await?;
+
+    // The worker now reports action 1 finished. The state-manager update
+    // fails ("already completed"), but the worker's slot must still be freed.
+    let update_result = scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::from(operation_id),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                ActionResult::default(),
+            )),
+        )
+        .await;
+    assert_eq!(
+        update_result
+            .expect_err("state-manager update should fail")
+            .code,
+        Code::Internal
+    );
+
+    // With the slot restored, action 2 must get matched to the worker.
+    scheduler.do_try_match_for_test().await?;
+    match rx_from_worker
+        .try_recv()
+        .expect("worker should have been sent action 2")
+        .update
+    {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction for the second action, got : {v:?}"),
+    }
+
+    Ok(())
+}
+
+/// Setup shared by the kill tests: a single-slot worker running action 1,
+/// which a client-timeout sweep then finishes server-side while the worker
+/// still holds it. Returns the scheduler, the worker's channel and the
+/// operation id the worker was given.
+async fn setup_worker_holding_a_finished_operation() -> Result<
+    (
+        Arc<SimpleScheduler>,
+        mpsc::UnboundedReceiver<UpdateForWorker>,
+        OperationId,
+        Box<dyn ActionStateResult>,
+    ),
+    Error,
+> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            // Keep the finished operation around, so its state can be
+            // inspected after the worker reports.
+            100_000,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    let mut rx_from_worker = setup_new_worker(
+        &scheduler,
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(1),
+        )])),
+    )
+    .await?;
+
+    let action1_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([1u8; 32], 512),
+        HashMap::from([("cpu_count".to_string(), "1".to_string())]),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => start_execute.operation_id,
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+
+    // Still executing: nothing to kill.
+    scheduler.kill_revoked_operations().await?;
+    assert_eq!(
+        rx_from_worker.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+
+    // The client stops sending keepalives past client_action_timeout_s, then
+    // a sweep over all operations times the executing operation out, marking
+    // it Completed(DeadlineExceeded) while the worker still runs it.
+    MockClock::advance(Duration::from_mins(2));
+    drop(
+        scheduler
+            .filter_operations(OperationFilter::default())
+            .await?
+            .collect::<Vec<_>>()
+            .await,
+    );
+
+    Ok((
+        scheduler,
+        rx_from_worker,
+        OperationId::from(operation_id),
+        action1_listener,
+    ))
+}
+
+#[nativelink_test]
+async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, mut rx_from_worker, operation_id, action1_listener) =
+        setup_worker_holding_a_finished_operation().await?;
+    assert!(logs_contain(
+        "Operation timed out having no more clients listening"
+    ));
+
+    // The worker is told to kill it, exactly once.
+    scheduler.kill_revoked_operations().await?;
+    assert_eq!(
+        rx_from_worker.try_recv().unwrap(),
+        UpdateForWorker {
+            update: Some(update_for_worker::Update::KillOperationRequest(
+                KillOperationRequest {
+                    operation_id: operation_id.to_string(),
+                }
+            )),
+        }
+    );
+    scheduler.kill_revoked_operations().await?;
+    assert_eq!(
+        rx_from_worker.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+
+    // Action 2 queues: the worker's only slot is still held by action 1
+    // until the worker confirms it stopped.
+    let _action2_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([2u8; 32], 512),
+        HashMap::from([("cpu_count".to_string(), "1".to_string())]),
+        make_system_time(2),
+    )
+    .await?;
+    assert_eq!(
+        rx_from_worker.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+
+    // The killed action reports back with the kill's error. That is not
+    // forwarded to the state manager (it would be "already completed" here,
+    // or a burnt retry had the operation been requeued), so it is not an
+    // error, and the slot is freed.
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(
+                Code::Aborted,
+                "Command was killed by scheduler"
+            )),
+        )
+        .await?;
+    let (action1_state, _) = action1_listener.as_state().await?;
+    match &action1_state.stage {
+        ActionStage::Completed(result) => assert_eq!(
+            result.error.as_ref().map(|err| err.code),
+            Some(Code::DeadlineExceeded)
+        ),
+        stage => panic!("Expected the client timeout result to stand, got : {stage:?}"),
+    }
+
+    scheduler.do_try_match_for_test().await?;
+    match rx_from_worker
+        .try_recv()
+        .expect("worker should have been sent action 2")
+        .update
+    {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction for the second action, got : {v:?}"),
+    }
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), Error> {
+    let (scheduler, rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation().await?;
+
+    // The worker's connection is gone, so the kill cannot be delivered.
+    drop(rx_from_worker);
+    let err = scheduler
+        .kill_revoked_operations()
+        .await
+        .expect_err("an undeliverable kill should evict the worker");
+    assert_eq!(err.code, Code::Internal);
+    assert!(logs_contain("Evicting worker from pool"));
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation().await?;
+
+    // The kill is delivered, but the worker is wedged (nativelink#2672): it
+    // keeps its keepalives up and never reports the operation.
+    scheduler.kill_revoked_operations().await?;
+    match rx_from_worker.try_recv().unwrap().update {
+        Some(update_for_worker::Update::KillOperationRequest(_)) => {}
+        v => panic!("Expected KillOperationRequest, got : {v:?}"),
+    }
+
+    // Inside the acknowledgement window the fresh keepalives shield it from
+    // the ordinary worker timeout and nothing is evicted.
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 30)
+        .await?;
+    scheduler.remove_timedout_workers(NOW_TIME + 30).await?;
+    assert!(!logs_contain("Evicting worker from pool"));
+
+    // Past the window the worker is evicted despite looking alive; its
+    // keepalives are exactly what would otherwise let the dead operation
+    // hold the slot forever.
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61)
+        .await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
+    assert!(logs_contain("did not acknowledge a kill in time"));
+    assert!(logs_contain("Evicting worker from pool"));
 
     Ok(())
 }

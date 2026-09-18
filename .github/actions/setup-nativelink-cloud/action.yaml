@@ -99,6 +99,28 @@ runs:
       run: |
         set -euo pipefail
 
+        # Start from a deterministic file. In addition to preventing duplicate
+        # options if this action is invoked twice, an empty file lets Docker
+        # builds mount it as an optional BuildKit secret when cloud CI is off.
+        : > user.bazelrc
+
+        write_ci_metadata() {
+          {
+            echo "common --build_metadata=ROLE=CI"
+            echo "common --build_metadata=GITHUB_REPOSITORY=${GITHUB_REPOSITORY:-unknown}"
+            echo "common --build_metadata=GITHUB_SHA=${GITHUB_SHA:-unknown}"
+            echo "common --build_metadata=GITHUB_RUN_ID=${GITHUB_RUN_ID:-unknown}"
+            echo "common --build_metadata=GITHUB_RUN_NUMBER=${GITHUB_RUN_NUMBER:-unknown}"
+            echo "common --build_metadata=GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-unknown}"
+            echo "common --build_metadata=GITHUB_JOB=${GITHUB_JOB:-unknown}"
+            echo "common --build_metadata=GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME:-unknown}"
+            echo "common --build_metadata=GITHUB_REF=${GITHUB_REF:-unknown}"
+            echo "common --build_metadata=RUNNER_OS=${RUNNER_OS:-unknown}"
+            echo "common --build_metadata=RUNNER_ARCH=${RUNNER_ARCH:-unknown}"
+            echo "common --bes_keywords=role=CI,repository=${GITHUB_REPOSITORY:-unknown},job=${GITHUB_JOB:-unknown},event=${GITHUB_EVENT_NAME:-unknown}"
+          } >> user.bazelrc
+        }
+
         cred_kind=""
         if [[ "$NL_CI_MODE" != "off" ]]; then
           if [[ -n "$NL_API_KEY" && -n "$NL_CLAIM_BASE" ]]; then
@@ -117,6 +139,7 @@ runs:
         fi
 
         if [[ -z "$cred_kind" ]]; then
+          write_ci_metadata
           echo "enabled=false" >> "$GITHUB_OUTPUT"
           echo "NativeLink Cloud disabled (no credentials or ci-mode off); building locally."
           exit 0
@@ -145,8 +168,8 @@ runs:
             echo "common --remote_upload_local_results=false"
             echo "common --remote_header=x-nativelink-api-key=${NL_PUBLIC_KEY}"
             echo "common --remote_header=x-nativelink-project=nativelink-github-ci"
-            echo "common --build_metadata=ROLE=CI"
           } >> user.bazelrc
+          write_ci_metadata
           echo "enabled=true" >> "$GITHUB_OUTPUT"
           echo "NativeLink Cloud enabled: public read-only cache (no uploads, no BES)"
           exit 0
@@ -176,8 +199,8 @@ runs:
           echo "common --remote_header=x-nativelink-api-key=${NL_API_KEY}"
           echo "common --bes_header=x-nativelink-api-key=${NL_API_KEY}"
           echo "common --remote_header=x-nativelink-project=nativelink-github-ci"
-          echo "common --build_metadata=ROLE=CI"
         } >> user.bazelrc
+        write_ci_metadata
 
         echo "enabled=true" >> "$GITHUB_OUTPUT"
         # Deliberately do not echo the endpoints: the claim base is a secret.

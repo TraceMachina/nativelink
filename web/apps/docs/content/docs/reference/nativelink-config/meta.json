@@ -1,6 +1,5 @@
 {
   "pages": [
-    "index",
     "store-overview"
   ],
   "title": "NativeLink config"

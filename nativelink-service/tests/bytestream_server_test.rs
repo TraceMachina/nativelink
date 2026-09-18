@@ -24,7 +24,7 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstanceName};
-use nativelink_config::stores::{MemorySpec, StoreSpec};
+use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
@@ -38,6 +38,7 @@ use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::{DigestInfo, encode_stream_proto};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::store_trait::StoreLike;
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
@@ -64,6 +65,24 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         "main_cas",
         store_factory(
             &StoreSpec::Memory(MemorySpec::default()),
+            &store_manager,
+            None,
+        )
+        .await?,
+    )?;
+    Ok(store_manager)
+}
+
+async fn make_verify_store_manager() -> Result<Arc<StoreManager>, Error> {
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store(
+        "main_cas",
+        store_factory(
+            &StoreSpec::Verify(Box::new(VerifySpec {
+                verify_size: true,
+                verify_hash: true,
+                backend: StoreSpec::Memory(MemorySpec::default()),
+            })),
             &store_manager,
             None,
         )
@@ -150,13 +169,19 @@ fn make_compressed_resource_name_with_compressor(
     hash: &str,
     data_len: impl core::fmt::Display,
 ) -> String {
-    format!("{INSTANCE_NAME}/uploads/{uuid}/compressed-blobs/{compressor}/{hash}/{data_len}")
+    format!("{INSTANCE_NAME}/uploads/{uuid}/compressed-blobs/{compressor}/sha256/{hash}/{data_len}")
 }
 
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
+}
+
+fn blake3_hex(data: &[u8]) -> String {
+    let mut hasher = DigestHasherFunc::Blake3.hasher();
+    hasher.update(data);
+    hasher.finalize_digest().packed_hash().to_string()
 }
 
 async fn read_all_bytes(
@@ -286,13 +311,13 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
             .await?;
 
         // Write empty set of data (clients are allowed to do this.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.data = vec![].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
 
         // Write final bit of data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
         write_request.finish_write = true;
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -329,6 +354,121 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
         );
     }
 
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn sha256_write_without_digest_segment_populates_cache()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &[u8] = b"sha256 cache entry without a digest segment";
+
+    let hash = sha256_hex(WRITE_DATA);
+    let store_manager = make_verify_store_manager().await?;
+    let bs_server = Arc::new(make_bytestream_server(&store_manager, None)?);
+    let write_resource_name = format!(
+        "{INSTANCE_NAME}/uploads/2dccbdca-8d6f-490c-8748-b3c723cf67a8/blobs/{hash}/{}",
+        WRITE_DATA.len()
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: write_resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+    join_handle.await??;
+
+    let cached_data = read_all_bytes(
+        &bs_server,
+        ReadRequest {
+            resource_name: format!("{INSTANCE_NAME}/blobs/{hash}/{}", WRITE_DATA.len()),
+            read_offset: 0,
+            read_limit: 0,
+        },
+    )
+    .await?;
+    assert_eq!(cached_data, WRITE_DATA);
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn explicit_blake3_write_overrides_sha256_default_with_warning()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &[u8] = b"content hashed with blake3";
+
+    let hash = blake3_hex(WRITE_DATA);
+    let digest = DigestInfo::try_new(&hash, WRITE_DATA.len())?;
+    let store_manager = make_verify_store_manager().await?;
+    let bs_server = Arc::new(make_bytestream_server(&store_manager, None)?);
+    let store = store_manager.get_store("main_cas").unwrap();
+    let resource_name = format!(
+        "{INSTANCE_NAME}/uploads/9eb44e87-1320-40e7-9154-bf19f3fdf94a/blobs/blake3/{hash}/{}",
+        WRITE_DATA.len()
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+
+    join_handle.await??;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, WRITE_DATA);
+    assert!(logs_contain(
+        "clients using different digest functions generate different cache keys and will not share cache hits"
+    ));
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn resumed_blake3_write_keeps_declared_digest_function()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &[u8] = b"resumed content hashed with blake3";
+    const BYTE_SPLIT_OFFSET: usize = 12;
+
+    let hash = blake3_hex(WRITE_DATA);
+    let digest = DigestInfo::try_new(&hash, WRITE_DATA.len())?;
+    let store_manager = make_verify_store_manager().await?;
+    let bs_server = Arc::new(make_bytestream_server(&store_manager, None)?);
+    let store = store_manager.get_store("main_cas").unwrap();
+    let resource_name = format!(
+        "{INSTANCE_NAME}/uploads/4dcec57e-1389-4ab5-b188-4a59f22ceb4b/blobs/blake3/{hash}/{}",
+        WRITE_DATA.len()
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: WRITE_DATA[..BYTE_SPLIT_OFFSET].to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+    assert!(
+        join_handle.await?.is_err(),
+        "the disconnected partial write should remain resumable"
+    );
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: BYTE_SPLIT_OFFSET.try_into()?,
+        finish_write: true,
+        data: WRITE_DATA[BYTE_SPLIT_OFFSET..].to_vec().into(),
+    })?))
+    .await?;
+    drop(tx);
+
+    join_handle.await??;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, WRITE_DATA);
     Ok(())
 }
 
@@ -380,7 +520,7 @@ pub async fn resume_write_success() -> Result<(), Box<dyn core::error::Error>> {
         make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -461,7 +601,7 @@ pub async fn restart_write_success() -> Result<(), Box<dyn core::error::Error>> 
     }
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -540,7 +680,7 @@ pub async fn restart_mid_stream_write_success() -> Result<(), Box<dyn core::erro
     }
     {
         // Write the remainder of our data.
-        write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+        write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -604,7 +744,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
     }
     {
         // Write our EOF.
-        write_request.write_offset = WRITE_DATA.len() as i64;
+        write_request.write_offset = WRITE_DATA.len().try_into().unwrap_or(i64::MAX);
         write_request.finish_write = true;
         write_request.data.clear();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -625,7 +765,7 @@ pub async fn ensure_write_is_not_done_until_write_request_is_set()
                 .err_tip(|| "bs_server.write returned an error")?
                 .into_inner(),
             WriteResponse {
-                committed_size: WRITE_DATA.len() as i64
+                committed_size: WRITE_DATA.len().try_into().unwrap_or(i64::MAX)
             },
             "Expected Responses to match"
         );
@@ -688,7 +828,8 @@ pub async fn zstd_write_committed_size_matches_wire_bytes()
 
     let committed_size = server_result.into_inner().committed_size;
     assert!(
-        committed_size == -1 || committed_size == compressed_data.len() as i64,
+        committed_size == -1
+            || committed_size == compressed_data.len().try_into().unwrap_or(i64::MAX),
         "compressed write committed_size must be -1 or the compressed byte count {}; got {} for uncompressed size {}",
         compressed_data.len(),
         committed_size,
@@ -744,7 +885,7 @@ pub async fn zstd_write_allows_wire_bytes_larger_than_digest_size()
 
     assert_eq!(
         server_result.into_inner().committed_size,
-        compressed_data.len() as i64,
+        compressed_data.len().try_into().unwrap_or(i64::MAX),
         "compressed write should report the compressed wire byte count"
     );
 
@@ -862,7 +1003,7 @@ pub async fn compressed_blobs_identity_write_and_read_use_identity_path()
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        raw_data.len() as i64
+        raw_data.len().try_into().unwrap_or(i64::MAX)
     );
 
     let digest = DigestInfo::try_new(&hash, raw_data.len())?;
@@ -882,7 +1023,7 @@ pub async fn compressed_blobs_identity_write_and_read_use_identity_path()
                 raw_data.len()
             ),
             read_offset: 0,
-            read_limit: raw_data.len() as i64,
+            read_limit: raw_data.len().try_into().unwrap_or(i64::MAX),
         },
     )
     .await?;
@@ -922,7 +1063,7 @@ pub async fn zstd_write_streams_chunked_compressed_upload()
         let end = (write_offset + 7).min(compressed_data.len());
         tx.send(Frame::data(encode_stream_proto(&WriteRequest {
             resource_name: resource_name.clone(),
-            write_offset: write_offset as i64,
+            write_offset: write_offset.try_into().unwrap_or(i64::MAX),
             finish_write: end == compressed_data.len(),
             data: Bytes::copy_from_slice(&compressed_data[write_offset..end]),
         })?))
@@ -936,7 +1077,7 @@ pub async fn zstd_write_streams_chunked_compressed_upload()
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        compressed_data.len() as i64
+        compressed_data.len().try_into().unwrap_or(i64::MAX)
     );
 
     let digest = DigestInfo::try_new(&hash, raw_data.len())?;
@@ -1027,7 +1168,7 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
             }))
             .await?
             .into_inner();
-        if response.committed_size == first_chunk_len as i64 {
+        if response.committed_size == first_chunk_len.try_into().unwrap_or(i64::MAX) {
             status_response = Some(response);
             break;
         }
@@ -1035,14 +1176,14 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
     assert_eq!(
         status_response.err_tip(|| "compressed write progress was not reported")?,
         QueryWriteStatusResponse {
-            committed_size: first_chunk_len as i64,
+            committed_size: first_chunk_len.try_into().unwrap_or(i64::MAX),
             complete: false,
         }
     );
 
     tx.send(Frame::data(encode_stream_proto(&WriteRequest {
         resource_name,
-        write_offset: first_chunk_len as i64,
+        write_offset: first_chunk_len.try_into().unwrap_or(i64::MAX),
         finish_write: true,
         data: Bytes::copy_from_slice(&compressed_data[first_chunk_len..]),
     })?))
@@ -1054,7 +1195,7 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
         .expect("Failed write");
     assert_eq!(
         server_result.into_inner().committed_size,
-        compressed_data.len() as i64
+        compressed_data.len().try_into().unwrap_or(i64::MAX)
     );
 
     Ok(())
@@ -1092,7 +1233,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>
     }
     {
         // Write data it already has.
-        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1).try_into().unwrap_or(i64::MAX);
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         tx.send(Frame::data(encode_stream_proto(&write_request)?))
             .await?;
@@ -1103,7 +1244,7 @@ pub async fn out_of_order_data_fails() -> Result<(), Box<dyn core::error::Error>
     );
     {
         // Make sure stream was closed.
-        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1) as i64;
+        write_request.write_offset = (BYTE_SPLIT_OFFSET - 1).try_into().unwrap_or(i64::MAX);
         write_request.data = WRITE_DATA[(BYTE_SPLIT_OFFSET - 1)..].into();
         assert!(
             tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -1226,7 +1367,7 @@ pub async fn chunked_stream_reads_small_set_of_data() -> Result<(), Box<dyn core
     let read_request = ReadRequest {
         resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, VALUE1.len()),
         read_offset: 0,
-        read_limit: VALUE1.len() as i64,
+        read_limit: VALUE1.len().try_into().unwrap_or(i64::MAX),
     };
     let mut read_stream = bs_server
         .read(Request::new(read_request))
@@ -1459,7 +1600,7 @@ pub async fn zstd_read_offset_applies_to_uncompressed_blob()
                 hash,
                 raw_data.len()
             ),
-            read_offset: read_offset as i64,
+            read_offset: read_offset.try_into().unwrap_or(i64::MAX),
             read_limit: 0,
         },
     )
@@ -1545,7 +1686,7 @@ pub async fn chunked_stream_reads_10mb_of_data() -> Result<(), Box<dyn core::err
     let read_request = ReadRequest {
         resource_name: format!("{}/blobs/{}/{}", INSTANCE_NAME, HASH1, raw_data.len()),
         read_offset: 0,
-        read_limit: raw_data.len() as i64,
+        read_limit: raw_data.len().try_into().unwrap_or(i64::MAX),
     };
     let mut read_stream = bs_server
         .read(Request::new(read_request))
@@ -1673,14 +1814,14 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::er
         assert_eq!(
             data.into_inner(),
             QueryWriteStatusResponse {
-                committed_size: write_request.data.len() as i64,
+                committed_size: write_request.data.len().try_into().unwrap_or(i64::MAX),
                 complete: false,
             }
         );
     }
 
     // Finish writing our data.
-    write_request.write_offset = BYTE_SPLIT_OFFSET as i64;
+    write_request.write_offset = BYTE_SPLIT_OFFSET.try_into().unwrap_or(i64::MAX);
     write_request.data = raw_data[BYTE_SPLIT_OFFSET..].into();
     write_request.finish_write = true;
     tx.send(Frame::data(encode_stream_proto(&write_request)?))
@@ -1695,7 +1836,7 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::er
         assert_eq!(
             data.into_inner(),
             QueryWriteStatusResponse {
-                committed_size: raw_data.len() as i64,
+                committed_size: raw_data.len().try_into().unwrap_or(i64::MAX),
                 complete: true,
             }
         );

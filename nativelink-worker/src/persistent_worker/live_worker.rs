@@ -75,7 +75,7 @@ impl LiveWorker {
     /// `working_dir`). `startup_args` are the flags that the worker is launched
     /// with once — these become part of the `WorkerKey`. The Bazel-conventional
     /// `--persistent_worker` flag is appended automatically.
-    pub async fn spawn(
+    pub fn spawn(
         executable: &Path,
         startup_args: &[String],
         wire_format: WireFormat,
@@ -387,7 +387,6 @@ mod tests {
             WireFormat::Json,
             dir.path(),
         )
-        .await
         .unwrap();
         let start = Instant::now();
         worker.shutdown(Duration::from_millis(100)).await;
@@ -411,7 +410,6 @@ mod tests {
             WireFormat::Json,
             dir.path(),
         )
-        .await
         .unwrap();
 
         let req = WorkRequest {
@@ -441,7 +439,6 @@ mod tests {
             WireFormat::Json,
             dir.path(),
         )
-        .await
         .unwrap();
 
         let req = WorkRequest {
@@ -470,7 +467,6 @@ mod tests {
             WireFormat::Json,
             dir.path(),
         )
-        .await
         .unwrap();
         let req = WorkRequest {
             request_id: 7,

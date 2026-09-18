@@ -21,6 +21,10 @@ concurrency:
 
 env:
   RUSTFLAGS: -Dwarnings
+  # aws-lc-sys (JWT signing for GCS auth) assembles with NASM on x86_64
+  # Windows, which the runner image does not ship. Use the prebuilt objects
+  # the crate carries instead; the variable is ignored on every other target.
+  AWS_LC_SYS_PREBUILT_NASM: 1
 
 jobs:
   cargo-native:

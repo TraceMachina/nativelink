@@ -1,0 +1,255 @@
+---
+title: Examples and templates
+description: Runnable configs, deployment topologies, and project scaffolds you can copy, plus the three client-side patterns most teams actually adopt.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone who wants a working starting point rather than a
+blank file. **What you'll have at the end:** the right example for your
+situation, and a client-side pattern that matches how you want work split
+between laptops and a fleet. **Time:** varies; the point of this page is to
+find the thing, not to read it.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+Three kinds of starting point ship in the repo, and they answer different
+questions.
+
+| You want | Look in |
+| --- | --- |
+| A NativeLink config for a specific backend or shape | [`nativelink-config/examples/`](#server-configs) |
+| A whole deployment topology to run | [`deployment-examples/`](#deployment-topologies) |
+| A client project pre-wired to a hermetic toolchain | [`nix flake init`](#project-templates) |
+
+## Server configs [#server-configs]
+
+<SourceLink file="nativelink-config/examples" dir symbol="nativelink-config/examples/" />
+is the largest and most useful collection. Every file is a complete,
+loadable config.
+
+| File | What it demonstrates |
+| --- | --- |
+| `basic_cas.json5` | The minimum cache, the quickstart's config |
+| `filesystem_cas.json5` | On-disk CAS with compression, dedup, and size partitioning in front of it |
+| `local_rbe_self_test.json5` | A complete cluster in one process: CAS, AC, scheduler, worker |
+| `stores-config.json5` | One block per store type, generated from the `stores.rs` doc comments for testing |
+| `chunking_cas.json5` | Content-defined chunking |
+| `advanced_http.json5` | HTTP/2 listener tuning (keepalive, stream limits, window sizes) |
+| `s3_backend_with_local_fast_cas.json5` | `fast_slow` over S3, the canonical production store |
+| `gcs_backend.json5`, `azure_blob_backend.json5`, `r2_backend.json5`, `oci_backend.json5`, `ontap_backend.json5` | The other object-storage backends |
+| `redis.json5`, `mongo.json5` | Redis and MongoDB stores |
+| `worker_with_redis_scheduler.json5` | A scheduler whose state lives in Redis |
+| `scheduler_match_logging_disable.json5` | Turning off the periodic match dump |
+| `tmpfs-worker.json5` | A worker whose fast tier and work directory sit on a tmpfs mount |
+| `legacy_service_config.json5` | The older service config shape, for migrations |
+
+<SourceLink file="nativelink-config/examples/README.md" />
+
+Start from the file closest to your situation and read its comments;
+several of them explain constraints you'd otherwise discover the hard way,
+like why a worker's `fast` store must be a filesystem store.
+
+[How-to guides](/how-to) is the task-oriented version of that table if you
+already know which backend you want.
+
+## Deployment topologies [#deployment-topologies]
+
+<SourceLink file="deployment-examples" dir />
+holds deployment material rather than single config files: the
+`docker-compose/` stack, a RHEL 8 `Dockerfile` (`rhel/`), the metrics
+pipeline configs and dashboards (`metrics/`), and the persistent-worker rule
+sketches (`persistent-workers/`).
+
+The `docker-compose/` one is the most useful of them, because it is the
+topology the project's own integration tests run against: a CAS process on
+`50051`, a scheduler with the execution and AC services on `50052`, a worker,
+and the scheduler's worker API on `50061` left unpublished so it is only
+reachable inside the compose network.
+
+```bash
+cd deployment-examples/docker-compose
+docker compose up
+```
+
+[Local testing](/remote-execution/local-testing) covers running this and
+pointing a build at it; [Production configuration](/operate/production-config)
+covers what changes when it stops being a demo.
+
+## Project templates [#project-templates]
+
+The flake ships templates for the client side: a project already wired to a
+Nix-pinned toolchain.
+
+```bash
+nix flake show github:TraceMachina/nativelink
+```
+
+<Callout type="info" title="That command is the source of truth">
+  Templates get added and removed between releases. Run it rather than
+  trusting a hardcoded list, including the one below, which reflects what
+  ships as of this page's last update.
+</Callout>
+
+| Template | What it gives you |
+| --- | --- |
+| `bazel` | A Bazel `cc_binary` project pre-wired for [Local Remote Execution](/remote-execution/toolchains-and-hermeticity): Nix-pinned toolchain, the LRE Bazel module, and a `user.bazelrc` you point at a cache and executor |
+
+```bash
+mkdir my-rbe-test && cd my-rbe-test
+nix flake init -t github:TraceMachina/nativelink#bazel
+git init && git add -A   # what templates/README.md tells you to do; a flake in a git repo only sees tracked files
+nix develop
+```
+
+The template does **not** bundle a NativeLink server; you point it at one you
+already have. It is also Linux-only, because the `lre-cc` toolchain it wires
+in currently supports `x86_64-linux` only.
+[Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity)
+walks the whole flow with real output, including the `user.bazelrc` values.
+
+<Callout type="warn" title="cargo, lre, and kubernetes templates do not exist">
+  Older material referenced them. `nix flake init -t
+  github:TraceMachina/nativelink#lre` (or `#cargo`, `#kubernetes`) fails with
+  `does not provide attribute 'templates.<name>'`. If you came looking for one:
+
+  - **A local cluster with no Nix**:
+    [Local testing](/remote-execution/local-testing).
+  - **Cargo / sccache**: not packaged as a template; the `bazel` template
+    is the maintained path.
+
+  The repo also has a `templates/cmake/` directory (CMake with `recc`,
+  cache-only), but `flake.nix` does not expose it under `templates`, so
+  `nix flake init -t github:TraceMachina/nativelink#cmake` fails the same way;
+  copy the directory by hand if you want it.
+</Callout>
+
+To customise: it's a flake, so fork and edit. The usual changes are pointing
+`user.bazelrc` at a real cluster, adding platform properties in
+`platforms/BUILD.bazel`, and pinning `inputs.nativelink.url` in `flake.nix`
+to a specific commit, kept in sync with the `local-remote-execution`
+override in `MODULE.bazel`.
+
+## Three client-side patterns [#three-client-side-patterns]
+
+Independently of which config you start from, there are three ways teams
+wire their builds. Most adopt them in this order.
+
+### Pattern A: Cache only [#pattern-a--cache-only]
+
+Every action runs locally; results land in the shared cache. No worker fleet
+needed, which makes it the cheapest thing that helps.
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://nativelink.internal:50051 \
+  --remote_instance_name=main
+```
+
+Right when you have one CI environment building similar things repeatedly,
+when you want shared caching across laptops without operating workers, or
+when you're still evaluating. This is
+[Getting started](/getting-started).
+
+### Pattern B: Cache plus execution [#pattern-b--cache-plus-execution]
+
+Actions ship to a worker fleet; the cache underneath stores everything.
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://nativelink.internal:50051 \
+  --remote_executor=grpc://nativelink.internal:50052 \
+  --remote_instance_name=main \
+  --jobs=200
+```
+
+`--jobs=200` is the change people forget. Without it Bazel dispatches only
+as many actions as your laptop has cores, and the fleet sits idle; the
+limiting factor is supposed to be pool size, not local CPU count.
+
+Right when full builds take hours, when you're trying to shrink a CI fleet,
+or when you need actions to run on hardware developers don't have.
+
+### Pattern C: Hybrid [#pattern-c--hybrid]
+
+Small actions local, everything else remote, decided by policy.
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://nativelink.internal:50051 \
+  --remote_executor=grpc://nativelink.internal:50052 \
+  --remote_instance_name=main \
+  --modify_execution_info=Javac=+no-remote-exec \
+  --strategy=Javac=local
+```
+
+This forces `Javac` local (for very small compilations the round-trip
+dominates) while everything else goes remote.
+
+Right when your workload mixes very fast and very slow actions, or when
+latency to the fleet is high enough that small actions lose. Reach for it
+when you have telemetry showing where time actually goes, not before;
+[Tuning](/operate/tuning) covers getting that telemetry.
+
+### Choosing [#choosing]
+
+| Pattern | Setup cost | Where the win comes from | What it costs |
+| --- | --- | --- | --- |
+| Cache only | Low | Repeated work becomes free | Storage |
+| Cache + execution | Medium | Cache misses fan out across a fleet | Worker compute |
+| Hybrid | High | Avoids paying round-trips on trivial actions | Worker compute + tuning effort |
+
+The speedup numbers you'll see quoted for these vary by an order of
+magnitude between workloads, and mostly reflect how much of a given build is
+cache-missing compilation. Measure your own before committing to a shape.
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+
+<Accordion title="Which example should I start from for a real cluster?" id="which-example-for-a-real-cluster">
+`s3_backend_with_local_fast_cas.json5` for the store layer and the
+`docker-compose/` topology for the process split; that combination is the
+shape [Production configuration](/operate/production-config) describes at
+full size. Don't start from `local_rbe_self_test.json5`; it's optimised for
+being readable in one screen, not for running a fleet.
+</Accordion>
+
+<Accordion title="Are these examples tested?" id="are-these-examples-tested">
+Partly. Every file in `nativelink-config/examples/` is parsed by a unit test
+(`nativelink-config/tests/json5_test.rs`), so they all load. The
+`docker-compose/` deployment is what `run_integration_tests.sh` brings up,
+so it is exercised end to end in CI. `local_rbe_self_test.json5` is only
+parse-tested, and the backend-specific configs are not validated against
+live cloud services, so treat credentials and endpoint syntax as the parts
+to double-check.
+</Accordion>
+
+<Accordion title="Can I mix patterns per target?" id="can-i-mix-patterns-per-target">
+That's what pattern C is. `--strategy` and `--modify_execution_info` take
+mnemonic-scoped values, and `exec_properties` on a target routes it
+specifically. The global flags are just defaults.
+</Accordion>
+
+<Accordion title="What do I need to change to use these against a hosted cluster?" id="what-to-change-for-a-hosted-cluster">
+The scheme and the hostname: `grpcs://` instead of `grpc://`, your endpoint,
+and credentials. The flag structure and the config shapes don't change.
+</Accordion>
+
+<Accordion title="Where do I go once none of these fit?" id="where-do-i-go-once-none-of-these-fit">
+[Configuration](/configuration) is about being able to write these
+files rather than adapt them, and [How-to guides](/how-to) covers specific
+backends and features one at a time.
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/configuration" title="Configuration">
+  Stop copying examples and write the config yourself.
+</NextStep>
+
+<NextStep href="/operate/production-config" kind="aside" title="Production configuration">
+  The full-size version of the compose topology, with the reasoning.
+</NextStep>

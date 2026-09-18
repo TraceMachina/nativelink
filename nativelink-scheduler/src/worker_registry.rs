@@ -21,7 +21,33 @@ use async_lock::RwLock;
 use nativelink_util::action_messages::WorkerId;
 use tracing::{debug, trace};
 
+/// Ceiling for an action whose worker no instance here recognises. Long on
+/// purpose: heartbeats never reach the shared state, so a healthy hour-long
+/// action and an abandoned one look identical from here, and acting early
+/// costs live work.
+pub const ORPHANED_ACTION_TIMEOUT: Duration = Duration::from_hours(1);
+
+/// What this scheduler instance knows about a worker's liveness.
+///
+/// A worker only appears in the registry of the instance holding its
+/// `connect_worker` stream, so `Unknown` means "not mine to judge", not
+/// "dead".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerLiveness {
+    /// Registered here and has heartbeat within the timeout.
+    Alive,
+    /// Registered here, but has not been heard from within the timeout.
+    Stale,
+    /// Not registered here at all. Either connected to a different scheduler
+    /// instance, or already evicted (in which case its actions were requeued
+    /// at eviction time and no longer reference it).
+    Unknown,
+}
+
 /// In-memory worker registry that tracks worker liveness.
+///
+/// Per-process: fed by the `connect_worker` streams this instance owns, not a
+/// view of every worker in the deployment.
 #[derive(Debug)]
 pub struct WorkerRegistry {
     workers: RwLock<HashMap<WorkerId, SystemTime>>,
@@ -60,30 +86,44 @@ impl WorkerRegistry {
         debug!(?worker_id, "FLOW: Worker removed from registry");
     }
 
+    /// Liveness as far as THIS instance can tell. Callers acting on "dead"
+    /// must handle `Unknown` separately.
+    pub async fn check_liveness(
+        &self,
+        worker_id: &WorkerId,
+        timeout: Duration,
+        now: SystemTime,
+    ) -> WorkerLiveness {
+        let workers = self.workers.read().await;
+
+        let Some(last_seen) = workers.get(worker_id) else {
+            trace!(?worker_id, "FLOW: Worker not registered on this instance");
+            return WorkerLiveness::Unknown;
+        };
+
+        // An overflowing deadline can only be clock skew; treat as alive.
+        let liveness = match last_seen.checked_add(timeout) {
+            Some(deadline) if deadline > now => WorkerLiveness::Alive,
+            Some(_) => WorkerLiveness::Stale,
+            None => WorkerLiveness::Alive,
+        };
+        trace!(
+            ?worker_id,
+            last_seen = %humantime::format_rfc3339(*last_seen),
+            ?timeout,
+            ?liveness,
+            "FLOW: Worker liveness check"
+        );
+        liveness
+    }
+
     pub async fn is_worker_alive(
         &self,
         worker_id: &WorkerId,
         timeout: Duration,
         now: SystemTime,
     ) -> bool {
-        let workers = self.workers.read().await;
-
-        if let Some(last_seen) = workers.get(worker_id)
-            && let Some(deadline) = last_seen.checked_add(timeout)
-        {
-            let is_alive = deadline > now;
-            trace!(
-                ?worker_id,
-                last_seen = %humantime::format_rfc3339(*last_seen),
-                ?timeout,
-                is_alive,
-                "FLOW: Worker liveness check"
-            );
-            return is_alive;
-        }
-
-        trace!(?worker_id, "FLOW: Worker not found or timed out");
-        false
+        self.check_liveness(worker_id, timeout, now).await == WorkerLiveness::Alive
     }
 
     pub async fn get_worker_last_seen(&self, worker_id: &WorkerId) -> Option<SystemTime> {
@@ -135,6 +175,42 @@ mod tests {
             registry
                 .is_worker_alive(&worker_id, Duration::from_secs(5), future)
                 .await
+        );
+    }
+
+    #[nativelink_test]
+    async fn test_check_liveness_distinguishes_stale_from_unknown() {
+        let registry = WorkerRegistry::new();
+        let mine = WorkerId::from(String::from("mine"));
+        let theirs = WorkerId::from(String::from("belongs-to-another-instance"));
+        let now = SystemTime::now();
+        let timeout = Duration::from_secs(5);
+
+        // Never registered here. This is the case that must NOT read as dead:
+        // with several schedulers on shared state it is a peer's worker.
+        assert_eq!(
+            registry.check_liveness(&theirs, timeout, now).await,
+            WorkerLiveness::Unknown
+        );
+
+        registry.register_worker(&mine, now).await;
+        assert_eq!(
+            registry.check_liveness(&mine, timeout, now).await,
+            WorkerLiveness::Alive
+        );
+
+        // Registered here but gone quiet: genuinely ours and genuinely dead.
+        let later = now.checked_add(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            registry.check_liveness(&mine, timeout, later).await,
+            WorkerLiveness::Stale
+        );
+
+        // Eviction takes it back to Unknown, not Stale.
+        registry.remove_worker(&mine).await;
+        assert_eq!(
+            registry.check_liveness(&mine, timeout, later).await,
+            WorkerLiveness::Unknown
         );
     }
 

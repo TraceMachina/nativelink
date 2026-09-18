@@ -8,15 +8,16 @@ use std::time::SystemTime;
 
 use bytes::Bytes;
 use futures::{Stream, stream};
-use mock_instant::thread_local::SystemTime as MockSystemTime;
+use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_scheduler::awaited_action_db::AwaitedAction;
+use nativelink_scheduler::awaited_action_db::{AwaitedAction, AwaitedActionDb};
 use nativelink_scheduler::store_awaited_action_db::{
     StoreAwaitedActionDb, inner_update_awaited_action,
 };
+use nativelink_scheduler::worker_registry::{ORPHANED_ACTION_TIMEOUT, WorkerRegistry};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -88,19 +89,27 @@ impl SchedulerStore for FakeSchedulerStore {
         Ok(Some(1))
     }
 
-    async fn search_by_index_prefix<K>(
+    fn search_by_index_prefix<K>(
         &self,
         _index: K,
-    ) -> Result<
-        impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
-        Error,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
     >
     where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
         <K as SchedulerStoreDecodeTo>::DecodeOutput: Send,
     {
-        // todo!();
-        Ok(stream::empty())
+        std::future::ready(Ok(stream::empty()))
+    }
+
+    async fn count_by_index_prefix<K>(&self, _index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        Ok(0)
     }
 
     async fn get_and_decode<K>(
@@ -209,6 +218,7 @@ impl SchedulerSubscriptionManager for PendingSubscriptionManager {
 /// is meant to absorb.
 struct EventuallyVisibleStore {
     search_calls: Arc<AtomicUsize>,
+    count_calls: Arc<AtomicUsize>,
     empty_for: usize,
     encoded_action: Bytes,
 }
@@ -218,6 +228,7 @@ impl EventuallyVisibleStore {
         let encoded = serde_json::to_vec(action).expect("serialize AwaitedAction for fake store");
         Self {
             search_calls: Arc::new(AtomicUsize::new(0)),
+            count_calls: Arc::new(AtomicUsize::new(0)),
             empty_for,
             encoded_action: Bytes::from(encoded),
         }
@@ -227,30 +238,34 @@ impl EventuallyVisibleStore {
 impl SchedulerStore for EventuallyVisibleStore {
     type SubscriptionManager = PendingSubscriptionManager;
 
-    async fn subscription_manager(&self) -> Result<Arc<Self::SubscriptionManager>, Error> {
-        Ok(Arc::new(PendingSubscriptionManager))
+    fn subscription_manager(
+        &self,
+    ) -> impl Future<Output = Result<Arc<Self::SubscriptionManager>, Error>> {
+        std::future::ready(Ok(Arc::new(PendingSubscriptionManager)))
     }
 
-    async fn update_data<T>(
+    fn update_data<T>(
         &self,
         _data: T,
         _expiry: Option<Duration>,
-    ) -> Result<Option<i64>, Error>
+    ) -> impl Future<Output = Result<Option<i64>, Error>>
     where
         T: SchedulerStoreDataProvider
             + SchedulerStoreKeyProvider
             + SchedulerCurrentVersionProvider
             + Send,
     {
-        Ok(Some(1))
+        std::future::ready(Ok(Some(1)))
     }
 
-    async fn search_by_index_prefix<K>(
+    fn search_by_index_prefix<K>(
         &self,
         _index: K,
-    ) -> Result<
-        impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
-        Error,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
     >
     where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
@@ -263,7 +278,15 @@ impl SchedulerStore for EventuallyVisibleStore {
             } else {
                 vec![K::decode(1, self.encoded_action.clone())]
             };
-        Ok(stream::iter(items))
+        std::future::ready(Ok(stream::iter(items)))
+    }
+
+    async fn count_by_index_prefix<K>(&self, _index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        self.count_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(0)
     }
 
     async fn get_and_decode<K>(
@@ -279,6 +302,7 @@ impl SchedulerStore for EventuallyVisibleStore {
 
 async fn build_db(
     store: Arc<EventuallyVisibleStore>,
+    enable_active_action_count_metric: bool,
 ) -> StoreAwaitedActionDb<
     EventuallyVisibleStore,
     fn() -> OperationId,
@@ -290,9 +314,17 @@ async fn build_db(
     }
     let now_fn: fn() -> MockInstantWrapped = MockInstantWrapped::default;
     let op_id_fn: fn() -> OperationId = new_op_id;
-    StoreAwaitedActionDb::new(store, Arc::new(Notify::new()), now_fn, op_id_fn, 60)
-        .await
-        .expect("construct test db")
+    StoreAwaitedActionDb::new(
+        store,
+        Arc::new(Notify::new()),
+        now_fn,
+        op_id_fn,
+        60,
+        60,
+        enable_active_action_count_metric,
+    )
+    .await
+    .expect("construct test db")
 }
 
 #[nativelink_test]
@@ -303,7 +335,7 @@ async fn try_subscribe_retries_once_on_miss_then_returns_existing() -> Result<()
         /* empty_for = */ 1, &action,
     ));
     let counter = store.search_calls.clone();
-    let db = build_db(store).await;
+    let db = build_db(store, false).await;
 
     let result = db
         .try_subscribe(
@@ -335,7 +367,7 @@ async fn try_subscribe_returns_none_after_two_consecutive_misses() -> Result<(),
         &action,
     ));
     let counter = store.search_calls.clone();
-    let db = build_db(store).await;
+    let db = build_db(store, false).await;
 
     let result = db
         .try_subscribe(
@@ -365,7 +397,7 @@ async fn try_subscribe_skips_lookup_for_uncacheable_qualifier() -> Result<(), Er
         /* empty_for = */ 0, &action,
     ));
     let counter = store.search_calls.clone();
-    let db = build_db(store).await;
+    let db = build_db(store, false).await;
 
     let uncacheable = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
         instance_name: INSTANCE_NAME.to_string(),
@@ -386,6 +418,207 @@ async fn try_subscribe_skips_lookup_for_uncacheable_qualifier() -> Result<(), Er
         counter.load(Ordering::SeqCst),
         0,
         "uncacheable qualifier must short-circuit before any lookup",
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `try_subscribe` abandonment check.
+//
+// The stage/timestamp pair lives in the shared store and heartbeats never
+// refresh it, so without a liveness check a healthy long-running action looks
+// abandoned and a duplicate Execute forks a second execution of it.
+// ---------------------------------------------------------------------------
+
+const WORKER_TIMEOUT: Duration = Duration::from_mins(2);
+const NOW_TIME: u64 = 10_000;
+
+/// `MockInstantWrapped::now` reads `MockClock::time`, so timestamps have to be
+/// built from the same clock or nothing lines up.
+fn mock_now() -> SystemTime {
+    SystemTime::UNIX_EPOCH + MockClock::time()
+}
+
+fn make_executing_awaited_action(worker_id: &WorkerId) -> AwaitedAction {
+    let now = mock_now();
+    let mut action = AwaitedAction::new(
+        OperationId::from("existing-operation"),
+        make_cacheable_action_info(),
+        now,
+    );
+    action.set_worker_id(Some(worker_id.clone()), now);
+    let mut state = action.state().as_ref().clone();
+    state.stage = ActionStage::Executing;
+    action.worker_set_state(Arc::new(state), now);
+    action
+}
+
+/// Runs `try_subscribe` against an executing action owned by `worker_id`,
+/// after `elapsed` has passed, and reports whether the action was recreated
+/// rather than joined.
+async fn recreated_after(
+    registry: Option<Arc<WorkerRegistry>>,
+    worker_id: &WorkerId,
+    elapsed: Duration,
+) -> Result<bool, Error> {
+    let action = make_executing_awaited_action(worker_id);
+    let qualifier = action.action_info().unique_qualifier.clone();
+    let store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let mut db = build_db(store, false).await;
+    if let Some(registry) = registry {
+        db.set_worker_registry(registry);
+    }
+
+    MockClock::advance(elapsed);
+
+    let result = db
+        .try_subscribe(
+            &OperationId::from("client-abandon"),
+            &qualifier,
+            WORKER_TIMEOUT,
+            0,
+        )
+        .await?
+        .expect("the action is visible, so try_subscribe must return it");
+
+    Ok(*result.operation_id() == OperationId::from("new-operation"))
+}
+
+#[nativelink_test]
+async fn joins_an_executing_action_whose_worker_is_ours_and_alive() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-alive".to_string());
+    let registry = Arc::new(WorkerRegistry::new());
+
+    // Heartbeats keep the registry current even though the shared timestamp
+    // on the action does not move.
+    let action = make_executing_awaited_action(&worker_id);
+    let qualifier = action.action_info().unique_qualifier.clone();
+    let store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let mut db = build_db(store, false).await;
+    db.set_worker_registry(registry.clone());
+
+    // The action's shared timestamp stays put while the worker keeps
+    // heartbeating, which is exactly the case that used to look abandoned.
+    MockClock::advance(WORKER_TIMEOUT * 3);
+    registry
+        .update_worker_heartbeat(&worker_id, mock_now())
+        .await;
+
+    let result = db
+        .try_subscribe(
+            &OperationId::from("client-alive"),
+            &qualifier,
+            WORKER_TIMEOUT,
+            0,
+        )
+        .await?
+        .expect("action is visible");
+    let recreated = *result.operation_id() == OperationId::from("new-operation");
+
+    assert!(
+        !recreated,
+        "a worker we can see heartbeating owns this action; recreating it would run the work twice",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn recreates_an_executing_action_whose_worker_went_quiet() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-stale".to_string());
+    let registry = Arc::new(WorkerRegistry::new());
+    registry.register_worker(&worker_id, mock_now()).await;
+
+    let recreated = recreated_after(Some(registry), &worker_id, WORKER_TIMEOUT * 2).await?;
+
+    assert!(
+        recreated,
+        "the worker is registered here and has stopped reporting, so the action is genuinely abandoned",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn joins_an_executing_action_on_a_peers_worker() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-elsewhere".to_string());
+    // Empty registry: the worker belongs to another scheduler instance.
+    let registry = Arc::new(WorkerRegistry::new());
+
+    let recreated = recreated_after(Some(registry), &worker_id, WORKER_TIMEOUT * 5).await?;
+
+    assert!(
+        !recreated,
+        "worker_timeout_s must not apply to a worker this instance never sees heartbeats for",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn recreates_an_orphan_once_past_the_backstop() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-orphaned".to_string());
+    let registry = Arc::new(WorkerRegistry::new());
+
+    let recreated =
+        recreated_after(Some(registry), &worker_id, ORPHANED_ACTION_TIMEOUT * 2).await?;
+
+    assert!(
+        recreated,
+        "an action nobody claims still has to be reaped eventually or it leaks forever",
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn falls_back_to_the_timestamp_when_there_is_no_registry() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from("worker-no-registry".to_string());
+
+    let recreated = recreated_after(None, &worker_id, WORKER_TIMEOUT * 2).await?;
+
+    assert!(
+        recreated,
+        "without a registry there is nothing better than the timestamp, so behaviour is unchanged",
+    );
+    Ok(())
+}
+
+/// Counting the actions in each stage queries the scheduler store on a timer,
+/// from every replica, against the same backend that serves scheduling. A
+/// deployment that does not read `execution.active.count` should not pay for
+/// it, so the work only happens when it is asked for.
+#[nativelink_test(start_paused = true)]
+async fn active_action_count_only_queries_the_store_when_enabled() -> Result<(), Error> {
+    let action = make_existing_awaited_action();
+
+    let off_store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let off_counts = off_store.count_calls.clone();
+    let _off_db = build_db(off_store, false).await;
+    tokio::time::sleep(Duration::from_mins(1)).await;
+    assert_eq!(
+        off_counts.load(Ordering::SeqCst),
+        0,
+        "the store must not be queried at all while the metric is disabled",
+    );
+
+    let on_store = Arc::new(EventuallyVisibleStore::new(
+        /* empty_for = */ 0, &action,
+    ));
+    let on_counts = on_store.count_calls.clone();
+    let _on_db = build_db(on_store, true).await;
+    tokio::time::sleep(Duration::from_mins(1)).await;
+    assert!(
+        on_counts.load(Ordering::SeqCst) >= 4,
+        "enabling it should count every stage at least once a minute, got {}",
+        on_counts.load(Ordering::SeqCst),
     );
     Ok(())
 }

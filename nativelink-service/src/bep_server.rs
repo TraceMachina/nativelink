@@ -67,7 +67,7 @@ impl BepServer {
     ) -> Result<Self, Error> {
         let store = store_manager
             .get_store(&config.store)
-            .err_tip(|| format!("Expected store {} to exist in store manager", &config.store))?;
+            .err_tip(|| format!("Expected store {} to exist in store manager", config.store))?;
 
         Ok(Self { store })
     }
@@ -94,7 +94,7 @@ impl BepServer {
 
         let store_key = StoreKey::Str(Cow::Owned(format!(
             "BepEvent:le:{}:{}:{}",
-            &stream_id.build_id, &stream_id.invocation_id, sequence_number,
+            stream_id.build_id, stream_id.invocation_id, sequence_number,
         )));
 
         let bep_event = BepEvent {
@@ -173,7 +173,7 @@ impl BepServer {
 
             let store_key = StoreKey::Str(Cow::Owned(format!(
                 "BepEvent:be:{}:{}:{}",
-                &stream_id.build_id, &stream_id.invocation_id, sequence_number,
+                stream_id.build_id, stream_id.invocation_id, sequence_number,
             )));
             let data = buf.freeze();
             for attempt in 1..=MAX_BEP_UPLOAD_ATTEMPTS {

@@ -58,11 +58,14 @@ fn test_redis_error_conversion_invalid_argument() {
 }
 
 #[test]
-fn test_redis_error_conversion_internal() {
-    let redis_error: redis::RedisError = (RedisErrorKind::Io, "Internal error").into();
+fn test_redis_error_conversion_io_is_unavailable() {
+    // An I/O error means the connection to Redis broke, which is transient
+    // and retryable — clients must be told UNAVAILABLE so they retry rather
+    // than fail the operation outright.
+    let redis_error: redis::RedisError = (RedisErrorKind::Io, "Connection error").into();
     let error: Error = redis_error.into();
-    assert_eq!(error.code, Code::Internal);
-    assert!(error.messages[0].contains("Internal error"));
+    assert_eq!(error.code, Code::Unavailable);
+    assert!(error.messages[0].contains("Connection error"));
 }
 
 #[test]
@@ -119,7 +122,11 @@ fn test_error_to_status_conversion() {
 fn test_encode_error_conversion() {
     let error: Error = make_err!(Code::Internal, "Encode failure mock");
     assert_eq!(error.code, Code::Internal);
-    assert!(error.messages[0].contains("Encode failure mock"));
+    assert!(
+        error.messages[0].contains("Encode failure mock"),
+        "messages: {:#?}",
+        error.messages
+    );
 }
 
 #[test]
@@ -127,7 +134,13 @@ fn test_try_from_int_error_conversion() {
     let int_error: Result<u8, TryFromIntError> = u16::try_into(300);
     let error: Error = int_error.unwrap_err().into();
     assert_eq!(error.code, Code::InvalidArgument);
-    assert!(error.messages[0].contains("out of range"));
+    assert!(
+        // Depending on Rust version
+        error.messages[0].contains("out of range")
+            || error.messages[0].contains("number too large to fit in target type"),
+        "messages: {:#?}",
+        error.messages
+    );
 }
 
 #[test]
@@ -135,7 +148,11 @@ fn test_parse_int_error_conversion() {
     let parse_error: Result<i32, ParseIntError> = "abc".parse();
     let error: Error = parse_error.unwrap_err().into();
     assert_eq!(error.code, Code::InvalidArgument);
-    assert!(error.messages[0].contains("invalid digit"));
+    assert!(
+        error.messages[0].contains("invalid digit"),
+        "messages: {:#?}",
+        error.messages
+    );
 }
 
 #[test]
@@ -161,21 +178,21 @@ fn test_join_error_conversion() {
 fn test_prost_encode_error_conversion() {
     let error = make_err!(Code::Internal, "Encode failure mock");
     assert_eq!(error.code, Code::Internal);
-    assert!(error.messages[0].contains("Encode failure mock"));
+    assert_eq!(error.messages, vec!["Encode failure mock"]);
 }
 
 #[test]
 fn test_prost_unknown_enum_value_conversion() {
     let error = make_err!(Code::Internal, "Unknown enum value mock");
     assert_eq!(error.code, Code::Internal);
-    assert!(error.messages[0].contains("Unknown enum value mock"));
+    assert_eq!(error.messages, vec!["Unknown enum value mock"]);
 }
 
 #[test]
 fn test_timestamp_error_conversion() {
     let error = make_err!(Code::InvalidArgument, "Timestamp error mock");
     assert_eq!(error.code, Code::InvalidArgument);
-    assert!(error.messages[0].contains("Timestamp error mock"));
+    assert_eq!(error.messages, vec!["Timestamp error mock"]);
 }
 
 #[test]

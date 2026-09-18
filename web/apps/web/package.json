@@ -6,12 +6,12 @@
     "@mdx-js/react": "^3.1.0",
     "@nativelink/tokens": "workspace:*",
     "@nativelink/ui": "workspace:*",
-    "@next/mdx": "^16",
-    "@next/third-parties": "^16.2.11",
+    "@next/mdx": "~16.2.11",
+    "@next/third-parties": "~16.2.11",
     "geist": "^1.5.1",
     "marked": "^18.0.0",
     "motion": "^12.0.0",
-    "next": "^16",
+    "next": "~16.3.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -27,9 +27,10 @@
   },
   "private": true,
   "scripts": {
-    "build": "next build",
+    "build": "bun scripts/gen-llms.ts && next build",
     "clean": "rm -rf .next .turbo",
-    "dev": "next dev --port 3000",
+    "dev": "bun scripts/gen-llms.ts && next dev --port 3000",
+    "gen:llms": "bun scripts/gen-llms.ts",
     "lint": "biome check .",
     "start": "next start --port 3000",
     "typecheck": "tsc --noEmit"

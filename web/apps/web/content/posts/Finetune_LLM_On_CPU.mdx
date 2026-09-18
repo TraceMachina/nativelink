@@ -43,7 +43,7 @@ cd nativelink-blogs/finetuning_on_cpu
 
 
 Here's a description of some of the files:<br></br>
-1\. `README.md` - Instructions on how to connect/use NativeLink Cloud and how to run the code locally as well as remotely<br></br>
+1\. `README.md` - Instructions on how to connect/use NativeLink and how to run the code locally as well as remotely<br></br>
 2\. `requirements.lock` - Ensures consistent Python dependencies across all environments<br></br>
 3\. `.bazelrc` - Main Bazel configuration file setting global options for hermetic builds and remote execution<br></br>
 4\. `MODULE.bazel` - Configures the project as a Bazel module, tells Bazel we'll need Python, `pip` and CPU-only PyTorch, and manages external dependencies<br></br>
@@ -79,7 +79,7 @@ To demonstrate NativeLink’s efficacy, consistency, and reliability, we ran the
 
 2\. Free version of Google Colab: the quickest run took 10 minutes while the slowest/longest took 20 minutes. The execution time was widely varied. We suspect varying traffic on Google’s servers and how Colab allocates its compute resources played a part in this variability.
 
-3\. Free NativeLink: the quickest run took 4 minutes of compute time while the slowest/longest took 6 minutes. NativeLink Cloud provided the quickest execution times by far.
+3\. Free NativeLink: the quickest run took 4 minutes of compute time while the slowest/longest took 6 minutes. NativeLink provided the quickest execution times by far.
 
 <img src="https://github.com/user-attachments/assets/c2bf8e0e-1500-4ee7-a0f7-6b4ca2196257" width="1000" alt="Model Fine-Tuning Times"></img>
 

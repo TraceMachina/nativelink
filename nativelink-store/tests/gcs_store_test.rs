@@ -612,9 +612,7 @@ async fn test_expired_object() -> Result<(), Error> {
         .await;
 
     // Mock the now function to return a time before expiration
-    MockClock::set_time(Duration::from_secs(
-        base_timestamp as u64 + expiration_seconds as u64 - 1,
-    ));
+    MockClock::set_time(Duration::from_secs(base_timestamp + expiration_seconds - 1));
 
     // Check that the object exists (it's not expired yet)
     let result = store.has(store_key.clone()).await?;
@@ -625,9 +623,7 @@ async fn test_expired_object() -> Result<(), Error> {
     );
 
     // Mock the now function to return a time after expiration
-    MockClock::set_time(Duration::from_secs(
-        base_timestamp as u64 + expiration_seconds as u64 + 1,
-    ));
+    MockClock::set_time(Duration::from_secs(base_timestamp + expiration_seconds + 1));
 
     // Object should now be considered expired
     let result = store.has(store_key).await?;
@@ -732,7 +728,7 @@ async fn test_null_object_metadata() -> Result<(), Error> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64;
+        .as_secs();
 
     let metadata = nativelink_store::gcs_client::types::GcsObject {
         name: object_path.path.clone(),
@@ -812,7 +808,7 @@ async fn create_test_store_with_retry(
 // Helper function to create a test GCS store with expiration
 async fn create_test_store_with_expiration(
     ops: Arc<MockGcsOperations>,
-    expiration_seconds: i64,
+    expiration_seconds: u64,
 ) -> Result<Arc<GcsStore<MockGcsOperations, fn() -> MockInstantWrapped>>, Error> {
     GcsStore::new_with_ops(
         &ExperimentalGcsSpec {
@@ -874,4 +870,149 @@ async fn check_health_failed_on_object_exists_error() -> Result<(), Error> {
         }
         other => panic!("expected HealthStatus::Failed, got {other:?}"),
     }
+}
+
+#[nativelink_test]
+async fn get_part_ignores_empty_stream_chunks() -> Result<(), Error> {
+    use futures::stream::{self, Stream, StreamExt};
+    use nativelink_store::gcs_client::types::GcsObject;
+    use nativelink_util::buf_channel::DropCloserReadHalf;
+
+    /// Wraps `MockGcsOperations`, re-chunking every content read so the
+    /// stream interleaves zero-length chunks the way an HTTP/2 peer that
+    /// emits empty DATA frames does.
+    #[derive(Debug)]
+    struct EmptyChunkOps(Arc<MockGcsOperations>);
+
+    impl GcsOperations for EmptyChunkOps {
+        async fn read_object_metadata(
+            &self,
+            object: &ObjectPath,
+        ) -> Result<Option<GcsObject>, Error> {
+            self.0.read_object_metadata(object).await
+        }
+
+        async fn read_object_content(
+            &self,
+            object_path: &ObjectPath,
+            start: u64,
+            end: Option<u64>,
+        ) -> Result<Box<dyn Stream<Item = Result<Bytes, Error>> + Send + Unpin>, Error> {
+            let mut inner = self.0.read_object_content(object_path, start, end).await?;
+            let mut content = BytesMut::new();
+            while let Some(chunk) = inner.next().await {
+                content.put(chunk?);
+            }
+            let content = content.freeze();
+            let mid = content.len() / 2;
+            Ok(Box::new(stream::iter(vec![
+                Ok(Bytes::new()),
+                Ok(content.slice(..mid)),
+                Ok(Bytes::new()),
+                Ok(content.slice(mid..)),
+                Ok(Bytes::new()),
+            ])))
+        }
+
+        async fn write_object(
+            &self,
+            object_path: &ObjectPath,
+            content: Vec<u8>,
+        ) -> Result<(), Error> {
+            self.0.write_object(object_path, content).await
+        }
+
+        async fn start_resumable_write(&self, object_path: &ObjectPath) -> Result<String, Error> {
+            self.0.start_resumable_write(object_path).await
+        }
+
+        async fn upload_chunk(
+            &self,
+            upload_url: &str,
+            object_path: &ObjectPath,
+            data: Bytes,
+            offset: u64,
+            end_offset: u64,
+            total_size: Option<u64>,
+        ) -> Result<(), Error> {
+            self.0
+                .upload_chunk(
+                    upload_url,
+                    object_path,
+                    data,
+                    offset,
+                    end_offset,
+                    total_size,
+                )
+                .await
+        }
+
+        async fn upload_from_reader(
+            &self,
+            object_path: &ObjectPath,
+            reader: &mut DropCloserReadHalf,
+            upload_id: &str,
+            max_size: u64,
+        ) -> Result<(), Error> {
+            self.0
+                .upload_from_reader(object_path, reader, upload_id, max_size)
+                .await
+        }
+
+        async fn object_exists(&self, object_path: &ObjectPath) -> Result<bool, Error> {
+            self.0.object_exists(object_path).await
+        }
+    }
+
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let digest = DigestInfo::try_new(VALID_HASH1, 11)?; // "hello world" length
+    let store_key: StoreKey = to_store_key(digest);
+    let object_path = create_object_path(&store_key);
+    mock_ops
+        .add_object(&object_path, b"hello world".to_vec())
+        .await;
+
+    let store = GcsStore::new_with_ops(
+        &ExperimentalGcsSpec {
+            bucket: BUCKET_NAME.to_string(),
+            common: CommonObjectSpec {
+                key_prefix: Some(KEY_PREFIX.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        Arc::new(EmptyChunkOps(mock_ops)),
+        MockInstantWrapped::default,
+    )?;
+
+    let (mut tx, mut rx) = make_buf_channel_pair();
+    let store_clone = store.clone();
+    let store_key_clone = store_key.clone();
+
+    let handle = nativelink_util::spawn!("get_part_task", async move {
+        store_clone
+            .get_part(store_key_clone, &mut tx, 0, None)
+            .await
+    });
+
+    let received_data =
+        match tokio::time::timeout(Duration::from_secs(5), rx.consume(Some(100))).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "Timeout waiting for data"
+                ));
+            }
+        };
+
+    assert_eq!(
+        received_data.as_ref(),
+        b"hello world",
+        "Received data should match original despite empty stream chunks"
+    );
+
+    handle.await??;
+
+    Ok(())
 }

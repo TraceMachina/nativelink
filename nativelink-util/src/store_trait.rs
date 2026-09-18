@@ -31,6 +31,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
+use opentelemetry::KeyValue;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -864,6 +865,13 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 
+    /// Starts reporting this store's size and entry count as `cache.size`
+    /// and `cache.entries` under `attrs`. Returns `false` for a store that
+    /// does not track its own size, which then reports nothing.
+    fn enable_cache_size_metrics(&self, _attrs: &[KeyValue]) -> bool {
+        false
+    }
+
     fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error>;
 }
 
@@ -938,6 +946,15 @@ pub trait SchedulerStore: Send + Sync + 'static {
     where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
         <K as SchedulerStoreDecodeTo>::DecodeOutput: Send;
+
+    /// Counts the keys in the store matching the given index prefix.
+    ///
+    /// Unlike `search_by_index_prefix` this never fetches the entries, so the
+    /// cost does not grow with the number of matches. Callers that only need
+    /// a total, such as reporting queue depth, should use this.
+    fn count_by_index_prefix<K>(&self, index: K) -> impl Future<Output = Result<u64, Error>> + Send
+    where
+        K: SchedulerIndexProvider + Send;
 
     /// Returns data for the provided key with the given version if
     /// `StoreKeyProvider::Versioned` is `TrueValue`.

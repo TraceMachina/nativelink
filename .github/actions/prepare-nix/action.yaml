@@ -11,6 +11,9 @@ runs:
       uses: ./.github/actions/free-disk
 
     - name: Install Nix
+      # Stay on the Determinate installer: the nix-quick-install switch (Nix
+      # 2.34.7) makes the nix2container multi-arch image publish fail with a
+      # layer digest mismatch. See the tagged image workflow.
       uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
         DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
       with:

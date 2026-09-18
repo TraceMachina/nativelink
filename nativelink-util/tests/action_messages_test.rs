@@ -66,7 +66,7 @@ fn make_missing_blob_error(digest: &DigestInfo) -> Error {
     )
     .with_context(ErrorContext::MissingDigest {
         hash: digest.packed_hash().to_string(),
-        size: digest.size_bytes() as i64,
+        size: digest.size_bytes().try_into().unwrap_or(i64::MAX),
     })
 }
 
@@ -179,6 +179,6 @@ fn to_execute_response_emits_default_status_when_no_error() {
     let resp = to_execute_response(action_result_with_error(None));
     let status = resp.status.expect("status must be set");
     assert_eq!(status.code, 0);
-    assert!(status.details.is_empty());
-    assert!(status.message.is_empty());
+    assert_eq!(status.details, vec![]);
+    assert_eq!(status.message, "");
 }

@@ -27,6 +27,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::record_matching_pass;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
@@ -57,10 +58,14 @@ use crate::worker_scheduler::WorkerScheduler;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
 
+/// Default timeout for a sent kill to be acknowledged in seconds.
+/// If this changes, remember to change the documentation in the config.
+const DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S: u64 = 60;
+
 /// Mark operations as completed with error if no client has updated them
 /// within this duration.
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_CLIENT_ACTION_TIMEOUT_S: u64 = 60;
+pub(crate) const DEFAULT_CLIENT_ACTION_TIMEOUT_S: u64 = 60;
 
 /// Default times a job can retry before failing.
 /// If this changes, remember to change the documentation in the config.
@@ -146,6 +151,10 @@ pub struct SimpleScheduler {
     /// is dropped the spawn will be cancelled as well.
     task_worker_matching_spawn: JoinHandleDropGuard<()>,
 
+    /// Background task that retires queued actions nobody is waiting on.
+    /// Dropped with the struct, like the matching task.
+    task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
+
     /// Every duration, do logging of worker matching
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
@@ -161,6 +170,10 @@ impl core::fmt::Debug for SimpleScheduler {
             .field(
                 "task_worker_matching_spawn",
                 &self.task_worker_matching_spawn,
+            )
+            .field(
+                "task_abandoned_sweep_spawn",
+                &self.task_abandoned_sweep_spawn,
             )
             .finish_non_exhaustive()
     }
@@ -275,6 +288,13 @@ impl SimpleScheduler {
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
     async fn do_try_match(&self, full_worker_logging: bool) -> Result<(), Error> {
+        let match_started = Instant::now();
+        let result = self.do_try_match_inner(full_worker_logging).await;
+        record_matching_pass(match_started.elapsed().as_secs_f64(), result.is_ok());
+        result
+    }
+
+    async fn do_try_match_inner(&self, full_worker_logging: bool) -> Result<(), Error> {
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
@@ -468,7 +488,7 @@ impl SimpleScheduler {
         NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
     >(
         spec: &SimpleSpec,
-        awaited_action_db: A,
+        mut awaited_action_db: A,
         on_matching_engine_run: F,
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
@@ -505,10 +525,19 @@ impl SimpleScheduler {
             max_job_retries = DEFAULT_MAX_JOB_RETRIES;
         }
 
+        let mut unacknowledged_kill_timeout_s = spec.unacknowledged_kill_timeout_s;
+        if unacknowledged_kill_timeout_s == 0 {
+            unacknowledged_kill_timeout_s = DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S;
+        }
+
         let worker_change_notify = Arc::new(Notify::new());
 
         // Create shared worker registry for single heartbeat per worker.
         let worker_registry = Arc::new(WorkerRegistry::new());
+
+        // The db decides on its own whether an executing action was abandoned,
+        // so it needs the same liveness view the state manager uses.
+        awaited_action_db.set_worker_registry(worker_registry.clone());
 
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
@@ -526,6 +555,7 @@ impl SimpleScheduler {
             spec.allocation_strategy,
             worker_change_notify.clone(),
             worker_timeout_s,
+            unacknowledged_kill_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
         );
@@ -537,6 +567,28 @@ impl SimpleScheduler {
             ..=0 => None,
             secs => Some(Duration::from_secs(secs.unsigned_abs())),
         };
+
+        // Retiring abandoned queued actions is its own task rather than part
+        // of the matching pass. The matching pass is exactly what stops
+        // running when they pile up, so making the cleanup depend on it
+        // means the cleanup stops precisely when it is needed. Sweeping on
+        // the client timeout bounds how long one can sit there to roughly
+        // twice that.
+        let sweep_interval = Duration::from_secs(client_action_timeout_s);
+        let sweep_state_manager = Arc::downgrade(&state_manager);
+        let task_abandoned_sweep_spawn =
+            spawn!("simple_scheduler_task_abandoned_sweep", async move {
+                loop {
+                    tokio::time::sleep(sweep_interval).await;
+                    // Weak, so the sweep stops when the scheduler goes away.
+                    let Some(state_manager) = sweep_state_manager.upgrade() else {
+                        return;
+                    };
+                    if let Err(err) = state_manager.sweep_abandoned_queued_actions().await {
+                        error!(?err, "Error while sweeping abandoned queued actions");
+                    }
+                }
+            });
 
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
@@ -691,6 +743,7 @@ impl SimpleScheduler {
                 platform_property_manager,
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
+                task_abandoned_sweep_spawn,
                 worker_match_logging_interval,
             }
         });
@@ -779,6 +832,10 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler
             .set_drain_worker(worker_id, is_draining)
             .await
+    }
+
+    async fn kill_revoked_operations(&self) -> Result<(), Error> {
+        self.worker_scheduler.kill_revoked_operations().await
     }
 }
 
