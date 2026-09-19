@@ -19,7 +19,7 @@ use std::process::Stdio;
 
 use futures::future::try_join_all;
 use nativelink_config::cas_server::WorkerProperty;
-use nativelink_error::{Error, ResultExt, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ConnectWorkerRequest;
 use tokio::process;
@@ -77,11 +77,15 @@ pub async fn make_connect_worker_request<S: BuildHasher>(
                         );
                     }
                     if !process_output.status.success() {
-                        return Err(make_err!(
-                            process_output.status.code().unwrap().into(),
-                            "{}",
-                            err_fn()
-                        ));
+                        let Some(exit_code) = process_output.status.code() else {
+                            return Err(make_err!(
+                                Code::Internal,
+                                "{}: {}",
+                                err_fn(),
+                                process_output.status
+                            ));
+                        };
+                        return Err(make_err!(exit_code.into(), "{}", err_fn()));
                     }
                     let reader = BufReader::new(Cursor::new(process_output.stdout));
 
