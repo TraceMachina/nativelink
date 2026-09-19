@@ -96,6 +96,25 @@ async fn make_connect_worker_request_with_bad_exit_code() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn make_connect_worker_request_with_signal() -> Result<(), Error> {
+    let mut worker_properties: HashMap<String, WorkerProperty> = HashMap::new();
+    worker_properties.insert(
+        "test".into(),
+        WorkerProperty::QueryCmd("bash -c \"kill -TERM $$\"".to_string()),
+    );
+
+    let mut extra_envs = HashMap::new();
+    extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
+
+    let res = make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1)
+        .await
+        .unwrap_err();
+    assert_eq!(res.code, Code::Internal);
+    assert!(res.messages[0].contains("signal: 15"));
+    Ok(())
+}
+
+#[nativelink_test]
 async fn make_connect_worker_request_with_stderr() -> Result<(), Error> {
     let mut worker_properties: HashMap<String, WorkerProperty> = HashMap::new();
     worker_properties.insert(
