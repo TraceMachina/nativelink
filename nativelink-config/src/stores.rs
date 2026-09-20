@@ -990,6 +990,11 @@ pub struct FastSlowSpec {
 
     /// How to handle the slow store. This can be useful if creating a diode
     /// and you wish to have an upstream read only store.
+    /// With `read_only` or `get`, existence reports readable data in either tier.
+    /// With a writable slow tier, existence instead demands durable presence
+    /// so clients refill missing slow-tier data. A read-only view of a writable
+    /// mirror must therefore reference its actual tiers, not wrap the mirror's
+    /// durable-only existence query as its fast store.
     #[serde(default)]
     pub slow_direction: StoreDirection,
 

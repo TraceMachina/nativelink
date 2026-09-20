@@ -97,6 +97,49 @@ async fn check_data(
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
 #[nativelink_test]
+async fn readonly_slow_existence_matches_both_readable_tiers() -> Result<(), Error> {
+    for slow_direction in [StoreDirection::ReadOnly, StoreDirection::Get] {
+        for fast_direction in [StoreDirection::Both, StoreDirection::ReadOnly] {
+            let (view, fast, slow) = make_stores_direction(fast_direction, slow_direction);
+            let hot = DigestInfo::try_new(VALID_HASH, 3)?;
+            let cold = DigestInfo::try_new(VALID_HASH, 4)?;
+            let absent = DigestInfo::try_new(VALID_HASH, 5)?;
+            fast.update_oneshot(hot, Bytes::from_static(b"hot")).await?;
+            slow.update_oneshot(cold, Bytes::from_static(b"cold"))
+                .await?;
+            // Interleaved duplicates exercise positional correspondence as well as
+            // the hot-only case. Uploads cannot refill a read-only upstream.
+            assert_eq!(
+                view.has_many(&[absent.into(), hot.into(), cold.into(), hot.into()])
+                    .await?,
+                vec![None, Some(3), Some(4), Some(3)]
+            );
+            assert_eq!(view.get_part_unchunked(hot, 0, None).await?, b"hot"[..]);
+            assert_eq!(view.get_part_unchunked(cold, 0, None).await?, b"cold"[..]);
+            assert_eq!(slow.has(hot).await?, None);
+            view.update_oneshot(absent, Bytes::from_static(b"local"))
+                .await?;
+            assert_eq!(slow.has(absent).await?, None);
+            assert_eq!(
+                fast.has(absent).await?,
+                if fast_direction == StoreDirection::ReadOnly {
+                    None
+                } else {
+                    Some(5)
+                }
+            );
+            assert_eq!(view.has(absent).await?, fast.has(absent).await?);
+        }
+    }
+    // Writable mirrors must still demand refilling their durable tier.
+    let (writer, fast, _) = make_stores();
+    let hot = DigestInfo::try_new(VALID_HASH, 3)?;
+    fast.update_oneshot(hot, Bytes::from_static(b"hot")).await?;
+    assert_eq!(writer.has(hot).await?, None);
+    Ok(())
+}
+
+#[nativelink_test]
 async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Result<(), Error> {
     let filesystem_spec = FilesystemSpec {
         content_path: make_temp_path("content_path"),

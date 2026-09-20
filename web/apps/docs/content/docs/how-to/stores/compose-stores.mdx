@@ -114,6 +114,18 @@ what each half participates in: `update` means writes land here but reads
 never consult it, which only makes sense on the fast half; `get`, `read_only`
 and the default `both` do what they sound like.
 
+On `main` (not yet released), setting `slow_direction` to `read_only` or `get`
+also changes existence checks: a blob in either tier counts as present. A blob
+found in `fast` needs no lookup in `slow`. This lets a cache reuse local files
+while consuming a shared cache that it cannot update. With a writable slow
+tier, existence checks still require the blob in `slow`, so clients upload
+anything that needs to be stored there. To share tiers between writable and
+read-only views, point both views at the individual stores with `ref_store`.
+Nesting a writable pair inside the read-only view keeps the inner pair's
+durability check.
+
+<SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
+
 `bypass_dedup_threshold_bytes` makes reads at or above a given size skip the
 fast tier entirely and stream straight from `slow`. It defaults to `0`, which
 disables the bypass; 256 MiB is a reasonable starting point if huge artifacts

@@ -479,6 +479,30 @@ impl StoreDriver for FastSlowStore {
             return self.fast_store.has_with_results(key, results).await;
         }
 
+        // A read-only upstream cannot be refilled by uploads. In this shape,
+        // existence means read availability, including private/hot-only data.
+        // Query only fast misses upstream so locally satisfied requests do not
+        // acquire an unnecessary dependency on the upstream's availability.
+        if matches!(
+            self.slow_direction,
+            StoreDirection::ReadOnly | StoreDirection::Get
+        ) {
+            self.fast_store.has_with_results(key, results).await?;
+            let missing: Vec<_> = key
+                .iter()
+                .zip(results.iter())
+                .filter(|(_, result)| result.is_none())
+                .map(|(key, _)| key.borrow())
+                .collect();
+            if !missing.is_empty() {
+                let mut upstream = self.slow_store.has_many(&missing).await?.into_iter();
+                for result in results.iter_mut().filter(|result| result.is_none()) {
+                    *result = upstream.next().expect("one result per upstream key");
+                }
+            }
+            return Ok(());
+        }
+
         // Check with the slow store first.
         self.slow_store.has_with_results(key, results).await?;
 
@@ -502,7 +526,7 @@ impl StoreDriver for FastSlowStore {
             results[i] = size;
         }
 
-        // NOTE: We intentionally *NEVER* check the fast store, this is to
+        // For a writable upstream we intentionally do not check the fast store, to
         // ensure that we re-upload data to the slow store if it only exists
         // in the fast store.  This does not affect workers as they do not
         // check existence through `has` and instead go direct to loading the
