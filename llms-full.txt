@@ -11280,6 +11280,15 @@ restart.
 forward selected headers from the incoming request. Use it to front an existing
 cache.
 
+Set `rpc_timeout_s` to bound each upstream request attempt; `0` disables it.
+On `main` (not yet released), it also covers ordinary requests and opening a
+streaming read, including the wait for a connection and the first response.
+This applies to both ordinary and compressed reads. Later chunks in an open
+stream have no timeout from this setting. Retries can make the total operation
+take longer than one timeout interval.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="GrpcSpec" />
+
 `noop` takes nothing at all and discards everything written to it, reporting
 every read as a miss. It is how you deliberately turn a half of something off.
 

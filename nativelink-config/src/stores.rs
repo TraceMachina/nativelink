@@ -1521,6 +1521,10 @@ pub struct GrpcSpec {
 
     /// Maximum time (seconds) allowed for a single RPC request (e.g. a
     /// `ByteStream.Write` call) before it is cancelled.
+    /// Includes waiting for an upstream connection. For `ByteStream.Read` this
+    /// covers opening the stream and receiving its first response, including
+    /// identity and compressed `StoreDriver` reads. It does not bound later stream
+    /// progress; transport keepalive detects broken connections, not stalled peers.
     ///
     /// A value of 0 (the default) disables the per-RPC timeout. Dead
     /// connections are still detected by the HTTP/2 and TCP keepalive
