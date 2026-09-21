@@ -264,12 +264,25 @@ fn resp3_data_parse(
                         };
                         match map_key.as_str() {
                             "extra_attributes" => {
-                                let Value::Map(extra_attributes_values) = raw_map_value else {
-                                    return Err(RedisError::from((
-                                        ErrorKind::Parse,
-                                        "Expected Map for extra_attributes",
-                                        format!("{raw_map_value:?}"),
-                                    )));
+                                let extra_attributes_values = match raw_map_value {
+                                    Value::Map(extra_attributes_values) => extra_attributes_values,
+                                    // A document that expired or was deleted between
+                                    // the search phase and the load phase comes back
+                                    // as a row with Nil attributes. Under load this is
+                                    // routine — completed awaited-action records expire
+                                    // constantly — so drop the row instead of failing
+                                    // the whole aggregate. Failing here surfaced to
+                                    // clients as `INVALID_ARGUMENT`, which Bazel treats
+                                    // as permanent, so a single expiry race killed the
+                                    // build.
+                                    Value::Nil => continue,
+                                    other => {
+                                        return Err(RedisError::from((
+                                            ErrorKind::Parse,
+                                            "Expected Map for extra_attributes",
+                                            format!("{other:?}"),
+                                        )));
+                                    }
                                 };
                                 let mut output_array = vec![];
                                 for (e_key, e_value) in extra_attributes_values {

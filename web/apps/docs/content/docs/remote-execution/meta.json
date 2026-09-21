@@ -1,0 +1,13 @@
+{
+  "pages": [
+    "from-cache-to-execution",
+    "first-remote-action",
+    "platform-properties",
+    "toolchains-and-hermeticity",
+    "containers-and-images",
+    "persistent-workers",
+    "local-testing",
+    "examples-and-templates"
+  ],
+  "title": "Remote execution"
+}

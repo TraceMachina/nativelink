@@ -1,0 +1,225 @@
+---
+title: "From One Robot to 1,000 with rules_omniverse"
+tags: ["announcements", "robotics", "simulation", "bazel"]
+slug: rules-omniverse-0-3-0
+pubDate: 2026-08-27
+readTime: 8 minutes
+---
+
+Today we are releasing our first official Bazel ruleset for physical AI. It is
+built to carry robotics work from research to production.
+
+[`rules_omniverse` 0.3.0](https://github.com/TraceMachina/rules_omniverse/tree/v0.3.0)
+has one goal: help robotics and software teams work together with the same
+tools, lower costs, and move faster. This is one of many steps Trace Machina is
+taking to help the world move from research to production.
+
+One successful rollout proves that a policy can work. Production asks a harder
+question. Can we make it work again, explain why it worked, and run it 1,000
+times without rebuilding the infrastructure?
+
+The software world has useful answers. Put the work in a directed acyclic graph
+(DAG). Declare every input and output. Make execution reproducible. Test the
+contract before spending scarce hardware. Never pay twice for identical work.
+
+`rules_omniverse` brings those habits to robotics, the physical world, and the
+broader NVIDIA Omniverse ecosystem.
+
+NativeLink makes this model especially powerful at remote GPU scale, but it is
+not required. The rules use Bazel's execution model. Teams can start locally,
+use another compatible remote execution service, or introduce NativeLink as
+their scheduling and caching needs grow.
+
+In our work with leading autonomy teams, we see the same transition again and
+again. Research proves that a policy can complete one task in one simulated
+world. Production runs that evaluation continuously across hundreds of worlds.
+It must preserve the exact scene, policy, toolchain, runtime, and hardware that
+produced every result.
+
+That is the problem `rules_omniverse` takes on.
+
+## The physical world needs a build graph
+
+A DAG is a map of what depends on what. If a source file changes, a good build
+system rebuilds its descendants. It does not rebuild every piece of software in
+the company. If nothing relevant changed, it reuses the result. If something
+fails, the graph identifies the failed action.
+
+Physical AI needs the same discipline. Its graph contains more than source
+code. It includes:
+
+- OpenUSD scenes
+- Sensor-derived assets
+- Omniverse Kit extensions
+- Simulation configuration
+- Policy versions
+- Container images
+- SDK runtimes
+- GPU requirements
+- Rollout outputs
+- Validation reports
+
+Without an explicit graph, those dependencies hide in shell scripts, mutable
+machines, shared directories, and people's memories. A successful rollout is
+hard to reproduce. A scene changes while an old result still looks current.
+Moving from a workstation to a GPU cluster becomes an infrastructure project.
+
+With Bazel and `rules_omniverse`, each stage becomes a declared action. The
+graph records what the action consumes, what it produces, which executable runs
+it, and what kind of worker may execute it.
+
+That is more than a faster script. It records exactly what happened.
+
+## Scale simulation and policy inference independently
+
+Putting a simulator and a policy model in one large process is convenient for
+rollout number one. It is wasteful by rollout number 1,000. Simulation and
+policy inference have different compute profiles, bottlenecks, and scaling
+curves.
+
+A simulation worker might use an RTX 6000-class GPU to render observations,
+advance physics, and capture task state. A policy replica keeps a model loaded,
+evaluates those observations, and returns a useful sequence of actions. One
+request can return the next action chunk. The simulator does not need a new
+inference request for every step.
+
+The system can use two specialized worker pools:
+
+- **Simulation workers** own scene state, rendering, physics, and observation
+  capture.
+- **Policy workers** own model memory and inference throughput.
+
+One policy replica can serve many simulators. Hundreds of simulators can share
+a smaller policy pool when latency and throughput allow it. Spare policy
+capacity is a reason to add simulators. A growing inference queue is a reason
+to add policy replicas.
+
+These are separate knobs because they control separate kinds of work.
+
+`rules_omniverse` does not prescribe an autoscaler or a long-running rollout
+control plane. It provides the lower-level action and artifact contracts that
+make such a system dependable. Those contracts cover declared simulation
+inputs, explicit runtime identity, GPU placement, container boundaries, and
+durable outputs. The orchestrator can change without changing what a valid
+simulation action means.
+
+Moving from one rollout to 1,000 should be a capacity decision, not an
+infrastructure rewrite.
+
+## What is new in 0.3.0
+
+Version 0.3.0 expands `rules_omniverse` from Kit packaging and metadata into a
+broader execution layer for physical AI:
+
+- `omni_gpu_action` declares a host GPU workload with explicit inputs, outputs,
+  tools, arguments, GPU count, GPU model, and execution properties.
+- `omni_container_gpu_action` does the same for a caller-selected OCI image. It
+  mounts only declared artifacts and keeps runtime selection in the user's
+  control.
+- `omni_gpu_platform` describes GPU capabilities and scheduler properties
+  without hard-coding one GPU generation.
+- OpenUSD rules cover validation, profiling, conversion, and optimization
+  through explicit adapters. Typed metadata connects each stage to the next.
+- Worker-native scripts and configurable packaging tools make the same targets
+  practical across local and remote execution environments.
+- Community trusted builders produce provenance attestations for the release
+  archive and Bazel Central Registry metadata.
+
+The release also separates two questions that teams often mix together.
+
+1. **Is the rule correct?** Hermetic fixtures test platform constraints,
+   arguments, inputs, outputs, providers, container behavior, and Bzlmod
+   consumption. They do not reserve a GPU or require a proprietary SDK.
+2. **Does the real hardware and SDK stack work?** A separate NativeLink
+   reference bench covers H200 worker matching, NVIDIA runtime initialization,
+   remote output retrieval, and action cache replay.
+
+An RTX 6000, H200, A100, L40S, or another suitable NVIDIA GPU remains a
+deployment choice. It is not a ruleset assumption.
+
+Reproducibility starts with the build graph. It should extend to the way the
+rules themselves are released. Version 0.3.0 does both.
+
+## A continuously aligned factory
+
+This work takes Trace Machina beyond two areas where our infrastructure is
+already useful: transportation robotics and agents that generate large volumes
+of code. Both create enormous graphs of expensive, parallel work. Factories add
+a new version of the same systems problem. The graph must stay connected to a
+changing physical environment.
+
+In Europe, our recent work with `rules_omniverse` and NativeLink includes
+simulated factories updated through continuous neural reconstruction. New
+observations of a facility become a new version of its digital state. The graph
+then has a direct job. It marks affected reconstruction, OpenUSD processing,
+validation, packaging, and simulation work as stale. NativeLink dispatches
+those actions to compatible workers. Unaffected content and completed actions
+remain reusable.
+
+This is more than rebuilding a digital twin on a schedule. The simulation stays
+aligned with evidence from the physical site. Every update carries a traceable
+chain of inputs and outputs. A team can ask which observations changed a scene,
+which reconstruction produced an asset, which runtime validated it, and which
+rollouts consumed it.
+
+The pattern reaches far beyond one factory. Warehouses, industrial inspection,
+manufacturing cells, autonomous fleets, synthetic data pipelines, and
+hardware-in-the-loop systems all need a controlled way to turn physical change
+into new computation.
+
+## Why NativeLink is the reference backend
+
+NativeLink is optional by design. `rules_omniverse` uses standard Bazel
+concepts, so teams get declared DAGs, reproducible actions, OpenUSD validation,
+packaging, and portable tests before introducing remote execution.
+
+NativeLink becomes valuable when the graph must run across specialized
+infrastructure. Its Remote Execution API scheduler can match actions to worker
+properties such as GPU model, GPU count, container capability, and a truthful
+runtime fingerprint. Its content-addressable store and action cache share
+immutable inputs and reuse completed work. Its worker configuration gives
+operators control over SDK environments, timeouts, isolation, and the
+properties that separate incompatible runtimes.
+
+In a mixed simulator and policy system, graphics-heavy simulation actions do
+not need to compete with model-serving workloads for the same machines. In a
+continuously reconstructed factory, new scene work can start as observations
+arrive while unchanged dependencies stay reusable.
+
+The same Bazel target can move from a local proof to remote GPU execution
+without replacing its dependency model.
+
+## From research result to production system
+
+Research velocity and production discipline are often treated as opposing
+forces. They should reinforce each other. A researcher should be able to add a
+scene, policy, or evaluation without filing an infrastructure request. A
+production engineer should be able to reproduce that result without
+reconstructing the researcher's workstation.
+
+In practical terms, `rules_omniverse` lets a team:
+
+- Define simulation, asset, packaging, and GPU work as reviewable targets.
+- Catch contract failures without consuming scarce hardware.
+- Route real actions to workers that truthfully advertise required
+  capabilities.
+- Reuse identical work and invalidate results when meaningful inputs change.
+- Scale simulation and policy inference around their independent bottlenecks.
+- Preserve the same graph as a workflow grows from one rollout to 1,000.
+
+`rules_omniverse` brings proven lessons from software into robotics and the
+industries that build the physical world. DAGs make dependencies explicit.
+Reproducibility turns a promising result into evidence. Bazel gives the work a
+portable execution contract. NativeLink adds specialized scheduling,
+content-addressable storage, and shared caching when teams need them.
+
+Our work with autonomy teams has made the wider need clear. Transportation,
+code-generating agents, factories, and other physical systems all need a
+reliable path from a changing idea or observation to tested production work.
+
+One rollout can be an experiment. One thousand rollouts are a system. The graph
+should survive that change.
+
+Explore [`rules_omniverse` 0.3.0 on
+GitHub](https://github.com/TraceMachina/rules_omniverse/tree/v0.3.0) or add it to
+your project through the [Bazel Central Registry](https://registry.bazel.build/modules/rules_omniverse).

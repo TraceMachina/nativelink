@@ -888,19 +888,13 @@ impl SchedulerSubscriptionManager for ExperimentalMongoSubscriptionManager {
 impl SchedulerStore for ExperimentalMongoStore {
     type SubscriptionManager = ExperimentalMongoSubscriptionManager;
 
-    async fn subscription_manager(
+    fn subscription_manager(
         &self,
-    ) -> Result<Arc<ExperimentalMongoSubscriptionManager>, Error> {
+    ) -> impl Future<Output = Result<Arc<ExperimentalMongoSubscriptionManager>, Error>> {
         let mut subscription_manager = self.subscription_manager.lock();
-        if let Some(subscription_manager) = &*subscription_manager {
+        std::future::ready(if let Some(subscription_manager) = &*subscription_manager {
             Ok(subscription_manager.clone())
-        } else {
-            if !self.enable_change_streams {
-                return Err(make_input_err!(
-                    "ExperimentalMongoStore must have change streams enabled for scheduler subscriptions"
-                ));
-            }
-
+        } else if self.enable_change_streams {
             let sub = Arc::new(ExperimentalMongoSubscriptionManager::new(
                 self.database.clone(),
                 self.scheduler_collection.name().to_string(),
@@ -908,7 +902,11 @@ impl SchedulerStore for ExperimentalMongoStore {
             ));
             *subscription_manager = Some(sub.clone());
             Ok(sub)
-        }
+        } else {
+            Err(make_input_err!(
+                "ExperimentalMongoStore must have change streams enabled for scheduler subscriptions"
+            ))
+        })
     }
 
     async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
@@ -1115,6 +1113,29 @@ impl SchedulerStore for ExperimentalMongoStore {
                 )
             })
         }))
+    }
+
+    async fn count_by_index_prefix<K>(&self, index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        let index_value = index.index_value();
+        let filter = doc! {
+            K::INDEX_NAME: {
+                "$regex": format!("^{}", regex::escape(index_value.as_ref())),
+            }
+        };
+        // Counting is a read-only observer, so unlike search_by_index_prefix it
+        // does not create the index.
+        self.scheduler_collection
+            .count_documents(filter)
+            .await
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to count in count_by_index_prefix: {e}"
+                )
+            })
     }
 
     async fn get_and_decode<K>(

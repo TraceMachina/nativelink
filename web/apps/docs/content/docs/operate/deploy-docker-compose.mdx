@@ -1,0 +1,250 @@
+---
+title: Deploy with Docker Compose
+description: "Bring up a complete CAS, scheduler and worker on one host with the compose files in the repository: what each service is, which ports it publishes, and the four things that make this a development setup rather than a production one."
+---
+
+{/* archetype: how-to (deployment), see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you want the whole system (cache *and* remote execution)
+running on one machine, either to try it or to give a small team something
+shared. **What you'll have at the end:** three containers serving a real CAS,
+scheduler and worker, a build pointed at them, and a clear picture of what
+separates this from production. **Time:** 20 minutes, most of it spent
+compiling.
+
+<Prerequisites>
+  A config you wrote (see [Your first full config](/configuration/your-first-full-config)), and a host with Docker on it.
+</Prerequisites>
+
+Of the deployment shapes NativeLink ships, Compose is the one that runs
+end-to-end out of the box. The Kubernetes building blocks need image tags and
+a Gateway you supply; the Compose files need nothing but Docker.
+
+## The configuration [#the-configuration]
+
+```sh
+git clone https://github.com/TraceMachina/nativelink
+cd nativelink/deployment-examples/docker-compose
+docker compose up -d
+```
+
+The first run builds the image from source with Bazel, which takes a while;
+see [the build is not fast](#the-build-is-not-fast) below.
+
+Three services come up:
+
+| Service | Config file | Role | Published ports |
+| --- | --- | --- | --- |
+| `nativelink_local_cas` | `local-storage-cas.json5` | CAS, Action Cache, ByteStream | `50051` (plain), `50071` (TLS), and a `127.0.0.1:50061` mapping that nothing in the CAS config listens on |
+| `nativelink_scheduler` | `scheduler.json5` | Execution, Capabilities, AC frontend; worker API | `50052` |
+| `nativelink_executor` | `worker.json5` | Runs actions. `privileged: true` | none |
+
+<Mermaid>
+{`flowchart LR
+    BZ["Bazel / Buck2"]
+    CAS["nativelink_local_cas<br/>50051 plain · 50071 TLS"]
+    SCH["nativelink_scheduler<br/>50052 frontend · 50061 worker API"]
+    EX["nativelink_executor<br/>privileged, no published port"]
+    D[("~/.cache/nativelink<br/>on the host")]
+
+    BZ -->|"--remote_cache"| CAS
+    BZ -->|"--remote_executor"| SCH
+    EX -->|"registers on 50061"| SCH
+    EX -->|"blobs on 50051"| CAS
+    SCH -->|"AC and CAS on 50051"| CAS
+    CAS --- D
+    EX --- D`}
+</Mermaid>
+
+They talk to each other by service name. The worker config reaches the
+scheduler at `grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061` and the CAS at
+`grpc://${CAS_ENDPOINT:-127.0.0.1}:50051`; Compose sets both variables, and
+NativeLink expands them at config-parse time; see
+[CLI and environment](/reference/cli-and-env).
+
+### Point a build at it [#point-a-build-at-it]
+
+```sh
+bazel build //... \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50052 \
+  --remote_default_exec_properties=cpu_count=2
+```
+
+Cache and executor are **different endpoints**. That is not an accident of the
+example: the CAS process and the scheduler process are genuinely separate
+here, exactly as they are in the
+[production shape](/operate/production-config).
+
+`cpu_count` is what the shipped README passes. The scheduler declares it as a
+`minimum` platform property and the worker advertises it from `nproc`, so an
+action is only matched to a worker with at least that many cores; ask for more
+than the worker has and the action queues silently forever. Omitting the
+property is fine: an action with no platform properties matches any worker. See
+[platform properties](/remote-execution/platform-properties).
+
+## What to change [#what-to-change]
+
+Only the fields carrying a decision. Everything else in the shipped files is
+already correct for a single host.
+
+| Field | File | Why you'd change it |
+| --- | --- | --- |
+| `eviction_policy.max_bytes` | `local-storage-cas.json5`, `worker.json5` | Ships at 10 GB for the CAS and 500 MB for the AC, plus a separate 10 GB fast tier for the worker, all under the same host directory. Size them to your disk. The worker's tier can reach roughly **twice** its `max_bytes`, because the executable-variant directory the worker creates next to `content_path` is not counted against it. See [Runbooks](/operate/runbooks#the-disk-fills-up). |
+| `NATIVELINK_DIR` | environment | Where the CAS and worker caches land on the host. Defaults to `~/.cache/nativelink`. |
+| `RUST_LOG` | environment | Ships at `warn`, which hides the scheduler's `INFO`-level matching diagnostics. Set `info` the first time something does not run. |
+| `platform_properties` | `worker.json5` | The worker's advertised capabilities. Whatever you add here must also appear in the scheduler's `supported_platform_properties`, or the scheduler rejects the worker's registration with `Unknown platform property`. |
+| `ADDITIONAL_SETUP_WORKER_CMD` | build arg | A bash string run inside the final image. This is the hook for installing whatever toolchain your actions need. |
+| `experimental_chunking` | `local-storage-cas.json5` | Enabled and pointed at a separate `CHUNK_INDEX_STORE`, for Bazel's `--experimental_remote_cache_chunking`. Remove both if you are not using that flag. |
+
+<Callout type="info" title="The chunk index must not be the CAS">
+  `CHUNK_INDEX_STORE` holds blob-to-chunk layouts, not blobs. It must be a
+  separate store that does not verify digests; pointing `index_store` at
+  `CAS_MAIN_STORE` produces verification failures on every split.
+</Callout>
+
+## The multi-worker variant [#the-multi-worker-variant]
+
+`docker-compose-multi-worker.yml` runs one CAS, one scheduler and three
+workers sharing a `cas-data` volume:
+
+```sh
+docker compose -f docker-compose-multi-worker.yml build
+docker compose -f docker-compose-multi-worker.yml up -d
+```
+
+The shared volume is the entire point, and the README says so more loudly than
+anything else in it: **all workers must share the same CAS storage path.**
+When they do not, actions fail with
+
+```text
+Object <digest> not found in either fast or slow store. If using multiple
+workers, ensure all workers share the same CAS storage path.
+```
+
+which the worker reports to the scheduler as `FAILED_PRECONDITION` with that
+message intact, so that is the text your developers will see.
+[Troubleshooting](/operate/troubleshooting#actions-fail-with-a-cas-miss)
+has the full path.
+
+<Callout type="warn" title="Three defects in the multi-worker files">
+
+  The first two are cosmetic if you know about them and confusing if you do not.
+
+  The `healthcheck` on `cas-server` and `scheduler` curls `/status` on ports
+  50051 and 50052. **Neither of those listeners has the `health` service
+  enabled**; only the 50061 listener does. Both healthchecks therefore fail
+  permanently. Nothing depends on them (`depends_on` uses
+  `condition: service_started`), so the stack works anyway, but
+  `docker compose ps` will show the containers as unhealthy forever.
+
+  It publishes `50061:50061` on **all interfaces**, unlike
+  `docker-compose.yml`, which does not publish the scheduler's 50061 at all.
+  Port 50061 is the worker API. Read
+  [Security hardening](/operate/security-hardening#the-worker-api-has-no-authentication)
+  before running this on anything with a routable address.
+
+  The shipped `worker-shared-cas.json5` keeps the worker's fast tier under
+  `/root/.cache/nativelink/`, not under the `/data/cas` mount, so the three
+  workers do not actually share the volume the compose file mounts for them.
+  Point `content_path` and `temp_path` at `/data/cas/...` if you want the
+  sharing the README describes.
+
+</Callout>
+
+## What makes this a development setup [#what-makes-this-a-development-setup]
+
+Four things, all of them deliberate in the example and all of them
+disqualifying for production.
+
+### The executor runs privileged [#the-executor-runs-privileged]
+
+```yaml
+nativelink_executor:
+  privileged: true # So we can do use_namespaces
+```
+
+`worker.json5` sets `use_namespaces: true` and `use_mount_namespace: true`,
+which need `CLONE_NEWUSER`/`CLONE_NEWNS`, hence the flag. Note what this buys
+and what it does not: namespaces here are a hermeticity and process-reaping
+mechanism, not a security boundary. Actions still run as the worker's own uid
+through an identity uid map, still see the host filesystem, and still have
+network access to every NativeLink port. A privileged container running
+arbitrary build actions is a lateral-movement primitive.
+[Security hardening](/operate/security-hardening#the-sandbox-is-not-a-security-boundary)
+covers what the sandbox actually does.
+
+### The TLS certificates are expired examples [#the-tls-certificates-are-expired-examples]
+
+The 50071 listener loads
+`example-do-not-use-in-prod-rootca.crt` and `example-do-not-use-in-prod-key.pem`
+from the same directory. They are committed to the repository, self-signed,
+`CN=localhost`, and **expired in October 2024**. Every client must pass
+`--insecure` or equivalent, which is what the repository's own TLS integration
+test does. No certificate-generation script exists anywhere in the tree; you
+supply real material yourself.
+
+### Nothing is authenticated [#there-is-no-authentication-on-anything]
+
+Not a Compose limitation: open-source NativeLink has no inbound
+authentication on any service, in any deployment. `docker-compose.yml` does not
+publish the scheduler's port 50061 at all; the worker reaches it over the
+Compose network by service name. That is the only thing standing between an
+attacker on your network and the ability to register as a worker. Keep it
+that way.
+
+### The build is not fast [#the-build-is-not-fast]
+
+The `Dockerfile` compiles NativeLink from the repository root with Bazel, in a
+three-stage build, and the final image is a fresh Ubuntu with the binary copied
+in and `curl` installed. The Ubuntu base is digest-pinned and the bazelisk
+download is checksum-verified, so the build is reproducible, but it is a full
+from-source build every time the layer cache misses. For repeated use, build once and push the image to a
+registry your hosts can pull from.
+
+<SourceLink file="deployment-examples/docker-compose/docker-compose.yml" symbol="docker-compose.yml" />
+<SourceLink file="deployment-examples/docker-compose/local-storage-cas.json5" symbol="CAS config" />
+<SourceLink file="deployment-examples/docker-compose/worker.json5" symbol="worker config" />
+
+<VerifyBlock>
+
+  `docker compose ps` shows all three services `Up`.
+
+  A `bazel build` with the two flags above completes. Run it twice; the second
+  run reports a high `remote cache hit` count in the summary line.
+
+  `docker compose logs nativelink_executor` contains
+  `Worker registered with scheduler`. If it instead repeats
+  `Could not connect to endpoint grpc://nativelink_scheduler:50061` roughly
+  twice a second, the worker never reached port 50061; reconnect is a hard-coded
+  0.5-second retry with no backoff, so that cadence is the signature.
+
+  `ls ~/.cache/nativelink` shows `content_path-cas` growing as you build.
+
+</VerifyBlock>
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Build hangs with no action ever starting | The scheduler has no worker matching your platform properties, and a value mismatch queues silently | Set `RUST_LOG=info` and look for `No workers matched!`; see [Troubleshooting](/operate/troubleshooting#actions-queue-forever-and-workers-sit-idle) |
+| `Unknown platform property` at once | The property *name* is not in the scheduler's `supported_platform_properties` | Add it to `scheduler.json5` and restart the scheduler |
+| Actions fail with `FAILED_PRECONDITION` about fast or slow store | Workers do not share CAS storage | Use the shared volume in the multi-worker file |
+| Executor container exits at startup | `use_namespaces: true` without `privileged: true` | Keep the flag, or set both namespace options to `false` |
+| TLS client refuses port 50071 | The committed certificate expired in 2024 | Use port 50051, or supply your own certificate and key |
+| `docker compose ps` shows containers unhealthy but everything works | The multi-worker healthchecks probe a port with no health service | Ignore it, or move the healthcheck to 50061 |
+| Disk fills, then every write errors | The 10 GB eviction policy is smaller than what the store actually consumes | [Runbooks](/operate/runbooks#the-disk-fills-up) |
+
+## What's next [#whats-next]
+
+<NextStep href="/operate/production-config" title="Production configuration">
+  The same three processes, configured for people who depend on them.
+</NextStep>
+
+<NextStep href="/operate/deploy-bare-metal" title="Move it to real hosts" kind="aside">
+  One binary per role under systemd, with a load balancer in front.
+</NextStep>
+
+<NextStep href="/operate/security-hardening" title="Before anyone else can reach it" kind="aside">
+  Nothing is authenticated. Plan the network accordingly.
+</NextStep>

@@ -209,12 +209,12 @@ where
         Ok(awaited_action)
     }
 
-    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+    fn borrow(&self) -> impl Future<Output = Result<AwaitedAction, Error>> + Send {
         let mut awaited_action = self.awaited_action_rx.borrow().clone();
         if let Some(client_info) = self.client_info.as_ref() {
             awaited_action.set_client_operation_id(client_info.client_operation_id.clone());
         }
-        Ok(awaited_action)
+        std::future::ready(Ok(awaited_action))
     }
 }
 
@@ -414,15 +414,31 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     }
                     debug!(%operation_id, "Clearing operation from state manager");
                     let awaited_action = tx.borrow().clone();
+                    // A removed operation has no later stage transition to
+                    // decrement its active count. This also covers clients
+                    // that disappear while an action is still executing.
+                    let stage_attrs = vec![opentelemetry::KeyValue::new(
+                        nativelink_util::metrics::EXECUTION_STAGE,
+                        ExecutionStage::from(&awaited_action.state().stage),
+                    )];
+                    EXECUTION_METRICS
+                        .execution_active_count
+                        .add(-1, &stage_attrs);
                     // Cleanup action_info_hash_key_to_awaited_action if it was marked cached.
                     match &awaited_action.action_info().unique_qualifier {
                         ActionUniqueQualifier::Cacheable(action_key) => {
-                            let maybe_awaited_action = self
+                            // Once this operation finished, a newer operation for the
+                            // same action key may have claimed the entry; removing it
+                            // unconditionally here would orphan that operation's
+                            // deduplication entry.
+                            let owned_by_this_operation = self
                                 .action_info_hash_key_to_awaited_action
-                                .remove(action_key);
-                            if !awaited_action.state().stage.is_finished()
-                                && maybe_awaited_action.is_none()
-                            {
+                                .get(action_key)
+                                .is_some_and(|id| id == &operation_id);
+                            if owned_by_this_operation {
+                                self.action_info_hash_key_to_awaited_action
+                                    .remove(action_key);
+                            } else if !awaited_action.state().stage.is_finished() {
                                 error!(
                                     %operation_id,
                                     ?awaited_action,
@@ -550,18 +566,19 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         }
         match &new_awaited_action.action_info().unique_qualifier {
             ActionUniqueQualifier::Cacheable(action_key) => {
-                let maybe_awaited_action =
-                    action_info_hash_key_to_awaited_action.remove(action_key);
-                match maybe_awaited_action {
-                    Some(removed_operation_id) => {
-                        if &removed_operation_id != new_awaited_action.operation_id() {
-                            error!(
-                                ?removed_operation_id,
-                                ?new_awaited_action,
-                                ?action_key,
-                                "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
-                            );
-                        }
+                match action_info_hash_key_to_awaited_action.get(action_key) {
+                    Some(owning_operation_id)
+                        if owning_operation_id == new_awaited_action.operation_id() => {}
+                    Some(owning_operation_id) => {
+                        // The entry belongs to a newer operation for the same
+                        // action key; leave it in place.
+                        error!(
+                            ?owning_operation_id,
+                            ?new_awaited_action,
+                            ?action_key,
+                            "action_info_hash_key_to_awaited_action and operation_id_to_awaited_action are out of sync",
+                        );
+                        return;
                     }
                     None => {
                         error!(
@@ -569,8 +586,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                             ?action_key,
                             "action_info_hash_key_to_awaited_action out of sync, it should have had the unique_key",
                         );
+                        return;
                     }
                 }
+                action_info_hash_key_to_awaited_action.remove(action_key);
             }
             ActionUniqueQualifier::Uncacheable(_action_key) => {
                 // If we are not cacheable, the action should not be in the
@@ -960,10 +979,11 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
             .await
     }
 
-    async fn get_all_awaited_actions(
+    fn get_all_awaited_actions(
         &self,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error> {
-        Ok(ChunkedStream::new(
+    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>>, Error>>
+    {
+        std::future::ready(Ok(ChunkedStream::new(
             Bound::Unbounded,
             Bound::Unbounded,
             move |start, end, mut output| async move {
@@ -980,7 +1000,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                 Ok(maybe_new_start
                     .map(|new_start| ((Bound::Excluded(new_start.clone()), end), output)))
             },
-        ))
+        )))
     }
 
     async fn get_by_operation_id(
@@ -990,14 +1010,15 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
         Ok(self.inner.lock().await.get_by_operation_id(operation_id))
     }
 
-    async fn get_range_of_actions(
+    fn get_range_of_actions(
         &self,
         state: SortedAwaitedActionState,
         start: Bound<SortedAwaitedAction>,
         end: Bound<SortedAwaitedAction>,
         desc: bool,
-    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        Ok(ChunkedStream::new(
+    ) -> impl Future<Output = Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error>>
+    {
+        std::future::ready(Ok(ChunkedStream::new(
             start,
             end,
             move |start, end, mut output| async move {
@@ -1034,7 +1055,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static> Awaite
                 }
                 Ok(Some(((new_start.cloned(), new_end.cloned()), output)))
             },
-        ))
+        )))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {

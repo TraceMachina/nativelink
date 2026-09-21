@@ -3,73 +3,154 @@ title: Glossary
 description: The vocabulary you need to read the rest of the docs.
 ---
 
-## Action
+{/* archetype: reference. See /web/apps/docs/templates/reference.mdx */}
+
+**Who this is for:** anyone reading the rest of these docs who hit a word that
+was used as if it needed no explanation. **What you'll have at the end:** the one
+sentence you needed, and a link to the page that goes deeper. **Time:** use as
+a lookup.
+
+Terms are alphabetical. Every heading has a stable anchor, so a link to a
+definition keeps resolving even if the wording around it changes.
+
+## Action [#action]
 
 A single unit of build work. Encodes a command line, input file
 digests, the platform requirements, and the expected outputs. Hashing
 an action produces a stable identifier; identical actions have
 identical hashes.
 
-## ActionResult
-
-What an action produces. Output file digests, exit code, captured
-stdout/stderr, timing metadata.
-
-## Action Cache (AC)
+## Action Cache (AC) [#action-cache-ac]
 
 A keyed store: `hash(Action) → ActionResult`. Cache hits skip the
 work entirely.
 
-## CAS — Content-Addressable Storage
+## ActionResult [#actionresult]
+
+What an action produces. Output file digests, exit code, captured
+stdout/stderr, timing metadata.
+
+## Awaited action [#awaited-action]
+
+The scheduler's record of one action between `Execute` and completion: its
+current [execution stage](#execution-stage), its priority, and every client
+waiting on it. Two identical actions submitted at the same time join the same
+awaited action instead of running twice. By default this record lives in the
+scheduler process's memory
+(<SourceLink file="nativelink-scheduler/src/memory_awaited_action_db.rs" />),
+which is why two scheduler replicas behind a load balancer do not share
+in-flight work. See [scheduler internals](/explanations/scheduler-internals).
+
+## ByteStream API [#bytestream-api]
+
+The streaming transport for blobs too large to move in a single
+`BatchUpdateBlobs` or `BatchReadBlobs` call, with the [digest](#digest)
+encoded in the resource name. Where the batch calls stop and this one starts
+is a server limit the [Capabilities API](#capabilities-api) advertises.
+
+## Capabilities API [#capabilities-api]
+
+The RE-API service a client calls first, to learn which
+[digest functions](#digest-function) the server accepts and what its size
+limits are rather than assuming. See
+[protocol and API surface](/reference/protocol-api).
+
+## CAS: Content-Addressable Storage [#cas--content-addressable-storage]
 
 Stores every blob (source file, intermediate output, final binary)
-under its SHA-256 hash. The same byte sequence stored from anywhere
+under the digest of its contents. The same byte sequence stored from anywhere
 collapses to one entry.
 
-## Digest
+## Completeness-checking store [#completeness-checking-store]
+
+An [Action Cache](#action-cache-ac) wrapper that checks every output
+[digest](#digest) still exists in the CAS before serving a hit. Without it a
+CAS eviction turns old cache entries into hits that reference blobs nobody can
+download, and the build fails while fetching outputs instead of quietly
+missing the cache. Valid only on AC stores.
+
+## Dedup store [#dedup-store]
+
+A store that splits blobs into content-defined chunks with FastCDC
+(<SourceLink file="nativelink-util/src/fastcdc.rs" />) and stores each chunk
+once, so two versions of a large file that differ in the middle share
+everything else. The cost is an index lookup per read. See
+[the store model](/explanations/store-model).
+
+## Digest [#digest]
 
 A content hash plus a size. Used everywhere instead of file paths.
 
-## Hermetic build
+## Digest function [#digest-function]
+
+The hash a client and server agree on for [digests](#digest): SHA-256 or
+BLAKE3, negotiated per request rather than fixed at build time
+(<SourceLink file="nativelink-util/src/digest_hasher.rs" symbol="DigestHasherFunc" />).
+Two clients using different functions produce different keys for the same
+bytes, so they do not share cache entries.
+
+## Eviction policy [#eviction-policy]
+
+The limits a store evicts against: `max_bytes`, `max_seconds`, `max_count`,
+and the `evict_bytes` low watermark that stops eviction thrashing right at the
+limit. Each defaults to `0`, which means *never evict on that dimension*: a
+store configured without a policy grows until the disk does.
+
+## Execution stage [#execution-stage]
+
+Where an action is in its life: `CacheCheck`, `Queued`, `Executing`, then
+`Completed` or `CompletedFromCache`
+(<SourceLink file="nativelink-util/src/action_messages.rs" symbol="ActionStage" />).
+An action stuck in `Queued` has no free [worker](#worker) whose
+[platform properties](#platform-properties) match what it asked for.
+`CacheCheck` is declared but the scheduler never reports it, because the
+cache lookup happens in a wrapper in front of the scheduler.
+
+## Existence cache store [#existence-cache-store]
+
+A store that remembers which digests it has already confirmed exist, so
+repeated [`FindMissingBlobs`](#findmissingblobs) calls stop re-querying the
+backend. It answers the existence question only; reads pass through.
+
+## `fast_slow` store [#fast-slow-store]
+
+A two-tier store. Reads try the fast backend, fall back to the slow one, and
+copy what they find into the fast tier on the way back; writes mirror to both.
+Its one sharp edge: it never checks the slow tier for something the fast tier
+already has, so a blob that reached the fast tier without reaching the slow one
+stays invisible to everything reading the slow tier directly.
+
+## FindMissingBlobs [#findmissingblobs]
+
+The CAS call that makes uploads incremental: the client offers a list of
+[digests](#digest), the server returns the ones it does not have, and the
+client uploads only those. On a warm cache this and the [AC](#action-cache-ac)
+lookup are most of what a client does.
+
+## Hermetic build [#hermetic-build]
 
 A build whose outputs depend only on its declared inputs. Same
-inputs → same outputs, on any machine, any time. See
-[the hermeticity FAQ](/explanations/lre#faq).
+inputs → same outputs, on any machine, any time. What NativeLink does
+and does not guarantee here is in
+[correctness and hermeticity](/explanations/correctness-hermeticity).
 
-## Instance name
+## Input root [#input-root]
 
-A namespace inside a NativeLink cluster. Action hashes from different
-instance names never collide. Lets one cluster serve multiple
-isolated environments.
+The complete file tree an action is allowed to see, encoded as a Merkle tree
+of `Directory` messages that reference their files and each other by
+[digest](#digest). Its root digest is part of the [action](#action) hash, so
+changing one input file changes the cache key.
 
-## LRE — Local Remote Execution
+## Instance name [#instance-name]
 
-NativeLink running on `localhost`, with a Nix-pinned toolchain, so
-local builds are bit-identical to remote ones. See
-[LRE](/explanations/lre).
+A namespace inside a NativeLink cluster. Each service entry maps an
+instance name to a store or scheduler, so one cluster can serve multiple
+isolated environments, and the scheduler keys in-flight actions by instance
+name as well as digest. Two instance names that point at the same store share
+its contents.
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="InstanceName" />
 
-## Platform properties
-
-Key/value tags attached to an action ("this action needs Linux,
-x86_64, a GPU") and to a worker ("this worker has Linux, x86_64, a
-GPU"). The scheduler matches them.
-
-## Remote Execution API (RE-API)
-
-The standard gRPC protocol every supported build system speaks.
-[Spec](https://github.com/bazelbuild/remote-apis).
-
-## Scheduler
-
-The dispatcher. Receives `Execute` calls, picks workers, tracks
-in-flight actions.
-
-## Worker
-
-The process that runs an action. Fetches inputs from CAS, runs the
-command, uploads outputs to CAS.
-
-## Isolation
+## Isolation [#isolation]
 
 Keeping an action from seeing state outside its declared inputs.
 On Linux, workers can isolate actions with kernel namespaces via
@@ -77,9 +158,99 @@ the `use_namespaces` and `use_mount_namespace` worker options,
 which also reap zombie processes and improve hermeticity.
 NativeLink doesn't currently integrate external sandboxing tools
 like `bwrap`, `landlock`, or `sandbox-exec`.
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="use_mount_namespace" />
 
-## Toolchain
+## JSON5 [#json5]
 
-The bundle of binaries an action needs to run — compiler, linker,
+The dialect NativeLink's configuration file is written in: JSON plus
+comments, trailing commas, and unquoted keys. Every example in
+[the configuration reference](/reference/nativelink-config) is JSON5.
+
+## LRE: Local Remote Execution [#lre--local-remote-execution]
+
+Building your toolchain with Nix so that your local build and your
+remote workers invoke the *same* toolchain binaries, at the same
+`/nix/store` paths, which makes their action digests match and lets
+both share one cache. No worker runs on your laptop. See
+[LRE](/explanations/lre).
+
+## Operation [#operation]
+
+The handle a client holds on a running action, from
+`google.longrunning.Operation`. `Execute` returns one immediately and the
+client watches it for [stage](#execution-stage) changes; `WaitExecution`
+re-attaches to it after a disconnect, which is what stops a dropped connection
+from re-running the work.
+
+## Origin events [#origin-events]
+
+An experimental stream of the requests and responses a server handled,
+published to a store for an external consumer to read
+(<SourceLink file="nativelink-proto/com/github/trace_machina/nativelink/remote_execution/events.proto" />).
+Off unless `experimental_origin_events` is configured.
+
+## Platform properties [#platform-properties]
+
+Key/value tags attached to an action ("this action needs Linux,
+x86_64, a GPU") and to a worker ("this worker has Linux, x86_64, a
+GPU"). The scheduler matches them.
+<SourceLink file="nativelink-util/src/platform_properties.rs" symbol="is_satisfied_by" />
+
+## Priority [#priority]
+
+An integer on `ExecuteRequest`'s `execution_policy`; NativeLink dequeues
+the highest value first when workers are scarce (the RE-API leaves the
+direction to the server, and its suggested default is the reverse). It orders
+the queue and nothing more; an action already executing is not interrupted for
+a higher-priority one that arrives after it.
+<SourceLink file="nativelink-scheduler/src/awaited_action_db/awaited_action.rs" symbol="AwaitedActionSortKey" />
+
+## Remote Execution API (RE-API) [#remote-execution-api-re-api]
+
+The standard gRPC protocol every supported build system speaks.
+[Spec](https://github.com/bazelbuild/remote-apis).
+
+## Scheduler [#scheduler]
+
+The dispatcher. Receives `Execute` calls, picks workers, tracks
+in-flight actions.
+
+## Shard store [#shard-store]
+
+A store that routes each key to one of several backends by digest hash, with
+a `weight` per backend. It spreads capacity; it is not replication, so losing
+one backend loses that backend's share of the data rather than none of it.
+
+## Store [#store]
+
+NativeLink's unit of storage configuration: a named thing that gets and puts
+bytes under a key. Stores compose, because a store's backend is another store,
+so the CAS a server serves is usually a stack of wrappers over one real
+backend. See [the store model](/explanations/store-model).
+
+## Toolchain [#toolchain]
+
+The bundle of binaries an action needs to run: compiler, linker,
 standard library, etc. See
-[how toolchains are provided](/rbe/examples#faq).
+[how toolchains are provided](/remote-execution/toolchains-and-hermeticity#faq).
+
+## Verify store [#verify-store]
+
+A wrapper that, depending on `verify_size` and `verify_hash`, checks a
+blob's size and re-hashes it on write, failing the upload when the bytes do
+not match the [digest](#digest) they were offered under. It turns silent corruption into a write error. Both checks
+belong on CAS stores and neither belongs on an [AC](#action-cache-ac) store.
+
+## Worker [#worker]
+
+The process that runs an action. Fetches inputs from CAS, runs the
+command, uploads outputs to CAS.
+
+## Worker API [#worker-api]
+
+NativeLink's own gRPC service, not part of the RE-API, over which a worker
+registers with a scheduler and receives work
+(<SourceLink file="nativelink-proto/com/github/trace_machina/nativelink/remote_execution/worker_api.proto" />).
+One bidirectional `ConnectWorker` stream carries the whole conversation, which
+is what keeps a worker talking to the same scheduler instance even behind a
+load balancer.

@@ -104,7 +104,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &ExperimentalAzureSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+    pub fn new(spec: &ExperimentalAzureSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let jitter_fn = spec.common.retry.make_jitter_fn();
         let client = Self::build_container_client(spec)?;
         Self::new_with_client_and_jitter(spec, client, jitter_fn, now_fn)
@@ -206,7 +206,7 @@ where
             max_concurrent_uploads: spec
                 .common
                 .multipart_max_concurrent_uploads
-                .map_or(DEFAULT_MAX_CONCURRENT_UPLOADS, |v| v),
+                .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS),
         }))
     }
 

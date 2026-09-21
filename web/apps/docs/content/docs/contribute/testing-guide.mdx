@@ -1,0 +1,189 @@
+---
+title: Testing guide
+description: How NativeLink's tests are organised, what `#[nativelink_test]` gives you, and which local environment problems cause which confusing failure.
+---
+
+{/* archetype: how-to. See /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone writing a test, or trying to work out why a
+test that passes in CI fails on their laptop. **What you'll have at the
+end:** the commands, the conventions, the fixtures that already exist, and
+a diagnosis list for the local failures that are not your code's fault.
+**Time:** twenty minutes.
+
+NativeLink has two test runners over the same tests. Cargo is faster to
+iterate with; Bazel is what CI runs and what gates a merge. Both matter,
+and the vocabulary differs between them in a way that trips people up.
+
+## The commands [#the-commands]
+
+```bash
+# Cargo: fastest loop. `smol` keeps target/ around 1GB instead of ~12GB.
+cargo test --all --profile=smol
+cargo test -p nativelink-store
+
+# Bazel: what CI runs.
+bazel test //...              # everything, plus rustfmt and clippy aspects
+bazel test //:unit_tests      # in-file `mod tests` across all crates
+bazel test doctests           # doc examples
+bazel test //nativelink-store:integration   # one crate's tests/ directory
+```
+
+<Callout type="info" title="Bazel's `unit_test` and `integration` do not mean what you expect">
+  In this repository, `unit_test` means *tests written inside a source file*
+  and `integration` means *tests in the crate's `tests/` directory*. Neither
+  implies anything about scope or about talking to a network. The
+  genuinely end-to-end suites are the shell scripts in `integration_tests/`,
+  which are separate again.
+</Callout>
+
+`bazel test` also attaches rustfmt and clippy aspects, which is why a
+formatting mistake shows up as a test failure rather than a separate lint
+step.
+
+## Where tests live [#where-tests-live]
+
+The convention is a separate `tests/` directory per crate, not inline
+modules; only nine `mod tests` blocks exist in the whole tree.
+
+| Crate | Test files under `tests/` |
+| --- | --- |
+| `nativelink-store` | 28 |
+| `nativelink-util` | 20 |
+| `nativelink-service` | 13 |
+| `nativelink-scheduler` | 10 |
+| `nativelink-worker` | 7 |
+| `nativelink-config` | 3 |
+| `nativelink-error` | 2 |
+
+A new test file has to be added to its crate's `rust_test_suite` in
+`BUILD.bazel`. Cargo picks it up automatically; Bazel does not.
+
+## `#[nativelink_test]` [#nativelink-test]
+
+Around 780 tests use it. It is defined in
+<SourceLink file="nativelink-macro/src/lib.rs" symbol="nativelink_test" />
+and it is not a thin wrapper; it expands to five things:
+
+- `#[tokio::test]`, so the test body can be `async`
+- `#[::tracing_test::traced_test]`, capturing logs for assertions
+- an `error_span!` named after the test function
+- `reseed_rng_for_test()`, so randomised tests are reproducible
+- a **log-redaction assertion** that fails the test if any captured log line
+  contains `" data: b"` (with one carve-out for an `aws_runtime` line that
+  legitimately does)
+
+That last one is the surprising one. It exists to catch blob contents
+leaking into debug output. If your test starts failing with
+`Non-redacted data in "..."` and you did not change any assertion, something
+you touched is now logging a `Debug` of a buffer.
+
+The forms:
+
+```rust
+#[nativelink_test]                          // the usual case
+#[nativelink_test("crate")]                 // inside nativelink-util itself
+#[nativelink_test(flavor = "multi_thread")] // args forwarded to tokio::test
+#[nativelink_test(start_paused = true)]     // virtual clock, see below
+```
+
+## Fixtures that already exist [#fixtures-that-already-exist]
+
+Reach for these before writing your own.
+
+**Redis**: `nativelink-redis-tester` provides a fake Redis, a `MockPubSub`,
+and a read-only Redis wrapper. Note that it is a regular dependency of
+`nativelink-store`, not a dev-dependency.
+
+**Time**: `MockInstantWrapped` plus `mock_instant::MockClock::advance` lets
+you move a store's clock forward without sleeping. Combine with
+`#[nativelink_test(start_paused = true)]` for Tokio's virtual time.
+
+**Scheduler helpers**: `nativelink-scheduler/tests/utils/scheduler_utils.rs`,
+pulled in with an inline `mod utils { pub(crate) mod scheduler_utils; }`
+block rather than as a crate.
+
+**Mongo**: `nativelink-store/tests/mongo_runner/` downloads and starts a
+real `mongod`. This is why the store crate's Bazel timeout is `moderate`
+rather than `short`, and why that suite needs network on a cold cache.
+
+**Temp paths**: `make_temp_path` honours `TEST_TMPDIR`, so tests behave
+under Bazel's sandbox.
+
+## The end-to-end suites [#the-end-to-end-suites]
+
+```bash
+./run_integration_tests.sh
+```
+
+It refuses to run as root, requires Bazel, Docker and `sudo`, and waits for
+ports 50051, 50052 and 50071 before starting. It drives
+`simple_cache_test.sh`, `simple_remote_execution_test.sh`,
+`simple_tls_test.sh` and `chunking_cache_test.sh`. You can pass a pattern to
+run one of them.
+
+Beyond those, `integration_tests/` also holds BuildStream, Buck2 and Mongo
+suites driven from Nix, and `nativelink-test/fuzz` holds a single fuzz
+target (`cas_config.rs`) run by ClusterFuzzLite.
+
+## Coverage [#coverage]
+
+```bash
+nix build .#nativelinkCoverageForHost
+```
+
+The `result` symlink contains an HTML report. **No coverage
+threshold gate**; no PR is blocked on a percentage. Coverage is a tool for
+finding untested paths, not a target to hit.
+
+## When it fails locally but not in CI [#when-it-fails-locally-but-not-in-ci]
+
+Most of these are environment, not code.
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Namespace/worker tests fail on Ubuntu 24.04 | `kernel.apparmor_restrict_unprivileged_userns` is on by default | Disable it for the session, or skip those tests locally and let CI run them |
+| `Too many open files` | `ulimit -n` too low for the store tests | Raise it; NativeLink itself defaults to a 24576 fd budget |
+| `run_integration_tests.sh` exits immediately | Running as root, or Docker not reachable without `sudo` | Run as a non-root user with Docker access |
+| The Mongo store suite times out | It downloads a real `mongod` on a cold Bazel cache | Give it network, and don't run it on a plane |
+| Two tests pass alone, fail together | Both touch process environment; they are marked `#[serial(env)]` for a reason | Don't parallelise them, and mark new env-touching tests the same way |
+| `Non-redacted data in "..."` | The `#[nativelink_test]` log assertion caught new `Debug` output containing a buffer | Redact the log line rather than the assertion |
+| Formatting failures from `bazel test` | Stable `cargo fmt` ignores the nightly-only rustfmt options | `bazel run --config=rustfmt @rules_rust//:rustfmt` |
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="Do I have to run the whole suite before submitting?" id="run-whole-suite">
+    Run the crate you touched with Cargo while iterating, then
+    `bazel test //...` once before pushing. CI runs Bazel, and the aspects
+    attached to `bazel test` catch formatting and clippy problems that a
+    Cargo run does not.
+  </Accordion>
+  <Accordion title="Why do doc examples need their own target?" id="why-doctests">
+    Doc comments in `nativelink-config` are the source text for the generated
+    [configuration reference](/reference/nativelink-config), so their examples
+    are user-facing documentation. `bazel test doctests` is what stops them
+    rotting.
+  </Accordion>
+  <Accordion title="My test needs to wait for something. Should I sleep?" id="should-i-sleep">
+    No. Use `#[nativelink_test(start_paused = true)]` with Tokio's virtual
+    clock, or `MockInstantWrapped` with `MockClock::advance` where a store's
+    own clock is what matters. A real sleep makes the suite slower and
+    flakier at the same time.
+  </Accordion>
+  <Accordion title="What coverage do I need for a PR to be accepted?" id="coverage-requirement">
+    No numeric gate exists. What reviewers ask for is a regression test for
+    a bug fix and both unit and integration coverage for new behaviour; see
+    [contribution guidelines](/contribute/guidelines).
+  </Accordion>
+  <Accordion title="Where do I add a new test file so Bazel sees it?" id="new-test-file-bazel">
+    In the crate's `BUILD.bazel`, in the `srcs` list of its `rust_test_suite`
+    (named `integration`). Cargo discovers `tests/*.rs` automatically, so a
+    test that runs locally and never runs in CI is usually this.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/contribute/release-versioning" title="Releases and versioning">
+  How a version becomes a tag, what the tag triggers, and what compatibility
+  NativeLink does and does not promise.
+</NextStep>

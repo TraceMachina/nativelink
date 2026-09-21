@@ -134,6 +134,22 @@ const GIT_CLIFF_MARKER_LINES = new Set([
   "<!-- vale on -->",
 ]);
 
+/**
+ * git-cliff links each release heading to its compare view:
+ * `## [1.6.3](https://.../compare/v1.6.2..v1.6.3) - 2026-07-24`. Fumadocs
+ * wraps every heading in its own anchor link, and an `<a>` inside an `<a>`
+ * is invalid HTML that breaks hydration. Keep the version and date in the
+ * heading and move the compare link to a line of its own underneath.
+ */
+const unlinkReleaseHeading = (line) => {
+  const match = /^## \[([^\]]+)\]\((https?:\/\/[^)\s]+)\)(.*)$/.exec(line);
+  if (!match) {
+    return line;
+  }
+  const [, version, url, rest] = match;
+  return `## ${version}${rest}\n\n[Compare with the previous release](${url})`;
+};
+
 const { text: raw, origin } = await readChangelog();
 
 // Keep everything from the first release heading on; the git-cliff header
@@ -156,7 +172,10 @@ const body = raw
     if (inFence) {
       return line;
     }
-    return GIT_CLIFF_MARKER_LINES.has(line.trim()) ? null : escapeLine(line);
+    if (GIT_CLIFF_MARKER_LINES.has(line.trim())) {
+      return null;
+    }
+    return escapeLine(unlinkReleaseHeading(line));
   })
   .filter((line) => line !== null)
   .join("\n")

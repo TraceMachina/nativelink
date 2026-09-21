@@ -1,0 +1,256 @@
+---
+title: The config file
+description: JSON5 mechanics, environment substitution, how the binary is pointed at a config, and how to find out a config is wrong before it takes a cluster down with it.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone about to edit a NativeLink config for the first
+time. **What you'll know at the end:** what dialect the file is written in,
+how to keep secrets and addresses out of it, how the binary finds it, and how
+to check one is valid without waiting for a production rollout to tell you.
+**Time:** twenty minutes.
+
+<Prerequisites>
+  A config file you got from an example, for instance from [Examples and templates](/remote-execution/examples-and-templates).
+</Prerequisites>
+
+## It's JSON5, not JSON [#its-json5-not-json]
+
+NativeLink parses its config with `serde_json5`, not `serde_json`. The
+difference matters every time you edit a file:
+
+```json5
+{
+  // Comments are legal. Use them: a config is the only place some
+  // operational decisions get written down at all.
+  stores: [
+    {
+      name: "CAS_MAIN_STORE", // unquoted keys are legal too
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-cas",
+        temp_path: "/tmp/nativelink/tmp_path-cas",
+        eviction_policy: {
+          max_bytes: 10000000000, // trailing comma is legal
+        },
+      },
+    },
+  ],
+}
+```
+
+Three things are legal here that plain JSON rejects: `//` and `/* */`
+comments, unquoted object keys, and trailing commas. Nearly every shipped
+example in `nativelink-config/examples/` uses all three, so a strict-JSON tool
+pointed at one of them will report syntax errors that aren't real.
+
+<Callout type="warn" title="Tell your editor it's JSON5">
+  Most editors infer the dialect from the extension. `.json5` is the extension
+  the repo uses, and it's the one that gets you comment support instead of a
+  wall of red squiggles. If you rename a config to `.json` to make a tool
+  happy, the tool will be happy and wrong.
+</Callout>
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="CasConfig::try_from_json5_file" />
+
+## Environment substitution [#environment-substitution]
+
+Any string field that is deserialized through the config crate's shellexpand
+helpers accepts shell-style variable references, including the
+default-if-unset form:
+
+```json5
+{
+  worker_api_endpoint: {
+    uri: "grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061",
+  },
+}
+```
+
+`${SCHEDULER_ENDPOINT:-127.0.0.1}` means "the value of `SCHEDULER_ENDPOINT`,
+or `127.0.0.1` if it isn't set". That single feature is what lets one config
+file serve a laptop and a cluster: the file names a default that works on your
+machine, and the deployment overrides it with an environment variable.
+
+The docker-compose deployment in this repo is built entirely on that pattern.
+Its worker and scheduler configs point at
+`grpc://${CAS_ENDPOINT:-127.0.0.1}:50051` and
+`grpc://${SCHEDULER_ENDPOINT:-127.0.0.1}:50061`, so the same files run
+unmodified whether the pieces are on one host or several.
+
+Substitution also works for numeric-looking fields that take a size, because
+those are parsed from strings:
+
+```json5
+{
+  memory: {
+    eviction_policy: {
+      max_bytes: "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100mb}",
+    },
+  },
+}
+```
+
+<SourceLink file="nativelink-config/src/serde_utils.rs" symbol="convert_string_with_shellexpand" />
+
+<Callout type="info" title="Not every field expands">
+  Substitution is opt-in per field, applied by the deserializer the field
+  declares. The endpoint, path, and size fields you're most likely to want to
+  parameterise do expand; an arbitrary field may not. If a `${VAR}` shows up
+  verbatim in an error message or a log line, that field isn't one of them.
+</Callout>
+
+## How the binary finds the config [#how-the-binary-finds-the-config]
+
+One way only, and it is positional:
+
+```sh
+nativelink /path/to/config.json5
+```
+
+No `--config` flag, no search path, no default location, no environment
+variable naming the file. The single positional argument is the whole
+interface.
+
+<SourceLink file="src/bin/nativelink.rs" symbol="Args" />
+
+That has one practical consequence worth internalising: **a container image
+does not carry its config**. Every deployment recipe in this repo mounts a
+config file in and passes its path as the argument. If you're writing a
+Kubernetes manifest, the config is a ConfigMap you mount, not something baked
+into the image.
+
+## Checking a config before you trust it [#checking-a-config-before-you-trust-it]
+
+Here is the honest answer, because the alternative wastes an afternoon:
+**there is no `--validate` flag and no dry-run mode.** The binary takes a
+config path and starts.
+
+What saves you is the order in which it starts. `main()` reads and parses the
+entire config, and only afterwards raises the open-file limit, constructs the
+stores, and binds any socket, so a config that fails to parse is rejected
+before the process has touched a port, which makes "run it and see" a
+genuinely safe validation step even on a machine where the real ports are
+already in use by something else.
+
+Combined with `#[serde(deny_unknown_fields)]`, which is on nearly every
+struct in the config crate, that gives you a fast, precise loop:
+
+<Steps>
+
+<li>
+
+**Start the binary against the config.**
+
+```sh
+nativelink ./my-config.json5
+```
+
+</li>
+
+<li>
+
+**Read the first error, not the last.** A parse failure names the offending
+key and its position. A misspelled `evicton_policy` produces an
+`unknown field` error naming `evicton_policy` and listing the fields that
+were expected, not a silent default and a cache that never evicts.
+
+</li>
+
+<li>
+
+**Stop it once it's listening.** Once the process reports its listeners are
+up, the config parsed. Everything after that point is runtime behaviour, not
+config validity.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- A deliberately misspelled key makes the process exit before it prints
+  anything about listeners.
+- Fixing the spelling makes it start.
+- The failing run did not need a free port, because it never reached the
+  bind.
+
+</VerifyBlock>
+
+## Editor validation, if you want it [#editor-validation-if-you-want-it]
+
+The config crate can emit a JSON Schema for the whole `CasConfig` type, which
+editors will use for completion and inline errors:
+
+```sh
+cargo run --bin build-schema --features dev-schema --package nativelink-config
+```
+
+That writes `nativelink_config.schema.json` into the working directory. The
+file is **not committed to the repo**; it's generated on demand, and it's
+generated from the same Rust types the binary parses with, so it can't drift
+from them. Point your editor's JSON5 schema mapping at the file you generated
+and misspellings show up as you type rather than at startup.
+
+<Callout type="info" title="Generated, not maintained">
+  Because the schema comes from `schema_for!(CasConfig)`, regenerating it after
+  you change NativeLink versions is the whole upgrade procedure. There's no
+  hand-written schema to fall out of date.
+</Callout>
+
+## FAQ [#faq]
+
+<Accordions>
+
+<Accordion title="Can I split the config across multiple files?" id="can-i-split-the-config-across-multiple-files">
+
+Not with an include directive; the parser reads exactly one file. What you do
+instead is split by *role*: one config for the CAS process, one for the
+scheduler, one for the workers, each a complete file naming the others by
+network address. That's the same split described in
+[the section overview](/configuration), and it's how the docker-compose
+deployment is laid out.
+
+</Accordion>
+
+<Accordion title="How do I keep secrets out of the file?" id="how-do-i-keep-secrets-out-of-the-file">
+
+Use environment substitution for the fields that carry them and set the
+variables from your platform's secret mechanism: a Kubernetes Secret mounted
+as environment variables, a systemd `EnvironmentFile`, or your process
+supervisor's equivalent. The config file itself then contains a variable name,
+which is safe to commit.
+
+</Accordion>
+
+<Accordion title="Why did my config work as JSON but not as JSON5, or vice versa?" id="why-did-my-config-work-as-json-but-not-as-json5-or-vice-versa">
+
+Every valid JSON document is also a valid JSON5 document, so that direction
+never breaks. The other direction does: a config using comments or trailing
+commas will be rejected by any strict-JSON tooling you point at it. If a
+linter, formatter, or CI check complains about a file that NativeLink accepts
+happily, the tool is the thing that's misconfigured.
+
+</Accordion>
+
+<Accordion title="The process starts, but nothing works. Was the config valid?" id="the-process-starts-but-nothing-works-was-the-config-valid">
+
+Yes, and that's the boundary worth knowing. Parsing checks structure and
+spelling. It does not check that a store name referenced by a service exists
+in a useful state, that a worker can reach the scheduler address you gave it,
+or that a path is writable. Those are runtime failures, and they show up in
+logs rather than at startup. [Observability](/operate/observability) is where
+you go to read them.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/configuration/stores" title="Stores">
+  Declaring stores, naming them, and the idea that unlocks the rest of the
+  config: stores compose, and one store can refer to another by name.
+</NextStep>
+
+<NextStep href="/reference/nativelink-config" kind="aside" title="Configuration reference">
+  Every field and default, generated from the same Rust types described here.
+</NextStep>

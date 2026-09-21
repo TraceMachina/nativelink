@@ -41,7 +41,7 @@ use tracing::{debug, info, trace, warn};
 use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
 };
-use crate::worker_registry::SharedWorkerRegistry;
+use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
 /// Maximum number of times an update to the database
 /// can fail before giving up.
@@ -346,6 +346,93 @@ where
         })
     }
 
+    /// Retires queued actions whose client has stopped listening.
+    ///
+    /// A queued action has no worker, so neither of the other two timeout
+    /// paths can reach it. `MatchingEngineActionStateResult::changed` skips
+    /// the `Queued` stage outright, and `should_timeout_operation` only
+    /// considers `Executing`. That leaves the matching pass as the only
+    /// thing that retires them, and it only does so for actions it happens
+    /// to visit.
+    ///
+    /// When it does not, they accumulate with no expiry and are handed to
+    /// the matcher again on every pass, ahead of live work because they are
+    /// the oldest. Enough of them starve dispatch entirely: workers sit
+    /// idle, nothing executes or completes, and clients eventually report a
+    /// remote execution failure.
+    ///
+    /// Returns how many were retired.
+    pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
+        let now = (self.now_fn)().now();
+        let stream = self
+            .action_db
+            .get_range_of_actions(
+                SortedAwaitedActionState::Queued,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                true,
+            )
+            .await
+            .err_tip(|| "In sweep_abandoned_queued_actions")?;
+        tokio::pin!(stream);
+
+        let mut retired = 0u64;
+        while let Some(subscriber) = stream.next().await {
+            let subscriber = subscriber.err_tip(|| "In sweep_abandoned_queued_actions")?;
+            let awaited_action = subscriber
+                .borrow()
+                .await
+                .err_tip(|| "In sweep_abandoned_queued_actions")?;
+
+            // Only queued actions belong to this sweep, and only once the
+            // client has been gone longer than it is allowed to be.
+            if !matches!(awaited_action.state().stage, ActionStage::Queued) {
+                continue;
+            }
+            if awaited_action.last_client_keepalive_timestamp() + self.client_action_timeout >= now
+            {
+                continue;
+            }
+
+            let mut state = awaited_action.state().as_ref().clone();
+            state.stage = ActionStage::Completed(ActionResult {
+                error: Some(make_err!(
+                    Code::DeadlineExceeded,
+                    "Operation timed out {} seconds of having no more clients listening",
+                    self.client_action_timeout.as_secs_f32(),
+                )),
+                ..ActionResult::default()
+            });
+            state.last_transition_timestamp = now;
+
+            let mut new_awaited_action = awaited_action;
+            new_awaited_action.worker_set_state(Arc::new(state), now);
+            // A conflict means something else is already changing this
+            // action, which is the outcome this sweep wants anyway. Leave it
+            // for the next pass rather than fighting for it.
+            match self
+                .action_db
+                .update_awaited_action(new_awaited_action)
+                .await
+            {
+                Ok(()) => retired += 1,
+                Err(err) if err.code == Code::Aborted => {}
+                Err(err) => {
+                    return Err(err).err_tip(|| "In sweep_abandoned_queued_actions");
+                }
+            }
+        }
+
+        if retired > 0 {
+            warn!(
+                retired,
+                timeout_secs = self.client_action_timeout.as_secs_f32(),
+                "Retired queued operations that had no clients listening"
+            );
+        }
+        Ok(retired)
+    }
+
     pub async fn should_timeout_operation(&self, awaited_action: &AwaitedAction) -> bool {
         if !matches!(awaited_action.state().stage, ActionStage::Executing) {
             return false;
@@ -367,34 +454,57 @@ where
             }
         }
 
-        let registry_alive = if let Some(ref worker_registry) = self.worker_registry {
-            if let Some(worker_id) = awaited_action.worker_id() {
+        let liveness = match (&self.worker_registry, awaited_action.worker_id()) {
+            (Some(worker_registry), Some(worker_id)) => {
                 worker_registry
-                    .is_worker_alive(worker_id, self.no_event_action_timeout, now)
+                    .check_liveness(worker_id, self.no_event_action_timeout, now)
                     .await
-            } else {
-                false
             }
-        } else {
-            false
+            // No registry, or not assigned yet: fall back to the
+            // timestamp-only check.
+            _ => WorkerLiveness::Stale,
         };
 
-        if registry_alive {
-            if self.max_executing_timeout > Duration::ZERO {
+        match liveness {
+            // Ours and heartbeating: only the stuck-but-alive ceiling applies,
+            // and disabling that means no ceiling on a live worker.
+            WorkerLiveness::Alive => {
+                if self.max_executing_timeout > Duration::ZERO {
+                    let last_update = awaited_action.last_worker_updated_timestamp();
+                    if let Ok(elapsed) = now.duration_since(last_update) {
+                        return elapsed > self.max_executing_timeout;
+                    }
+                }
+                false
+            }
+
+            // Usually a peer's healthy worker, so worker_timeout_s must not
+            // apply. It can also be an orphan no instance will ever reap, and
+            // max_action_executing_timeout_s defaults to disabled, so fall
+            // back to a ceiling rather than never timing out.
+            WorkerLiveness::Unknown => {
+                let ceiling = if self.max_executing_timeout > Duration::ZERO {
+                    self.max_executing_timeout
+                } else {
+                    ORPHANED_ACTION_TIMEOUT
+                };
                 let last_update = awaited_action.last_worker_updated_timestamp();
-                if let Ok(elapsed) = now.duration_since(last_update) {
-                    return elapsed > self.max_executing_timeout;
+                match now.duration_since(last_update) {
+                    Ok(elapsed) => elapsed > ceiling,
+                    Err(_) => false,
                 }
             }
-            return false;
+
+            // Registered here and gone quiet: ours, and it looks dead.
+            WorkerLiveness::Stale => {
+                let worker_should_update_before = awaited_action
+                    .last_worker_updated_timestamp()
+                    .checked_add(self.no_event_action_timeout)
+                    .unwrap_or(now);
+
+                worker_should_update_before < now
+            }
         }
-
-        let worker_should_update_before = awaited_action
-            .last_worker_updated_timestamp()
-            .checked_add(self.no_event_action_timeout)
-            .unwrap_or(now);
-
-        worker_should_update_before < now
     }
 
     async fn apply_filter_predicate(
@@ -571,41 +681,13 @@ where
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::timeout_operation_id")?;
 
-        // If the action is not executing, we should not timeout the action.
-        if !matches!(awaited_action.state().stage, ActionStage::Executing) {
-            return Ok(());
-        }
-
-        let now = (self.now_fn)().now();
-
-        // Check worker liveness via registry if available.
-        let registry_alive = if let Some(ref worker_registry) = self.worker_registry {
-            if let Some(worker_id) = awaited_action.worker_id() {
-                worker_registry
-                    .is_worker_alive(worker_id, self.no_event_action_timeout, now)
-                    .await
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        let timestamp_alive = {
-            let worker_should_update_before = awaited_action
-                .last_worker_updated_timestamp()
-                .checked_add(self.no_event_action_timeout)
-                .unwrap_or(now);
-            worker_should_update_before >= now
-        };
-
-        if registry_alive || timestamp_alive {
+        // Re-check under the lock against freshly loaded state, and delegate
+        // rather than re-deriving the rule: the two copies had drifted.
+        if !self.should_timeout_operation(&awaited_action).await {
             trace!(
                 %operation_id,
                 worker_id = ?awaited_action.worker_id(),
-                registry_alive,
-                timestamp_alive,
-                "Worker is alive, operation not timed out"
+                "Operation no longer needs timing out, skipping"
             );
             return Ok(());
         }
@@ -613,9 +695,7 @@ where
         warn!(
             %operation_id,
             worker_id = ?awaited_action.worker_id(),
-            registry_alive,
-            timestamp_alive,
-            "Worker not alive via registry or timestamp, timing out operation"
+            "Timing out operation"
         );
 
         self.assign_operation(
@@ -1189,6 +1269,35 @@ where
     ) -> Result<(), Error> {
         self.inner_update_operation(operation_id, Some(worker_id), update)
             .await
+    }
+
+    async fn is_executing_on_worker(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+    ) -> Result<bool, Error> {
+        let Some(subscriber) = self
+            .action_db
+            .get_by_operation_id(operation_id)
+            .await
+            .err_tip(|| "In SimpleSchedulerStateManager::is_executing_on_worker")?
+        else {
+            return Ok(false);
+        };
+        let awaited_action = match subscriber.borrow().await {
+            Ok(awaited_action) => awaited_action,
+            // Store-backed dbs hand out a subscriber for any id and only
+            // discover the operation is gone on read.
+            Err(err) if err.code == Code::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(err)
+                    .err_tip(|| "In SimpleSchedulerStateManager::is_executing_on_worker");
+            }
+        };
+        Ok(
+            matches!(awaited_action.state().stage, ActionStage::Executing)
+                && awaited_action.worker_id() == Some(worker_id),
+        )
     }
 }
 

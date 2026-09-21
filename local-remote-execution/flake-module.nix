@@ -123,7 +123,7 @@
               # When using remote executors that differ from the host this needs to
               # be manually extended via the `--extra_execution_platforms` flag.
               "--extra_execution_platforms=${
-                lib.concatStringsSep "," (lib.optionals pkgs.stdenv.isLinux [
+                lib.concatStringsSep "," (lib.optionals pkgs.stdenv.hostPlatform.isLinux [
                   # TODO(palfrey): Reimplement rbe-configs-gen for C++ so that we
                   #                    can support more execution and target platforms.
                   "@local-remote-execution//generated-cc/config:platform"
@@ -134,7 +134,7 @@
             # TODO(palfrey): At the moment lre-cc only supports x86_64-linux.
             #                    Extend this to more nix systems.
             # See: https://github.com/bazelbuild/bazel/issues/19714#issuecomment-1745604978
-            ++ lib.optionals pkgs.stdenv.isLinux [
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               "--action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1"
 
               # The C++ toolchain running on the execution platform.

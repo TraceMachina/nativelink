@@ -125,7 +125,12 @@ message ActionResourceUsage {
     /// The worker ID that observed the resource usage.
     string worker_id = 4;
 
-    reserved 5; // NextId.
+    /// Total CPU time consumed by the action process tree, in milliseconds.
+    /// User and system time combined, summed across every process in the
+    /// action's process group.
+    uint64 cpu_time_ms = 5;
+
+    reserved 6; // NextId.
 }
 
 /// Result sent back from the server when a node connects.

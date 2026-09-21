@@ -44,10 +44,16 @@ pub struct CacheMetricsStore {
 
 impl CacheMetricsStore {
     pub fn new(spec: &CacheMetricsSpec, backend: Store) -> Arc<Self> {
+        let base_attrs = [KeyValue::new(CACHE_TYPE, spec.cache_type.clone())];
+        // A store that tracks its own size reports it under the same cache
+        // type as the operation metrics. Other stores report no size.
+        backend
+            .inner_store(None::<StoreKey<'_>>)
+            .enable_cache_size_metrics(&base_attrs);
         Arc::new(Self {
             backend,
             cache_type: spec.cache_type.clone(),
-            attrs: CacheMetricAttrs::new(&[KeyValue::new(CACHE_TYPE, spec.cache_type.clone())]),
+            attrs: CacheMetricAttrs::new(&base_attrs),
         })
     }
 

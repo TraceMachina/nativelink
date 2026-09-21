@@ -321,10 +321,69 @@ pub async fn hard_link(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(
     call_with_permit(move |_| std::fs::hard_link(src, dst).map_err(Into::<Error>::into)).await
 }
 
+/// Hardlinks many files under a single permit and a single `spawn_blocking`
+/// dispatch, returning one result per input in the same order.
+///
+/// [`hard_link`] pays a semaphore acquire plus a `spawn_blocking` hop per call,
+/// and both dwarf the `hard_link(2)` syscall itself, which is a few microseconds
+/// on tmpfs. Staging an input tree of thousands of small files therefore spends
+/// most of its wall time in the tokio scheduler rather than in the kernel.
+/// Batching amortizes the acquire and the dispatch over the whole batch.
+///
+/// A single permit covers the batch because `hard_link(2)` is a metadata
+/// operation that never leaves a file descriptor open, so it does not consume
+/// the open-file budget [`OPEN_FILE_SEMAPHORE`] exists to protect.
+///
+/// This does change the backpressure profile; the permit no longer paces
+/// individual syscalls, only whole batches, and one blocking thread is held for
+/// the length of a batch rather than for one syscall. On Linux and tmpfs, where
+/// this was measured, that trades well because the per-call dispatch was the
+/// cost. A filesystem that serializes metadata operations internally, as APFS
+/// does on a per-volume lock, gets a different bargain: less parallel
+/// contention, but a long batch occupies its thread throughout. Size batches
+/// accordingly.
+pub async fn hard_link_many(
+    links: Vec<(PathBuf, PathBuf)>,
+) -> Result<Vec<Result<(), Error>>, Error> {
+    call_with_permit(move |_| {
+        Ok(links
+            .into_iter()
+            .map(|(src, dst)| std::fs::hard_link(src, dst).map_err(Into::<Error>::into))
+            .collect())
+    })
+    .await
+}
+
 pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))
         .await
+}
+
+/// Creates many directories under a single permit and a single `spawn_blocking`
+/// dispatch, each parent before its children.
+///
+/// An existing directory is an error, exactly as [`create_dir`] reports it.
+///
+/// See [`hard_link_many`] for why batching matters here: the `mkdir(2)` syscall
+/// is dwarfed by the semaphore acquire and `spawn_blocking` hop, and an input
+/// tree contributes hundreds of directories.
+pub async fn create_dir_many(mut dirs: Vec<PathBuf>) -> Result<(), Error> {
+    // Sorting puts every parent ahead of its children, since a parent's path is
+    // a prefix of theirs. We do this instead of using `create_dir_all` below
+    // because we want to fail on existing directories: on case-insensitive
+    // filesystems, that will ensure that we don't silently merge two trees in
+    // the event of a different-in-case-only collision.
+    dirs.sort_unstable();
+    call_with_permit(move |_| {
+        for dir in dirs {
+            std::fs::create_dir(&dir).map_err(|e| {
+                Error::from(e).append(format!("Could not create directory {}", dir.display()))
+            })?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 pub async fn create_dir(path: impl AsRef<Path>) -> Result<(), Error> {
@@ -414,6 +473,25 @@ pub async fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, Error> {
 pub async fn metadata(path: impl AsRef<Path>) -> Result<Metadata, Error> {
     let path = path.as_ref().to_owned();
     call_with_permit(move |_| std::fs::metadata(path).map_err(Into::<Error>::into)).await
+}
+
+/// Tests many paths for existence under a single permit and a single
+/// `spawn_blocking` dispatch, returning one answer per input in the same order.
+///
+/// A `stat(2)` on a warm tmpfs costs far less than the permit acquisition and
+/// thread hop needed to dispatch it, so callers checking a whole input tree pay
+/// almost entirely dispatch overhead when they ask one path at a time.
+///
+/// Any error is reported as `false`, since every failure mode (absent,
+/// dangling, unreadable parent) answers "can I use this path" the same way.
+pub async fn exists_many(paths: Vec<PathBuf>) -> Result<Vec<bool>, Error> {
+    call_with_permit(move |_| {
+        Ok(paths
+            .into_iter()
+            .map(|path| std::fs::metadata(path).is_ok())
+            .collect())
+    })
+    .await
 }
 
 pub async fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {

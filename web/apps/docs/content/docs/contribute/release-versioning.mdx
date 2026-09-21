@@ -1,0 +1,201 @@
+---
+title: Releases and versioning
+description: How a NativeLink version becomes a signed tag, what the tag triggers, and what compatibility the project does and does not promise.
+---
+
+{/* archetype: how-to. See /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** maintainers cutting a release, and anyone who needs to
+know what a version number means before pinning one. **What you'll have at
+the end:** the fourteen files a version lives in, the release sequence, what
+each workflow produces, and the compatibility policy, which is mostly the
+absence of one. **Time:** twenty minutes.
+
+NativeLink's release process is deliberately semi-manual. Tags are signed by
+a human, and release notes are written by a human, because both are things
+an automated changelog does badly. Everything downstream of the tag is
+automated.
+
+## The version lives in fourteen files [#the-version-lives-in-fourteen-files]
+
+No single source of truth for the version exists, because the root
+`Cargo.toml` declares a `[package]` version rather than a
+`[workspace.package]` version, so nothing inherits it.
+
+| File | Count |
+| --- | --- |
+| Root `Cargo.toml` | 1 |
+| `MODULE.bazel` | 1 |
+| Each crate's `Cargo.toml` | 11 |
+| `nativelink-metric/nativelink-metric-macro-derive/Cargo.toml` | 1 |
+
+<Callout type="warn" title="The nested crate is the one that gets missed">
+  The macro-derive crate is nested one level deeper inside
+  `nativelink-metric/` and does not match a `nativelink-*/Cargo.toml` glob.
+  `CONTRIBUTING.md` calls it out by name and gives a sanity check: a standard
+  release commit touches 17 files, the fourteen above plus `Cargo.lock`,
+  `nativelink-test/fuzz/Cargo.lock` and `CHANGELOG.md`.
+</Callout>
+
+Several things that contain a version are **generated** and must not be
+hand-edited: `CHANGELOG.md` (git-cliff, configured by `cliff.toml`),
+`web/apps/docs/lib/config-versions.ts`, the per-version configuration
+reference pages, and the lockfiles.
+
+## Cutting a release [#cutting-a-release]
+
+The authoritative sequence is the numbered list under "Creating releases" in
+<SourceLink file="CONTRIBUTING.md" symbol="CONTRIBUTING.md" />.
+The shape of it:
+
+<Steps>
+  <li>
+    **Bump the version** in all fourteen files.
+  </li>
+  <li>
+    **Prepend the new changelog section**, after `git fetch upstream --tags`
+    so `--unreleased` means what it should:
+    `git cliff --unreleased --tag=v1.x.y --prepend CHANGELOG.md`. Do not
+    regenerate the whole file; that rewrites earlier entries and drops manual
+    curation. Adjusting `cliff.toml` is expected when a commit lands in the
+    wrong section.
+  </li>
+  <li>
+    **Open the release PR**, titled `Release NativeLink v1.x.y`, and merge it.
+  </li>
+  <li>
+    **Create a signed tag on the release commit**: `git tag -s v1.x.y`, with
+    the tag message equal to the tag name. Use the `v<major>.<minor>.<patch>`
+    form: the image workflow fires on any tag, but the config-reference
+    workflow only fires on `v1.*`.
+  </li>
+  <li>
+    **Push the tag to your fork first.** That triggers the image workflow in
+    your own repository, which is the dry run. Only push to `upstream` once
+    it is green.
+  </li>
+  <li>
+    **Confirm the config reference regenerated.** Pushing the tag upstream
+    triggers `config-reference.yaml`, which opens an auto-merging PR against
+    `main`. If it did not fire, re-run it from the Actions tab or regenerate
+    by hand with
+    `bun --filter @nativelink/docs gen:config-reference v1.x.y`.
+  </li>
+  <li>
+    **Write the release notes**, attributing every entry to its author, then
+    publish. Publishing is what triggers the signed-artifacts workflow.
+  </li>
+  <li>
+    **Verify the assets landed**: for each target, a `.tar.gz` plus its
+    `.sig` and `.pem`, an `.spdx.json` SBOM, and an `.intoto.jsonl`
+    provenance file.
+  </li>
+</Steps>
+
+## What the tag triggers [#what-the-tag-triggers]
+
+| Workflow | Fires on | Produces |
+| --- | --- | --- |
+| `tagged_image.yaml` | Any tag push | Four OCI images pushed to GHCR |
+| `image.yaml` | Push to `main` (and pull requests, for the build) | A `YYYY-MM-DD-<sha>` image plus a Trivy scan |
+| `config-reference.yaml` | `v1.*` tags, and weekly | Regenerated config reference, auto-merged |
+| `release.yaml` | Publishing a GitHub Release | Signed binaries, SBOMs, SLSA provenance |
+
+`release.yaml` builds three targets (`x86_64-unknown-linux-musl`,
+`aarch64-unknown-linux-musl` and `aarch64-apple-darwin`), signs each with
+keyless Sigstore cosign, and attaches SLSA Build Level 3 provenance.
+
+<Callout type="info" title="Cosign is pinned to v2.5.3 on purpose">
+  Cosign v3 stopped emitting the separate `.sig` and `.pem` files. The
+  OpenSSF Scorecard `Signed-Releases` check reads the GitHub Releases API and
+  looks for exactly those, so the pin is what keeps that check passing. The
+  cosign signatures on the GHCR container images are invisible to it.
+</Callout>
+
+Verify any asset locally:
+
+```bash
+slsa-verifier verify-artifact nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz \
+  --provenance-path nativelink-1.x.y.intoto.jsonl \
+  --source-uri github.com/TraceMachina/nativelink \
+  --source-tag v1.x.y
+```
+
+## What the version number promises [#what-the-version-number-promises]
+
+Less than you would assume, and it is better to say so than to imply
+otherwise.
+
+**No SemVer or compatibility policy is stated anywhere in the
+repository.** `MODULE.bazel` declares `compatibility_level = 0`, which is
+Bazel's way of saying no compatibility guarantee has been asserted. The
+security policy states only that the most recent tagged version is
+supported.
+
+In practice this means: read the release notes for breaking changes rather
+than inferring from the version number; pin an exact version in production
+rather than a range; and treat a minor bump as something to test, not
+something to assume.
+
+**Nothing is published to crates.io.** The crates exist for the workspace's
+own use. Consume NativeLink as a binary, a container image, or a Bazel
+module, not as a library dependency.
+
+Backward-compatible config changes do get shims: see the `#[serde(untagged)]`
+helpers in `nativelink-config`'s `backcompat.rs`, which accept the old shape
+and emit a deprecation warning. That is a convention, not a promise.
+
+## Regenerating the configuration reference [#regenerating-the-configuration-reference]
+
+The reference pages under `reference/nativelink-config/` are generated from
+the Rust config crate and must never be hand-edited. The chain is:
+`cargo run --bin build-schema --features dev-schema` produces a JSON schema,
+`web/apps/docs/scripts/gen-config-reference.mjs` and `scripts/lib/schema-to-mdx.mjs`
+turn it into MDX, and the whole thing is invoked as:
+
+```bash
+cd web
+bun --filter @nativelink/docs gen:config-reference v1.x.y
+```
+
+Passing a tag updates `lib/config-versions.ts` (which is what the docs UI
+reads to decide the current version), rewrites the current reference from
+that tag, and archives the previous one as a versioned page. Historical
+versions do not need regenerating.
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="Does a minor version bump mean no breaking changes?" id="does-minor-mean-no-breaking">
+    It is not guaranteed to. No SemVer policy is stated, and
+    `compatibility_level = 0` in `MODULE.bazel` explicitly asserts none. Read
+    the release notes, which do call out breaking changes and include
+    migration instructions.
+  </Accordion>
+  <Accordion title="Why sign tags manually instead of automating it?" id="why-manual-tags">
+    A signed tag attests that a human made the release. Automating it would
+    move the signing key into CI, which is exactly what the signature is
+    supposed to rule out.
+  </Accordion>
+  <Accordion title="Can I depend on `nativelink-store` from my own crate?" id="depend-on-crates">
+    Not from crates.io; nothing is published there. You can path- or
+    git-depend on it, but with no compatibility policy you are pinning a
+    commit, not an interface.
+  </Accordion>
+  <Accordion title="A release shipped without signed assets. Can it be fixed?" id="backfill-signed-assets">
+    Yes. Re-run `Signed release artifacts` from the Actions tab with the tag
+    as the input; it rebuilds, re-signs, and attaches the assets to the
+    existing release.
+  </Accordion>
+  <Accordion title="Which version do the docs describe?" id="which-version-do-docs-describe">
+    The configuration reference is generated per release and version-switched
+    in the UI. Everything else describes the most recent tagged version. If a
+    page's claim and your binary disagree, the binary wins, and the page is
+    a bug worth reporting.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/contribute/docs" title="Working on documentation">
+  The other half of a contribution: how these pages are built, what the
+  components are, and the rules a docs PR is reviewed against.
+</NextStep>

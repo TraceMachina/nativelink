@@ -1602,6 +1602,7 @@ async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
         headers: HashMap::new(),
         forward_headers: vec![],
         experimental_read_batching: None,
+        experimental_remote_cache_compression: Some(false),
     };
     let fast_spec = FilesystemSpec {
         content_path: make_temp_path("paginated_get_tree_cas_content"),
@@ -1609,7 +1610,7 @@ async fn get_tree_prefetch_follows_server_pagination() -> Result<(), Error> {
         ..Default::default()
     };
     let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_spec).await?;
-    let grpc_store = GrpcStore::new(&grpc_spec).await?;
+    let grpc_store = GrpcStore::new(&grpc_spec)?;
     let cas_store = FastSlowStore::new(
         &FastSlowSpec {
             fast: StoreSpec::Filesystem(fast_spec),

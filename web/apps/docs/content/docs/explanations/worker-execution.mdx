@@ -1,0 +1,286 @@
+---
+title: Worker execution
+description: "How an action becomes a running process: input materialization, what isolation you actually get, and what the worker throws away."
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone running workers, debugging an action that behaves
+differently on a worker than locally, or deciding how much to trust the
+actions they run. **What you'll have at the end:** the lifecycle, the
+filesystem layout, the exact isolation boundary, and the list of things the
+worker deliberately discards. **Time:** twenty-five minutes.
+
+The worker is where the abstractions stop. Everything upstream is digests and
+state machines; here there is a directory, a process, and an exit code. Most
+of the surprising behaviour in a NativeLink cluster originates in this crate,
+because this is the only place where the operating system gets a vote.
+
+## The connection is one stream [#the-connection-is-one-stream]
+
+A worker opens exactly one bidirectional gRPC stream to the scheduler
+(`ConnectWorker`, the sole RPC on NativeLink's own `WorkerApi` service), and
+everything flows over it. It has no polling loop and no second connection.
+
+The worker supplies only an ID *prefix*; the scheduler mints the actual
+worker ID by appending a UUIDv6, so IDs are unique and time-ordered. Which
+worker gets an action is decided separately, by the LRU-ordered
+[matching engine](/explanations/scheduler-internals#matching-is-first-fit-over-an-lru).
+
+<Callout type="warn" title="The heartbeat and the eviction timeout are two separate knobs">
+  The worker's heartbeat period is derived as **half** its configured
+  `worker_api_endpoint.timeout`, 2.5 seconds by default. Eviction is
+  governed by the *scheduler's* `worker_timeout_s`, 5 seconds by default.
+  Nothing reconciles them. Raise the scheduler's timeout without raising the
+  worker's, or vice versa, and you get workers evicted mid-heartbeat and
+  reconnecting in a loop.
+</Callout>
+
+## The filesystem, and the hardlink that everything depends on [#the-filesystem-and-the-hardlink-that-everything-depends-on]
+
+On startup the worker **purges and recreates its `work_directory`**. Anything
+left there by a previous run is gone. This is intentional (a worker that
+inherits state is a worker whose actions are not hermetic), but it means the
+work directory must not be somewhere you also keep things.
+
+Each action gets a tree:
+
+```
+<work_directory>/
+  <operation_id>/
+    work/                 <- the action's cwd root
+      <Command.working_directory>/
+    <side channel file>   <- sibling of work/, not inside it
+```
+
+Input materialization's hot path is a **hardlink**: no copy, no `chmod`, no
+byte movement at all. The worker links the file straight out of the
+filesystem CAS into the action's input tree.
+
+This one decision produces four consequences that account for a large share
+of worker bug reports.
+
+**Inputs are read-only.** A hardlink shares the inode, and CAS blobs are
+stored `0o444` (or `0o555` when executable). An action that modifies an input
+file in place gets `EACCES`. Actions that work locally and fail remotely are
+very often doing exactly this.
+
+**Executables cost a second inode.** You cannot `chmod` a hardlink without
+`chmod`-ing the shared CAS blob, so an executable input needs its own copy,
+one per digest, not one per action. This also sidesteps `ETXTBSY`, where
+writing to a file that is currently executing fails.
+
+**`work_directory` must be on the same filesystem as the CAS content path.**
+Hardlinks cannot cross filesystem boundaries. This is the single most common
+worker misconfiguration, and its symptom (everything works but is
+inexplicably slow, or fails outright) does not visibly point at a mount
+table.
+
+**The fast store must be a `FilesystemStore`.** The worker downcasts to the
+concrete type to find the file to link, and **refuses to start** if it is
+given anything else. It does not degrade to copying.
+
+<Callout type="info" title="Output parent directories are created inconsistently">
+  Parents of `output_files` and `output_paths` are pre-created. Parents of
+  `output_directories` are **not**. An action that expects its output
+  directory's parent to exist has to create it.
+</Callout>
+
+## What isolation you actually get [#what-isolation-you-actually-get]
+
+This section is deliberately blunt, because overclaiming here is dangerous.
+
+**With the default configuration, a NativeLink worker provides no
+OS-level isolation whatsoever.** `use_namespaces` defaults to `false`. The
+action runs as an ordinary child process of the worker, with the worker's
+privileges, on the worker's network, with access to whatever the worker can
+reach.
+
+Turning namespaces on improves this, but far less than the word "sandbox"
+suggests. Here is the complete list, in both directions:
+
+| Provided when enabled | **Not** provided, even when enabled |
+| --- | --- |
+| PID namespace | Network namespace; the action has the host's network |
+| IPC namespace | seccomp filtering; every syscall is available |
+| UTS namespace | cgroups; no CPU or memory limit is applied |
+| User namespace (identity map only) | `chroot` / `pivot_root`; the host filesystem is visible |
+| An init-stub reaper, via double fork | Any privilege drop; the uid map is identity, range 1 |
+| Optional mount namespace that tmpfs-masks sibling action directories | Anything at all on macOS or Windows |
+
+The user namespace maps one uid to itself. It does not sandbox the action's
+identity; it exists so the other namespaces can be created without
+privileges. Namespaces are **Linux-only** and hard-error elsewhere; this is
+not a silent no-op you can leave enabled in a mixed fleet.
+
+<Callout type="warn" title="Real isolation is delegated, not provided">
+  If you run untrusted actions, the isolation boundary has to come from
+  somewhere else: the `entrypoint` wrapper, which can invoke whatever sandbox
+  you choose, or the container the worker itself runs in. NativeLink's
+  namespace support is a hygiene measure (it stops actions tripping over
+  each other's processes and mounts), not a security boundary. Note also that
+  inside Docker, creating namespaces requires a privileged container, which
+  trades away more than it buys back.
+</Callout>
+
+## The environment is built from nothing [#the-environment-is-built-from-nothing]
+
+The worker calls `env_clear()` first. Nothing is inherited. Variables are
+then applied in this order:
+
+1. `additional_environment` from the worker's config
+2. On Windows only, `SystemRoot` and `PATH`
+3. The action's own `Command.environment_variables`, **last**
+
+Two things follow. **Action-declared variables override worker config**, not
+the other way round; worker config is a default, not a policy. And on Linux
+and macOS **no `PATH`, `HOME` or `TMPDIR` is injected at all**. An action that
+does not declare them does not have them, which is correct for hermeticity
+and is why toolchains that assume a working `PATH` fail here. See
+[toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity).
+
+## Timeouts, signals, and the output you lose [#timeouts-signals-and-the-output-you-lose]
+
+A requested timeout above `max_action_timeout_s` (20 minutes if unset) is
+**rejected with `InvalidArgument`, not clamped**. The client is told its
+request was unacceptable rather than silently receiving a shorter deadline
+than it asked for. That is the right choice, and one worth knowing before you
+set a low ceiling on a cluster whose clients ask for long ones. An action
+that requests no timeout at all runs under `max_action_timeout_s`.
+
+Three things about failure output are worth internalising:
+
+**A timed-out or killed action returns empty stdout and stderr.** The
+captured bytes are explicitly discarded, not truncated. The single most
+useful diagnostic for "why did this hang" is the one you do not get.
+
+**Signal death is reported as exit code 9**, indistinguishable from a genuine
+`exit(9)`. An OOM kill and a program that chose to exit 9 look identical.
+
+**stdout and stderr are buffered entirely in worker memory**, with no cap and
+no streaming. An action that writes a gigabyte to stdout costs a gigabyte of
+worker RAM, and no part of it is visible until the action ends.
+
+## Uploading outputs, and what is dropped [#uploading-outputs-and-what-is-dropped]
+
+The ordering here is subtle and matters for anyone reasoning about
+consistency. When the command exits, the worker sends `ExecuteComplete` to
+the scheduler (the process is done, so a new action can be assigned) and
+*then* uploads outputs, deletes the action directory, and writes the action
+cache entry. The final result update, which is what a client is waiting on,
+comes after all of that, so a client that observes completion and
+immediately queries the cache finds the result; but the scheduler knows the
+command finished slightly before the bytes exist.
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="execution_complete" />
+
+<Mermaid>{`sequenceDiagram
+    participant sched as Scheduler
+    participant w as Worker
+    participant cas as CAS + AC
+    sched->>w: assign action (over ConnectWorker)
+    w->>w: create work directory for the operation
+    w->>cas: fetch missing blobs
+    w->>w: hardlink inputs from filesystem CAS
+    w->>w: env_clear(), then run the command
+    w->>sched: ExecuteComplete (the process exited)
+    w->>cas: upload outputs
+    w->>w: delete the action directory
+    w->>cas: write ActionResult to AC
+    w->>sched: final result update
+`}</Mermaid>
+
+Four behaviours in the upload path:
+
+**A declared-but-missing output is not an error.** An action that promises
+`output_files` and does not produce them completes successfully with those
+outputs absent. Bazel will notice; a hand-rolled client may not.
+
+**Absolute symlinks are dereferenced and uploaded as content.** Only
+*relative* output symlinks are preserved as symlinks. An action that emits an
+absolute symlink gets a copy of the target instead, which is usually what
+you want across machines, and occasionally very much not.
+
+**`node_properties` is `None`.** Output file modes and mtimes are dropped. A
+file that was executable in the action's output tree is not necessarily
+executable when a client materialises it.
+
+**`server_logs` is not implemented.** The field exists in the protocol; the
+worker never populates it.
+
+## Cleanup, and three things called eviction [#cleanup-and-three-things-called-eviction]
+
+The entire action directory is deleted after every action, with a `Drop`
+backstop for the panicking case and a path-canonicalization check so that a
+malicious or malformed operation ID cannot direct the delete outside the work
+directory.
+
+Three separate mechanisms get called "eviction" in worker discussions, and
+conflating them makes capacity planning impossible:
+
+| Domain | Governed by | Behaviour |
+| --- | --- | --- |
+| The action directory | nothing | Deleted unconditionally after every action |
+| The filesystem CAS | `eviction_policy.max_bytes` | LRU over stored blobs |
+| The directory cache (only if `directory_cache` is configured) | `max_entries` (1000), `max_size_bytes` (10 GB) | LRU over materialized input trees |
+
+Only the second is your cache size. The third is a distinct, much smaller
+cache of materialized trees, off by default, and its defaults are not derived
+from the second.
+
+<Callout type="info" title="Persistent workers keep more than you might expect">
+  A persistent worker process is spawned once (with the worker's own
+  environment, and **without** namespaces or `env_clear()`) and reused across
+  actions. Each action still gets its own materialized input directory, which
+  is handed to the process as the request's `sandbox_dir`, but the process
+  itself carries whatever state it accumulates from one request to the next.
+  That is the point (it is what makes them fast), but it also means a
+  persistent worker is a shared mutable environment across the actions it
+  serves. See [persistent workers](/remote-execution/persistent-workers).
+</Callout>
+
+## Where the exact truth lives [#where-the-exact-truth-lives]
+
+Every worker field and default is in the generated
+[worker configuration reference](/reference/nativelink-config#workerconfig). The
+execution code itself is
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="RunningActionsManager" />
+and
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="LocalWorker" />.
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="My action works locally and fails remotely with EACCES. Why?" id="eacces-on-inputs">
+    It is almost certainly modifying an input file in place. Inputs are
+    hardlinks to read-only CAS blobs. Copy the file into the output tree
+    first, or declare it as an output rather than an input.
+  </Accordion>
+  <Accordion title="Is it safe to run untrusted actions on a NativeLink worker?" id="untrusted-actions">
+    Not on the strength of NativeLink's own isolation. With defaults there is
+    none; with namespaces enabled there is still no network isolation, no
+    seccomp, no cgroups, no filesystem root change and no privilege drop. Put
+    the boundary in the `entrypoint` wrapper or in the container the worker
+    runs in, and size that boundary for genuinely hostile input.
+  </Accordion>
+  <Accordion title="Why did my action time out with no logs at all?" id="timeout-no-logs">
+    Because output from a timed-out or killed action is discarded rather than
+    returned. To get diagnostics out of a hanging action, have it write to a
+    declared output file rather than to stdout, or lower the action's own
+    internal timeout so it exits normally before the worker kills it.
+  </Accordion>
+  <Accordion title="Can I put work_directory on a different disk from the CAS?" id="work-directory-separate-disk">
+    No. Materialization is hardlink-based and hardlinks cannot cross
+    filesystems. Both must live on the same filesystem, which is also the
+    thing to check first when a worker is unexpectedly slow.
+  </Accordion>
+  <Accordion title="Why is my worker using so much memory on one action?" id="worker-memory-one-action">
+    stdout and stderr are buffered entirely in memory with no cap. An action
+    that is chatty on stdout costs RAM proportional to everything it has
+    printed, held until it exits.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/explanations/correctness-hermeticity" title="Correctness and hermeticity">
+  Which of these guarantees you get by default, which you have to configure,
+  and which the protocol never offered in the first place.
+</NextStep>

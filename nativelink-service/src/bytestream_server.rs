@@ -1242,6 +1242,7 @@ impl ByteStreamServer {
         let encode_fut = Box::pin(crate::wire_compression::stream_encode_compressed_download(
             raw_rx,
             wire_compressor,
+            crate::wire_compression::ZSTD_COMPRESSION_LEVEL,
             compressed_tx,
         ));
 
@@ -1326,7 +1327,7 @@ impl ByteStreamServer {
             .err_tip(|| {
                 format!(
                     "'instance_name' not configured for '{}'",
-                    &resource_info.instance_name
+                    resource_info.instance_name
                 )
             })?;
         let store_clone = instance.store.clone();

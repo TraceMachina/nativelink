@@ -117,13 +117,10 @@ pub fn namespaces_supported(mount: bool) -> bool {
                         } == 0
                         {
                             exit(0);
-                        } else {
-                            // SAFETY: We just called a libc function that failed (-1).
-                            let errno = unsafe { *libc::__errno_location() };
-                            exit(
-                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
-                            );
                         }
+                        // SAFETY: We just called a libc function that failed (-1).
+                        let errno = unsafe { *libc::__errno_location() };
+                        exit((NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS));
                     }
                     Err(uid_map_err) => {
                         exit(
@@ -132,11 +129,10 @@ pub fn namespaces_supported(mount: bool) -> bool {
                         );
                     }
                 }
-            } else {
-                // SAFETY: We just called a libc function that failed (-1).
-                let errno = unsafe { *libc::__errno_location() };
-                exit((NamespaceErrorType::Unshare as i32) | (errno << NS_ERROR_TYPE_BITS));
             }
+            // SAFETY: We just called a libc function that failed (-1).
+            let errno = unsafe { *libc::__errno_location() };
+            exit((NamespaceErrorType::Unshare as i32) | (errno << NS_ERROR_TYPE_BITS));
         }
         pid if pid > 0 => {
             let mut status = 0;

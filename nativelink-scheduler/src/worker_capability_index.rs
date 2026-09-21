@@ -123,7 +123,8 @@ impl WorkerCapabilityIndex {
     /// The caller should apply additional filtering (e.g., worker availability).
     ///
     /// IMPORTANT: This method returns candidates based on STATIC properties only.
-    /// - Exact and Unknown properties are fully matched
+    /// - Exact and Unknown properties are fully matched; Unknown properties
+    ///   additionally match workers that do not declare the key
     /// - Priority properties just require the key to exist
     /// - Minimum properties return workers that HAVE the property (presence check only)
     ///
@@ -157,7 +158,18 @@ impl WorkerCapabilityIndex {
                         value: value.clone(),
                     };
 
-                    let matching = self.exact_index.get(&key).cloned().unwrap_or_default();
+                    let mut matching = self.exact_index.get(&key).cloned().unwrap_or_default();
+
+                    // Unknown properties only restrict workers that declare the
+                    // key, so workers without the key remain candidates.
+                    if matches!(value, PlatformPropertyValue::Unknown(_)) {
+                        match self.property_presence.get(name) {
+                            Some(with_key) => {
+                                matching.extend(self.all_workers.difference(with_key).cloned());
+                            }
+                            None => matching.extend(self.all_workers.iter().cloned()),
+                        }
+                    }
 
                     let internal_candidates = match candidates {
                         Some(existing) => existing.intersection(&matching).cloned().collect(),

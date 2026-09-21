@@ -116,6 +116,11 @@ pub struct SimpleSpec {
     /// have the `"cpu_arch"` label. We have no special treatment of any platform
     /// property labels other and entirely driven by worker configs and this
     /// config.
+    ///
+    /// Properties that are not listed here are matched dynamically: workers
+    /// that declare the key must match the value exactly, and workers that do
+    /// not declare the key are not restricted by it. List a property here to
+    /// enforce stricter matching.
     pub supported_platform_properties: Option<HashMap<String, PropertyType>>,
 
     /// The amount of time to retain completed actions for in case
@@ -129,6 +134,22 @@ pub struct SimpleSpec {
     /// Default: 60 seconds
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub client_action_timeout_s: u64,
+
+    /// Periodically count the actions in each stage and report them as the
+    /// `execution.active.count` metric.
+    ///
+    /// Only has an effect when scheduler state lives in a store, which today
+    /// means Redis; the in-memory scheduler always maintains this count because
+    /// it already holds the state in process. The count is a query against the
+    /// scheduler store every 15 seconds from every scheduler replica, so it
+    /// adds load to the same backend that serves action scheduling. Leave it
+    /// off unless you want the metric.
+    ///
+    /// Every replica reports the same store-wide totals, so aggregate the
+    /// series across replicas with `max`, not `sum`.
+    /// Default: false
+    #[serde(default)]
+    pub enable_active_action_count_metric: bool,
 
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds.
@@ -145,6 +166,16 @@ pub struct SimpleSpec {
     /// Default: 0 (disabled)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_executing_timeout_s: u64,
+
+    /// Evict a worker that has not reported back on an operation it was
+    /// told to kill within this many seconds. A healthy worker
+    /// acknowledges a kill in moments; one that cannot is wedged, and its
+    /// keepalives would otherwise keep `worker_timeout_s` from ever firing
+    /// while the dead operation holds its slot. Eviction requeues the
+    /// worker's other operations.
+    /// Default: 60 seconds
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub unacknowledged_kill_timeout_s: u64,
 
     /// If a job returns an internal error or times out this many times when
     /// attempting to run on a worker the scheduler will return the last error

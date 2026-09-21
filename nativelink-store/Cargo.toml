@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-store"
-version = "1.6.3"
+version = "1.7.1"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -16,8 +16,10 @@ nativelink-util = { path = "../nativelink-util" }
 
 async-lock = { version = "3.4.0", features = ["std"], default-features = false }
 async-trait = { version = "0.1.88", default-features = false }
-aws-config = { version = "1.6.1", default-features = false, features = ["sso"] }
-aws-sdk-s3 = { version = "1.82.0", features = [
+aws-config = { version = "1.11.0", default-features = false, features = [
+  "sso",
+] }
+aws-sdk-s3 = { version = "1.144.0", features = [
   "http-1x",
   "rt-tokio",
 ], default-features = false }
@@ -45,13 +47,17 @@ bytes = { version = "1.10.1", default-features = false }
 const_format = { version = "0.2.34", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 gcloud-auth = { version = "1.3", default-features = false, features = [
-  "jwt-rust-crypto",
+  # jsonwebtoken's `rust_crypto` backend signs service-account JWTs with the
+  # `rsa` crate, which has no fix for the Marvin timing side channel
+  # (RUSTSEC-2023-0071). aws-lc-rs is only linked for that JWT signing; every
+  # rustls stack in the binary still runs on ring (see below).
+  "jwt-aws-lc-rs",
 ] }
 gcloud-storage = { version = "1.3", default-features = false, features = [
   "auth",
   # reqwest 0.13's `rustls` feature pulls aws-lc-rs; `rustls-no-provider` uses
   # the process-default rustls provider (ring, installed by common_s3_utils) so
-  # the whole binary stays on a single crypto provider.
+  # every rustls stack in the binary stays on a single crypto provider.
   "rustls-no-provider",
 ] }
 hex = { version = "0.4.3", default-features = false }
@@ -134,13 +140,13 @@ wincode = { version = "0.5.4", default-features = false, features = [
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { version = "0.2.177", default-features = false }
 
+[build-dependencies]
+# Compiles aws_lc_musl_shims.c for musl targets; see that file.
+cc = { version = "1.2", default-features = false }
+
 [dev-dependencies]
 nativelink-macro = { path = "../nativelink-macro" }
 
-aws-sdk-s3 = { version = "1.82.0", features = [
-  "http-1x",
-  "rt-tokio",
-], default-features = false }
 aws-smithy-http-client = { version = "1.1.13", default-features = false, features = [
   "test-util",
 ] }
@@ -179,4 +185,4 @@ zip = { version = "8.0.0", default-features = false, features = [
 
 [package.metadata.cargo-machete]
 # Used by nativelink_test macro
-ignored = ["tracing-test"]
+ignored = ["cc", "tracing-test"]

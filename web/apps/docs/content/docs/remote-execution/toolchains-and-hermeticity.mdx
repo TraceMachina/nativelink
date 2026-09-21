@@ -1,0 +1,323 @@
+---
+title: Toolchains and hermeticity
+description: Your action ran on a worker and failed on a missing compiler. Here is why that happens, and how to pin the toolchain so local and remote builds hash identically.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone whose actions execute remotely but fail on the
+worker for reasons that never happen locally. **What you'll have at the end:**
+a Nix-pinned toolchain that produces the same action digests on your machine
+and on a worker. **Time:** thirty minutes for the walkthrough.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+## The problem [#the-problem]
+
+An action is a closed description of some work: input digests, a command
+line, an environment, and platform properties. If the compiler your command
+invokes isn't in that description, the action is a lie: it works on your
+machine because your machine happens to have the compiler, and it fails on a
+worker that doesn't.
+
+This is not a NativeLink behaviour. It is what remote execution *is*: the
+protocol will faithfully reproduce whatever you described, and no more.
+Caching lets you get away with an under-described action because the only
+machine that ever ran it was yours. Execution doesn't.
+
+Two ways out exist.
+
+1. **Make the environment part of the image.** Bake the toolchain into the
+   worker's container, and route actions to it with the `container-image`
+   property. Minimal, and it's what most fleets do first.
+   [Containers and images](/remote-execution/containers-and-images) covers
+   this path.
+2. **Make the toolchain part of the action.** Pin every tool at a
+   content-addressed path so the toolchain itself is an input the CAS knows
+   about. This is Local Remote Execution, and it's the rest of this page.
+
+The second is strictly stronger: it gets you identical action digests
+locally and remotely, which means a local build and a remote build share
+cache entries instead of each maintaining their own.
+[What LRE is and why](/explanations/lre) is the conceptual write-up; this
+page is the mechanism.
+
+<Callout type="info" title="You don't need LRE to use remote execution">
+  A worker image with your toolchain in it is a legitimate answer, and it's
+  the right one if you don't already use Nix. Read the problem statement
+  above, then decide which of the two paths you're on.
+</Callout>
+
+## What ships in `@local-remote-execution` [#what-ships-in-local-remote-execution]
+
+Three toolchain families, and they do not behave the same way once you leave
+`x86_64-linux`.
+
+| Family | Bazel target prefix | Platforms with a native config |
+| --- | --- | --- |
+| Rust | `@local-remote-execution//rust/...` | `aarch64-darwin`, `aarch64-linux`, `x86_64-darwin`, `x86_64-linux` |
+| C++ | `@local-remote-execution//generated-cc/...` | `x86_64-linux` only (container `nativelink-worker-lre-cc`) |
+| Java | `@local-remote-execution//generated-java/...` | `x86_64-linux` only (container `nativelink-worker-lre-java`) |
+
+<SourceLink file="local-remote-execution/README.md" />
+<SourceLink file="local-remote-execution/flake-module.nix" />
+
+The flake module always emits the Rust platform and toolchain flags, and adds
+the C++ ones only on Linux, where the generated config is `x86_64` and
+carries a `container-image` property. On an `x86_64-linux` host that means
+C++ actions can run locally out of the same `/nix/store` paths the worker
+image has, or remotely on that image, with the same digest either way. On
+macOS there is no local C++ or Java toolchain at all, so those actions can
+only execute on a remote worker running the matching image, and even a
+Nix-pinned toolchain costs a network round-trip: **LRE gives you
+hermeticity, not offline-ness.**
+
+<Callout type="warn" title="This is the single most common surprise">
+  Reading "local remote execution" as "everything runs locally" leads to a
+  confusing first hour on macOS. What is local is the *toolchain definition*.
+  Whether the action executes locally depends on which family it uses.
+</Callout>
+
+## Set it up [#set-it-up]
+
+<Steps>
+
+<li>
+
+### Install Nix with flakes enabled [#install-nix-with-flakes-enabled]
+
+The [next-gen installer](https://github.com/NixOS/experimental-nix-installer)
+is the shortest path. If you already have Nix, make sure
+`experimental-features = nix-command flakes` is in your `nix.conf`.
+
+The pinning *is* the guarantee here: every tool lives at a
+content-addressed `/nix/store` path, and that path is what makes action
+hashes match across machines. No non-Nix version of this mechanism exists.
+
+</li>
+
+<li>
+
+### Pull the template [#pull-the-template]
+
+```bash
+mkdir my-lre-test && cd my-lre-test
+nix flake init -t github:TraceMachina/nativelink#bazel
+```
+
+This writes a `flake.nix` importing `nativelink.flakeModules.lre` and
+pinning `lre = { inherit (pkgs.lre.lre-cc.meta) Env; }`, plus a
+`hello-world.cpp` example, its `BUILD.bazel`, and `platforms/BUILD.bazel`.
+
+`bazel` is the only template the flake ships;
+[Examples and templates](/remote-execution/examples-and-templates) has the
+full list and what to do if you want a different starting point.
+
+</li>
+
+<li>
+
+### Initialise git before you enter the shell [#initialise-git-before-you-enter-the-shell]
+
+```bash
+git init && git add -A
+```
+
+This step is not optional and it fails quietly.
+
+<Callout type="warn" title="Skip this and lre.bazelrc is silently never written">
+  The flake module's install script checks for a `.git` directory before
+  generating anything. In a plain non-git folder, `nix develop` prints this
+  and carries on without writing `lre.bazelrc` (no error, no toolchain):
+
+  ```plaintext
+  WARNING: lre: .git not found; skipping installation.
+  ```
+</Callout>
+
+</li>
+
+<li>
+
+### Enter the dev shell [#enter-the-dev-shell]
+
+```bash
+nix develop
+```
+
+This fetches the Nix-pinned toolchain and writes `lre.bazelrc` (a symlink
+into the Nix store). On `aarch64-darwin` the generated file looks like this,
+abbreviated; your store paths will differ:
+
+```bash
+# These flags are dynamically generated by the lre flake module.
+#
+# PATH=/nix/store/...-binutils-wrapper-.../bin:/nix/store/...-customClang/bin:...
+# CC=/nix/store/...-customClang/bin/customClang
+
+# Bazel-side configuration for LRE.
+build --define=EXECUTOR=remote
+build --extra_execution_platforms=@local-remote-execution//rust/platforms:aarch64-apple-darwin,@local-remote-execution//rust/platforms:aarch64-apple-darwin
+build --extra_toolchains=@local-remote-execution//rust:rust-aarch64-darwin
+build --extra_toolchains=@local-remote-execution//rust:rustfmt-aarch64-darwin
+build --platforms=@local-remote-execution//rust/platforms:aarch64-apple-darwin
+```
+
+Note that it registered only the **Rust** platform and toolchains even
+though the flake asked for the `lre-cc` `Env`: the module emits the Rust
+lines on every system and adds the `generated-cc` platform and
+`cc-toolchain` lines only on Linux. `Env` only decides which store paths
+are listed (and therefore fetched) in the commented header. The template's
+own `.bazelrc` separately adds
+`--extra_execution_platforms=@//platforms:lre-cc` for the C++ example, which
+is the container-based platform from the table above.
+
+</li>
+
+<li>
+
+### Point `user.bazelrc` at your cluster [#point-userbazelrc-at-your-cluster]
+
+`nix flake init` writes a `user.bazelrc` with the literal string `TODO` as
+every value. That is what lands on disk, not a placeholder left in this page:
+
+```bash
+build --remote_cache=grpcs://TODO
+build --bes_backend=grpcs://TODO
+build --remote_timeout=600
+build --remote_executor=grpcs://TODO
+```
+
+Filled in against a plain local cluster: no TLS, so `grpc://`, and no BES
+endpoint to point at:
+
+```bash
+build --remote_cache=grpc://127.0.0.1:50051
+build --remote_timeout=600
+build --remote_executor=grpc://127.0.0.1:50051
+```
+
+A hosted or self-managed cluster is the same shape with `grpcs://` and real
+hostnames, plus a `bes_backend` line if you want build results streamed.
+
+If you build before editing this file, Bazel fails on the literal hostname
+`TODO`:
+
+```plaintext
+[8 / 10] Compiling src/hello-world.cpp; 0s remote, remote-cache
+ERROR: BUILD.bazel:3:10: Compiling src/hello-world.cpp failed:
+  Failed to query remote execution capabilities: UNAVAILABLE: Unable to resolve host TODO
+```
+
+Everything before that DNS failure worked: the Nix toolchain, the platform
+wiring, and the `lre-cc` execution platform selection. `0s remote,
+remote-cache` means Bazel had already committed to executing remotely.
+
+</li>
+
+<li>
+
+### Build [#build]
+
+```bash
+bazel build hello-world
+```
+
+With a real endpoint and a worker running the `nativelink-worker-lre-cc`
+image, this compiles `src/hello-world.cpp` on that worker and returns the
+binary through the same CAS your local Bazel reads from. Run it again and
+it's a cache hit.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- `lre.bazelrc` exists in the workspace root and contains
+  `--extra_toolchains` lines.
+- `bazel build` reports the action as `remote` (for `lre-cc`), or, run
+  without `--remote_executor`, builds locally with the pinned toolchain
+  (Rust on any of the four systems, C++ on `x86_64-linux`).
+- The **same target built on two different machines** produces a cache hit
+  on the second. This is the actual test of hermeticity; same-machine
+  re-runs prove nothing about it.
+
+</VerifyBlock>
+
+<Callout type="info" title="No container-capable worker handy?">
+  You can still validate the cache half.
+  [Local testing](/remote-execution/local-testing) starts a NativeLink
+  instance on `localhost`, which is enough to exercise `--remote_cache`
+  against real credentials before you also need a worker matching
+  `lre-cc`'s platform requirements.
+</Callout>
+
+## Adding LRE to a project you already have [#adding-lre-to-a-project-you-already-have]
+
+The template bootstraps a *new* workspace. For an existing one you need the
+flake-parts module wiring, the `bazel_dep` override, and a `try-import` of
+the generated `lre.bazelrc`.
+<SourceLink file="local-remote-execution/README.md" symbol="local-remote-execution/README.md" />
+has that path, and also covers verifying the setup against a Kubernetes
+cluster.
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `WARNING: lre: .git not found; skipping installation.` | `nix develop` ran outside a git repo | `git init && git add -A`, then re-enter the shell |
+| `Unable to resolve host TODO` | `user.bazelrc` still has the generated placeholders | Replace all three `TODO`s |
+| Local and remote stop sharing cache hits | `lre.bazelrc` has stale `/nix/store` paths | Compare against the `@local-remote-execution` module at the commit pinned in `MODULE.bazel` / `flake.nix`; version drift is the usual cause |
+| C++ actions queue forever | No worker advertises the `lre-cc` container image | See [Containers and images](/remote-execution/containers-and-images) and [Platform properties](/remote-execution/platform-properties) |
+| Action runs remotely but can't find a header | The toolchain is pinned, the *inputs* aren't | Check that the header is a declared Bazel dependency, not something on the include path by accident |
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+
+<Accordion title="Can I get hermeticity without Nix?" id="can-i-get-hermeticity-without-nix">
+You can get *reproducibility across a fleet* by baking the toolchain into
+one worker image and routing every action to it. That's path 1 at the top
+of this page, and for many teams it's enough. What you don't get is matching
+action digests between a developer's laptop and the fleet, because the
+laptop isn't running that image. Nix pinning is what closes that gap.
+
+Note this is a client-side requirement only. The NativeLink server, the
+scheduler, and the workers run fine with no Nix anywhere.
+</Accordion>
+
+<Accordion title="How is this different from local testing?" id="how-is-this-different-from-local-testing">
+[Local testing](/remote-execution/local-testing) validates the *protocol*
+with whatever toolchain is on your `PATH`; it deliberately has no toolchain
+opinion, which is what makes it a good first step. This page pins the
+toolchain so local and remote actions hash identically. Do that one first if
+you just want to see `Execute` work.
+</Accordion>
+
+<Accordion title="Does hermeticity slow my build down?" id="does-hermeticity-slow-my-build-down">
+The first `nix develop` is slow; it's fetching a full toolchain closure,
+and 15 to 20 GB of free disk is a reasonable expectation. After that it's a
+no-op. At build time, pinned toolchains are marginally *faster* to cache
+against, because the digest stability means fewer spurious misses.
+</Accordion>
+
+<Accordion title="Which family should I use for a mixed-language repo?" id="which-family-for-a-mixed-language-repo">
+They compose: a workspace can register Rust, C++, and Java toolchains at
+once, and Bazel resolves per target. The practical constraint is that only
+Rust has native non-Linux configs, so on macOS your C++ and Java actions
+need a reachable worker while your Rust actions can still run locally.
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/remote-execution/containers-and-images" title="Containers and images">
+  The other path to a reproducible worker environment, and what the
+  `container-image` property actually does.
+</NextStep>
+
+<NextStep href="/explanations/lre" kind="aside" title="What LRE is and why">
+  The conceptual write-up behind the mechanism on this page.
+</NextStep>

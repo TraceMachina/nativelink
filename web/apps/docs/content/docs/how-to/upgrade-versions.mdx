@@ -1,0 +1,251 @@
+---
+title: Upgrade to a newer version
+description: Read the changelog for the things that actually break, upgrade the three process types in the right order, and know what happens to the cache you already have.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone running a pinned version who wants a newer one.
+**What you'll have at the end:** a rehearsed upgrade, a rollback that works, and
+your existing cache intact. **Time:** thirty minutes for the rehearsal, minutes
+for the upgrade itself.
+
+<Prerequisites>
+  A running deployment with a pinned version.
+</Prerequisites>
+
+NativeLink releases every week or two. Most releases change nothing you depend on,
+which makes it tempting to upgrade casually and equally tempting to never
+upgrade at all. Both go wrong in the same way: the thing that breaks an upgrade
+is almost never the code, it is the config.
+
+Nearly every block of the config is parsed with `deny_unknown_fields`. A field
+that was renamed or removed in the new version is not ignored: it is a startup
+failure with a message naming the field (renamed fields sometimes keep the old
+name as a serde alias, in which case both spellings parse). That is the
+behaviour you want, because the alternative is a silently ignored setting and a
+deployment that is quietly not doing what the file says. But it means an
+upgrade is a config compatibility exercise first and a binary swap second.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="CasConfig" />
+
+<SourceLink file="CHANGELOG.md" />
+
+## What is stable and what isn't [#what-is-stable-and-what-isnt]
+
+The **client-facing API** is the Remote Execution API. It is a published,
+versioned protocol, and Bazel talking to NativeLink over `:50051` and `:50052`
+is the most stable surface here. You do not generally need to upgrade clients in
+step with the server.
+
+The **config schema** is the surface that moves. Fields get added constantly,
+which is harmless; occasionally one is renamed or removed, which is not.
+
+The **worker API** between a worker and the scheduler is internal. Nothing
+promises that a worker from one release talks to a scheduler from another, so
+treat scheduler and workers as a unit that upgrades together.
+
+Stored **data** is content-addressed, which does most of the work for you: a
+blob's key is its digest, so bytes written by an old version are found by a new
+one. What is not automatically portable is the on-disk or in-Redis *layout* a
+store uses to organize those bytes. Layout changes are rare (the filesystem
+store still migrates its old single-folder layout in place at startup), and they
+are one of the things to look for when you read the changelog.
+
+<SourceLink file="nativelink-store/src/filesystem_store.rs" symbol="read_files" />
+
+## Read the changelog for four things [#read-the-changelog-for-four-things]
+
+`CHANGELOG.md` is generated per release, grouped into features, bug fixes,
+documentation, testing and CI, miscellaneous, and bumps and version updates,
+with a `compare/v1.6.4..v1.6.5` link in each release heading that shows every
+commit between the two.
+
+Skimming the whole thing is not the point. Read it for:
+
+Renamed, removed or newly-required **config fields**: these are the ones that
+stop your process from starting.
+
+Changes to **default values**, which do not fail loudly and are the reason to
+set explicitly anything you actually care about.
+
+**Store layout or serialization** changes, which determine whether existing
+cached data is still reachable.
+
+Anything about the **worker protocol**, which decides whether you can upgrade
+workers and scheduler independently.
+
+Skip several versions and you must read every intervening release's entries, not
+just the newest, because the breaking change may be three releases back.
+
+<Callout type="info" title="The config reference is versioned">
+  [The configuration reference](/reference/nativelink-config) is published per
+  release. Open the page for the version you are moving to and diff it against
+  the one you are on. It is the fastest way to see field-level changes without
+  reading commits.
+</Callout>
+
+## Rehearse the config before you touch production [#rehearse-the-config-before-you-touch-production]
+
+No `--validate` flag exists. The binary takes one positional argument, the
+config file (plus the usual `--help` and `--version`), and parses it at
+startup, which is exactly what you want, because the check is just "does the
+new binary accept this file":
+
+```sh
+docker run --rm \
+  -v $(pwd)/cas.json5:/config.json5 \
+  ghcr.io/tracemachina/nativelink:v1.6.5 /config.json5
+```
+
+A config error fails within a second, before any port is bound, with a message
+naming the offending field. If instead it starts up and begins listening, the
+config parsed and you can stop the container.
+
+Run this for every config file you have (the CAS, the scheduler, and each
+distinct worker) against the version you are moving to. A parse failure here is
+a five-minute fix. The same failure during a rolling restart is an outage.
+
+## Upgrade in the right order [#upgrade-in-the-right-order]
+
+<Steps>
+
+<li>
+
+**Pin, don't float.** If anything in your deployment says `:latest`, fix that
+first. You cannot control an upgrade you did not choose, and you cannot roll
+back to a tag that means something different now.
+
+</li>
+
+<li>
+
+**Rehearse every config file** against the new image as above, and fix whatever
+fails.
+
+</li>
+
+<li>
+
+**Upgrade the CAS servers first.** They hold the data, they serve the most
+traffic, and they are the piece other processes depend on. A filesystem store
+rescans its `content_path` at startup to rebuild its index, so a restart with a
+large cache is not instant. Expect a pause proportional to the number of
+objects, and do not interpret it as a hang.
+
+</li>
+
+<li>
+
+**Upgrade the scheduler and the workers together.** The worker API between them
+is internal. With a `simple` scheduler the queue is in memory, so restarting it
+drops queued actions. Clients retry, but do it when a retry storm is cheap.
+
+</li>
+
+<li>
+
+**Run a real build**, then run it again. The first proves the new version works;
+the second proves it can still read what the old version wrote, which is the
+question that actually matters.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Every process is running the intended tag, and you can prove it rather than
+  assume it.
+- A build run before the upgrade gets cache hits after it. This is the
+  data-compatibility check.
+- Remote execution actions complete on upgraded workers.
+- Nothing in any process log mentions an unknown or deprecated config field.
+- The previous image tag plus the previous config file are still somewhere you
+  can reach in under a minute.
+
+</VerifyBlock>
+
+## Rolling back [#rolling-back]
+
+Rollback is the same operation in reverse, with one asymmetry worth internalizing.
+
+Config is not backward compatible in the direction you need it to be. If you
+added a field that only exists in the new version, the old binary rejects that
+file, because `deny_unknown_fields` cuts both ways. **Roll back the config and the
+image together, as a pair.** Keeping the two versions of each config file next
+to each other for a release or two costs nothing and turns a rollback into a
+single decision.
+
+Data written by the newer version stays readable by the older one in the normal
+case, because content addressing does not change. If the changelog mentioned a
+store layout change, that is the case where it does not, and it is also the case
+where rolling back means accepting a cold cache. Reading for that in advance is
+what makes the difference between a rollback and an incident.
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="`unknown field` at startup" id="unknown-field-at-startup">
+
+Exactly the failure this design intends. The message names the field. Find it in
+the new version's config reference. Usually it was renamed, occasionally it
+moved under a different parent, rarely it is gone because the feature it
+controlled is. Fix the file, do not try to make the parser lenient.
+
+</Accordion>
+
+<Accordion title="Everything starts but the cache is cold" id="everything-starts-but-the-cache-is-cold">
+
+The new version is not finding the old data. Check first that `content_path`,
+the bucket, or the Redis instance is genuinely the same one. A changed volume
+mount or a changed key prefix looks exactly like a format incompatibility. If
+the paths are identical, re-read the changelog for the intervening releases with
+store layout in mind.
+
+</Accordion>
+
+<Accordion title="Workers connect but actions fail after upgrading only the scheduler" id="workers-connect-but-actions-fail-after-upgrading-only-the-scheduler">
+
+Version skew across the worker API. Bring the workers to the same version. This
+is why the two upgrade together rather than independently.
+
+</Accordion>
+
+<Accordion title="The CAS takes a long time to start" id="the-cas-takes-a-long-time-to-start">
+
+A filesystem store walks `content_path` at startup to rebuild its in-memory
+index, and that scales with object count. It is not stuck. If the pause is long
+enough to matter operationally, that is a signal about cache size rather than
+about the upgrade, and [Tuning](/operate/tuning) has the storage levers.
+
+</Accordion>
+
+<Accordion title="How far behind can I safely get?" id="how-far-behind-can-i-safely-get">
+
+Being several releases behind is not itself dangerous. The risk is that the
+upgrade becomes several config migrations at once with no way to tell which one
+broke. If you are many versions back, step through in two or three hops and run
+a build at each, rather than making one jump you cannot bisect.
+
+</Accordion>
+
+<Accordion title="Do clients need to upgrade too?" id="do-clients-need-to-upgrade-too">
+
+Usually no. Bazel and NativeLink talk the Remote Execution API, which is stable
+across these releases. Client upgrades matter when you want a client-side
+feature, not because the server moved.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/reference/nativelink-config" title="Configuration reference">
+  The per-version field reference, which is what you diff when a release note is
+  ambiguous.
+</NextStep>
+
+<NextStep href="/operate/production-config" kind="aside" title="Production configuration">
+  The settings worth pinning explicitly so a changed default never surprises you.
+</NextStep>

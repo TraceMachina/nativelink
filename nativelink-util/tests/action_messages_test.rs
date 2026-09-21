@@ -179,6 +179,6 @@ fn to_execute_response_emits_default_status_when_no_error() {
     let resp = to_execute_response(action_result_with_error(None));
     let status = resp.status.expect("status must be set");
     assert_eq!(status.code, 0);
-    assert!(status.details.is_empty());
-    assert!(status.message.is_empty());
+    assert_eq!(status.details, vec![]);
+    assert_eq!(status.message, "");
 }

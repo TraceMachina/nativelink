@@ -19,10 +19,27 @@ if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
     echo "This script should be run under run_integration_tests.sh"
     exit 1
 fi
+
+# This test uploads a locally-run test result to the cache and asserts the
+# re-run is a cache hit, so it needs --remote_upload_local_results=true.
+# nativelink.bazelrc sets that false repo-wide to stop PR/developer lanes from
+# writing to the *shared* cache (cache-poisoning guard). Uploads here target
+# only the ephemeral, per-run docker-compose cache, so they are safe -- but to
+# keep the anti-poisoning default intact this test runs only where local
+# uploads are explicitly enabled: merges to main and the scheduled canary set
+# NL_LOCAL_UPLOADS=1 (see main.yaml / nativelink-cloud-canary.yaml).
+if [[ ${NL_LOCAL_UPLOADS:-0} != "1" ]]; then
+    echo "Skipping $(basename "$0"): requires local cache uploads (main/canary lanes only)."
+    exit 0
+fi
 set -x
 
+# A command-line flag overrides the repo-wide --remote_upload_local_results
+# =false so this test can populate the cache it then asserts on.
+TEST_FLAGS=(--config self_test --remote_upload_local_results=true)
+
 # First run our test under bazel. It should not be cached.
-OUTPUT=$(bazel --output_base="$BAZEL_CACHE_DIR" test --config self_test //:dummy_test)
+OUTPUT=$(bazel --output_base="$BAZEL_CACHE_DIR" test "${TEST_FLAGS[@]}" //:dummy_test)
 if [[ $OUTPUT =~ .*'(cached)'.* ]]; then
     echo "Expected first bazel run to not have test cached."
     echo "STDOUT:"
@@ -34,7 +51,7 @@ fi
 bazel --output_base="$BAZEL_CACHE_DIR" clean
 
 # Now run it under bazel again. This time the remote cache should have it.
-OUTPUT=$(bazel --output_base="$BAZEL_CACHE_DIR" test --config self_test //:dummy_test)
+OUTPUT=$(bazel --output_base="$BAZEL_CACHE_DIR" test "${TEST_FLAGS[@]}" //:dummy_test)
 if [[ ! $OUTPUT =~ .*'(cached)'.* ]]; then
     echo "Expected second bazel run to have test cached."
     echo "STDOUT:"
