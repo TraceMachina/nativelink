@@ -304,6 +304,20 @@
               "build_file": "@@local-remote-execution+//rust:x86_64-linux.BUILD.bazel",
               "path": "/nix/store/ynvh9map0qv132chm5wdif3ymqk6x1d7-rust-default-1.100.0-nightly-2026-08-26"
             }
+          },
+          "lre-rs-zlib-aarch64-linux": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:local.bzl%new_local_repository",
+            "attributes": {
+              "build_file": "@@local-remote-execution+//rust:zlib.BUILD.bazel",
+              "path": "/nix/store/dxiaz7djzlgkqi9bzd95x25lhvixvdph-zlib-1.3.2"
+            }
+          },
+          "lre-rs-zlib-x86_64-linux": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:local.bzl%new_local_repository",
+            "attributes": {
+              "build_file": "@@local-remote-execution+//rust:zlib.BUILD.bazel",
+              "path": "/nix/store/dbz6pb9g67kpgpl95k8d85kzpxm1c32p-zlib-1.3.2"
+            }
           }
         }
       }

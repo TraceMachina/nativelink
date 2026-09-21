@@ -1403,7 +1403,15 @@ async fn do_cleanup(
         return Ok(());
     };
 
-    debug!("Worker cleaning up");
+    // Debug-only hack to not cleanup workers when we need to debug something
+    if !env::var("NATIVELINK_DONT_CLEANUP")
+        .unwrap_or_default()
+        .is_empty()
+    {
+        return Ok(());
+    }
+
+    debug!(?action_directory, "Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
     let remove_dir_result = fs::remove_dir_all(action_directory)
         .await
@@ -1700,12 +1708,20 @@ impl RunningActionImpl {
         } else {
             command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
+        let command_directory = if command_proto.working_directory.is_empty() {
+            self.work_directory.clone()
+        } else {
+            format!(
+                "{}/{}",
+                self.work_directory, command_proto.working_directory
+            )
+        };
         // TODO(palfrey): This should probably be in debug, but currently
         //                    that's too busy and we often rely on this to
         //                    figure out toolchain misconfiguration issues.
         //                    De-bloat the `debug` level by using the `trace`
         //                    level more effectively and adjust this.
-        info!(?args, "Executing command");
+        info!(?args, ?command_directory, "Executing command");
 
         let program = self
             .canonicalise_path(args[0], &command_proto.working_directory)
@@ -1721,14 +1737,7 @@ impl RunningActionImpl {
                         request_id: 0,
                         cancel: false,
                         verbosity: 0,
-                        sandbox_dir: if command_proto.working_directory.is_empty() {
-                            self.work_directory.clone()
-                        } else {
-                            format!(
-                                "{}/{}",
-                                self.work_directory, command_proto.working_directory
-                            )
-                        },
+                        sandbox_dir: command_directory.clone(),
                     };
                     let worker_cwd =
                         PathBuf::from(&self.running_actions_manager.root_action_directory);
@@ -1839,10 +1848,7 @@ impl RunningActionImpl {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(format!(
-                "{}/{}",
-                self.work_directory, command_proto.working_directory
-            ))
+            .current_dir(command_directory)
             .env_clear();
 
         let requested_timeout = if self.action_info.timeout.is_zero() {

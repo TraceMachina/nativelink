@@ -38,9 +38,5 @@
       nightly-rust = nightlyRustFor final;
     in {
       inherit stable-rust nightly-rust stableRustFor nightlyRustFor;
-
-      lre-rs = final.callPackage ./lre-rs.nix {
-        inherit (rustConfig) nixSystemToRustTargets;
-      };
     });
 }

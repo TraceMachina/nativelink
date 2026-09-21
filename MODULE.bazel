@@ -115,11 +115,12 @@ crate.from_cargo(
         "x86_64-apple-darwin",
         "x86_64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
     ],
     # The LRE Rust toolchains in //local-remote-execution/rust still register
     # against @rules_rust//rust:toolchain_type, so crate_universe must render
     # selects against legacy @rules_rust//rust/platform:* labels.
-    use_legacy_rules_rust_platforms = True,
+    # use_legacy_rules_rust_platforms = True,
 )
 crate.annotation(
     crate = "zstd-sys",
