@@ -3974,7 +3974,14 @@ exit 1
         #[cfg(target_family = "windows")]
         let command = "[\"cmd\", \"/C\", \"ping -n 99999 127.0.0.1\"]";
 
-        assert!(logs_contain(&format!("Executing command args={command}")));
+        #[cfg(target_family = "unix")]
+        assert!(logs_contain(&format!(
+            "Executing command args={command} command_directory=/"
+        )));
+        #[cfg(target_family = "windows")]
+        assert!(logs_contain(&format!(
+            "Executing command args={command} command_directory="
+        )));
         assert!(logs_contain("Command complete exit_code="));
 
         assert!(!logs_contain(
@@ -3982,11 +3989,11 @@ exit 1
         ));
         #[cfg(target_family = "unix")]
         assert!(logs_contain(
-            "Command timed out seconds=0.0 command=sh -c sleep 24h"
+            "Command timed out seconds=0.0 command=sh -c sleep 24h command_directory=/"
         ));
         #[cfg(target_family = "windows")]
         assert!(logs_contain(
-            "Command timed out seconds=0.0 command=cmd /C ping -n 99999 127.0.0.1"
+            "Command timed out seconds=0.0 command=cmd /C ping -n 99999 127.0.0.1 command_directory="
         ));
 
         Ok(())
