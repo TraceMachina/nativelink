@@ -177,6 +177,39 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub unacknowledged_kill_timeout_s: u64,
 
+    /// Fail a queued action once no connected worker has been able to run
+    /// it for this many seconds, instead of leaving it queued forever. An
+    /// action counts as impossible to run when no connected worker could
+    /// take it even when idle: an `exact` value no worker has, a required
+    /// key no worker declares, or a `minimum` larger than any worker's
+    /// total. An action that is only waiting for a busy worker is never
+    /// failed by this setting, and neither is any action while no workers
+    /// are connected at all.
+    ///
+    /// The action fails with `FAILED_PRECONDITION` and a message naming the
+    /// properties that could not be satisfied. Bazel does not retry this,
+    /// and runs the action locally if `--remote_local_fallback` is set.
+    ///
+    /// The time is measured per distinct set of platform properties, so
+    /// once one action has waited this long, later actions asking for the
+    /// same properties fail straight away until a capable worker connects.
+    ///
+    /// Set this higher than the time a worker pool needs to scale up from
+    /// zero and register, or actions that the pool would have served are
+    /// failed. Only properties listed in `supported_platform_properties`
+    /// are enforced strictly; a property that is not listed does not
+    /// restrict workers that do not declare it. Not supported with a
+    /// shared backend store (`experimental_backend: redis`): each scheduler
+    /// only knows about the workers connected to it, so the scheduler
+    /// refuses to start with this set there.
+    ///
+    /// Such actions are logged and counted in the
+    /// `scheduler.unsatisfiable.queued` metric whatever this is set to.
+    ///
+    /// Default: 0 (never fail)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub unsatisfiable_action_timeout_s: u64,
+
     /// If a job returns an internal error or times out this many times when
     /// attempting to run on a worker the scheduler will return the last error
     /// to the client. Jobs will be retried and this configuration is to help

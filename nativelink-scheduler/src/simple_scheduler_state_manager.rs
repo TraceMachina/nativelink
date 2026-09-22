@@ -433,6 +433,68 @@ where
         Ok(retired)
     }
 
+    async fn inner_fail_queued_operation(
+        &self,
+        operation_id: &OperationId,
+        err: Error,
+    ) -> Result<bool, Error> {
+        let Some(subscriber) = self
+            .action_db
+            .get_by_operation_id(operation_id)
+            .await
+            .err_tip(|| "In SimpleSchedulerStateManager::fail_queued_operation")?
+        else {
+            return Ok(false);
+        };
+        // The action may be racing an assignment or a client update, so on
+        // a version conflict reload it and, if it is still queued, try again.
+        let mut last_err = None;
+        for _ in 0..MAX_UPDATE_RETRIES {
+            let awaited_action = match subscriber.borrow().await {
+                Ok(awaited_action) => awaited_action,
+                // Store-backed dbs hand out a subscriber for any id and only
+                // discover the operation is gone on read.
+                Err(err) if err.code == Code::NotFound => return Ok(false),
+                Err(err) => {
+                    return Err(err)
+                        .err_tip(|| "In SimpleSchedulerStateManager::fail_queued_operation");
+                }
+            };
+            if !matches!(awaited_action.state().stage, ActionStage::Queued) {
+                return Ok(false);
+            }
+
+            let now = (self.now_fn)().now();
+            let mut state = awaited_action.state().as_ref().clone();
+            state.stage = ActionStage::Completed(ActionResult {
+                error: Some(err.clone()),
+                ..ActionResult::default()
+            });
+            state.last_transition_timestamp = now;
+
+            let mut new_awaited_action = awaited_action;
+            new_awaited_action.worker_set_state(Arc::new(state), now);
+            match self
+                .action_db
+                .update_awaited_action(new_awaited_action)
+                .await
+            {
+                Ok(()) => return Ok(true),
+                Err(err) if err.code == Code::Aborted => last_err = Some(err),
+                Err(err) => {
+                    return Err(err)
+                        .err_tip(|| "In SimpleSchedulerStateManager::fail_queued_operation");
+                }
+            }
+        }
+        warn!(
+            %operation_id,
+            ?last_err,
+            "Could not fail an unsatisfiable action after repeated version conflicts, will try again on the next matching pass"
+        );
+        Ok(false)
+    }
+
     pub async fn should_timeout_operation(&self, awaited_action: &AwaitedAction) -> bool {
         if !matches!(awaited_action.state().stage, ActionStage::Executing) {
             return false;
@@ -1337,5 +1399,13 @@ where
         };
         self.inner_update_operation(operation_id, maybe_worker_id, update)
             .await
+    }
+
+    async fn fail_queued_operation(
+        &self,
+        operation_id: &OperationId,
+        err: Error,
+    ) -> Result<bool, Error> {
+        self.inner_fail_queued_operation(operation_id, err).await
     }
 }

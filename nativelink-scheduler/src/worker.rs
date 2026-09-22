@@ -87,6 +87,10 @@ pub struct Worker {
     #[metric(group = "platform_properties")]
     pub platform_properties: PlatformProperties,
 
+    /// The properties the worker registered with. `platform_properties` is
+    /// reduced while actions run; this is what the worker offers when idle.
+    pub total_platform_properties: PlatformProperties,
+
     /// Channel to send commands from scheduler to worker.
     pub tx: UnboundedSender<UpdateForWorker>,
 
@@ -158,6 +162,7 @@ impl Worker {
     ) -> Self {
         Self {
             id,
+            total_platform_properties: platform_properties.clone(),
             platform_properties,
             tx,
             running_action_infos: HashMap::new(),

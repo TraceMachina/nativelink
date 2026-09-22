@@ -35,6 +35,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
+use nativelink_scheduler::match_outcome::MatchOutcome;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::worker::ActionInfoWithProps;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -585,7 +586,7 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
         .await;
     assert_eq!(
         selected_worker,
-        Some(test_context.worker_id.clone()),
+        MatchOutcome::Matched(test_context.worker_id.clone()),
         "Expected worker to permit tasks to begin with"
     );
 
@@ -637,7 +638,8 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
         .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
         .await;
     assert_eq!(
-        selected_worker, None,
+        selected_worker,
+        MatchOutcome::WaitingForCapacity,
         "Expected not to be able to give worker a second task"
     );
 

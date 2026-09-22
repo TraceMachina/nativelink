@@ -19,7 +19,7 @@ use std::time::{Instant, SystemTime};
 use async_trait::async_trait;
 use futures::{Future, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, RequestEvent, event, request_event,
@@ -27,12 +27,15 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::metrics::record_matching_pass;
+use nativelink_util::metrics::{
+    record_matching_pass, record_unsatisfiable_failed, record_unsatisfiable_queued,
+};
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType,
 };
 use nativelink_util::origin_event::{OriginMetadata, get_node_id};
+use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -40,6 +43,7 @@ use opentelemetry::KeyValue;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
+use parking_lot::Mutex;
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
@@ -48,8 +52,10 @@ use uuid::Uuid;
 use crate::api_worker_scheduler::ApiWorkerScheduler;
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
+use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_registry::WorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
@@ -159,6 +165,13 @@ pub struct SimpleScheduler {
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
     worker_match_logging_interval: Option<Duration>,
+
+    /// How long each action property shape has gone without any worker able
+    /// to run it.
+    unsatisfiable_tracker: Mutex<UnsatisfiableTracker>,
+
+    /// The clock the state manager uses.
+    now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
 
 impl core::fmt::Debug for SimpleScheduler {
@@ -295,6 +308,59 @@ impl SimpleScheduler {
     }
 
     async fn do_try_match_inner(&self, full_worker_logging: bool) -> Result<(), Error> {
+        struct UnsatisfiablePass<'a> {
+            tracker: &'a Mutex<UnsatisfiableTracker>,
+            now: SystemTime,
+            fleet_generation: u64,
+        }
+
+        /// Logs an action no worker can run and, once its property shape has
+        /// been unsatisfiable for the configured timeout, fails it.
+        async fn handle_unsatisfiable(
+            action_state_result: &dyn ActionStateResult,
+            matching_engine_state_manager: &dyn MatchingEngineStateManager,
+            platform_properties: &PlatformProperties,
+            reason: &UnsatisfiableReason,
+            pass: &UnsatisfiablePass<'_>,
+        ) -> Result<(), Error> {
+            let observation = pass.tracker.lock().observe(
+                PropertyShape::from(platform_properties),
+                pass.now,
+                pass.fleet_generation,
+            );
+            if observation.should_warn {
+                warn!(
+                    %reason,
+                    waited_s = observation.waited.as_secs(),
+                    "Queued action cannot run on any connected worker"
+                );
+            }
+            if !observation.is_due {
+                return Ok(());
+            }
+
+            let operation_id = {
+                let (action_state, _origin_metadata) = action_state_result
+                    .as_state()
+                    .await
+                    .err_tip(|| "Failed to get state of an unsatisfiable action")?;
+                action_state.client_operation_id.clone()
+            };
+            let err = make_err!(
+                Code::FailedPrecondition,
+                "Action cannot be scheduled, {reason}. No capable worker connected within {}s.",
+                observation.waited.as_secs()
+            );
+            let failed = matching_engine_state_manager
+                .fail_queued_operation(&operation_id, err)
+                .await
+                .err_tip(|| "Failed to fail an unsatisfiable action in do_try_match")?;
+            if failed {
+                record_unsatisfiable_failed(reason.property_names());
+            }
+            Ok(())
+        }
+
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
@@ -302,6 +368,7 @@ impl SimpleScheduler {
             platform_property_manager: &PlatformPropertyManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             full_worker_logging: bool,
+            unsatisfiable_pass: &UnsatisfiablePass<'_>,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
                 action_state_result
@@ -331,10 +398,22 @@ impl SimpleScheduler {
                     .find_worker_for_action(&action_info.platform_properties, full_worker_logging)
                     .await
                 {
-                    Some(worker_id) => worker_id,
-                    // If we could not find a worker for the action,
-                    // we have nothing to do.
-                    None => return Ok(()),
+                    MatchOutcome::Matched(worker_id) => worker_id,
+                    // The action can run once a worker has room or connects,
+                    // so we have nothing to do.
+                    MatchOutcome::WaitingForCapacity | MatchOutcome::NoWorkersConnected => {
+                        return Ok(());
+                    }
+                    MatchOutcome::Unsatisfiable(reason) => {
+                        return handle_unsatisfiable(
+                            action_state_result,
+                            matching_engine_state_manager,
+                            &action_info.platform_properties,
+                            &reason,
+                            unsatisfiable_pass,
+                        )
+                        .await;
+                    }
                 }
             };
 
@@ -413,6 +492,12 @@ impl SimpleScheduler {
 
         let start = Instant::now();
 
+        let unsatisfiable_pass = UnsatisfiablePass {
+            tracker: &self.unsatisfiable_tracker,
+            now: (self.now_fn)(),
+            fleet_generation: self.worker_scheduler.fleet_generation().await,
+        };
+
         let mut stream = self
             .get_queued_operations()
             .await
@@ -435,10 +520,17 @@ impl SimpleScheduler {
                     self.platform_property_manager.as_ref(),
                     self.maybe_origin_event_tx.as_ref(),
                     full_worker_logging,
+                    &unsatisfiable_pass,
                 )
                 .await,
             );
         }
+
+        let unsatisfiable_queued = self
+            .unsatisfiable_tracker
+            .lock()
+            .end_pass(unsatisfiable_pass.now, unsatisfiable_pass.fleet_generation);
+        record_unsatisfiable_queued(unsatisfiable_queued);
 
         let total_elapsed = start.elapsed();
         if total_elapsed > Duration::from_secs(5) {
@@ -539,6 +631,15 @@ impl SimpleScheduler {
         // so it needs the same liveness view the state manager uses.
         awaited_action_db.set_worker_registry(worker_registry.clone());
 
+        let unsatisfiable_action_timeout = match spec.unsatisfiable_action_timeout_s {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        };
+        let scheduler_now_fn = {
+            let now_fn = now_fn.clone();
+            Box::new(move || now_fn().now())
+        };
+
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
             Duration::from_secs(worker_timeout_s),
@@ -619,6 +720,16 @@ impl SimpleScheduler {
                             // a disconnected worker.  The sleep ensures we don't enter a
                             // hard loop if there's something wrong inside do_try_match.
                             Some(Duration::from_millis(100))
+                        };
+                        // Wake in time to fail actions no worker can run,
+                        // even when nothing else triggers a pass.
+                        let unsatisfiable_deadline = weak_inner.upgrade().and_then(|scheduler| {
+                            let now = (scheduler.now_fn)();
+                            scheduler.unsatisfiable_tracker.lock().next_deadline(now)
+                        });
+                        let max_wait = match (max_wait, unsatisfiable_deadline) {
+                            (Some(max_wait), Some(deadline)) => Some(max_wait.min(deadline)),
+                            (max_wait, deadline) => max_wait.or(deadline),
                         };
                         if let Some(max_wait) = max_wait {
                             let sleep_fut = tokio::time::sleep(max_wait);
@@ -745,6 +856,10 @@ impl SimpleScheduler {
                 task_worker_matching_spawn,
                 task_abandoned_sweep_spawn,
                 worker_match_logging_interval,
+                unsatisfiable_tracker: Mutex::new(UnsatisfiableTracker::new(
+                    unsatisfiable_action_timeout,
+                )),
+                now_fn: scheduler_now_fn,
             }
         });
         (action_scheduler, worker_scheduler_clone)
