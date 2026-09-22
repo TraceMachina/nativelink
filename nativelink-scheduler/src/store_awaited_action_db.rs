@@ -29,6 +29,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{EXECUTION_METRICS, EXECUTION_STAGE, ExecutionStage};
+use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
@@ -37,6 +38,7 @@ use nativelink_util::store_trait::{
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::KeyValue;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tracing::{error, warn};
 
@@ -436,6 +438,12 @@ const CLIENT_ID_TO_OPERATION_ID_KEY_PREFIX: &str = "cid_";
 const CLIENT_ID_MAPPING_TTL: Duration = Duration::from_hours(24);
 /// Phase 2: Separate key prefix for client keepalives (non-versioned).
 const CLIENT_KEEPALIVE_KEY_PREFIX: &str = "ck_";
+/// One record per scheduler holding what its connected workers can run
+/// (non-versioned, expires on its own).
+const FLEET_CAPABILITIES_KEY_PREFIX: &str = "fc_";
+/// Index over every fleet capabilities record. The value is the same for
+/// all of them; the index exists so peers can be listed.
+const FLEET_CAPABILITIES_INDEX_NAME: &str = "fleet";
 
 #[derive(Debug)]
 struct OperationIdToAwaitedAction<'a>(Cow<'a, OperationId>);
@@ -518,6 +526,58 @@ impl SchedulerStoreKeyProvider for UpdateClientKeepalive<'_> {
 impl SchedulerStoreDataProvider for UpdateClientKeepalive<'_> {
     fn try_into_bytes(self) -> Result<Bytes, Error> {
         Ok(Bytes::from(self.timestamp.to_string()))
+    }
+}
+
+/// What one scheduler's workers can run, as published to its peers.
+#[derive(Serialize, Deserialize)]
+struct FleetCapabilities {
+    scheduler_id: String,
+    workers: Vec<PlatformProperties>,
+}
+
+struct UpdateFleetCapabilities(FleetCapabilities);
+impl SchedulerStoreKeyProvider for UpdateFleetCapabilities {
+    type Versioned = FalseValue;
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(Cow::Owned(format!(
+            "{FLEET_CAPABILITIES_KEY_PREFIX}{}",
+            self.0.scheduler_id
+        )))
+    }
+}
+impl SchedulerStoreDataProvider for UpdateFleetCapabilities {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        serde_json::to_string(&self.0)
+            .map(Bytes::from)
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Could not convert FleetCapabilities to json")
+            })
+    }
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        Ok(vec![(
+            FLEET_CAPABILITIES_INDEX_NAME,
+            Bytes::from_static(b"1"),
+        )])
+    }
+}
+
+struct SearchFleetCapabilities;
+impl SchedulerIndexProvider for SearchFleetCapabilities {
+    const KEY_PREFIX: &'static str = FLEET_CAPABILITIES_KEY_PREFIX;
+    const INDEX_NAME: &'static str = FLEET_CAPABILITIES_INDEX_NAME;
+    type Versioned = FalseValue;
+    fn index_value(&self) -> Cow<'_, str> {
+        Cow::Borrowed("1")
+    }
+}
+impl SchedulerStoreDecodeTo for SearchFleetCapabilities {
+    type DecodeOutput = FleetCapabilities;
+    fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        serde_json::from_slice(&data).map_err(|e| {
+            Error::from_std_err(Code::Internal, &e).append("In SearchFleetCapabilities::decode")
+        })
     }
 }
 
@@ -1124,6 +1184,40 @@ where
 
     fn set_worker_registry(&mut self, worker_registry: SharedWorkerRegistry) {
         self.worker_registry = Some(worker_registry);
+    }
+
+    async fn exchange_fleet_capabilities(
+        &self,
+        scheduler_id: &str,
+        local: Vec<PlatformProperties>,
+        ttl: Duration,
+    ) -> Result<Vec<PlatformProperties>, Error> {
+        self.store
+            .update_data(
+                UpdateFleetCapabilities(FleetCapabilities {
+                    scheduler_id: scheduler_id.to_string(),
+                    workers: local,
+                }),
+                Some(ttl),
+            )
+            .await
+            .err_tip(|| "In StoreAwaitedActionDb::exchange_fleet_capabilities publish")?;
+
+        let stream = self
+            .store
+            .search_by_index_prefix(SearchFleetCapabilities)
+            .await
+            .err_tip(|| "In StoreAwaitedActionDb::exchange_fleet_capabilities search")?;
+        // Records that have expired on peers that stopped publishing are
+        // gone from the search already, so everything found here is live.
+        stream
+            .try_filter(|record| futures::future::ready(record.scheduler_id != scheduler_id))
+            .try_fold(Vec::new(), |mut peers, record| async move {
+                peers.extend(record.workers);
+                Ok(peers)
+            })
+            .await
+            .err_tip(|| "In StoreAwaitedActionDb::exchange_fleet_capabilities collect")
     }
 
     async fn get_range_of_actions(

@@ -64,6 +64,14 @@ use crate::worker_scheduler::WorkerScheduler;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
 
+/// How often this scheduler tells its peers what its workers can run and
+/// reads what theirs can.
+const FLEET_EXCHANGE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How many exchange intervals a published fleet record outlives its last
+/// refresh, so one missed refresh does not make a peer's workers vanish.
+const FLEET_RECORD_TTL_INTERVALS: u32 = 3;
+
 /// Default timeout for a sent kill to be acknowledged in seconds.
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_UNACKNOWLEDGED_KILL_TIMEOUT_S: u64 = 60;
@@ -161,6 +169,10 @@ pub struct SimpleScheduler {
     /// Dropped with the struct, like the matching task.
     task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
 
+    /// Background task that swaps worker capabilities with peer schedulers
+    /// on the same state. Dropped with the struct, like the matching task.
+    task_fleet_exchange_spawn: JoinHandleDropGuard<()>,
+
     /// Every duration, do logging of worker matching
     /// e.g. "worker busy", "can't find any worker"
     /// Set to None to disable. This is quite noisy, so we limit it
@@ -188,6 +200,7 @@ impl core::fmt::Debug for SimpleScheduler {
                 "task_abandoned_sweep_spawn",
                 &self.task_abandoned_sweep_spawn,
             )
+            .field("task_fleet_exchange_spawn", &self.task_fleet_exchange_spawn)
             .finish_non_exhaustive()
     }
 }
@@ -295,6 +308,16 @@ impl SimpleScheduler {
 
     pub async fn do_try_match_for_test(&self) -> Result<(), Error> {
         self.do_try_match(true).await
+    }
+
+    /// Stands in for the fleet exchange with peer schedulers.
+    pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
+        self.worker_scheduler.set_peer_fleet(peer_fleet).await;
+    }
+
+    /// What this scheduler would publish to peer schedulers.
+    pub async fn fleet_shapes_for_test(&self) -> Vec<PlatformProperties> {
+        self.worker_scheduler.fleet_shapes().await
     }
 
     // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
@@ -580,11 +603,40 @@ impl SimpleScheduler {
         NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
     >(
         spec: &SimpleSpec,
+        awaited_action_db: A,
+        on_matching_engine_run: F,
+        task_change_notify: Arc<Notify>,
+        now_fn: NowFn,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+        Self::new_with_fleet_exchange_interval(
+            spec,
+            awaited_action_db,
+            on_matching_engine_run,
+            task_change_notify,
+            now_fn,
+            maybe_origin_event_tx,
+            FLEET_EXCHANGE_INTERVAL,
+        )
+    }
+
+    /// Same as `new_with_callback`, with the interval at which worker
+    /// capabilities are swapped with peer schedulers, so a test need not wait
+    /// out the real one.
+    pub fn new_with_fleet_exchange_interval<
+        Fut: Future<Output = ()> + Send,
+        F: Fn() -> Fut + Send + Sync + 'static,
+        A: AwaitedActionDb,
+        I: InstantWrapper,
+        NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
+    >(
+        spec: &SimpleSpec,
         mut awaited_action_db: A,
         on_matching_engine_run: F,
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        fleet_exchange_interval: Duration,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
             spec.supported_platform_properties
@@ -690,6 +742,42 @@ impl SimpleScheduler {
                     }
                 }
             });
+
+        // Only matters when the state is shared, and only for deciding that
+        // an action is unsatisfiable, so it stays off unless that decision
+        // can fail an action. The db decides whether it has peers to talk
+        // to; the in-memory one returns nothing.
+        let task_fleet_exchange_spawn = {
+            let scheduler_id = Uuid::new_v4().hyphenated().to_string();
+            let state_manager = Arc::downgrade(&state_manager);
+            let worker_scheduler = Arc::downgrade(&worker_scheduler);
+            let enabled = unsatisfiable_action_timeout.is_some();
+            let record_ttl = fleet_exchange_interval * FLEET_RECORD_TTL_INTERVALS;
+            spawn!("simple_scheduler_task_fleet_exchange", async move {
+                if !enabled {
+                    return;
+                }
+                loop {
+                    let (Some(state_manager), Some(worker_scheduler)) =
+                        (state_manager.upgrade(), worker_scheduler.upgrade())
+                    else {
+                        return;
+                    };
+                    let local = worker_scheduler.fleet_shapes().await;
+                    match state_manager
+                        .exchange_fleet_capabilities(&scheduler_id, local, record_ttl)
+                        .await
+                    {
+                        Ok(peer_fleet) => worker_scheduler.set_peer_fleet(peer_fleet).await,
+                        Err(err) => {
+                            error!(?err, "Error while exchanging fleet capabilities");
+                        }
+                    }
+                    drop((state_manager, worker_scheduler));
+                    tokio::time::sleep(fleet_exchange_interval).await;
+                }
+            })
+        };
 
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
@@ -855,6 +943,7 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 task_abandoned_sweep_spawn,
+                task_fleet_exchange_spawn,
                 worker_match_logging_interval,
                 unsatisfiable_tracker: Mutex::new(UnsatisfiableTracker::new(
                     unsatisfiable_action_timeout,

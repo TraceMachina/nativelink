@@ -198,10 +198,13 @@ pub struct SimpleSpec {
     /// zero and register, or actions that the pool would have served are
     /// failed. Only properties listed in `supported_platform_properties`
     /// are enforced strictly; a property that is not listed does not
-    /// restrict workers that do not declare it. Not supported with a
-    /// shared backend store (`experimental_backend: redis`): each scheduler
-    /// only knows about the workers connected to it, so the scheduler
-    /// refuses to start with this set there.
+    /// restrict workers that do not declare it.
+    ///
+    /// When several schedulers share one Redis backend, each publishes what
+    /// its workers can run every 5 seconds, and an action is only failed
+    /// when no scheduler has a worker that could run it. A worker that
+    /// joins a peer is seen here within about 5 seconds, and one that leaves
+    /// stops counting within 15, so keep this well above that.
     ///
     /// Such actions are logged and counted in the
     /// `scheduler.unsatisfiable.queued` metric whatever this is set to.

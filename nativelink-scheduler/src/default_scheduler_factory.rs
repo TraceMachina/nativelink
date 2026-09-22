@@ -142,14 +142,6 @@ async fn simple_scheduler_factory(
             Ok((Some(action_scheduler), Some(worker_scheduler)))
         }
         ExperimentalSimpleSchedulerBackend::Redis(redis_config) => {
-            // Every scheduler on a shared backend sees every queued action
-            // but only its own workers, so one would fail actions that a
-            // peer's workers could run.
-            if spec.unsatisfiable_action_timeout_s != 0 {
-                return Err(make_input_err!(
-                    "unsatisfiable_action_timeout_s is not supported with a shared scheduler backend; leave it at 0"
-                ));
-            }
             let store = store_manager
                 .get_store(redis_config.redis_store.as_ref())
                 .err_tip(|| {

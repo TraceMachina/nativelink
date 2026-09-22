@@ -147,8 +147,12 @@ struct ApiWorkerSchedulerImpl {
     /// based on properties before doing linear scan.
     capability_index: WorkerCapabilityIndex,
 
-    /// Incremented every time a worker joins or leaves.
+    /// Incremented every time a worker joins or leaves, here or on a peer.
     fleet_generation: u64,
+
+    /// What the workers connected to other schedulers on the same state
+    /// registered with. Empty when this scheduler has no peers.
+    peer_fleet: Vec<PlatformProperties>,
 
     /// Whether an action with a given property shape could run on some
     /// connected worker when that worker is idle. `None` means it could. This
@@ -270,6 +274,25 @@ impl ApiWorkerSchedulerImpl {
         self.static_verdicts.clear();
     }
 
+    /// The distinct properties this scheduler's workers registered with.
+    fn fleet_shapes(&self) -> Vec<PlatformProperties> {
+        let mut seen = HashSet::new();
+        self.workers
+            .iter()
+            .map(|(_, w)| &w.total_platform_properties)
+            .filter(|totals| seen.insert(PropertyShape::from(*totals)))
+            .cloned()
+            .collect()
+    }
+
+    fn set_peer_fleet(&mut self, peer_fleet: Vec<PlatformProperties>) {
+        if self.peer_fleet == peer_fleet {
+            return;
+        }
+        self.peer_fleet = peer_fleet;
+        self.fleet_changed();
+    }
+
     /// Sets if the worker is draining or not.
     fn set_drain_worker(&mut self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
         let worker = self
@@ -303,10 +326,20 @@ impl ApiWorkerSchedulerImpl {
         if satisfiable {
             return None;
         }
+        // A peer's worker counts too: the action would run there once that
+        // worker has room, and this scheduler cannot see how busy it is.
+        if self
+            .peer_fleet
+            .iter()
+            .any(|totals| platform_properties.is_satisfied_by(totals, false))
+        {
+            return None;
+        }
         let fleet: Vec<_> = self
             .workers
             .iter()
             .map(|(_, w)| &w.total_platform_properties)
+            .chain(self.peer_fleet.iter())
             .collect();
         Some(Arc::new(explain_unsatisfiable(platform_properties, &fleet)))
     }
@@ -706,6 +739,7 @@ impl ApiWorkerScheduler {
                 shutting_down: false,
                 capability_index: WorkerCapabilityIndex::new(),
                 fleet_generation: 0,
+                peer_fleet: Vec::new(),
                 static_verdicts: HashMap::new(),
             }),
             platform_property_manager,
@@ -759,6 +793,16 @@ impl ApiWorkerScheduler {
     /// A counter that changes every time a worker joins or leaves.
     pub async fn fleet_generation(&self) -> u64 {
         self.inner.lock().await.fleet_generation
+    }
+
+    /// The distinct properties this scheduler's workers registered with.
+    pub async fn fleet_shapes(&self) -> Vec<PlatformProperties> {
+        self.inner.lock().await.fleet_shapes()
+    }
+
+    /// Records what the workers connected to peer schedulers can run.
+    pub async fn set_peer_fleet(&self, peer_fleet: Vec<PlatformProperties>) {
+        self.inner.lock().await.set_peer_fleet(peer_fleet);
     }
 
     /// Attempts to find a worker that is capable of running this action.

@@ -381,6 +381,34 @@ async fn empty_fleet_is_never_failed() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn a_peer_schedulers_capable_worker_prevents_the_failure() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
+
+    // Another scheduler on the same state has a GPU worker connected.
+    scheduler
+        .set_peer_fleet_for_test(vec![gpu_worker_properties()])
+        .await;
+
+    let action = add_action(&scheduler, 1, gpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    MockClock::advance(Duration::from_secs(TIMEOUT_S * 10));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+
+    // Once that worker is gone, the clock starts from there.
+    scheduler.set_peer_fleet_for_test(Vec::new()).await;
+    scheduler.do_try_match_for_test().await?;
+    MockClock::advance(Duration::from_secs(TIMEOUT_S - 1));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+    MockClock::advance(Duration::from_secs(1));
+    scheduler.do_try_match_for_test().await?;
+    assert_failed_as_unsatisfiable(&stage_of(action.as_ref()).await?);
+    Ok(())
+}
+
+#[nativelink_test]
 async fn priority_value_mismatch_still_matches() -> Result<(), Error> {
     let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
     let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
@@ -461,6 +489,27 @@ async fn deadline_wakes_the_loop_before_the_fallback_match_interval() -> Result<
     Ok(())
 }
 
+#[nativelink_test]
+async fn fleet_shapes_are_the_distinct_worker_totals() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let _a = add_worker(&scheduler, "cpu-a", cpu_worker_properties(), 0).await?;
+    let _b = add_worker(&scheduler, "cpu-b", cpu_worker_properties(), 0).await?;
+    let _c = add_worker(&scheduler, "gpu", gpu_worker_properties(), 0).await?;
+
+    // Running an action reduces what is free, not what was registered.
+    let action = add_action(&scheduler, 1, cpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Executing);
+
+    let mut shapes = scheduler.fleet_shapes_for_test().await;
+    shapes.sort_by_key(|shape| shape.properties["gpu_count"].as_str().into_owned());
+    assert_eq!(
+        shapes,
+        vec![cpu_worker_properties(), gpu_worker_properties()]
+    );
+    Ok(())
+}
+
 fn minimum_properties(values: &[(&str, u64)]) -> PlatformProperties {
     PlatformProperties::new(
         values
@@ -497,6 +546,37 @@ async fn explain_reports_a_combination_no_single_worker_has() -> Result<(), Erro
     assert!(reason.combination_only);
     let names: Vec<_> = reason.properties.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, vec!["gpu_count", "memory_kb"]);
+    assert_eq!(
+        reason.to_string(),
+        "no single worker satisfies the combination of: 'gpu_count' requested 1, \
+         largest worker total 1; 'memory_kb' requested 100, largest worker total 200"
+    );
+    assert_eq!(reason.property_names(), "gpu_count,memory_kb");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn explain_truncates_a_long_list_of_offered_values() -> Result<(), Error> {
+    let action = PlatformProperties::new(HashMap::from([(
+        "ISA".to_string(),
+        PlatformPropertyValue::Exact("riscv".to_string()),
+    )]));
+    let workers: Vec<_> = (0..10)
+        .map(|i| {
+            PlatformProperties::new(HashMap::from([(
+                "ISA".to_string(),
+                PlatformPropertyValue::Exact(format!("arch{i}")),
+            )]))
+        })
+        .collect();
+    let fleet: Vec<_> = workers.iter().collect();
+
+    let reason = explain_unsatisfiable(&action, &fleet);
+    assert_eq!(
+        reason.to_string(),
+        "no worker can satisfy: 'ISA' requested riscv, workers offer [arch0, arch1, arch2, \
+         arch3, arch4, arch5, arch6, arch7] and 2 more"
+    );
     Ok(())
 }
 
@@ -543,37 +623,6 @@ async fn explain_leaves_out_properties_every_worker_satisfies() -> Result<(), Er
     assert!(reason.combination_only);
     let names: Vec<_> = reason.properties.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(names, vec!["gpu_count", "memory_kb"]);
-    assert_eq!(
-        reason.to_string(),
-        "no single worker satisfies the combination of: 'gpu_count' requested 1, \
-         largest worker total 1; 'memory_kb' requested 100, largest worker total 200"
-    );
-    assert_eq!(reason.property_names(), "gpu_count,memory_kb");
-    Ok(())
-}
-
-#[nativelink_test]
-async fn explain_truncates_a_long_list_of_offered_values() -> Result<(), Error> {
-    let action = PlatformProperties::new(HashMap::from([(
-        "ISA".to_string(),
-        PlatformPropertyValue::Exact("riscv".to_string()),
-    )]));
-    let workers: Vec<_> = (0..10)
-        .map(|i| {
-            PlatformProperties::new(HashMap::from([(
-                "ISA".to_string(),
-                PlatformPropertyValue::Exact(format!("arch{i}")),
-            )]))
-        })
-        .collect();
-    let fleet: Vec<_> = workers.iter().collect();
-
-    let reason = explain_unsatisfiable(&action, &fleet);
-    assert_eq!(
-        reason.to_string(),
-        "no worker can satisfy: 'ISA' requested riscv, workers offer [arch0, arch1, arch2, \
-         arch3, arch4, arch5, arch6, arch7] and 2 more"
-    );
     Ok(())
 }
 

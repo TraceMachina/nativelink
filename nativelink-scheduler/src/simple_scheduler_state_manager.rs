@@ -35,6 +35,7 @@ use nativelink_util::operation_state_manager::{
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::platform_properties::PlatformProperties;
 use opentelemetry::KeyValue;
 use tracing::{debug, info, trace, warn};
 
@@ -431,6 +432,18 @@ where
             );
         }
         Ok(retired)
+    }
+
+    /// See `AwaitedActionDb::exchange_fleet_capabilities`.
+    pub async fn exchange_fleet_capabilities(
+        &self,
+        scheduler_id: &str,
+        local: Vec<PlatformProperties>,
+        ttl: Duration,
+    ) -> Result<Vec<PlatformProperties>, Error> {
+        self.action_db
+            .exchange_fleet_capabilities(scheduler_id, local, ttl)
+            .await
     }
 
     async fn inner_fail_queued_operation(
