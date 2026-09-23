@@ -14,8 +14,10 @@
 
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::fs::FileType;
 use std::path::Path;
+use std::sync::Arc;
 
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use tokio::fs;
@@ -79,17 +81,24 @@ pub enum CloneMethod {
 /// - Filesystem doesn't support hardlinks (Linux/Windows fallback)
 /// - Permission denied
 ///
-/// # Blocking
+/// # Blocking and cancellation
 /// The whole materialization (the existence checks, the `clonefile(2)`
 /// attempt and the per-file walk) runs as ONE task on tokio's blocking pool.
 /// Issuing a `tokio::fs` call per entry instead costs one blocking-pool
 /// handoff per file, and at high action concurrency on many-core hosts that
 /// handoff, not the filesystem, becomes the bottleneck.
+///
+/// A blocking task cannot be aborted once it has started, so dropping the
+/// returned future instead raises a cancel flag that the walk checks before
+/// every entry. An abandoned walk therefore stops after at most the entry
+/// in progress, rather than continuing to populate `dst_dir` while the
+/// caller cleans it up.
 pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
     let src_dir = src_dir.to_path_buf();
     let dst_dir = dst_dir.to_path_buf();
+    let (cancel, _cancel_on_drop) = cancel_flag();
     crate::spawn_blocking!("hardlink_directory_tree", move || {
-        hardlink_directory_tree_blocking(&src_dir, &dst_dir)
+        hardlink_directory_tree_blocking(&src_dir, &dst_dir, &cancel)
     })
     .await
     .err_tip(|| "Failed to join hardlink_directory_tree blocking task")?
@@ -97,7 +106,11 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
 
 /// Synchronous body of [`hardlink_directory_tree`]. It runs on the blocking
 /// pool, so it calls `std::fs` directly.
-fn hardlink_directory_tree_blocking(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
+fn hardlink_directory_tree_blocking(
+    src_dir: &Path,
+    dst_dir: &Path,
+    cancel: &AtomicBool,
+) -> Result<CloneMethod, Error> {
     error_if!(
         !src_dir.exists(),
         "Source directory does not exist: {}",
@@ -154,8 +167,41 @@ fn hardlink_directory_tree_blocking(src_dir: &Path, dst_dir: &Path) -> Result<Cl
         }
     }
 
-    hardlink_tree_by_walk(src_dir, dst_dir)?;
+    hardlink_tree_by_walk(src_dir, dst_dir, cancel)?;
     Ok(CloneMethod::Hardlink)
+}
+
+/// Raises its flag when dropped. The async side of a blocking walk holds one
+/// across the `.await`, so dropping that future (cancellation) tells the walk
+/// to stop. `JoinHandle::abort` cannot do that: it has no effect on a
+/// `spawn_blocking` task that has already started running.
+#[derive(Debug)]
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Returns a cancel flag to move into a blocking walk, and the guard that
+/// raises it when the future awaiting the walk is dropped.
+fn cancel_flag() -> (Arc<AtomicBool>, CancelOnDrop) {
+    let flag = Arc::new(AtomicBool::new(false));
+    (Arc::clone(&flag), CancelOnDrop(flag))
+}
+
+/// Fails with `Code::Cancelled` once the walk rooted at `root` has been
+/// abandoned by its caller. The walks check this before every entry.
+fn check_not_cancelled(cancel: &AtomicBool, root: &Path) -> Result<(), Error> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(make_err!(
+            Code::Cancelled,
+            "Stopped walking {}: the caller dropped the future",
+            root.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Sets `dir` to mode 0o755 on unix; no-op elsewhere. The per-file hardlink
@@ -246,7 +292,7 @@ fn chmod_dir_writable(dir: &Path) -> Result<(), Error> {
 /// NOT traverse symlinks (it has `symlink_metadata`/lstat semantics) and on
 /// most filesystems comes straight from the directory entry (`d_type`), with
 /// no extra `stat` call per entry.
-fn hardlink_tree_by_walk(src_dir: &Path, dst_dir: &Path) -> Result<(), Error> {
+fn hardlink_tree_by_walk(src_dir: &Path, dst_dir: &Path, cancel: &AtomicBool) -> Result<(), Error> {
     // Create the root destination directory
     std::fs::create_dir_all(dst_dir).err_tip(|| {
         format!(
@@ -261,6 +307,7 @@ fn hardlink_tree_by_walk(src_dir: &Path, dst_dir: &Path) -> Result<(), Error> {
         let read_dir = std::fs::read_dir(&src)
             .err_tip(|| format!("Failed to read directory: {}", src.display()))?;
         for entry in read_dir {
+            check_not_cancelled(cancel, dst_dir)?;
             let entry =
                 entry.err_tip(|| format!("Failed to get next entry in: {}", src.display()))?;
             let entry_path = entry.path();
@@ -386,13 +433,14 @@ pub async fn set_dir_writable_recursive(dir: &Path) -> Result<(), Error> {
 type PermsFn = fn(&Path, FileType) -> Result<(), Error>;
 
 /// Runs [`set_perms_walk`] over the tree rooted at `dir` as ONE blocking
-/// task. See [`hardlink_directory_tree`] for why the walk is batched this
-/// way.
+/// task, cancelled when the returned future is dropped. See
+/// [`hardlink_directory_tree`] for why the walk is batched this way.
 async fn set_perms_recursive(dir: &Path, perms_fn: PermsFn) -> Result<(), Error> {
     let dir = dir.to_path_buf();
-    crate::spawn_blocking!("set_perms_recursive", move || set_perms_walk(
-        &dir, perms_fn
-    ))
+    let (cancel, _cancel_on_drop) = cancel_flag();
+    crate::spawn_blocking!("set_perms_recursive", move || {
+        set_perms_walk(&dir, perms_fn, &cancel)
+    })
     .await
     .err_tip(|| "Failed to join set_perms_recursive blocking task")?
 }
@@ -417,7 +465,7 @@ async fn set_perms_recursive(dir: &Path, perms_fn: PermsFn) -> Result<(), Error>
 /// Each directory gets `perms_fn` before it is read. Both callers only ever
 /// make directories more permissive (0o755), so that order can only help the
 /// walk read them, and the end state is the same as a post-order walk.
-fn set_perms_walk(root: &Path, perms_fn: PermsFn) -> Result<(), Error> {
+fn set_perms_walk(root: &Path, perms_fn: PermsFn, cancel: &AtomicBool) -> Result<(), Error> {
     error_if!(
         !root.exists(),
         "Directory does not exist: {}",
@@ -441,10 +489,12 @@ fn set_perms_walk(root: &Path, perms_fn: PermsFn) -> Result<(), Error> {
 
     let mut pending = vec![(root.to_path_buf(), root_type)];
     while let Some((dir, dir_type)) = pending.pop() {
+        check_not_cancelled(cancel, root)?;
         perms_fn(&dir, dir_type)?;
         let read_dir = std::fs::read_dir(&dir)
             .err_tip(|| format!("Failed to read directory: {}", dir.display()))?;
         for entry in read_dir {
+            check_not_cancelled(cancel, root)?;
             let entry =
                 entry.err_tip(|| format!("Failed to get next entry in: {}", dir.display()))?;
             let entry_path = entry.path();
@@ -1212,6 +1262,24 @@ mod tests {
         Ok(snapshot)
     }
 
+    /// Counts every entry under `root`; zero if `root` does not exist.
+    fn count_entries(root: &Path) -> usize {
+        let mut count = 0;
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            let Ok(read_dir) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in read_dir.flatten() {
+                count += 1;
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    pending.push(entry.path());
+                }
+            }
+        }
+        count
+    }
+
     /// The per-file walk reproduces a nested tree exactly: the same paths,
     /// file contents and symlink targets, with empty directories kept and the
     /// symlinked directory recreated as a symlink rather than walked through.
@@ -1229,7 +1297,7 @@ mod tests {
         create_nested_tree(&src_dir)?;
         let dst_dir = temp_dir.path().join("dst");
 
-        hardlink_tree_by_walk(&src_dir, &dst_dir)?;
+        hardlink_tree_by_walk(&src_dir, &dst_dir, &AtomicBool::new(false))?;
 
         let src_tree = snapshot_tree(&src_dir)?;
         assert_eq!(snapshot_tree(&dst_dir)?, src_tree);
@@ -1273,6 +1341,120 @@ mod tests {
         hardlink_directory_tree(&src_dir, &dst_dir).await?;
 
         assert_eq!(snapshot_tree(&dst_dir)?, snapshot_tree(&src_dir)?);
+        Ok(())
+    }
+
+    /// A walk whose caller has gone away creates nothing more. Here the cancel
+    /// flag is raised before the walk starts, which keeps the test
+    /// deterministic; in production dropping the future raises it (see
+    /// `test_dropping_hardlink_future_stops_walk`).
+    #[nativelink_test("crate")]
+    async fn test_hardlink_walk_stops_when_cancelled() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("test_dst");
+
+        let err = hardlink_tree_by_walk(&src_dir, &dst_dir, &AtomicBool::new(true))
+            .expect_err("a cancelled walk must fail");
+        assert_eq!(err.code, Code::Cancelled, "{err:?}");
+        assert_eq!(
+            count_entries(&dst_dir),
+            0,
+            "a cancelled walk must not create entries"
+        );
+
+        Ok(())
+    }
+
+    /// Same as `test_hardlink_walk_stops_when_cancelled`, for the permission
+    /// walk: a cancelled walk changes no modes.
+    #[nativelink_test("crate")]
+    async fn test_set_perms_walk_stops_when_cancelled() -> Result<(), Error> {
+        let (_temp_dir, test_dir) = create_test_directory().await?;
+
+        let err = set_perms_walk(&test_dir, set_readonly_one_path, &AtomicBool::new(true))
+            .expect_err("a cancelled walk must fail");
+        assert_eq!(err.code, Code::Cancelled, "{err:?}");
+        for file in ["file1.txt", "subdir/file2.txt"] {
+            assert!(
+                !std::fs::metadata(test_dir.join(file))?
+                    .permissions()
+                    .readonly(),
+                "a cancelled walk must not chmod {file}"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Dropping the `hardlink_directory_tree` future stops the blocking walk
+    /// it started, instead of leaving it to populate the destination behind
+    /// the back of a caller that may already be deleting it. The future is
+    /// dropped as soon as the walk is observably running on a tree far too
+    /// large to finish in that window. Without the cancel flag the walk, a
+    /// single blocking task that `abort` cannot stop, would mirror the whole
+    /// tree. Not on macOS, where `clonefile(2)` materializes the tree in one
+    /// call.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[nativelink_test("crate")]
+    async fn test_dropping_hardlink_future_stops_walk() -> Result<(), Error> {
+        use core::time::Duration;
+        use std::time::Instant;
+
+        use futures::FutureExt;
+
+        const DIRS: usize = 40;
+        const FILES_PER_DIR: usize = 250;
+        const TOTAL_ENTRIES: usize = DIRS * (FILES_PER_DIR + 1);
+
+        let temp_dir = TempDir::new().err_tip(|| "Failed to create temp directory")?;
+        let src_dir = temp_dir.path().join("src");
+        for dir_index in 0..DIRS {
+            let dir = src_dir.join(format!("dir{dir_index}"));
+            std::fs::create_dir_all(&dir)?;
+            for file_index in 0..FILES_PER_DIR {
+                std::fs::write(dir.join(format!("file{file_index}")), b"")?;
+            }
+        }
+        let dst_dir = temp_dir.path().join("dst");
+
+        // One poll spawns the blocking walk, which then runs on its own.
+        let mut walk = Box::pin(hardlink_directory_tree(&src_dir, &dst_dir));
+        assert!(
+            (&mut walk).now_or_never().is_none(),
+            "the walk cannot finish on its first poll"
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while count_entries(&dst_dir) == 0 {
+            assert!(Instant::now() < deadline, "the walk never started");
+            std::thread::yield_now();
+        }
+        drop(walk);
+        let entries_at_drop = count_entries(&dst_dir);
+
+        // Wait for the destination to stop changing.
+        let mut entries = entries_at_drop;
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let now = count_entries(&dst_dir);
+            if now == entries {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the walk never stopped");
+            entries = now;
+        }
+
+        // The walk checks the flag before every entry, so after the drop it
+        // finishes at most the entry it was working on.
+        assert!(
+            entries <= entries_at_drop + 1,
+            "the walk kept creating entries after its future was dropped: \
+             {entries_at_drop} at drop, {entries} after"
+        );
+        assert!(
+            entries < TOTAL_ENTRIES,
+            "the walk mirrored the whole tree ({entries} entries) after its future was dropped"
+        );
+
         Ok(())
     }
 }
