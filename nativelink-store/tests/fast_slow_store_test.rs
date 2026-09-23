@@ -26,6 +26,7 @@ use nativelink_config::stores::{
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
+use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
@@ -137,6 +138,89 @@ async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Res
         assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, content);
         assert_eq!(slow.get_part_unchunked(digest, 0, None).await?, content);
     }
+    Ok(())
+}
+
+// Filesystem and memory fast tiers are read without a separate `has()`
+// first. Hits (whole and ranged), misses, absent blobs and zero digests must
+// behave exactly as they did with the existence check.
+#[nativelink_test]
+async fn fast_tier_reads_without_separate_existence_check() -> Result<(), Error> {
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    };
+    let filesystem = FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?;
+    check_fast_tier_reads(
+        Store::new(filesystem),
+        StoreSpec::Filesystem(filesystem_spec),
+    )
+    .await?;
+    check_fast_tier_reads(
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        StoreSpec::Memory(MemorySpec::default()),
+    )
+    .await?;
+    // Every fast-tier miss above was an ordinary miss, never a stale entry.
+    assert!(!logs_contain("Stale fast-store map entry"));
+    Ok(())
+}
+
+async fn check_fast_tier_reads(fast: Store, fast_spec: StoreSpec) -> Result<(), Error> {
+    const SLOW_HASH: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
+    const MISSING_HASH: &str = "0123456789abcdef000000000000000000030000000000000123456789abcdef";
+    let slow = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: fast_spec,
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast.clone(),
+        slow.clone(),
+    ));
+
+    // Only in the fast tier, so a hit can only be served from there.
+    let fast_only = Bytes::from_static(b"only in the fast tier");
+    let fast_digest = DigestInfo::try_new(VALID_HASH, fast_only.len())?;
+    fast.update_oneshot(fast_digest, fast_only.clone()).await?;
+    assert_eq!(
+        store.get_part_unchunked(fast_digest, 0, None).await?,
+        fast_only
+    );
+    assert_eq!(
+        store.get_part_unchunked(fast_digest, 5, Some(4)).await?,
+        fast_only.slice(5..9)
+    );
+    assert_eq!(slow.has(fast_digest).await?, None);
+
+    // Only in the slow tier: an ordinary miss, not a stale fast entry, and
+    // the read populates the fast tier.
+    let slow_only = Bytes::from_static(b"only in the slow tier");
+    let slow_digest = DigestInfo::try_new(SLOW_HASH, slow_only.len())?;
+    slow.update_oneshot(slow_digest, slow_only.clone()).await?;
+    assert_eq!(
+        store.get_part_unchunked(slow_digest, 0, None).await?,
+        slow_only
+    );
+    assert!(fast.has(slow_digest).await?.is_some());
+
+    let missing = DigestInfo::try_new(MISSING_HASH, 3)?;
+    let err = store
+        .get_part_unchunked(missing, 0, None)
+        .await
+        .expect_err("a blob in neither tier must not be found");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+
+    assert_eq!(
+        store
+            .get_part_unchunked(ZERO_BYTE_DIGESTS[0], 0, None)
+            .await?,
+        Bytes::new()
+    );
     Ok(())
 }
 

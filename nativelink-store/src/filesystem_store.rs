@@ -2109,6 +2109,81 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         }
     }
 
+    /// Streams `key` like `get_part`, but reports a key the store does not
+    /// hold as `Ok(false)` with nothing written, instead of as `NotFound`.
+    ///
+    /// A caller that would otherwise ask `has()` first, as `FastSlowStore`
+    /// does for its fast tier, learns whether the key is here and reads it
+    /// with one eviction-map lookup instead of two. A key the map holds but
+    /// whose file is gone is still an error: the open's `NotFound`, after the
+    /// stale entry is removed.
+    pub async fn get_part_if_present(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<bool, Error> {
+        if is_zero_digest(key.borrow()) {
+            self.has(key.borrow())
+                .await
+                .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
+            return Ok(true);
+        }
+        let owned_key = key.into_owned();
+        let Some(entry) = self.evicting_map.get(&owned_key).await else {
+            return Ok(false);
+        };
+        let read_limit = length.unwrap_or(u64::MAX);
+        let mut temp_file = match entry.read_file_part(offset, read_limit).await {
+            Ok(file) => file,
+            Err(err) => {
+                // If the file is not found, we need to remove it from the eviction map.
+                if err.code == Code::NotFound {
+                    // Map said the file was present but `open()` hit ENOENT.
+                    // Self-heals: we remove the stale entry below and a
+                    // fast/slow caller re-populates from the slow store, so
+                    // this is a recoverable warn, not a fatal error.
+                    warn!(
+                        ?err,
+                        key = ?owned_key,
+                        "Filesystem store map/disk divergence: removing entry; reader will fall through to slow store",
+                    );
+                    self.evicting_map
+                        .remove_if(&owned_key, |map_entry| Arc::ptr_eq(map_entry, &entry))
+                        .await;
+                }
+                return Err(err);
+            }
+        };
+
+        loop {
+            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
+            temp_file
+                .read_buf(&mut buf)
+                .await
+                .err_tip(|| "Failed to read data in filesystem store")?;
+            if buf.is_empty() {
+                break; // EOF.
+            }
+            writer
+                .send(buf.freeze())
+                .await
+                .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
+        }
+        if self.evict_page_cache {
+            temp_file.get_ref().advise_dontneed();
+        }
+        writer
+            .send_eof()
+            .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
+
+        Ok(true)
+    }
+
     pub fn get_eviction_snapshot(&self) -> EvictionSnapshot {
         self.evicting_map.get_snapshot()
     }
@@ -2334,68 +2409,17 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        if is_zero_digest(key.borrow()) {
-            self.has(key.borrow())
-                .await
-                .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
-            writer
-                .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
+        if self
+            .get_part_if_present(key.borrow(), writer, offset, length)
+            .await?
+        {
             return Ok(());
         }
-        let owned_key = key.into_owned();
-        let entry = self.evicting_map.get(&owned_key).await.ok_or_else(|| {
-            make_err!(
-                Code::NotFound,
-                "{} not found in filesystem store here",
-                owned_key.as_str()
-            )
-        })?;
-        let read_limit = length.unwrap_or(u64::MAX);
-        let mut temp_file = match entry.read_file_part(offset, read_limit).await {
-            Ok(file) => file,
-            Err(err) => {
-                // If the file is not found, we need to remove it from the eviction map.
-                if err.code == Code::NotFound {
-                    // Map said the file was present but `open()` hit ENOENT.
-                    // Self-heals: we remove the stale entry below and a
-                    // fast/slow caller re-populates from the slow store, so
-                    // this is a recoverable warn, not a fatal error.
-                    warn!(
-                        ?err,
-                        key = ?owned_key,
-                        "Filesystem store map/disk divergence: removing entry; reader will fall through to slow store",
-                    );
-                    self.evicting_map
-                        .remove_if(&owned_key, |map_entry| Arc::ptr_eq(map_entry, &entry))
-                        .await;
-                }
-                return Err(err);
-            }
-        };
-
-        loop {
-            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
-            temp_file
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Failed to read data in filesystem store")?;
-            if buf.is_empty() {
-                break; // EOF.
-            }
-            writer
-                .send(buf.freeze())
-                .await
-                .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
-        }
-        if self.evict_page_cache {
-            temp_file.get_ref().advise_dontneed();
-        }
-        writer
-            .send_eof()
-            .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
-
-        Ok(())
+        Err(make_err!(
+            Code::NotFound,
+            "{} not found in filesystem store here",
+            key.as_str()
+        ))
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {

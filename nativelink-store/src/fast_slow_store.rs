@@ -43,6 +43,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, trace, warn};
 
 use crate::filesystem_store::FilesystemStore;
+use crate::memory_store::MemoryStore;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -830,45 +831,56 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // `has()` can report a stale map entry whose file is gone, so
-        // get_part may still return NotFound; fall through to the slow
-        // store unless we have already streamed bytes to the caller.
-        // One existence check, reused: this is the hot read path and `has()`
-        // on a filesystem fast store is a syscall.
-        let in_fast_store = self.fast_store.has(key.borrow()).await?.is_some();
-        if !in_fast_store {
-            record_store_tier_read("fast", "miss");
-        }
-        if in_fast_store {
-            let bytes_before = writer.get_bytes_written();
-            match self
-                .fast_store
-                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
-                .await
-            {
-                Ok(()) => {
-                    self.metrics
-                        .fast_store_hit_count
-                        .fetch_add(1, Ordering::Acquire);
-                    self.metrics
-                        .fast_store_downloaded_bytes
-                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-                    record_store_tier_read("fast", "hit");
-                    record_store_tier_io("fast", "read", writer.get_bytes_written());
-                    return Ok(());
-                }
-                Err(e)
-                    if e.code == Code::NotFound && writer.get_bytes_written() == bytes_before =>
-                {
-                    self.metrics
-                        .fast_store_stale_map_falls_through
-                        .fetch_add(1, Ordering::Acquire);
-                    record_store_tier_read("fast", "stale");
-                    warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
-                    // fall through to populate path
-                }
-                Err(e) => return Err(e),
+        // The fast store can hold a stale map entry whose file is gone, so a
+        // read of a key it reports present may still return NotFound; fall
+        // through to the slow store unless we have already streamed bytes
+        // to the caller. A key it does not hold at all is an ordinary miss.
+        let bytes_before = writer.get_bytes_written();
+        // A filesystem or memory fast store answers "is it here?" and streams
+        // it with one lookup in its eviction map, where `has()` followed by
+        // `get_part()` took that store-wide lock twice per read. Only the
+        // store itself qualifies: a wrapper around it may do more in `has()`
+        // or `get_part()`, so it keeps the separate existence check.
+        let fast_driver = self.fast_store.as_store_driver().as_any();
+        let fast_read =
+            if let Some(filesystem_store) = fast_driver.downcast_ref::<FilesystemStore>() {
+                Pin::new(filesystem_store)
+                    .get_part_if_present(key.borrow(), writer.borrow_mut(), offset, length)
+                    .await
+            } else if let Some(memory_store) = fast_driver.downcast_ref::<MemoryStore>() {
+                Pin::new(memory_store)
+                    .get_part_if_present(key.borrow(), writer.borrow_mut(), offset, length)
+                    .await
+            } else if self.fast_store.has(key.borrow()).await?.is_some() {
+                self.fast_store
+                    .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                    .await
+                    .map(|()| true)
+            } else {
+                Ok(false)
+            };
+        match fast_read {
+            Ok(true) => {
+                self.metrics
+                    .fast_store_hit_count
+                    .fetch_add(1, Ordering::Acquire);
+                self.metrics
+                    .fast_store_downloaded_bytes
+                    .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                record_store_tier_read("fast", "hit");
+                record_store_tier_io("fast", "read", writer.get_bytes_written());
+                return Ok(());
             }
+            Ok(false) => record_store_tier_read("fast", "miss"),
+            Err(e) if e.code == Code::NotFound && writer.get_bytes_written() == bytes_before => {
+                self.metrics
+                    .fast_store_stale_map_falls_through
+                    .fetch_add(1, Ordering::Acquire);
+                record_store_tier_read("fast", "stale");
+                warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
+                // fall through to populate path
+            }
+            Err(e) => return Err(e),
         }
 
         // If the fast store is noop or read only or update only then bypass it.
