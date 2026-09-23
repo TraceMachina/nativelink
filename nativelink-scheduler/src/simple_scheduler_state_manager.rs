@@ -54,6 +54,81 @@ const BASE_RETRY_DELAY_MS: u64 = 10;
 /// Maximum jitter to add to retry delay (in ms).
 const MAX_RETRY_JITTER_MS: u64 = 20;
 
+/// How long to wait before the `retry_count`th attempt at an update that
+/// lost a version conflict: exponential in the attempt, plus jitter.
+fn version_conflict_backoff(retry_count: usize) -> Duration {
+    let base_delay = BASE_RETRY_DELAY_MS * (1 << retry_count.saturating_sub(2).min(4));
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| {
+            u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS
+        });
+    Duration::from_millis(base_delay + jitter)
+}
+
+/// Records the execution metrics for an action whose new state was just
+/// stored. `is_retry` is set when a failed attempt re-queued the action.
+fn record_execution_metrics(awaited_action: &AwaitedAction, is_retry: bool) {
+    let action_state = awaited_action.state();
+    let instance_name = awaited_action
+        .action_info()
+        .unique_qualifier
+        .instance_name()
+        .as_str();
+    let worker_id = awaited_action
+        .worker_id()
+        .map(std::string::ToString::to_string);
+    let priority = Some(awaited_action.action_info().priority);
+
+    // Build base attributes for metrics
+    let mut attrs = nativelink_util::metrics::make_execution_attributes(
+        instance_name,
+        worker_id.as_deref(),
+        priority,
+    );
+
+    // Add stage attribute
+    let execution_stage: ExecutionStage = (&action_state.stage).into();
+    attrs.push(KeyValue::new(EXECUTION_STAGE, execution_stage));
+
+    // Record stage transition
+    EXECUTION_METRICS.execution_stage_transitions.add(1, &attrs);
+
+    // For completed actions, record the completion count with result
+    match &action_state.stage {
+        ActionStage::Completed(action_result) => {
+            let result = if action_result.exit_code == 0 {
+                ExecutionResult::Success
+            } else {
+                ExecutionResult::Failure
+            };
+            attrs.push(KeyValue::new(EXECUTION_RESULT, result));
+            EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
+            nativelink_util::metrics::record_completed_execution_metrics(
+                action_result,
+                instance_name,
+                worker_id.as_deref(),
+                priority,
+            );
+        }
+        ActionStage::CompletedFromCache(_) => {
+            attrs.push(KeyValue::new(EXECUTION_RESULT, ExecutionResult::CacheHit));
+            EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
+        }
+        _ => {}
+    }
+
+    // A failed attempt that re-queued the action counts as a retry.
+    if is_retry {
+        let retry_attrs = nativelink_util::metrics::make_execution_attributes(
+            instance_name,
+            worker_id.as_deref(),
+            priority,
+        );
+        EXECUTION_METRICS.execution_retry_count.add(1, &retry_attrs);
+    }
+}
+
 /// Simple struct that implements the `ActionStateResult` trait and always returns an error.
 struct ErrorActionStateResult(Error);
 
@@ -462,7 +537,10 @@ where
         // The action may be racing an assignment or a client update, so on
         // a version conflict reload it and, if it is still queued, try again.
         let mut last_err = None;
-        for _ in 0..MAX_UPDATE_RETRIES {
+        for attempt in 1..=MAX_UPDATE_RETRIES {
+            if attempt > 1 {
+                tokio::time::sleep(version_conflict_backoff(attempt)).await;
+            }
             let awaited_action = match subscriber.borrow().await {
                 Ok(awaited_action) => awaited_action,
                 // Store-backed dbs hand out a subscriber for any id and only
@@ -489,10 +567,14 @@ where
             new_awaited_action.worker_set_state(Arc::new(state), now);
             match self
                 .action_db
-                .update_awaited_action(new_awaited_action)
+                .update_awaited_action(new_awaited_action.clone())
                 .await
             {
-                Ok(()) => return Ok(true),
+                Ok(()) => {
+                    info!(%operation_id, ?err, "Failed a queued action no worker can run");
+                    record_execution_metrics(&new_awaited_action, false);
+                    return Ok(true);
+                }
                 Err(err) if err.code == Code::Aborted => last_err = Some(err),
                 Err(err) => {
                     return Err(err)
@@ -817,13 +899,7 @@ where
         for _ in 0..MAX_UPDATE_RETRIES {
             retry_count += 1;
             if retry_count > 1 {
-                let base_delay = BASE_RETRY_DELAY_MS * (1 << (retry_count - 2).min(4));
-                let jitter = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| {
-                        u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS
-                    });
-                let delay = Duration::from_millis(base_delay + jitter);
+                let delay = version_conflict_backoff(retry_count);
 
                 warn!(
                     %operation_id,
@@ -1042,65 +1118,7 @@ where
                 return Err(err);
             }
 
-            // Record execution metrics after successful state update
-            let action_state = awaited_action.state();
-            let instance_name = awaited_action
-                .action_info()
-                .unique_qualifier
-                .instance_name()
-                .as_str();
-            let worker_id = awaited_action
-                .worker_id()
-                .map(std::string::ToString::to_string);
-            let priority = Some(awaited_action.action_info().priority);
-
-            // Build base attributes for metrics
-            let mut attrs = nativelink_util::metrics::make_execution_attributes(
-                instance_name,
-                worker_id.as_deref(),
-                priority,
-            );
-
-            // Add stage attribute
-            let execution_stage: ExecutionStage = (&action_state.stage).into();
-            attrs.push(KeyValue::new(EXECUTION_STAGE, execution_stage));
-
-            // Record stage transition
-            EXECUTION_METRICS.execution_stage_transitions.add(1, &attrs);
-
-            // For completed actions, record the completion count with result
-            match &action_state.stage {
-                ActionStage::Completed(action_result) => {
-                    let result = if action_result.exit_code == 0 {
-                        ExecutionResult::Success
-                    } else {
-                        ExecutionResult::Failure
-                    };
-                    attrs.push(KeyValue::new(EXECUTION_RESULT, result));
-                    EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
-                    nativelink_util::metrics::record_completed_execution_metrics(
-                        action_result,
-                        instance_name,
-                        worker_id.as_deref(),
-                        priority,
-                    );
-                }
-                ActionStage::CompletedFromCache(_) => {
-                    attrs.push(KeyValue::new(EXECUTION_RESULT, ExecutionResult::CacheHit));
-                    EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
-                }
-                _ => {}
-            }
-
-            // A failed attempt that re-queued the action counts as a retry.
-            if is_retry {
-                let retry_attrs = nativelink_util::metrics::make_execution_attributes(
-                    instance_name,
-                    worker_id.as_deref(),
-                    priority,
-                );
-                EXECUTION_METRICS.execution_retry_count.add(1, &retry_attrs);
-            }
+            record_execution_metrics(&awaited_action, is_retry);
 
             debug!(
                 %operation_id,
