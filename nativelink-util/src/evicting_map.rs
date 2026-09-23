@@ -224,14 +224,23 @@ impl<
         self.leases.contains_key(key)
     }
 
-    /// Keep candidate recency aligned with a normal read from `lru`.
-    /// Returns whether the key is leased so callers do not repeat the lookup.
-    fn touch_evictable(&mut self, key: &Q) -> bool {
-        if self.is_leased(key) {
-            return true;
-        }
-        self.evictable_lru.get(key);
-        false
+    /// Looks up a resident entry and reports whether it is leased. Unless
+    /// `peek` is set, an unleased entry becomes the most recently used
+    /// eviction candidate.
+    ///
+    /// Only `evictable_lru` is re-linked. Eviction walks that index alone,
+    /// so the recency order of `lru` is never read and promoting there as
+    /// well would be a second re-link for nothing. A resident key is in
+    /// `evictable_lru` exactly when it is unleased, so the promoting lookup
+    /// also answers whether the key is leased.
+    fn get_resident(&mut self, key: &Q, peek: bool) -> Option<(&mut EvictionItem<T>, bool)> {
+        let entry = self.lru.peek_mut(key)?;
+        let is_leased = if peek {
+            self.leases.contains_key(key)
+        } else {
+            self.evictable_lru.get(key).is_none()
+        };
+        Some((entry, is_leased))
     }
 
     /// Add a newly written key to the candidate index unless it is reserved
@@ -723,18 +732,8 @@ where
             let mut removal_futures = Vec::new();
             let mut expired_keys = Vec::new();
             for (key, result) in keys.into_iter().zip(results.iter_mut()) {
-                let is_leased = if peek {
-                    state.is_leased(key.borrow())
-                } else {
-                    state.touch_evictable(key.borrow())
-                };
-                let maybe_entry = if peek {
-                    state.lru.peek_mut(key.borrow())
-                } else {
-                    state.lru.get_mut(key.borrow())
-                };
-                match maybe_entry {
-                    Some(entry) => {
+                match state.get_resident(key.borrow(), peek) {
+                    Some((entry, is_leased)) => {
                         // Note: We need to check eviction because the item might be expired
                         // based on the current time. In such case, we remove the item while
                         // we are here.
@@ -813,8 +812,7 @@ where
         let (data, expired, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
             let lru_len = state.lru.len();
-            let is_leased = state.touch_evictable(key.borrow());
-            let entry = state.lru.get_mut(key.borrow())?;
+            let (entry, is_leased) = state.get_resident(key, false)?;
             // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
             // consult TTL / count predicates — never the global byte budget.
             // Mirrors the per-key reap path in `sizes_for_keys`.
@@ -822,7 +820,7 @@ where
                 let (popped_key, eviction_item) = state
                     .lru
                     .pop_entry(key.borrow())
-                    .expect("entry was just observed via get_mut");
+                    .expect("entry was just observed via get_resident");
                 let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
                 (
                     None,
@@ -894,8 +892,7 @@ where
         let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
 
-            state.touch_evictable(key.borrow());
-            if let Some(old_entry) = state.lru.get(key.borrow())
+            if let Some((old_entry, _)) = state.get_resident(key.borrow(), false)
                 && !cond(&old_entry.data, &data)
             {
                 return (false, None);
@@ -1146,8 +1143,7 @@ where
         let mut logs = EvictionLogs::new();
         let (evicted_items, removal_futures, removed_item, cache_size_delta) = {
             let mut state = self.state.lock();
-            state.touch_evictable(key.borrow());
-            let Some(entry) = state.lru.get(key.borrow()) else {
+            let Some((entry, _)) = state.get_resident(key, false) else {
                 return false;
             };
             if !cond(&entry.data) {

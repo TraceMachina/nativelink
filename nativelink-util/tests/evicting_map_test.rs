@@ -559,6 +559,68 @@ async fn leased_key_survives_ttl_until_released() -> Result<(), Error> {
     Ok(())
 }
 
+// A promoting read learns whether a key is leased from the eviction
+// candidate index, so reading a leased entry must neither reap it nor turn
+// it into a candidate.
+#[nativelink_test]
+async fn promoting_read_of_leased_key_neither_reaps_nor_exposes_it() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 5,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let leased_key = DigestInfo::try_new(HASH1, 0)?;
+    let other_key = DigestInfo::try_new(HASH2, 0)?;
+
+    evicting_map.lease_key(leased_key);
+    evicting_map
+        .insert(leased_key, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(10));
+
+    assert_eq!(
+        evicting_map.get(&leased_key).await,
+        Some(Bytes::from(DATA).into()),
+        "TTL expiry must not reap a leased input on get",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+        "TTL expiry must not reap a leased input on a promoting size lookup",
+    );
+
+    evicting_map
+        .insert(other_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&other_key).await,
+        None,
+        "the unleased entry is the only eviction candidate",
+    );
+    assert_eq!(
+        evicting_map.get(&leased_key).await,
+        Some(Bytes::from(DATA).into()),
+        "reading a leased entry must not make it an eviction candidate",
+    );
+
+    // The reads above refreshed its age, so it outlives the release...
+    evicting_map.release_key(&leased_key).await;
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+    );
+    // ...and is reaped once it expires unleased.
+    MockClock::advance(Duration::from_secs(6));
+    assert_eq!(evicting_map.get(&leased_key).await, None);
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
     const DATA: &str = "12345678";
