@@ -96,6 +96,20 @@ impl MockRunningActionsManager {
         req
     }
 
+    /// Waits for `create_and_add_action` to be invoked but never replies, so
+    /// the worker-side call stays pending and the action remains in transit.
+    pub(crate) async fn expect_create_and_add_action_no_reply(&self) -> (String, StartExecute) {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let RunningActionManagerCalls::CreateAndAddAction(req) = rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for create_and_add_action")
+        };
+        req
+    }
+
     pub(crate) async fn expect_cache_action_result(
         &self,
     ) -> (DigestInfo, ActionResult, DigestHasherFunc) {

@@ -11,6 +11,9 @@ runs:
       uses: ./.github/actions/free-disk
 
     - name: Install Nix
+      # Stay on the Determinate installer: the nix-quick-install switch (Nix
+      # 2.34.7) makes the nix2container multi-arch image publish fail with a
+      # layer digest mismatch. See the tagged image workflow.
       uses: >- # https://github.com/DeterminateSystems/nix-installer-action/releases/tag/v22
         DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
       with:
@@ -19,6 +22,16 @@ runs:
           fallback = true # So we always work even if the cache is down
           log-lines = 100 # Necessary in CI to get enough failure context
           keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
+
+    - name: Prefetch flake inputs
+      uses: >- # v4
+        nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+      with:
+        timeout_minutes: 10
+        max_attempts: 5
+        retry_wait_seconds: 30 # GitHub tarball 503s are usually brief; ride them out
+        command: nix flake archive --json > /dev/null
+        shell: bash
 
     - name: Setup attic cache
       uses: >- # v4

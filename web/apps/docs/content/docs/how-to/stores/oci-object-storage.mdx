@@ -1,0 +1,264 @@
+---
+title: Oracle Cloud (OCI) Object Storage
+description: "Back the cache with OCI Object Storage through its S3 Compatibility API: Customer Secret Keys, the two adjustments the store makes for you, and what has actually been verified."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone running NativeLink on Oracle Cloud who wants the
+durable tier to be an OCI bucket. **What you'll have at the end:** a
+bucket-backed CAS and Action Cache authenticated with a Customer Secret Key.
+**Time:** thirty minutes, most of it namespace and policy setup.
+
+<Prerequisites>
+  A config file you can edit (see [Configuration](/configuration)), and an OCI tenancy you can create a bucket in.
+</Prerequisites>
+
+OCI is one `provider` value of the same cloud object store used by
+[S3 and compatible](/how-to/stores/s3-and-compatible),
+[GCS](/how-to/stores/gcs) and [Azure Blob](/how-to/stores/azure): six
+providers over one store type, sharing the same multipart, retry and streaming
+code paths.
+
+## How it works [#how-it-works]
+
+[OCI Object Storage](https://www.oracle.com/cloud/storage/object-storage/)
+exposes an [S3 Compatibility
+API](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/s3compatibleapi.htm),
+and the `oci` provider is a thin adapter pointing the S3 store at it. Two
+OCI-specific adjustments are applied automatically, and you do not configure
+either:
+
+- **Path-style addressing.** OCI requires `endpoint/bucket/key` rather than
+  virtual-hosted `bucket.endpoint/key` URLs. The endpoint is derived as
+  `https://{namespace}.compat.objectstorage.{region}.oci.customer-oci.com`.
+- **Checksums downgraded to "when required".** The AWS SDK otherwise adds a
+  default trailing checksum that forces `Content-Encoding: aws-chunked`, which
+  OCI rejects with `501 NotImplemented: AWS chunked encoding not supported`.
+  Without the downgrade, small single-`PUT` objects (notably Action Cache
+  entries) fail.
+
+<SourceLink file="nativelink-store/src/oci_store.rs" symbol="OciStore" />
+
+## Before you start [#before-you-start]
+
+You need three things.
+
+**A bucket.** Create one in the Console under *Storage → Buckets*, or with
+`oci os bucket create`. Note its region, for example `ap-mumbai-1`.
+
+**Your Object Storage namespace.** A tenancy-wide identifier shown under
+*Tenancy details*, or from `oci os ns get`. It goes into the derived endpoint.
+
+**A Customer Secret Key.** See below.
+
+## Authentication [#authentication]
+
+The S3 Compatibility API authenticates with Customer Secret Keys, a static
+access-key and secret-key pair used as `access_key_id` and
+`secret_access_key`, signed with AWS SigV4.
+
+Generate one in the Console under *Profile → User settings → Customer secret
+keys → Generate secret key*. The secret is shown **only once** at generation time, so copy it
+immediately; the access key stays listed in the table and can be copied
+whenever you like. OCI has no way to retrieve a secret after generation, so if
+you lose it you rotate rather than recover.
+
+Grant the associated user read and write on the bucket with a least-privilege
+policy:
+
+```
+Allow group <your-group> to manage object-family in compartment <compartment> where target.bucket.name='<bucket>'
+```
+
+Supply both keys through environment variables and reference them with `${VAR}`
+rather than pasting them into the config; see
+[The config file](/configuration/config-file).
+
+<Callout type="warn" title="Only Customer Secret Keys work here">
+  The S3 Compatibility API supports no other credential. OCI-native
+  authentication (API signing keys, instance principals, resource principals)
+  is not available through this store. If you run NativeLink on OCI compute and
+  want keyless workload identity, that is not currently supported: you use
+  static Customer Secret Keys and rotate them yourself.
+</Callout>
+
+## The recipe [#the-recipe]
+
+A minimal CAS and Action Cache sharing one bucket, segmented by `key_prefix`:
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "oci",
+      namespace: "storagenamespace",
+      region: "ap-mumbai-1",
+      bucket: "nativelink-cas",
+      access_key_id: "${OCI_ACCESS_KEY_ID}",
+      secret_access_key: "${OCI_SECRET_ACCESS_KEY}",
+      key_prefix: "cas/",
+      retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+    },
+  },
+  {
+    name: "AC_MAIN_STORE",
+    experimental_cloud_object_store: {
+      provider: "oci",
+      namespace: "storagenamespace",
+      region: "ap-mumbai-1",
+      bucket: "nativelink-cas",
+      access_key_id: "${OCI_ACCESS_KEY_ID}",
+      secret_access_key: "${OCI_SECRET_ACCESS_KEY}",
+      key_prefix: "ac/",
+      retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+    },
+  },
+],
+```
+
+<SourceLink file="nativelink-config/examples/oci_backend.json5" />
+
+That is the smallest thing that works, not the thing to run. In production,
+wrap the CAS in `verify` for integrity and front it with a `fast_slow`
+filesystem tier to cut round trips, exactly as for AWS.
+[Compose stores](/how-to/stores/compose-stores) has the shapes.
+
+### Fields [#fields]
+
+| Field | Required | What it is |
+| --- | --- | --- |
+| `namespace` | yes | Object Storage namespace; used to derive the endpoint |
+| `region` | yes | OCI region id, for example `ap-mumbai-1`; also the SigV4 signing region |
+| `bucket` | yes | Target bucket |
+| `access_key_id` | no | Customer Secret Key access key; if either key is unset the store falls back to the AWS default credential chain, which reads `AWS_*` names, not OCI ones |
+| `secret_access_key` | no | Customer Secret Key secret |
+| `key_prefix`, `retry`, … | no | The [shared cloud object options](/how-to/stores/s3-and-compatible) |
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalOciSpec" />
+
+OCI also accepts `us-east-1` as a `region` value to target the tenancy home
+region, which is occasionally useful when a tool insists on an AWS region name.
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Create the bucket** and note its region and your tenancy's Object Storage
+namespace.
+
+</li>
+
+<li>
+
+**Generate a Customer Secret Key** and copy the secret immediately, because it is
+shown once.
+
+</li>
+
+<li>
+
+**Apply a least-privilege policy** scoped to that bucket, and export both keys
+into the process environment.
+
+</li>
+
+<li>
+
+**Add a lifecycle rule** aborting incomplete multipart uploads after a few days
+as a backstop.
+
+</li>
+
+<li>
+
+**Add the stores** with distinct `key_prefix` values, then run a build twice.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Objects appear under both `cas/` and `ac/` in the bucket during the first
+  build.
+- The second build is a cache hit, which proves the Action Cache round trip
+  works. That is the path the checksum adjustment exists for.
+- A large artifact uploads and downloads intact, which exercises multipart.
+- No incomplete multipart uploads accumulate between builds.
+
+</VerifyBlock>
+
+## Operational notes [#operational-notes]
+
+**Reap incomplete multipart uploads.** When a multipart upload fails mid-flight
+the store issues `AbortMultipartUpload` to clean up, and OCI honors both
+`ListMultipartUploads` and `AbortMultipartUpload`. A process killed *before* it
+can abort still leaves orphaned parts, which is what the lifecycle rule is for.
+
+**Status.** This backend lives under `experimental_cloud_object_store`. When it
+was added, its core paths (read, write, existence checks, ranged reads,
+multipart and integrity) were verified against live OCI, including an
+end-to-end Bazel remote cache round trip, a 2 GiB multipart upload of roughly 400 parts with full byte
+verification, multipart abort and cleanup, and 200-way concurrent load. It has
+not been benchmarked at sustained production scale or duration.
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Small objects fail with 501 NotImplemented: AWS chunked encoding not supported" id="small-objects-fail-with-501-notimplemented-aws-chunked-encoding-not-supported">
+
+Something is re-adding the default trailing checksum the store removes. This is
+the failure the checksum downgrade exists to prevent, and it shows up first on
+Action Cache entries because they are small single-`PUT` objects. Confirm you
+are on a NativeLink version that carries the `oci` provider rather than
+pointing the `aws` provider at an OCI endpoint by hand.
+
+</Accordion>
+
+<Accordion title="Every request fails to authenticate" id="every-request-fails-to-authenticate">
+
+The S3 Compatibility API takes Customer Secret Keys only. An API signing key,
+an instance principal or a resource principal will not work here. Check also
+that `region` matches the bucket's region. It is the SigV4 signing region as
+well as part of the endpoint.
+
+</Accordion>
+
+<Accordion title="The endpoint cannot be resolved" id="the-endpoint-cannot-be-resolved">
+
+`namespace` is wrong. It is the tenancy's Object Storage namespace from
+`oci os ns get`, not the tenancy name and not the compartment.
+
+</Accordion>
+
+<Accordion title="You lost the secret key" id="you-lost-the-secret-key">
+
+It cannot be retrieved; OCI shows it once. Generate a new Customer Secret Key
+and delete the old one.
+
+</Accordion>
+
+<Accordion title="Can the CAS and Action Cache share one bucket?" id="can-the-cas-and-action-cache-share-one-bucket">
+
+Yes, and they should. Segment them with `key_prefix` (`cas/` and `ac/` in the
+example above) rather than provisioning two buckets. Lifecycle rules can still
+treat the prefixes differently.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  The `verify` wrapper and the `fast_slow` tier that turn this into something
+  you'd run in production.
+</NextStep>
+
+<NextStep href="/how-to/stores/s3-and-compatible" kind="aside" title="S3 and compatible">
+  The shared cloud object options (retry, expiry, buffering) documented in
+  full.
+</NextStep>

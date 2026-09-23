@@ -15,6 +15,42 @@ Should you wish to work on an issue, please claim it first by commenting on
 the GitHub issue that you want to work on it. This is to prevent duplicated
 efforts from contributors on the same issue.
 
+## AI-assisted contributions
+
+NativeLink builds infrastructure for coding agents, so we won't pretend they
+don't write code. Agents are welcome contributors when a person stands behind
+the change. Four rules, in the spirit of the projects whose contribution
+culture we admire:
+
+1. **You must understand your change.** Using an agent to write code is fine;
+   interrogate it about the codebase until you grasp every edge case and
+   effect of the diff. Submitting code you cannot explain is not fine. A
+   reviewer may ask about any line, and "the agent wrote it" is not an answer.
+2. **Disclose it.** The pull request template has an "AI assistance" section.
+   Say which tools helped and how much: none, autocomplete, an agent drafted
+   it and you reworked it, an agent wrote it and you reviewed every line.
+   "None" is a complete answer. The section is required, and the PR template
+   check asks for it.
+3. **No slop.** Unreviewed generated code, generated issue or discussion text
+   that no person edited, and generated media (artwork, video, audio) are
+   closed without review. Write issues and comments in your own voice;
+   generated prose runs long, sounds confident, and often misses the point.
+   Repeated submissions of this kind cost the ability to contribute.
+4. **Agents follow `AGENTS.md`.** It maps the repository, names the checks,
+   and says which document must follow which change. An agent working here
+   runs the same checks a person would before opening a pull request, and
+   never opens one on its own initiative.
+
+Maintainers use agents at their discretion; the difference is that they have
+already shown they understand the code. None of this is an anti-AI stance.
+Review attention is the scarcest resource an open project has, and generated
+text made it cheap to produce contributions that look finished and are not.
+The rules keep the reviewer's time for changes a person is answerable for.
+
+Everything the repository offers an agent (the `llms.txt` files at the
+repository root and the skills under `.claude/skills/`) is listed at
+https://nativelink.com/agents and in [`AGENTS.md`](AGENTS.md).
+
 ## Git setup
 
 NativeLink has a somewhat specific contribution process to ensure consistent
@@ -403,12 +439,15 @@ dev shell), then:
 cd web
 bun install
 
-# Live dev server for just the docs at http://localhost:3001/docs
+# Live dev server for just the docs at http://localhost:3001
 bun dev:docs
 
-# Production build + preview of the docs app
-bun --filter @nativelink/docs build
-bun --filter @nativelink/docs start   # serves the build on port 3001
+# Production build + preview of both apps, the successor to the old
+# `rm -r dist && bun run build` and `bun preview`. DOCS_URL is baked into
+# the marketing app's /docs redirect at build time.
+DOCS_URL=http://localhost:3001 bun run build
+bun --filter @nativelink/web start    # nativelink.com build on port 3000
+bun --filter @nativelink/docs start   # docs build on port 3001
 ```
 
 Docs content is MDX under `web/apps/docs/content/docs/`. Every page needs
@@ -435,13 +474,42 @@ most automatically generated changelogs provide.
 
    - `MODULE.bazel`
    - `Cargo.toml`
-   - `nativelink-*/Cargo.toml`
+   - The `Cargo.toml` of every `nativelink-*` crate — including nested ones
+     like `nativelink-metric/nativelink-metric-macro-derive/Cargo.toml` —
+     and the regenerated lock files (`Cargo.lock`,
+     `nativelink-test/fuzz/Cargo.lock`)
 
-2. Run `git cliff --tag=0.x.y > CHANGELOG.md` to update the changelog. You might
-   need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put a
-   commit in the right subsection.
+   As a sanity check, a standard release touches 17 files.
 
-3. Create the commit and PR. Call it `Release NativeLink v0.x.y`.
+2. Update the changelog by prepending the new release section to the existing
+   `CHANGELOG.md`. Don't regenerate the whole file — that rewrites previous
+   release entries and drops manual curation.
+
+   First make sure your local tags match upstream, since `--unreleased` means
+   "commits not contained in any tag":
+
+   ```bash
+   git fetch upstream --tags
+   ```
+
+   Sanity check which commits will form the new release section:
+
+   ```bash
+   git log --oneline "$(git describe --tags --abbrev=0)"..HEAD
+   ```
+
+   Then prepend the new section:
+
+   ```bash
+   git cliff --unreleased --tag=v1.x.y --prepend CHANGELOG.md
+   ```
+
+   Verify with `git diff CHANGELOG.md` that the change is purely additive:
+   only added lines, with all previous release entries untouched. You might
+   need to make manual adjustments to `cliff.toml` if `git-cliff` doesn't put
+   a commit in the right subsection.
+
+3. Create the commit and PR. Call it `Release NativeLink v1.x.y`.
 
 4. Once the PR is merged, update your local repository and origin:
 
@@ -456,15 +524,15 @@ most automatically generated changelogs provide.
    `v` prefix:
 
    ```bash
-   git tag -s v0.x.y
+   git tag -s v1.x.y
 
-   # tag message should be: v0.x.y
+   # tag message should be: v1.x.y
    ```
 
 6. Push the signed tag to the origin repository:
 
    ```bash
-   git push origin v0.x.y
+   git push origin v1.x.y
    ```
 
 7. Pushing the tag triggers an additional GHA workflow which should create the
@@ -472,7 +540,7 @@ most automatically generated changelogs provide.
    the CI job in your fork passes, push the tag to upstream:
 
    ```bash
-   git push upstream v0.x.y
+   git push upstream v1.x.y
    ```
 
 8. Regenerate the latest config reference docs now that the upstream tag exists.
@@ -492,14 +560,14 @@ most automatically generated changelogs provide.
    ```bash
    git fetch --tags upstream
    cd web
-   bun --filter @nativelink/docs gen:config-reference v0.x.y
+   bun --filter @nativelink/docs gen:config-reference v1.x.y
    cd ..
    ```
 
-   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v0.x.y` as the
+   Confirm that `web/apps/docs/lib/config-versions.ts` marks `v1.x.y` as the
    latest release and that
    `web/apps/docs/content/docs/reference/nativelink-config/index.mdx` says it was
-   sourced from `nativelink-config @ v0.x.y`. Then run the docs lint and commit
+   sourced from `nativelink-config @ v1.x.y`. Then run the docs lint and commit
    the generated docs update:
 
    ```bash
@@ -512,6 +580,19 @@ most automatically generated changelogs provide.
    does, select `Create a release from tag` and create release notes. You can
    use previous release notes as template by clicking on the "Edit" button on a
    previous release and copy-pasting the contents into the new release notes.
+
+   Attribute every entry to its author. Keep the same category headings as the
+   changelog and write each line as `<summary> by @author in (#PR) - (short-sha)`,
+   then close the notes with a `New Contributors` section and a `Full Changelog`
+   link. To pull the author list and first-time contributors for the range, run:
+
+   ```bash
+   gh api -X POST repos/TraceMachina/nativelink/releases/generate-notes \
+     -f tag_name=v1.x.y -f previous_tag_name=v1.x.z
+   ```
+
+   Fold that output into the categorized notes rather than pasting it verbatim,
+   since the changelog groups commits by type.
 
    Make sure to include migration instructions for all breaking changes.
 
@@ -535,15 +616,15 @@ most automatically generated changelogs provide.
 
     ```bash
     # Verify the SLSA provenance covers the artifact.
-    slsa-verifier verify-artifact nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
-      --provenance-path nativelink-0.x.y.intoto.jsonl \
+    slsa-verifier verify-artifact nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --provenance-path nativelink-1.x.y.intoto.jsonl \
       --source-uri github.com/TraceMachina/nativelink \
-      --source-tag v0.x.y
+      --source-tag v1.x.y
 
     # Verify the cosign signature.
-    cosign verify-blob nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz \
-      --signature nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.sig \
-      --certificate nativelink-0.x.y-x86_64-unknown-linux-musl.tar.gz.pem \
+    cosign verify-blob nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz \
+      --signature nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz.sig \
+      --certificate nativelink-1.x.y-x86_64-unknown-linux-musl.tar.gz.pem \
       --certificate-identity-regexp '^https://github.com/TraceMachina/nativelink/' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com
     ```
@@ -551,7 +632,7 @@ most automatically generated changelogs provide.
     If a release ever ships without signed assets (for example a release created
     before this workflow existed), re-run the workflow manually against the tag:
     `Actions → Signed release artifacts → Run workflow`, entering the tag (e.g.
-    `v0.x.y`). It will rebuild, re-sign, and attach the assets to that existing
+    `v1.x.y`). It will rebuild, re-sign, and attach the assets to that existing
     release.
 
 ## Conduct

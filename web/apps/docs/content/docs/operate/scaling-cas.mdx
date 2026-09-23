@@ -1,0 +1,538 @@
+---
+title: Scaling the CAS
+description: "How to grow the content-addressable store: composing tiers, sizing eviction, sharding, and the specific reasons a second CAS replica is harder than a second worker."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** you run a CAS that real builds depend on, and it is
+running out of disk, running out of throughput, or both. **What you'll have at
+the end:** a store composition sized for your load, an eviction policy that
+doesn't thrash, and a clear-eyed view of what running more than one CAS process
+costs. **Time:** an afternoon to size and tune; longer if you go horizontal.
+
+<Prerequisites>
+  A CAS that real builds depend on.
+</Prerequisites>
+
+[Scaling workers](/operate/scaling-workers) is the straightforward half of capacity. This
+is the other half, and it is a different problem: a worker holds nothing, so
+adding one is free. The CAS holds everything, so adding one is a design
+decision.
+
+## Start here: a CAS process is not stateless [#start-here-a-cas-process-is-not-stateless]
+
+Most guidance about scaling services assumes replicas are interchangeable. For
+NativeLink's CAS that assumption is wrong in five specific places, and every
+horizontal-scaling decision on this page follows from them.
+
+**In-flight resumable uploads live in one process.** The ByteStream service
+keeps a registry of active uploads keyed by the upload's UUID, in memory, per
+process.
+
+<SourceLink file="nativelink-service/src/bytestream_server.rs" symbol="ByteStreamServer" />
+
+When a client asks `QueryWriteStatus` to resume an interrupted upload, the
+server looks the UUID up in that map. If the request lands on a replica that
+never saw the upload, the lookup misses, the fallback checks whether the blob is
+already complete in the store, and on a miss the client is told to start over
+from byte zero. The source comment at that branch says so in as many words. A
+large blob interrupted at 90% and resumed against a different replica is
+re-uploaded in full.
+
+**LRU state is per process.** The eviction index (recency ordering, running
+size total, entry count) belongs to the process that built it.
+
+<SourceLink file="nativelink-util/src/evicting_map.rs" symbol="EvictingMap" />
+
+Two replicas over the same logical dataset make independent eviction decisions
+and diverge.
+
+**The existence cache produces stale positives.** An `existence_cache` store
+remembers "this digest exists" in memory and is invalidated by its backend's
+remove callbacks. Those callbacks are in-process for a filesystem or memory
+backend, and there is no cross-process path at all for S3, GCS or Azure, so
+a blob removed underneath one replica (an object lifecycle rule, another
+replica's eviction, an operator) leaves the other replicas answering "present".
+The client skips the upload, and a later fetch fails. The one backend with a
+cross-process signal is Redis: with `notify-keyspace-events` set to include
+`K` and `A`, every process subscribed to the store hears Redis-side
+evictions and TTL expiries and drops the entry.
+
+<SourceLink file="nativelink-store/src/existence_cache_store.rs" symbol="ExistenceCacheStore" />
+<SourceLink file="nativelink-store/src/redis_store.rs" symbol="notify-keyspace-events" />
+
+<Callout type="warn" title="Do not put `existence_cache` behind a load balancer">
+  It is the most dangerous wrapper to replicate. It is safe on a single process
+  and safe in front of a backend nothing else removes from; it is unsafe the
+  moment anything other than that process deletes from the shared backing
+  store, unless the backing store is Redis with keyspace notifications on. The
+  failure mode is a build that skips an upload and then can't find its own
+  artifact.
+</Callout>
+
+**A filesystem store cannot share a directory.** Two processes pointed at the
+same `content_path` each build their own index at boot and each unlink files the
+other believes it owns. This is not a supported configuration.
+
+**Read deduplication is intra-process only.** `fast_slow` collapses concurrent
+reads of the same digest into a single fetch from the slow tier, but only within one
+process. Three replicas asking for the same cold blob at once make three
+requests to S3.
+
+It has no leader election, no gossip, no Raft or quorum protocol, no etcd and
+no ZooKeeper anywhere in NativeLink. Replicas are independent processes, and any
+coordination between them has to come from the semantics of the shared backing
+store you point them at.
+
+## Scale vertically first, by composing [#scale-vertically-first-by-composing]
+
+The store graph is where most capacity problems are solved, and it is cheaper
+than adding processes because it changes nothing about consistency.
+[Compose stores](/how-to/stores/compose-stores) is the reference for the
+wrappers; what follows is which one relieves which pressure.
+
+| Pressure | Layer | What it buys |
+| --- | --- | --- |
+| Disk is full | `compression` | LZ4 on the slow tier. It is the only algorithm the `compression` store offers (zstd exists only as REAPI wire compression on the `grpc` store). |
+| Disk is full, inputs are similar | `dedup` | Content-defined chunking, 64 KiB to 512 KiB, so near-identical blobs share chunks. |
+| Reads are slow | `fast_slow` | A local hot tier in front of object storage or Redis. |
+| Small blobs dominate request count | `size_partitioning` | Route small objects to memory, large ones elsewhere. |
+| One backend is the ceiling | `shard` | Spread keys across several backends by hash. |
+| `FindMissingBlobs` is hot | `existence_cache` | Answer existence without touching the backend; single process only. |
+| AC hits point at missing blobs | `completeness_checking` | Re-check the CAS on every AC read. |
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
+
+Three details of composition matter for capacity specifically and aren't
+apparent from the individual recipes.
+
+**`fast_slow` populates the fast tier on a read miss**, streaming from the slow
+store to the caller and into the fast store at the same time. That's what makes
+the hot tier fill itself. It also means a single large cold blob can evict a lot
+of hot working set, which is what `bypass_dedup_threshold_bytes` is for: at or
+above that size the read goes straight to the slow store and does not
+populate. It defaults to `0`, which disables the bypass.
+
+**`size_partitioning` splits at `size`, exclusive on the low side**: a blob of
+exactly that many bytes goes to the *upper* store. It also rejects non-digest
+keys outright, so it must not sit anywhere string-keyed traffic flows.
+
+**A memory store silently drops blobs at or above its `max_bytes`.** The write
+is skipped with a log line rather than an error, and the blob is served from the
+backing store instead. If a memory fast tier appears to be doing nothing, this
+is usually why.
+
+<SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
+
+## Eviction is your capacity control, and its default thrashes [#eviction-is-your-capacity-control-and-its-default-thrashes]
+
+Four fields, all on `EvictionPolicy`, all defaulting to `0`, and `0` means
+*disabled* in every case. A policy with no fields set is an unbounded store.
+
+```json5
+eviction_policy: {
+  max_bytes: 500000000000,
+  evict_bytes: 50000000000,
+  max_seconds: 2592000,
+  max_count: 0,
+}
+```
+
+`max_bytes` is the ceiling. `evict_bytes` is the low watermark: when eviction
+triggers, keep going until the store is down to `max_bytes - evict_bytes`.
+`max_seconds` expires entries by age since last access. `max_count` caps the
+number of entries.
+
+<Callout type="warn" title="`evict_bytes: 0` makes eviction run on nearly every write">
+  With no low watermark configured, eviction evicts the bare minimum: it pops
+  LRU entries only until the store is back under `max_bytes`, then stops. The
+  store sits pinned at its high-water mark, and the next write puts it over
+  again. Every example config in the repository leaves `evict_bytes` unset.
+  Setting it to some fraction of `max_bytes` is the single cheapest tuning
+  change available on this page.
+</Callout>
+
+Two more behaviours to plan around:
+
+**No background eviction timer exists.** Eviction runs on inserts and
+removals (and when a worker releases a lease on an input it was using). Reads
+perform a lazy per-key expiry check on the key being read and nothing else. The consequence is that **an idle store never shrinks**; a CAS
+that goes over quota and then stops receiving writes stays over quota, and
+`max_seconds` only takes effect on entries someone happens to ask for.
+
+**Eviction is whole entries, one at a time.** It does no partial or chunked
+eviction; the unit is one blob, or one file for a filesystem store.
+
+### Size the AC and the CAS together [#size-the-ac-and-the-cas-together]
+
+The Action Cache is just another store with its own `EvictionPolicy`; there is
+no separate mechanism. The shipped examples give it roughly a twentieth of the
+CAS budget, which is a reasonable starting ratio because AC entries are tiny.
+
+That asymmetry creates the hazard. AC entries are small and survive eviction
+readily; the CAS blobs they *point at* are large and get evicted first. The
+result is an AC hit that resolves to missing content. `completeness_checking`
+exists precisely for this: it re-queries the CAS on every AC read and treats an
+incomplete result as a miss. It costs a CAS round trip per AC hit, and on a
+shared production cache it is worth it.
+
+<SourceLink file="nativelink-store/src/completeness_checking_store.rs" symbol="CompletenessCheckingStore" />
+
+## Sharding, and what changing it costs [#sharding-and-what-changing-it-costs]
+
+`shard` distributes keys across several backends by hash, with an optional
+integer `weight` per shard. The weights are turned into a cumulative table over
+the `u32` space at startup and the key is binary-searched into it.
+
+<SourceLink file="nativelink-store/src/shard_store.rs" symbol="ShardStore" />
+
+Two properties decide whether it fits.
+
+**Placement includes the blob's size.** The hash folds the digest *and* its
+declared size, so the same content at a different declared size lands in a
+different shard. This is fine (it's still deterministic), but it means you
+cannot reason about placement from the hash alone.
+
+**Nothing rebalances.** No migration, no virtual-node consistent hashing,
+no read repair, no re-shard command. Adding, removing, or reweighting a shard
+moves the boundaries and remaps a large fraction of keys. The data is still
+physically where it was written; lookups just go somewhere else and never find
+it.
+
+<Callout type="warn" title="Treat any shard change as a cache flush">
+  Plan a shard-list change the way you would plan wiping the cache: during a
+  quiet window, with the expectation that the next build is cold. Size the shard
+  count for where you expect to be in a year rather than for today.
+</Callout>
+
+Sharding is the right tool when one backend is genuinely the ceiling: a single
+Redis instance's memory, one filesystem's IOPS. It is the wrong tool for
+capacity you could have bought by pointing at object storage instead.
+
+## Going horizontal [#going-horizontal]
+
+Everything above scales one process. If you have exhausted that, here is the
+order to add replicas in.
+
+<Steps>
+
+<li>
+
+**Move the backing store off local disk first.** Replicas only make sense over
+storage they can share: S3 or a compatible object store, GCS, Azure, or Redis.
+A filesystem store cannot be shared between processes at all, so this is a
+prerequisite rather than an optimisation. [S3 and
+compatible](/how-to/stores/s3-and-compatible) and [Redis](/how-to/stores/redis)
+are the recipes.
+
+</li>
+
+<li>
+
+**Keep the per-replica fast tier local and private.** Each replica gets its own
+`fast_slow` hot tier on its own disk, pointed at the shared slow store. This is
+the topology that works: shared truth underneath, independent caches above.
+Accept that the hot tiers diverge; they are caches of a cache.
+
+</li>
+
+<li>
+
+**Remove `existence_cache` from the replicated path**, or accept that it will
+serve stale positives. No cross-process invalidation exists except for a
+Redis backend with keyspace notifications enabled. If
+`FindMissingBlobs` latency is why you wanted it, a `fast_slow` hot tier gets you
+most of the same benefit without the correctness hazard.
+
+</li>
+
+<li>
+
+**Make ByteStream uploads sticky.** Configure your load balancer for session
+affinity so a client's upload stream and its `QueryWriteStatus` resume reach the
+same replica. Without it, every interrupted large upload restarts from zero.
+This is the single most common way a horizontally scaled CAS gets slower rather
+than faster.
+
+</li>
+
+<li>
+
+**Set readiness to account for the startup scan.** A filesystem store scans its
+entire `content_path` at boot and builds its index *before the process binds any
+socket*. During that window there is nothing to connect to: not a degraded
+service, an absent one. The window grows with the number of files on disk, so
+give readiness and liveness probes an initial delay that reflects a full cache,
+not an empty one.
+
+</li>
+
+<li>
+
+**Scale in slowly, and prefer fewer larger replicas.** Removing a replica throws
+away a warm fast tier that took hours to fill, and the actions that would have
+hit it now go to the slow store. The CAS is the opposite of the worker pool
+here: generous, patient, and biased toward vertical growth.
+
+</li>
+
+<li>
+
+**Only then consider `shard`**, and only if a single shared backend is provably
+the ceiling. Re-read the cache-flush warning above before you commit to a shard
+count.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Store size levels off below `max_bytes` and stays there, rather than sawing up
+  to the limit on every write; that saw is `evict_bytes` being unset.
+- A cold build populates the fast tier and the next identical build reads almost
+  entirely from it.
+- Interrupting a large upload and resuming it resumes from where it stopped,
+  not from zero. If it restarts, affinity isn't working.
+- An AC hit never resolves to a missing blob. If it does, add
+  `completeness_checking`.
+- Restarting a replica does not fail client requests; it fails readiness first,
+  and the load balancer takes it out before it stops answering.
+- Disk usage on each replica's fast tier is bounded and roughly equal.
+
+</VerifyBlock>
+
+## The ceilings you hit before you expect to [#the-ceilings-you-hit-before-you-expect-to]
+
+**File descriptors, at 80% of what you configured.** `global.max_open_files`
+defaults to 24576, and the process reserves a fifth of it for sockets and pipes,
+so the effective permit budget is about 19660.
+
+<SourceLink file="nativelink-util/src/fs.rs" symbol="DEFAULT_OPEN_FILE_LIMIT" />
+
+Every filesystem operation that goes through the store's file helpers takes a
+permit, including metadata-only ones such as `metadata`, `read_dir` and
+`rename`. (The startup scan is the exception: it holds one permit for the
+directory handle and runs its 200-way parallel `stat` outside the semaphore.)
+Network sockets are *not* counted by this semaphore but *are* counted by the
+kernel, so the kernel's limit must exceed `max_open_files` plus your expected
+connection count.
+
+**One connection per gRPC endpoint.** A `grpc` store's
+`connections_per_endpoint` defaults to `1`, so all traffic to a remote store
+multiplexes over a single HTTP/2 connection. On a busy CAS-of-a-CAS topology
+this is usually the first thing to raise.
+
+**Redis permits and pool size.** `max_client_permits` defaults to 500 in-flight
+operations and `connection_pool_size` to 3. The permit cap exists specifically
+to stop timeouts from unbounded in-flight work, so raise it deliberately rather
+than reflexively.
+
+**Object-store upload concurrency.** `multipart_max_concurrent_uploads`
+defaults to 10 per request, with a 5 MB retry buffer per request.
+
+**Message size, which is not a blob size limit.** The HTTP listener's
+`max_decoding_message_size` defaults to 4 MiB and bounds a single decoded gRPC
+message, so it caps `BatchUpdateBlobs`, not ByteStream. No
+configuration anywhere caps how large a blob a CAS will accept over
+ByteStream. Capacity is bounded by eviction and disk, not by an upload check.
+
+[Tuning](/operate/tuning) has the full lever table for the storage path,
+including `evict_page_cache` and its caveat.
+
+## Metrics: nothing is on by default [#metrics-nothing-is-on-by-default]
+
+This is the finding most likely to catch you out while you're trying to measure
+any of the above.
+
+NativeLink defines a full set of cache instruments: operation duration,
+operation counts by result, bytes in and out, item size distribution, and
+(declared but [never emitted](/reference/metrics#declared-but-never-emitted))
+current size and entry count.
+
+<SourceLink file="nativelink-util/src/metrics.rs" symbol="CACHE_METRICS" />
+
+**No store emits any of them unless you explicitly wrap it in the
+`cache_metrics` store.** That wrapper is the only caller of the instruments, and
+the design is deliberately opt-in so unwrapped stores carry no timers or
+attribute allocation in their hot path. **None of the shipped deployment
+configs wrap anything** (the only `cache_metrics` block in the tree is in the
+config-parser coverage fixture `nativelink-config/examples/stores-config.json5`),
+so out of the box an operator gets zero hit rate and zero latency data.
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  cache_metrics: {
+    cache_type: "cas",
+    backend: {
+      // the composition you would otherwise have written here
+    },
+  },
+},
+```
+
+Wrap the layer whose behaviour you want to see, and give each one a distinct
+`cache_type`; the recording rules group by it.
+
+`deployment-examples/metrics/prometheus-recording-rules.yml` defines a
+`nativelink_cache` group that is genuinely useful once metrics are flowing:
+`nativelink:cache_hit_rate`, latency at p50/p95/p99,
+`nativelink:cache_eviction_rate`, read and write throughput, and
+`nativelink:cache_error_rate`. The same group also defines
+`nativelink:cache_size_bytes` and `nativelink:cache_entry_count`, which are
+built on the two instruments nothing emits and will stay empty.
+
+<Callout type="info" title="Recording rules exist; alerts on them do not">
+  The shipped alert rules cover cache miss rate and eviction rate only. Nothing
+  alerts on read latency, on throughput collapse, or on
+  `nativelink:cache_error_rate`; write those yourself. No emitted
+  size metric exists to alert on at all, so size-approaching-`max_bytes` has to come
+  from disk usage on the host rather than from NativeLink.
+</Callout>
+
+[Observability](/operate/observability) covers getting the telemetry out of the
+process at all, which is the prerequisite for any of this.
+
+## What the repository actually ships [#what-the-repository-actually-ships]
+
+Being explicit, because the gap between the examples and a production CAS is
+wide.
+
+**Every shipped deployment runs exactly one CAS process.** The docker-compose
+single-node example, the multi-worker compose example, and the Kubernetes
+manifest all have one. `docker-compose-multi-worker.yml` replicates *workers*
+against one `cas-server`; the only thing replicated anywhere in the repository
+is the worker pool.
+
+**No multi-replica CAS example exists**, no load balancer or Service fronting
+several CAS pods, no HPA for the CAS, and no readiness gate accounting for the
+startup scan. Anyone scaling the CAS horizontally is operating outside every
+path this repository exercises.
+
+**The Kubernetes example stores the CAS in the container.**
+`kubernetes/nativelink/nativelink.yaml` is a single Deployment with
+`replicas: 1`, and its filesystem store points at a path under `/tmp` inside the
+container: no PersistentVolumeClaim, no StatefulSet, not even an `emptyDir`.
+Every pod restart wipes the CAS and the AC. It is a demo topology, and the
+composition inside its config is worth reading even though the storage isn't.
+
+**Sharding has no deployment example.** The only `shard` block in the tree is a
+single-shard entry in a config-parser coverage fixture, which exercises no
+distribution behaviour at all.
+
+**The `cas-data` volume in the multi-worker compose file is vestigial.** It is
+mounted into the CAS server and into all three workers at the same path, but the
+workers' config points their fast tier somewhere else entirely and reaches the
+CAS over gRPC. Don't read that mount as an endorsement of sharing a filesystem
+store directory between processes; it isn't one.
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Disk usage sits exactly at max_bytes and write latency is spiky" id="disk-usage-sits-exactly-at-max_bytes-and-write-latency-is-spiky">
+
+That's the `evict_bytes: 0` thrash. With no low watermark, every write pushes
+the store over the limit and re-enters the eviction loop to remove the minimum.
+Set `evict_bytes` to a real fraction of `max_bytes`, enough that a burst of
+writes fits under the headroom it creates.
+
+</Accordion>
+
+<Accordion title="The store is over quota but nothing is being evicted" id="the-store-is-over-quota-but-nothing-is-being-evicted">
+
+Eviction is triggered by inserts and removals; there is no background timer. A
+store that went over quota and then went idle stays over quota. Writes will
+bring it back down. If the store is idle because clients moved elsewhere, the
+space is only reclaimed by restarting with a lower `max_bytes` or by clearing
+the path directly.
+
+</Accordion>
+
+<Accordion title="Large uploads restart from the beginning" id="large-uploads-restart-from-the-beginning">
+
+The upload registry is per process. If a client's ByteStream write and its
+`QueryWriteStatus` resume land on different replicas, the second one has never
+heard of the upload and tells the client to start over. Enable session affinity
+on the load balancer, keyed so a single client's stream stays on one replica.
+
+</Accordion>
+
+<Accordion title="Bazel says a blob exists, then a later fetch can't find it" id="bazel-says-a-blob-exists-then-a-later-fetch-cant-find-it">
+
+An `existence_cache` served a stale positive. It caches "digest present" in
+memory, and unless the backend is Redis with keyspace notifications on there
+is no cross-process invalidation, so it will keep answering yes after the blob
+was removed underneath it. Remove the wrapper from any replicated
+deployment, or accept the failure mode. `completeness_checking` on the AC path
+catches the related case where an AC hit points at an evicted CAS blob.
+
+</Accordion>
+
+<Accordion title="A restarted CAS refuses connections for minutes" id="a-restarted-cas-refuses-connections-for-minutes">
+
+The filesystem store scans `content_path` and builds its eviction index before
+the process binds a socket. The scan is O(files) (200-way parallel `stat`, then
+a serialized index build), so a large cache means a long window with nothing
+listening. Raise your probes' initial delay to cover a full cache, and expect
+the window to grow as the cache does.
+
+</Accordion>
+
+<Accordion title="Two CAS processes point at the same content_path and files keep disappearing" id="two-cas-processes-point-at-the-same-content_path-and-files-keep-disappearing">
+
+Each process builds an independent index at boot and each evicts against its
+own view, unlinking files the other still has indexed. No locking and
+no coordination exist. Give each process its own directory and share a slow tier
+underneath instead.
+
+</Accordion>
+
+<Accordion title="Entries went missing after changing the shard list" id="entries-went-missing-after-changing-the-shard-list">
+
+Shard placement is a hash into a cumulative weight table. Changing the number of
+shards or any weight moves the boundaries, so keys resolve to different shards
+than the ones they were written to. The data is still on disk; nothing looks for
+it there. Treat the change as a cache flush.
+
+</Accordion>
+
+<Accordion title="Cache dashboards are empty even though the CAS is busy" id="cache-dashboards-are-empty-even-though-the-cas-is-busy">
+
+The OpenTelemetry cache instruments only fire from inside the `cache_metrics`
+wrapper store, and no shipped config uses it. Wrap the store you want to observe
+and give it a `cache_type`. The recording rules will start evaluating against
+real series immediately afterwards.
+
+</Accordion>
+
+<Accordion title="A memory fast tier never seems to hold anything" id="a-memory-fast-tier-never-seems-to-hold-anything">
+
+A memory store skips any write at or above its own `max_bytes`, logging rather
+than erroring, and the blob is served from the backing store instead. If your
+blobs are larger than the tier, raise `max_bytes` or put a `size_partitioning`
+store in front so only small objects are routed there.
+
+</Accordion>
+
+<Accordion title="Throughput to a remote gRPC store plateaus well below the network" id="throughput-to-a-remote-grpc-store-plateaus-well-below-the-network">
+
+`connections_per_endpoint` defaults to 1, so everything multiplexes over one
+HTTP/2 connection. Raise it, and check `max_concurrent_requests`; a value of
+zero is unlimited, but a low non-zero value queues requests silently.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/operate/autoscaling-reference" title="An autoscaling reference deployment">
+  Both scaling axes assembled into one deployment: the manifests, the probes,
+  the drain path, and the reaction-time budget behind them.
+</NextStep>
+
+<NextStep href="/how-to/stores/compose-stores" kind="aside" title="Compose stores">
+  The mechanics of the wrappers used here: what each one is, and how the graph
+  is written.
+</NextStep>

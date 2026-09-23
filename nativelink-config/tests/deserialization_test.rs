@@ -382,6 +382,8 @@ mod optional_values_tests {
 }
 
 mod boolean_tests {
+    use nativelink_config::stores::GrpcSpec;
+
     use crate::BoolEntity;
 
     #[test]
@@ -403,6 +405,38 @@ mod boolean_tests {
                 serde_json5::from_str(input).unwrap_or_else(|_| panic!("Failed on '{input}'"));
             assert_eq!(deserialized.value, expected, "{input}");
         }
+    }
+
+    #[test]
+    fn grpc_compression_accepts_string_and_environment_boolean() {
+        let string_spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://localhost:1234" }],
+                store_type: "cas",
+                experimental_remote_cache_compression: "true"
+            }"#,
+        )
+        .expect("string boolean should deserialize");
+        assert_eq!(
+            string_spec.experimental_remote_cache_compression,
+            Some(true)
+        );
+
+        // Safety: this test uses a unique variable and does not run code that
+        // reads mutable environment state concurrently.
+        unsafe { std::env::set_var("TEST_GRPC_REMOTE_CACHE_COMPRESSION", "false") };
+        let environment_spec: GrpcSpec = serde_json5::from_str(
+            r#"{
+                endpoints: [{ address: "http://localhost:1234" }],
+                store_type: "cas",
+                experimental_remote_cache_compression: "${TEST_GRPC_REMOTE_CACHE_COMPRESSION}"
+            }"#,
+        )
+        .expect("environment boolean should deserialize");
+        assert_eq!(
+            environment_spec.experimental_remote_cache_compression,
+            Some(false)
+        );
     }
 }
 
@@ -486,7 +520,8 @@ mod shellexpand_tests {
 mod convert_numeric_with_shellexpand_tests {
     use std::env;
 
-    use serde_test::{Token, assert_de_tokens_error};
+    use serde_assert::de::Error as DeError;
+    use serde_assert::{Deserializer, Token};
 
     use super::*;
 
@@ -563,17 +598,29 @@ mod convert_numeric_with_shellexpand_tests {
 
     #[test]
     fn test_visit_u64_exceeds_i64_range() {
-        assert_de_tokens_error::<NumericEntity>(
-            &[
-                Token::Map { len: Some(1) },
-                Token::Str("value"),
-                Token::U64(9_223_372_036_854_775_808),
-                Token::MapEnd,
-            ],
-            "out of range integral type conversion attempted",
+        let mut deserializer = Deserializer::builder([
+            Token::Struct {
+                name: "NumericEntity",
+                len: 1,
+            },
+            Token::Field("value"),
+            Token::U64(9_223_372_036_854_775_808),
+            Token::StructEnd,
+        ])
+        .self_describing(true)
+        .build();
+        let err = NumericEntity::deserialize(&mut deserializer).unwrap_err();
+        assert!(
+            // Correct message depends on Rust version
+            [
+                DeError::Custom("out of range integral type conversion attempted".into()),
+                DeError::Custom("number too large to fit in target type".into())
+            ]
+            .contains(&err)
         );
     }
 }
+
 #[cfg(test)]
 mod shellexpand_string_tests {
     use std::env;
@@ -611,21 +658,28 @@ mod shellexpand_string_tests {
 }
 #[cfg(test)]
 mod convert_optional_numeric_with_shellexpand_tests {
-
-    use serde_test::{Token, assert_de_tokens_error};
+    use serde_assert::de::Error as DeError;
+    use serde_assert::{Deserializer, Token};
 
     use super::*;
 
     #[test]
     fn test_visit_unit_returns_none() {
-        serde_test::assert_de_tokens(
-            &OptionalNumericEntity { value: None },
-            &[
-                Token::Map { len: Some(1) },
-                Token::Str("value"),
-                Token::Unit,
-                Token::MapEnd,
-            ],
+        let mut deserializer = Deserializer::builder([
+            Token::Struct {
+                name: "OptionalNumericEntity",
+                len: 1,
+            },
+            Token::Field("value"),
+            Token::Some,
+            Token::Unit,
+            Token::StructEnd,
+        ])
+        .self_describing(true)
+        .build();
+        assert_eq!(
+            OptionalNumericEntity::deserialize(&mut deserializer),
+            Ok(OptionalNumericEntity { value: None })
         );
     }
 
@@ -638,14 +692,26 @@ mod convert_optional_numeric_with_shellexpand_tests {
 
     #[test]
     fn test_visit_u64_exceeds_i64_range() {
-        assert_de_tokens_error::<OptionalNumericEntity>(
-            &[
-                Token::Map { len: Some(1) },
-                Token::Str("value"),
-                Token::U64(9_223_372_036_854_775_808),
-                Token::MapEnd,
-            ],
-            "out of range integral type conversion attempted",
+        let mut deserializer = Deserializer::builder([
+            Token::Struct {
+                name: "OptionalNumericEntity",
+                len: 1,
+            },
+            Token::Field("value"),
+            Token::Some,
+            Token::U64(9_223_372_036_854_775_808),
+            Token::StructEnd,
+        ])
+        .self_describing(true)
+        .build();
+        let err = OptionalNumericEntity::deserialize(&mut deserializer).unwrap_err();
+        assert!(
+            // Correct message depends on Rust version
+            [
+                DeError::Custom("out of range integral type conversion attempted".into()),
+                DeError::Custom("number too large to fit in target type".into())
+            ]
+            .contains(&err)
         );
     }
 

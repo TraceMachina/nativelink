@@ -1,0 +1,237 @@
+---
+title: Content-defined chunking
+description: Cut remote cache transfer bytes by 80-90% for incrementally changing artifacts with the REAPI SplitBlob/SpliceBlob extension and Bazel's --experimental_remote_cache_chunking.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone re-transferring large artifacts that change a
+little at a time: container layers, linked binaries, archives. **What you'll
+have at the end:** clients uploading and downloading only the chunks that
+changed. **Time:** twenty minutes.
+
+<Prerequisites>
+  A config file you can edit (see [Configuration](/configuration)), and Bazel 9.1.1+ or 8.7.0+.
+</Prerequisites>
+
+When a large build output changes slightly (a relinked binary, a container
+layer with one file modified), its digest changes, and a conventional remote
+cache re-transfers the whole blob. Content-defined chunking (CDC) splits blobs
+into chunks at content-derived boundaries, so clients upload and download only
+the chunks that actually changed. In our measurements a one-file change to a
+16.8 MB tar layer re-uploaded 2.1 MB (87.5% less), and a one-source-file change
+to a linked binary re-uploaded 80.8% less.
+
+NativeLink implements the server side of the
+[REAPI blob split/splice extension](https://github.com/bazelbuild/remote-apis/pull/282):
+`SpliceBlob` re-assembles chunked uploads (verifying the digest before
+committing anything), and `SplitBlob` serves chunk layouts for downloads,
+chunking blobs on demand with FastCDC 2020 when they were uploaded whole, which
+is what makes chunked downloads work for outputs produced by remote execution
+workers.
+
+## Requirements [#requirements]
+
+- **Bazel 9.1.1+ or 8.7.0+** on the client, with
+  `--experimental_remote_cache_chunking`. Avoid 9.1.0: it has a client bug that
+  corrupts outputs when the chunking flag is combined with `--disk_cache`
+  (fixed in 9.1.1).
+- Chunking is **optional and off by default**. Without the configuration below,
+  NativeLink behaves exactly as before and does not advertise chunking support,
+  so clients fall back to regular transfers.
+
+## Enabling it [#enabling-it]
+
+Add an `experimental_chunking` block to the CAS service and give it a small
+store for chunk layouts. The index store must not verify content digests and
+must not be the CAS store itself (naming the same store for both is rejected
+at startup):
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    // ... your existing CAS store ...
+  },
+  {
+    // Blob-to-chunks layouts: roughly 80-140 bytes per chunk.
+    name: "CHUNK_INDEX_STORE",
+    filesystem: {
+      content_path: "/tmp/nativelink/data/content_path-chunk-index",
+      temp_path: "/tmp/nativelink/data/tmp_path-chunk-index",
+      eviction_policy: { max_bytes: 100000000 },
+    },
+  },
+],
+servers: [
+  {
+    // ...
+    services: {
+      cas: [
+        {
+          cas_store: "CAS_MAIN_STORE",
+          experimental_chunking: {
+            index_store: "CHUNK_INDEX_STORE",
+            // Optional; the REAPI-recommended default. Must be between
+            // 1 KiB and 1 MiB. Clients derive min and max chunk sizes
+            // from it (a quarter and four times this value).
+            avg_chunk_size_bytes: 524288,
+            // Optional; blobs producing more chunks than this are served
+            // without chunking (~25 GiB at the default average).
+            max_chunk_count: 50000,
+          },
+        },
+      ],
+      // The capabilities service advertises chunking support; clients
+      // only use it when advertised.
+      capabilities: [{}],
+      // ...
+    },
+  },
+],
+```
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="CasChunkingConfig" />
+
+A complete runnable example lives at
+<SourceLink file="nativelink-config/examples/chunking_cas.json5" />.
+For instances whose `cas_store` is a grpc proxy store, omit `index_store`: the
+chunking RPCs are forwarded to the backend, which owns the layouts.
+
+Then build with:
+
+```sh
+bazel build //... \
+  --remote_cache=grpc://your-nativelink:50051 \
+  --experimental_remote_cache_chunking
+```
+
+## When it helps, and when it doesn't [#when-it-helps-and-when-it-doesnt]
+
+Chunking pays off when clients reach the cache across a real network (WAN,
+metered links, cross-region) and artifacts change incrementally: uncompressed
+archives, linked binaries, and container layers typically save 80 to 90% of
+transfer bytes per change. It does little on same-rack links (saved bytes only
+save time when the wire is the bottleneck) and little for compressed
+artifacts, where everything after the first changed byte re-transfers. Small
+blobs, below the maximum chunk size (4x the average), are not worth chunking
+and clients leave them alone, so hot small-object traffic is unaffected.
+
+The server verifies every spliced blob's digest before committing it and
+materializes the full blob, so non-chunking clients and every existing read
+path see ordinary blobs.
+
+<SourceLink file="nativelink-service/src/cas_server.rs" symbol="CasServer::inner_splice_blob" /> Storage grows by roughly the chunk bytes for
+chunk-eligible blobs; pairing the CAS with a `dedup` or `compression` store
+composes normally; see [Compose stores](/how-to/stores/compose-stores).
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Add a chunk index store**: a small `filesystem` store of its own, not the
+CAS store, and not wrapped in `verify`.
+
+</li>
+
+<li>
+
+**Add `experimental_chunking`** to the CAS service pointing at it, and make
+sure the instance has a `capabilities` entry so support is advertised.
+
+</li>
+
+<li>
+
+**Build with `--experimental_remote_cache_chunking`**, change one source file,
+and build again.
+
+</li>
+
+<li>
+
+**Compare the re-upload bytes** between the two builds. That difference is the
+whole point.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- The chunk index store fills with small entries while a build runs, and stays
+  far smaller than the CAS.
+- A one-file change to a large artifact re-uploads a fraction of the artifact,
+  not all of it.
+- Outputs are byte-identical to a build without the flag.
+- Clients that don't pass the flag keep working against the same instance.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="My outputs corrupt with --disk_cache" id="my-outputs-corrupt-with---disk_cache">
+
+Bazel 9.1.0 has a client bug that corrupts outputs when the chunking flag is
+combined with `--disk_cache`. Use 9.1.1+ or 8.7.0+.
+
+</Accordion>
+
+<Accordion title="Clients never use chunking" id="clients-never-use-chunking">
+
+Support is advertised through the capabilities service, so the instance needs a
+`capabilities` entry. Check the client version too: the flag exists only from
+Bazel 9.1.1 / 8.7.0.
+
+</Accordion>
+
+<Accordion title="Nothing gets chunked" id="nothing-gets-chunked">
+
+Clients do not chunk blobs below the maximum chunk size, 4x
+`avg_chunk_size_bytes`. At the 512 KiB default that's everything under 2 MiB.
+Blobs producing more chunks than `max_chunk_count` are also served whole:
+`SplitBlob` answers `NOT_FOUND` and the client downloads normally.
+
+</Accordion>
+
+<Accordion title="Errors from the chunk index store" id="errors-from-the-chunk-index-store">
+
+It must not be the CAS store, and must not sit under `verify`, because the layouts it
+holds are not content-addressed, so digest verification rejects them. Give it
+its own plain `filesystem` store.
+
+</Accordion>
+
+<Accordion title="Do I need to change anything for existing clients?" id="do-i-need-to-change-anything-for-existing-clients">
+
+No. Chunking is opt-in and advertised through the capabilities service, so
+clients that don't request it (or predate it) keep using regular transfers
+against the same CAS.
+
+</Accordion>
+
+<Accordion title="Chunking or wire compression?" id="chunking-or-wire-compression">
+
+They solve different transfer problems. Chunking re-transfers only the changed
+parts of large, incrementally-changing blobs;
+[wire compression](/how-to/stores/compression) shrinks compressible blobs
+wholesale. Compressed artifacts chunk poorly (everything after the first
+changed byte re-transfers), so lean on chunking for archives, binaries, and
+layers, and on compression for text-heavy outputs.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compression" title="Remote cache compression">
+  The complementary lever: zstd on the wire for artifacts that compress well.
+</NextStep>
+
+<NextStep href="/how-to/stores/compose-stores" kind="aside" title="Compose stores">
+  The store-level `dedup` wrapper: deduplication at rest rather than on the
+  wire.
+</NextStep>

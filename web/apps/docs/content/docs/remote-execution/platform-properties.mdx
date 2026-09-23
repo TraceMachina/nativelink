@@ -1,0 +1,343 @@
+---
+title: Platform properties
+description: How the scheduler decides which worker gets an action, why a mismatch queues forever instead of failing, and how to read the matching diagnostics it already emits.
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone whose actions are queueing, and anyone about to
+run more than one kind of worker. **What you'll have at the end:** an
+accurate model of the matching rules, plus the log lines that tell you which
+rule you tripped. **Time:** fifteen minutes.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+Platform properties are the only vocabulary a build tool and a worker fleet
+share. The action says *I need this*; the worker says *I have this*; the
+scheduler decides whether those two statements are compatible. No
+type checking happens across that boundary beyond what you configure, and no
+negotiation, which is why a typo produces a build that waits rather than a
+build that fails.
+
+## The three places a property appears [#the-three-places-a-property-appears]
+
+A property key has to be declared in all three, and they have to agree.
+
+<Mermaid>
+{`flowchart TD
+    A["action<br/>--remote_default_exec_properties=cpu_count=1"]
+    S["scheduler<br/>supported_platform_properties: { cpu_count: minimum }"]
+    W["worker<br/>platform_properties: { cpu_count: { values: [16] } }"]
+
+    A -->|"Execute()"| S
+    W -->|"connect_worker()"| S
+    S -->|"assign if satisfied"| W`}
+</Mermaid>
+
+The scheduler's `supported_platform_properties` is the schema. It maps each
+key to a **type**, and that type decides how the value on the action is
+compared against the value on the worker. A key that isn't in this map is
+not a valid key anywhere, for either side.
+
+<SourceLink file="nativelink-config/src/schedulers.rs" symbol="PropertyType" />
+
+## The four property types [#the-four-property-types]
+
+| Type | What the action's value means | What it takes to match |
+| --- | --- | --- |
+| `minimum` | A numeric floor. Parsed as `u64`. | The worker's value must be **≥** the action's. |
+| `exact` | A literal string. | The worker's value must be **byte-for-byte identical**. |
+| `priority` | Informational; passed through to the worker. | Any value matches, but the worker must still **have the key**. |
+| `ignore` | Requestable but unenforced. | Always matches, and the worker need not have the key at all. |
+
+Most documentation you'll find elsewhere describes three of these. `ignore`
+exists and is the only one that exempts a worker from carrying the key.
+
+<SourceLink file="nativelink-util/src/platform_properties.rs" symbol="is_satisfied_by" />
+
+### Why `priority` is not the escape hatch people assume [#why-priority-is-not-the-escape-hatch-people-assume]
+
+The matching loop checks key presence *before* it checks value
+compatibility. For every property the action requests, the scheduler looks
+the key up on the worker; if it isn't there, the worker is rejected,
+regardless of type. `priority` only tells the scheduler to stop caring about
+the *value*.
+
+A worker that omits `OSFamily` entirely will never receive an action that
+requests `OSFamily`, even though the scheduler declares `OSFamily` as
+`priority`. This is why the example configs advertise `OSFamily: { values:
+[""] }`: an empty string is still a value, and presence is what's being
+tested. Only `ignore` skips the presence check.
+
+### `minimum` is a consumable resource, not a filter [#minimum-is-a-consumable-resource-not-a-filter]
+
+This is the most consequential and least visible behaviour in the system.
+
+When the scheduler assigns an action to a worker, it **subtracts** every
+`minimum` value the action requested from the worker's advertised value. When
+the action completes, it adds them back.
+
+<SourceLink file="nativelink-scheduler/src/worker.rs" symbol="reduce_platform_properties" />
+
+A worker advertising `cpu_count: 16` that receives four actions each asking
+for `cpu_count=4` is, at that moment, advertising `cpu_count: 0`, and will
+match nothing further until one of them finishes. `minimum` properties are
+therefore your real concurrency control, and `cpu_count` in particular is the
+knob that governs how many actions a worker runs at once.
+
+Two consequences worth internalising:
+
+- An action requesting `cpu_count=32` against workers that advertise `16`
+  will never be scheduled. Not slowly; never. No bin-packing across
+  workers happens, and no error is raised.
+- Setting `cpu_count=1` on every action, as the getting-started examples do,
+  means a 16-core worker runs 16 concurrent actions. That's usually what you
+  want; it is a decision you're making either way.
+
+`max_inflight_tasks` on the worker is the separate, blunter cap: it counts
+tasks rather than resources, and `0` means unlimited.
+
+## What happens when it doesn't match [#what-happens-when-it-doesnt-match]
+
+The two failure modes are asymmetric, and knowing which one you're in tells
+you where to look.
+
+**An unknown key on a worker is a hard failure at registration.** Worker
+properties go through the same type map as action properties, so a worker
+advertising a key that isn't in `supported_platform_properties` is rejected
+with `Bad Property during connect_worker()` and never joins the pool. You'll
+see this in the worker's log at startup, and the effect is a fleet that looks
+smaller than you provisioned.
+
+<SourceLink file="nativelink-service/src/worker_api_server.rs" symbol="connect_worker" />
+
+**An unknown key on an action queues forever.** The scheduler types an
+action's properties at match time, not at submission time. When that typing
+fails, the scheduler logs `Error while running do_try_match` (wrapping
+`Unknown platform property 'x'`), moves on to the other queued actions, and
+leaves this one where it is; the action is not errored out and the client
+is not told anything. Because the pass ended in an error, the scheduler
+re-runs it after 100 ms, failing identically each time. From the build's
+side this is indistinguishable from a busy queue.
+
+<SourceLink file="nativelink-scheduler/src/simple_scheduler.rs" symbol="do_try_match" />
+
+<Callout type="warn" title="A queued build is a configuration bug until proven otherwise">
+  If a build sits at `0s remote` for more than a few seconds on an idle
+  cluster, do not wait it out. The scheduler is not going to time out and
+  tell you. Read the match logging described below; it is on by default.
+</Callout>
+
+## Reading the scheduler's own diagnostics [#reading-the-schedulers-own-diagnostics]
+
+The scheduler has a built-in periodic dump of exactly this. It's on by
+default at a ten-second interval:
+
+```json5
+schedulers: [
+  {
+    name: "MAIN_SCHEDULER",
+    simple: {
+      supported_platform_properties: {
+        cpu_count: "minimum",
+        OSFamily: "priority",
+        "container-image": "priority",
+      },
+      // Seconds between full match-attempt dumps. -1 or 0 disables.
+      worker_match_logging_interval_s: 10,
+    },
+  },
+]
+```
+
+<SourceLink file="nativelink-config/src/schedulers.rs" symbol="SimpleSpec" />
+
+On each interval it logs, for every queued action, why no worker took it,
+plus the oldest five actions in each state (`Oldest actions in state`).
+Matching happens in two passes, and each pass has its own lines. First a
+capability index narrows the fleet by key presence and by `exact` value:
+
+```plaintext
+No candidate workers due to a lack of key 'container-image'. Job asked for Priority("")
+No candidate workers due to a lack of matching 'gpu' = Exact("a100"). Workers have: [Exact("none")]
+No workers in capability index match required properties
+```
+
+Then the surviving candidates are checked for free capacity, which is where
+`minimum` values are compared:
+
+```plaintext
+Property mismatch on worker property cpu_count. Minimum(8) < Minimum(32)
+Worker <id> cannot accept work: is_paused=false, is_draining=false, inflight=4/4
+```
+
+<SourceLink file="nativelink-scheduler/src/worker_capability_index.rs" symbol="find_matching_workers" />
+
+Read those lines literally, because they mean different things:
+
+- **`lack of key`**: no worker advertises the key at all (for a `priority`
+  or `minimum` property). Add it to the worker's `platform_properties` (an
+  empty string is fine for `priority`), or change the scheduler's
+  declaration to `ignore`.
+- **`lack of matching`**: for an `exact` property, no worker carries that
+  exact value; the line lists the values workers do have, so check for
+  trailing whitespace and case. A worker that omits the key entirely shows
+  up here too, with an empty list.
+- **`Property mismatch`**: the worker has the key, but its remaining
+  `minimum` capacity (on the left) is below what the action asks for.
+- **`All workers are fully allocated`** or **`cannot accept work`**: the
+  properties are fine; every worker is paused, draining, or at its
+  `max_inflight_tasks` cap.
+
+None of these appearing at all, while actions queue, points at typing rather
+than matching; look for `Unknown platform property` in the same log, which
+is the unknown-key-on-an-action case above.
+
+The example config
+<SourceLink file="nativelink-config/examples/scheduler_match_logging_disable.json5" />
+shows the opposite setting for clusters where this output is too noisy in
+steady state.
+
+## A worked example: routing to a GPU pool [#a-worked-example-routing-to-a-gpu-pool]
+
+Say you have two worker pools and want tests tagged for GPU to land only on
+the GPU machines.
+
+**Scheduler**: declare the key and its type once:
+
+```json5
+supported_platform_properties: {
+  cpu_count: "minimum",
+  OSFamily: "priority",
+  gpu: "exact",
+}
+```
+
+**CPU workers**: they can omit the key entirely; an `exact` key a worker
+doesn't carry never matches an action that requests it, and actions
+that don't request `gpu` are unaffected either way. Advertising a value no
+action asks for behaves the same and keeps the intent visible in the config:
+
+```json5
+platform_properties: {
+  cpu_count: { query_cmd: "nproc" },
+  OSFamily: { values: [""] },
+  gpu: { values: ["none"] },
+}
+```
+
+**GPU workers:**
+
+```json5
+platform_properties: {
+  cpu_count: { query_cmd: "nproc" },
+  OSFamily: { values: [""] },
+  gpu: { values: ["a100"] },
+}
+```
+
+**The build**: request it per target rather than globally:
+
+```python
+# BUILD.bazel
+cc_test(
+    name = "kernel_test",
+    exec_properties = {"gpu": "a100"},
+    ...
+)
+```
+
+Targets that say nothing about `gpu` still match every worker, because the
+scheduler only checks properties the *action* requested. The asymmetry is
+deliberate: adding a capability to your fleet doesn't invalidate the actions
+that don't need it.
+
+Note `query_cmd` above: a worker property can be computed at startup by
+running a command (not a shell; the string is split into words shell-style
+with `shlex` and executed directly, with a cleared environment) and
+splitting its output on newlines, one value per line. `nproc` is the
+canonical use.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="WorkerProperty" />
+<SourceLink file="nativelink-worker/src/worker_utils.rs" symbol="make_connect_worker_request" />
+
+## About `container-image` [#about-container-image]
+
+It appears in nearly every example config and it is worth being precise about
+what it does, because the name suggests something that isn't happening:
+**NativeLink does not pull or launch a container per action.** No
+code sits behind this key. It is an ordinary string property like any other.
+
+What it actually means is *this worker process is running inside this image*,
+which the worker asserts, and the scheduler matches on. The value has to be
+byte-for-byte what your build requests, or actions queue forever in the usual
+silent way. [Containers and images](/remote-execution/containers-and-images)
+covers using it correctly.
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| Build sits at `0s remote`, no errors anywhere | No worker satisfies the action's properties | Read the match logging (on by default every 10 s; `worker_match_logging_interval_s`) |
+| `Unknown platform property 'x'` repeating in scheduler log | Action requests a key the scheduler doesn't declare | Add `x` to `supported_platform_properties`, or remove it from the build |
+| Fewer workers in the pool than you started | Worker advertises a key the scheduler doesn't declare | Look for `Bad Property during connect_worker()` in the *worker's* log |
+| `Property mismatch ... Minimum(0) < Minimum(1)` | Worker is fully allocated, not misconfigured | This is backpressure; add workers or raise `cpu_count` |
+| Works on one worker, queues on another | The pools advertise different key sets | Every worker needs every key the actions request |
+| `No candidate workers due to a lack of key 'OSFamily'` | Worker omits a `priority` or `minimum` key | Add it with an empty value, or make it `ignore` |
+| `No candidate workers due to a lack of matching 'x' = Exact(...)` | No worker carries that exact value | Compare against the `Workers have:` list in the same line |
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+
+<Accordion title="Should I use exact or priority for OSFamily?" id="should-i-use-exact-or-priority-for-osfamily">
+`priority` if you have one OS in the fleet, `exact` the moment you have two.
+The example configs use `priority` with an empty value because a homogeneous
+fleet gains nothing from enforcing it, but that's a default for a tutorial,
+not a recommendation for a mixed fleet. With `exact` you get a real routing
+guarantee; with `priority` you get a label.
+</Accordion>
+
+<Accordion title="Can an action request a property the scheduler declares but no worker has?" id="can-an-action-request-a-property-no-worker-has">
+Yes, and it will queue indefinitely. Declaring a key in
+`supported_platform_properties` makes it *legal*, not *satisfiable*. This is
+the usual shape of the mistake when a new capability is half-rolled-out:
+builds start requesting it before the fleet advertises it.
+</Accordion>
+
+<Accordion title="How do I set properties per target instead of for the whole build?" id="how-do-i-set-properties-per-target">
+`exec_properties` on the target, or on a platform definition the target
+resolves to. `--remote_default_exec_properties` is a fallback that applies
+only where nothing more specific was set, which makes it right for
+`cpu_count` and wrong for anything that varies.
+</Accordion>
+
+<Accordion title="Does the worker enforce what it advertises?" id="does-the-worker-enforce-what-it-advertises">
+No. `cpu_count: 16` is an assertion the scheduler believes; nothing pins the
+action to 16 cores or stops it using 64. Properties are for *routing* and
+for accounting, not for isolation. If you need enforcement, that's the
+worker's sandboxing configuration, not this.
+</Accordion>
+
+<Accordion title="Why not just error out an action that can't be matched?" id="why-not-just-error-out-an-unmatched-action">
+Because a worker fleet is dynamic: the machine that satisfies an action may
+be thirty seconds from registering. Holding the action is the right default
+for autoscaling clusters, and it's why the diagnostic logging exists as the
+counterweight. In practice, treat "queued longer than your autoscaler's warm-up
+time" as a failure and alert on it. [Tuning](/operate/tuning) has the
+queue-depth signals.
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/remote-execution/toolchains-and-hermeticity" title="Toolchains and hermeticity">
+  The other wall: making sure the action a worker receives can actually run
+  on it.
+</NextStep>
+
+<NextStep href="/remote-execution/containers-and-images" kind="aside" title="Containers and images">
+  What `container-image` really does, and how to keep worker images and
+  build requests in sync.
+</NextStep>

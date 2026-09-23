@@ -47,6 +47,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer, Registry, fmt, registry};
 use uuid::Uuid;
 
+use crate::metrics::record_rpc_served;
 use crate::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
 
 /// The OTLP "service.name" field for all nativelink services.
@@ -364,8 +365,36 @@ NativeLink instance configured to require this OpenTelemetry Baggage header:
         }
 
         let cx = cx.with_value(client_headers);
-        Box::pin(async move { inner.call(req).with_context(cx).await })
+        // Rate, errors and latency for every gRPC service, taken here because
+        // this layer already wraps all of them.
+        let route = req.uri().path().to_string();
+        let started = std::time::Instant::now();
+        Box::pin(async move {
+            let result = inner.call(req).with_context(cx).await;
+            if let Ok(response) = &result {
+                record_rpc_served(
+                    &route,
+                    grpc_status_of(response.headers()),
+                    started.elapsed().as_secs_f64(),
+                );
+            }
+            result
+        })
     }
+}
+
+/// Reads the gRPC status from a response.
+///
+/// Tonic puts `grpc-status` in the headers when it fails before streaming and
+/// in the trailers otherwise. Trailers are not available here without
+/// consuming the body, so a call that got far enough to stream is reported as
+/// OK. Transport-level failures never reach this point at all.
+fn grpc_status_of(headers: &hyper::http::HeaderMap) -> i32 {
+    headers
+        .get("grpc-status")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i32>().ok())
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -22,5 +22,10 @@ extend-exclude = [
   "web/*",
   # Contains old wrongly spelt data
   "nativelink-util/tests/data/*.json",
+  # Generated from the site, the blog and the docs corpus (all covered or
+  # excluded above); regenerated, never edited.
+  "llms-full.txt",
+  "llms-small.txt",
+  "llms.txt",
 ]
 ignore-hidden = false

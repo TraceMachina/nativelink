@@ -1,0 +1,59 @@
+---
+title: How the thing actually works
+description: The concept, not the procedure.
+---
+
+{/* archetype: explanation. Understanding-oriented. This page exists to make
+    the reader's model correct, so that every how-to afterwards makes sense.
+    No steps. If you're writing steps, it's a tutorial or a how-to. */}
+
+{/* ── Layer 1: the mental model ──────────────────────────────────────── */}
+
+**Who this is for:** the reader who wants to understand rather than do.
+**What you'll have at the end:** a model accurate enough to predict the
+system's behaviour. **Time:** honest estimate.
+
+The model in three to five sentences, up front, before any elaboration. A
+reader should be able to stop here and still be better off than when they
+arrived.
+
+<Mermaid chart={`
+graph TD
+  A[concept] --> B[concept]
+`} />
+
+{/* ── Layer 2: why it's shaped this way ──────────────────────────────── */}
+
+## Why it works this way
+
+The narrative: the tradeoffs, the alternatives that were rejected, and what
+would break if it were done the usual way instead. Facts alone don't build
+a model; a reader who knows *why* can reason about cases this page doesn't
+cover, and that's the whole point of an explanation page.
+
+Where a claim is about actual behaviour, link the code:
+<SourceLink file="nativelink-scheduler/src/some_file.rs" symbol="some_fn" />.
+
+{/* ── Layer 3: the exact truth, and the questions ────────────────────── */}
+
+## Where the exact truth lives
+
+Field-level and value-level facts belong in the reference, and this page
+links there rather than restating them. That link is not a cop-out: it's what
+keeps this page true a year from now.
+
+## Common questions
+
+<Accordions>
+
+<Accordion title="The question, phrased the way a reader would ask it">
+  The answer, short.
+</Accordion>
+
+</Accordions>
+
+## What's next
+
+<NextStep href="/somewhere" title="Where understanding leads">
+  Usually a how-to that this model makes tractable.
+</NextStep>

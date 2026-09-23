@@ -1,0 +1,188 @@
+---
+title: CLI and environment
+description: "Every command-line argument the nativelink binary accepts and every environment variable it reads: the telemetry variables, the ones the configuration expands, and the ones it passes through to actions."
+---
+
+{/* archetype: reference (lookup surface). See /web/apps/docs/templates/reference.mdx */}
+
+**Who this is for:** you are writing a systemd unit, a Dockerfile `CMD`, or a
+Kubernetes `env:` block and need to know what the process actually reads.
+**What you'll have at the end:** the complete argument and variable surface,
+with the sharp edges marked.
+
+NativeLink's command line is deliberately tiny. Almost every decision lives in
+the JSON5 configuration file, not in flags, which means the interesting surface
+here is the *environment*, split across three unrelated jobs: configuring
+telemetry, filling in holes in the configuration file, and reaching the
+processes that actions run in.
+
+## The command line [#the-command-line]
+
+<SourceLink file="src/bin/nativelink.rs" symbol="Args" />
+
+```sh
+nativelink <config_file>
+```
+
+That is the whole thing. `config_file` is a required positional argument, the
+path to a JSON5 configuration file, and there are no other arguments. The
+binary is a [clap](https://docs.rs/clap) parser with `version`, `about` and
+`author` derived, so `--help` and `--version` work and nothing else does.
+
+| Argument | Required | Meaning |
+| --- | --- | --- |
+| `<config_file>` | Yes | Path to the JSON5 configuration file. Parsed with `serde_json5`; the config structs are `deny_unknown_fields`, so an unrecognised key is a startup failure, not a warning. |
+| `--help` | No | Print usage and exit. |
+| `--version` | No | Print the crate version and exit. |
+
+No `--port`, no `--log-level`, no `--config-from-env` exist. If you are
+looking for a knob, it is in the configuration file; see the
+[configuration reference](/reference/nativelink-config).
+
+## Telemetry variables [#telemetry-variables]
+
+These are read once, at startup, by `nativelink-util`'s tracing initialiser.
+They are the only variables that change the binary's own behaviour.
+
+<SourceLink file="nativelink-util/src/telemetry.rs" symbol="init_tracing" />
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `NL_LOG` | `pretty` | Format of the stdout log layer. `compact` and `json` are recognised; **any other value silently falls back to `pretty`**, including a typo like `Json`. |
+| `RUST_LOG` | `info` | Log filter, parsed by `tracing_subscriber`'s `EnvFilter` in lossy mode; an unparseable directive is dropped rather than fatal. Applies to the stdout layer *and* to the OTLP log, trace and metric layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled from here. |
+| `NL_OTEL_ENDPOINT` | not set | When set, all three OTLP exporters share one client-side load-balanced gRPC channel pointed at this endpoint. When unset, each exporter is built with the SDK's own tonic defaults instead. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Standard OpenTelemetry SDK variable. Applies only when `NL_OTEL_ENDPOINT` is unset; an explicit channel wins over the SDK's endpoint resolution. The signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` variables behave the same way. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | How often the periodic metric reader flushes to the collector. NativeLink sets no interval of its own, so the SDK default of one minute applies unless you override it here. This is the first hop in the [reaction-time budget](/operate/autoscaling-reference). |
+
+<Callout type="warn" title="NL_OTEL_ENDPOINT requires a scheme and an explicit port">
+
+  The endpoint is parsed as a URL and then the host and port are pulled out
+  individually, and each step `unwrap`s. A value with no scheme, or with no
+  explicit port, yields `None` for the port and **panics the process during
+  startup** rather than falling back to a default.
+
+  `http://otel-collector:4317` is correct. `otel-collector:4317` and
+  `http://otel-collector` both crash the binary before it binds a socket.
+
+</Callout>
+
+The service name is fixed. `Resource::builder().with_service_name("nativelink")`
+is called unconditionally, so `OTEL_SERVICE_NAME` does not change what appears
+on your spans. `service.instance.id` is a fresh UUIDv4 generated per process,
+which means it changes on every restart: useful for telling replicas apart,
+useless as a stable series identity.
+
+## Variables the configuration file expands [#variables-the-configuration-file-expands]
+
+Many configuration fields are deserialized through a shellexpand wrapper rather
+than directly, so their string values undergo environment substitution before
+the value is used.
+
+<SourceLink file="nativelink-config/src/serde_utils.rs" symbol="convert_string_with_shellexpand" />
+
+Two forms are available:
+
+| Form | Behaviour |
+| --- | --- |
+| `${VAR}` or `$VAR` | Substitutes the variable. An unset variable is an error, and the error surfaces as a config parse failure. |
+| `${VAR:-default}` | Substitutes the variable, or the literal default when it is unset. A variable that is set but empty expands to the empty string, not to the default. |
+
+This is what makes one configuration file work across environments:
+
+```json5
+{
+  stores: [
+    {
+      name: "CAS_MAIN_STORE",
+      memory: {
+        eviction_policy: {
+          max_bytes: "${NATIVELINK_CAS_MEMORY_CONTENT_LIMIT:-100mb}",
+        },
+      },
+    },
+  ],
+}
+```
+
+Not every field is expanded; the wrapper is applied per field, so whether a
+given key supports substitution depends on how its struct member is annotated.
+Numeric, boolean, duration and data-size fields have their own expanding
+deserializers, which is why `max_bytes` above accepts the *string* `"100mb"`
+rather than a number. When in doubt, the
+[configuration reference](/reference/nativelink-config) records the type each
+field actually deserializes from.
+
+<Callout type="info" title="Expansion happens at parse time, not at use time">
+  The substitution runs once, while the configuration file is being read at
+  startup. Changing a variable in the environment of a running process has no
+  effect until it restarts.
+</Callout>
+
+## Variables the worker passes to actions [#variables-the-worker-passes-to-actions]
+
+A worker does not forward its own environment to the commands it runs: the
+child is spawned with `env_clear()`. An action sees exactly two things: the
+`environment_variables` its own `Command` message carries, and whatever the
+worker's `additional_environment` map (on the `local` worker configuration)
+names explicitly.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="EnvironmentSource" />
+
+| Source | What the action receives |
+| --- | --- |
+| `Value` | A literal string, itself shellexpanded at config parse time, so `Value` is one way to deliberately pass a worker-side variable through. |
+| `FromEnvironment` | The worker process's value for the variable of the same name (empty if unset). This is the only runtime pass-through, and it is opt-in per variable. |
+| `Property` | The value of the named platform property from the action, or the empty string if the action did not set it. |
+| `TimeoutMillis` | The timeout the worker will enforce, in milliseconds: the client-requested timeout, or `max_action_timeout` when the client asked for none. |
+| `SideChannelFile` | A path (a fresh UUID under the action directory) the action may write JSON to in order to influence how its result is interpreted; `{"failure": "timeout"}` marks the action as timed out. |
+| `ActionDirectory` | A scratch directory that is purged after the action completes. The usual pattern is an `entrypoint` script that creates a `tmp` subdirectory under it and exports `TMPDIR`. |
+
+<Callout type="warn" title="The precondition script and property-query commands inherit almost nothing">
+  `experimental_precondition_script` and any `query_cmd` platform property are
+  run with `env_clear()` and split with `shlex` rather than through a shell.
+  The only variables they receive are the `Value` and `FromEnvironment`
+  entries of `additional_environment` (the precondition script also gets
+  `Property` entries). Unless you pass `PATH` that way, use an absolute path,
+  and shell syntax (pipes, globs, `&&`) is not interpreted.
+</Callout>
+
+## What NativeLink does not read [#what-nativelink-does-not-read]
+
+Stated explicitly, because each of these is a reasonable guess that is wrong:
+
+- **No environment-based configuration.** No `NL_CAS_PORT` or
+  equivalent. Ports, stores, schedulers and services come from the
+  configuration file only. The escape hatch is `${VAR}` substitution *inside*
+  that file.
+- **No `NATIVELINK_CONFIG` variable.** The configuration path is the positional
+  argument and nothing else.
+- **No Prometheus scrape configuration.** The binary exports OTLP and only
+  OTLP; the `namespace`, `const_labels` and scrape endpoint you may be looking
+  for belong to the OpenTelemetry collector's configuration, not NativeLink's.
+  See the [metrics reference](/reference/metrics).
+- **No `OTEL_SERVICE_NAME` honouring**, as above; the service name is a
+  compile-time constant.
+
+## Reading the source [#reading-the-source]
+
+If anything here disagrees with the binary, the source wins:
+
+- <SourceLink file="src/bin/nativelink.rs" symbol="Args" />: the argument parser
+- <SourceLink file="nativelink-util/src/telemetry.rs" />: every telemetry variable
+- <SourceLink file="nativelink-config/src/serde_utils.rs" />: the shellexpanding deserializers
+- <SourceLink file="nativelink-config/src/cas_server.rs" symbol="EnvironmentSource" />: action environment sources
+
+## Where to go next [#where-to-go-next]
+
+<NextStep href="/reference/nativelink-config" title="Configuration reference">
+  Everything the command line does not do, which is nearly everything,
+  generated from the config crate itself.
+</NextStep>
+
+<NextStep href="/operate/observability" title="Wire up telemetry" kind="aside">
+  The variables above in the context of a working collector pipeline.
+</NextStep>
+
+<NextStep href="/reference/oss-and-enterprise" title="Open source and Enterprise" kind="aside">
+  Why there is no licence flag here, and what is licensed differently anyway.
+</NextStep>

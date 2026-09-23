@@ -50,6 +50,13 @@ in {
     excludes = [
       # Testdata for fastcdc.
       "nativelink-util/tests/data/SekienAkashita.jpg"
+      # Menlo Security case-study figures on the marketing site.
+      "web/apps/web/public/assets/menlo-security-build-time-comparison.jpg"
+      "web/apps/web/public/assets/menlo-security-kubernetes-topology.jpg"
+      # RE API Fellow figures on the marketing site.
+      "web/apps/web/public/assets/re-api-fellow-fig1-action-lifecycle.jpg"
+      "web/apps/web/public/assets/re-api-fellow-fig2-protocol-never-says-compiler.jpg"
+      "web/apps/web/public/assets/re-api-fellow-fig3-overlap-hiring.jpg"
     ];
     name = "forbid-binary-files";
     types = ["binary"];
@@ -84,7 +91,7 @@ in {
   # Nix
   alejandra.enable = true;
   deadnix = {
-    excludes = ["tools/cargo-llvm-cov/package.nix"] ++ excludes; # because the upstream pattern has some things we don't want to drop
+    inherit excludes;
     enable = true;
   };
   statix.enable = true;

@@ -87,7 +87,7 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
         send_fut,
         store.update(digest, rx, UploadSizeInfo::ExactSize(100))
     );
-    assert!(result.is_err(), "Expected error, got: {:?}", &result);
+    assert!(result.is_err(), "Expected error, got: {result:?}");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains(EXPECTED_ERR),
@@ -179,7 +179,11 @@ async fn verify_sha256_hash_true_succeeds_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,
@@ -207,10 +211,15 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     let err = result.unwrap_err().to_string();
-    let expected_err =
-        format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
+    let expected_err = format!(
+        "Hash verification using SHA256 failed: client declared SHA256:{HASH}, but the server computed SHA256:{ACTUAL_HASH}"
+    );
     assert!(
         err.contains(&expected_err),
         "Error should contain '{expected_err}', got: {err:?}"
@@ -283,8 +292,9 @@ async fn verify_blake3_hash_true_fails_on_update() -> Result<(), Error> {
 
     // let result = store.update_oneshot(digest, VALUE.into()).await;
     let err = result.unwrap_err().to_string();
-    let expected_err =
-        format!("Hashes do not match, got: {HASH} but digest hash was {ACTUAL_HASH}");
+    let expected_err = format!(
+        "Hash verification using BLAKE3 failed: client declared BLAKE3:{HASH}, but the server computed BLAKE3:{ACTUAL_HASH}"
+    );
     assert!(
         err.contains(&expected_err),
         "Error should contain '{expected_err}', got: {err:?}"
@@ -329,7 +339,7 @@ async fn verify_fails_immediately_on_too_much_data_sent_update() -> Result<(), E
         send_fut,
         store.update(digest, rx, UploadSizeInfo::ExactSize(4))
     );
-    assert!(result.is_err(), "Expected error, got: {:?}", &result);
+    assert!(result.is_err(), "Expected error, got: {result:?}");
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains(EXPECTED_ERR),
@@ -360,7 +370,11 @@ async fn verify_size_and_hash_succeeds_on_small_data() -> Result<(), Error> {
     );
 
     let digest = DigestInfo::try_new(HASH, 3).unwrap();
-    let result = store.update_oneshot(digest, VALUE.into()).await;
+    let result = store
+        .update_oneshot(digest, VALUE.into())
+        .instrument(info_span!("update_oneshot"))
+        .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
+        .await;
     assert_eq!(result, Ok(()), "Expected success, got: {:?}", result);
     assert_eq!(
         inner_store.has(digest).await,

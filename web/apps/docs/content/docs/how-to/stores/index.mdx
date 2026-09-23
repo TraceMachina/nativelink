@@ -1,0 +1,140 @@
+---
+title: Storage backends
+description: Every place NativeLink can put bytes, compared on durability, latency and cost, and the composition almost every real deployment lands on.
+---
+
+{/* archetype: how-to (chooser), see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone whose cache currently lives somewhere they can't
+keep it. **What you'll have at the end:** the one backend page that matches
+your durability and latency requirements, and the shape you'll wrap it in.
+**Time:** ten minutes to choose, then as long as the backend page takes.
+
+<Prerequisites>
+  A config file you can edit. See [Configuration](/configuration).
+</Prerequisites>
+
+## Everything here is a store entry [#everything-here-is-a-store-entry]
+
+Nothing on this page is a new concept. A backend is one entry in the `stores`
+array with a name and a type, exactly as described in
+[Stores](/configuration/stores):
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    filesystem: {
+      content_path: "/var/lib/nativelink/cas",
+      temp_path: "/var/lib/nativelink/tmp",
+      eviction_policy: { max_bytes: "50gb" },
+    },
+  },
+],
+```
+
+Swapping backends means swapping the inner block. The name, and everything
+that references the name, stays the same. That is why these pages are
+interchangeable recipes rather than a migration guide.
+
+## Pick a backend [#pick-a-backend]
+
+| Backend | Survives restart | Typical read latency | Cost shape | Reach for it when |
+| --- | --- | --- | --- | --- |
+| `memory` | No | Microseconds | RAM | Testing, or the fast half of a `fast_slow` pair |
+| [`filesystem`](/how-to/stores/filesystem) | Yes | Sub-millisecond on NVMe | Disk you already pay for | One machine, or the fast tier of any fleet |
+| [S3 and compatible](/how-to/stores/s3-and-compatible) | Yes | Tens of milliseconds | Per-GB stored plus per-request | You want durability you don't operate |
+| [GCS](/how-to/stores/gcs) | Yes | Tens of milliseconds | Per-GB stored plus per-request | You're on Google Cloud |
+| [Azure Blob](/how-to/stores/azure) | Yes | Tens of milliseconds | Per-GB stored plus per-request | You're on Azure |
+| [OCI Object Storage](/how-to/stores/oci-object-storage) | Yes | Tens of milliseconds | Per-GB stored plus per-request | You're on Oracle Cloud |
+| [Redis](/how-to/stores/redis) | Configurable | Around a millisecond | RAM, priced steeply | Small hot objects shared across replicas |
+| [Mongo](/how-to/stores/mongo) | Yes | Single-digit milliseconds | Per-GB plus the cluster you run | You already operate Mongo, or you need change streams |
+| `grpc` | Delegated | One extra network hop | Whatever the upstream costs | Fronting another REAPI cache |
+| `noop` | n/a | Zero | Free | Deliberately discarding writes |
+
+`memory`, `grpc` and `noop` have no page of their own because there is nothing
+to decide: `memory` takes an eviction policy, `grpc` takes an upstream address,
+and `noop` takes nothing at all. All three are covered in
+[Compose stores](/how-to/stores/compose-stores).
+
+<Callout type="info" title="`experimental_` is about the config key, not the code path">
+  Six providers (`aws`, `r2`, `ontap`, `gcs`, `azure`, `oci`) are declared
+  under `experimental_cloud_object_store`, and Mongo under `experimental_mongo`. The prefix signals that the
+  configuration key may be renamed in a future release. It is not a claim
+  that the store is unfinished. Pin your NativeLink version and read the
+  release notes before upgrading, the same as for any config surface.
+</Callout>
+
+## The shape almost everyone lands on [#the-shape-almost-everyone-lands-on]
+
+Very few production deployments name a cloud bucket as their CAS store
+directly. The read pattern of a build cache (many small objects, requested
+repeatedly, in bursts) is exactly what object storage prices and latency are
+worst at. The shape that works is a local fast tier in front of a durable slow
+tier:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  fast_slow: {
+    fast: {
+      filesystem: {
+        content_path: "/var/lib/nativelink/cas",
+        temp_path: "/var/lib/nativelink/tmp",
+        eviction_policy: { max_bytes: "50gb" },
+      },
+    },
+    slow: {
+      experimental_cloud_object_store: {
+        provider: "aws",
+        region: "us-east-1",
+        bucket: "my-nativelink-cas",
+        key_prefix: "cas/",
+      },
+    },
+  },
+},
+```
+
+Reads hit the filesystem first and only fall through to the bucket on a miss.
+Writes go to both. Every shipped cloud example in
+`nativelink-config/examples/` is built this way (some with a `memory` fast
+tier instead of `filesystem`), and every backend page below shows its own
+version of it.
+
+[Compose stores](/how-to/stores/compose-stores) covers the rest of the
+composition vocabulary (deduplication, size partitioning, integrity
+verification, sharding) and the order the layers have to go in.
+
+## Shrinking what you move [#shrinking-what-you-move]
+
+Two pages in this group are not backends at all. They change how many bytes
+travel between the client and NativeLink, whichever backend is underneath:
+
+- [Remote cache compression](/how-to/stores/compression): zstd on the wire,
+  for compressible artifacts on a real network.
+- [Content-defined chunking](/how-to/stores/chunking-and-dedup): re-transfer
+  only the changed parts of large, incrementally-changing blobs.
+
+They compose with everything above, and with each other.
+
+<VerifyBlock title="You've chosen well if">
+
+- Your slow tier survives the loss of any single machine, or you've decided
+  out loud that losing the cache is acceptable.
+- Your fast tier is on the same host as the process reading it, and has an
+  `eviction_policy` with a `max_bytes` you can afford.
+- If you run workers, the fast half of their `cas_fast_slow_store` is a
+  `filesystem` store, because nothing else supports the hard-linking workers need.
+
+</VerifyBlock>
+
+<NextStep href="/how-to/stores/filesystem" title="Filesystem store">
+  The one backend nearly every deployment uses, whether or not it's the
+  durable one.
+</NextStep>
+
+<NextStep href="/how-to/stores/compose-stores" kind="aside" title="Compose stores">
+  Wrapping, layering and splitting stores, and the order the layers have to
+  go in.
+</NextStep>

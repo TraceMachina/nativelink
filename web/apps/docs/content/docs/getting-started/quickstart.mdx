@@ -1,0 +1,272 @@
+---
+title: Quickstart
+description: Install NativeLink and point your build system at it in under 10 minutes.
+---
+
+<Prerequisites>
+  Nothing beyond a build system that speaks the Remote Execution API.
+</Prerequisites>
+
+This guide takes you from zero to your first cached build. Pick the
+installation method that matches your platform, then wire your build
+system to the running cluster.
+
+<Callout type="info" title="Prerequisites">
+  You need a build tool that speaks the Remote Execution API: Bazel,
+  Buck2, Siso, Pants, Goma, or CMake via recc. For the Docker path,
+  Docker. For the Nix path, a recent Nix install with flakes enabled.
+</Callout>
+
+## Install NativeLink [#install-nativelink]
+
+The fastest way is the prebuilt container image. It runs anywhere Docker
+runs; the configuration it needs is a single JSON5 file from the
+repository.
+
+<Tabs items={["Linux (Docker)", "macOS / Linux (Nix)", "Windows (Docker)"]}>
+
+  <Tab value="Linux (Docker)">
+
+```bash
+# Grab a known-good basic configuration
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5
+
+# Run the official image
+docker run \
+  -v $(pwd)/basic_cas.json5:/config \
+  -p 50051:50051 \
+  ghcr.io/tracemachina/nativelink:v1.6.5 config
+```
+
+The image is multi-arch: x86_64 and ARM64 both run natively (use
+v1.6.0 or later; earlier tags are x86_64-only). The server is now
+listening on `localhost:50051`.
+
+  </Tab>
+
+  <Tab value="macOS / Linux (Nix)">
+
+```bash
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/v1.6.5/nativelink-config/examples/basic_cas.json5
+
+nix run github:TraceMachina/nativelink/v1.6.5 ./basic_cas.json5
+```
+
+Slower than the prebuilt image because it builds from source, but works on
+macOS (Apple Silicon and Intel) and any Linux with Nix. Use it when you
+want a native binary instead of a container; the Docker path above also
+runs natively on Apple Silicon.
+
+<Callout type="warn">
+  - **Prerequisites**: Make sure your Nix installation has experimental features enabled (add `experimental-features = nix-command flakes` to your `~/.config/nix/nix.conf`).
+  - **Disk Space**: The installation and build process requires downloading and compiling toolchains and compilers. Ensure you have at least **15 to 20 GB of free space** on your drive.
+  - **Portability**: Executables built for macOS link dynamically against libraries from the
+  Nix store. They will not run on systems without those libraries
+  available. Stick to the Docker path if you need to copy the binary to
+  another machine.
+</Callout>
+
+  </Tab>
+
+  <Tab value="Windows (Docker)">
+
+```powershell
+Invoke-WebRequest `
+  -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.6.5/nativelink-config/examples/basic_cas.json5" `
+  -OutFile "basic_cas.json5"
+
+docker run `
+  -v ${PWD}/basic_cas.json5:/config `
+  -p 50051:50051 `
+  ghcr.io/tracemachina/nativelink:v1.6.5 config
+```
+
+The image is a Linux image published for x86_64 and ARM64, so Docker
+Desktop runs it on either kind of Windows machine. WSL2 with the Linux
+instructions above works too.
+
+  </Tab>
+
+</Tabs>
+
+## Verify it's running [#verify-its-running]
+
+In another terminal:
+
+```bash
+curl -v http://localhost:50051/
+```
+
+You should see the connection open and an HTTP response come back. The
+status will be an error, since `/` is not a gRPC route; the exact body
+doesn't matter, the connection succeeding does.
+
+## Point your build system at it [#point-your-build-system-at-it]
+
+<Tabs items={["Bazel", "Buck2", "Siso", "Pants"]}>
+
+  <Tab value="Bazel">
+
+Add to your `.bazelrc`:
+
+```
+build --remote_cache=grpc://localhost:50051
+build --remote_instance_name=main
+```
+
+Or pass them per invocation:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://localhost:50051 \
+  --remote_instance_name=main
+```
+
+Run any build target. Subsequent rebuilds of unchanged targets should
+report a `remote cache hit` count in the final `processes:` summary line.
+Leave `--remote_executor` off for now: the container image holds only the
+NativeLink binary, no shell or compilers, so actions sent to its worker
+cannot run. [Remote execution](/remote-execution) sets up workers with a
+toolchain.
+
+  </Tab>
+
+  <Tab value="Buck2">
+
+In your project root, add `.buckconfig`:
+
+```ini
+[buck2_re_client]
+engine_address = localhost:50051
+action_cache_address = localhost:50051
+cas_address = localhost:50051
+tls = false
+instance_name = main
+```
+
+Then build as usual:
+
+```bash
+buck2 build //...
+```
+
+Buck2 also needs an execution platform with `remote_enabled = True`; the
+[Buck2](/getting-started/connect-your-build/buck2) page shows the one the
+checked-in integration test uses.
+
+  </Tab>
+
+  <Tab value="Siso">
+
+Set the endpoint variables Siso reads:
+
+```bash
+export SISO_REAPI_ADDRESS=localhost:50051
+export SISO_REAPI_INSTANCE=main
+export RBE_service_no_security=true   # only for local TLS-free dev
+```
+
+The Chromium build is the canonical Siso consumer; see
+[Chromium](/getting-started/connect-your-build/chromium) for a full example.
+
+  </Tab>
+
+  <Tab value="Pants">
+
+In `pants.toml`:
+
+```toml
+[GLOBAL]
+remote_cache_read = true
+remote_cache_write = true
+remote_store_address = "grpc://localhost:50051"
+remote_instance_name = "main"
+```
+
+Then run any goal as usual; Pants will route through the cache.
+
+  </Tab>
+
+</Tabs>
+
+## Confirm cache hits [#confirm-cache-hits]
+
+Re-run your build a second time without changing any source files. Every
+action should land in the cache and report a hit. With Bazel:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://localhost:50051 \
+  --execution_log_json_file=/tmp/exec.json
+
+# Count the cache hits vs misses
+grep -c '"remoteCacheHit": true' /tmp/exec.json
+```
+
+If you see hits, you're done. If not, jump to the troubleshooting
+section below.
+
+## Troubleshooting [#troubleshooting]
+
+<Callout type="warn" title="Connection refused">
+  The NativeLink server isn't listening on the port your client is
+  pointing at. Confirm with `lsof -i :50051` (macOS / Linux) or
+  `netstat -ano | findstr 50051` (Windows). Check the Docker container is
+  still running with `docker ps`.
+</Callout>
+
+<Callout type="warn" title="Cache writes succeed, reads always miss">
+  Most often this means two clients are using different `instance_name`
+  values or different toolchain configurations. Compare the
+  `--remote_instance_name` flag (Bazel) or the equivalent in your build
+  system across the two invocations. Toolchain mismatches surface as
+  action hashes that never collide.
+</Callout>
+
+<Callout type="warn" title="Permission denied on /config in Docker">
+  SELinux-enforcing distributions (Fedora, RHEL) require an explicit
+  `:Z` label on the mounted volume:
+  `-v $(pwd)/basic_cas.json5:/config:Z`.
+</Callout>
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+  <Accordion title="What is remote caching actually doing?" id="what-is-remote-caching-actually-doing">
+    Every action's inputs (source digests, the compiler binary, the
+    exact command line, declared headers) are hashed together, and the
+    action's outputs are stored under that hash. Anyone whose action
+    hashes identically gets the stored outputs back in milliseconds
+    instead of redoing the work.
+  </Accordion>
+  <Accordion title="Why does a one-byte change cause a miss?" id="why-does-a-one-byte-change-cause-a-miss">
+    The hash covers every declared input, so any difference (a header,
+    a compiler patch version, a leaked environment variable) produces a
+    new hash. That's by design: a hit is a guarantee the result is
+    identical. If you see misses where you expect hits, start with the
+    [troubleshooting](#troubleshooting) section above and
+    [correctness and hermeticity](/explanations/correctness-hermeticity#hermeticity-is-the-clients-job).
+  </Accordion>
+  <Accordion title="Do I need --remote_cache when --remote_executor is set?" id="do-i-need-remote-cache-when-remote-executor-is-set">
+    No. When `--remote_cache` is empty Bazel reuses the `--remote_executor`
+    endpoint for the cache, so one flag is enough when the same NativeLink
+    serves both. Set `--remote_cache` explicitly only when the cache lives
+    at a different address from the scheduler.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/getting-started/verify-your-cache" title="Verify your cache">
+  A server that starts and a build that succeeds are not evidence that
+  anything was cached. This is the line to read, and what it means when it
+  says zero.
+</NextStep>
+
+<NextStep href="/configuration" kind="aside" title="Configuration">
+  What is in that JSON5 file, and how to grow it from a single node to a
+  fleet.
+</NextStep>
+
+<NextStep href="/explanations/architecture" kind="aside" title="Architecture">
+  What each piece of the cluster is responsible for, and why the split is
+  drawn where it is.
+</NextStep>

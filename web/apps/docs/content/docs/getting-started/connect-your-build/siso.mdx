@@ -1,0 +1,96 @@
+---
+title: Siso
+description: Point Siso at NativeLink for Chromium-style remote caching and execution.
+---
+
+<Prerequisites>
+  A running NativeLink instance. If you don't have one, start with the [Quickstart](/getting-started/quickstart).
+</Prerequisites>
+
+[Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md)
+is Chromium's Ninja replacement. It runs build actions on RBE natively,
+and NativeLink can be the RE API backend for Chromium and other
+Siso-driven builds.
+
+For a production Chromium walkthrough, see
+[Chromium](/getting-started/connect-your-build/chromium).
+
+## Local endpoint setup [#local-endpoint-setup]
+
+Start NativeLink on `localhost:50051` with instance name `main`, then
+export the environment variables Siso reads:
+
+```bash
+export SISO_REAPI_ADDRESS=localhost:50051
+export SISO_REAPI_INSTANCE=main
+export RBE_service_no_security=true
+```
+
+For CMake projects, [`recc`](/getting-started/connect-your-build/cmake-recc)
+is often the smaller setup. It uses the same Remote Execution API but fits
+CMake compiler-launcher workflows directly.
+
+## Chromium-style setup [#chromium-style-setup]
+
+Chromium checks in Siso configs. Point them at NativeLink by enabling
+remote execution in GN:
+
+```bash
+gn gen out/Default --args='
+  use_remoteexec=true
+  use_siso=true
+'
+```
+
+Build normally with `autoninja`; it reads `use_siso=true` from `args.gn`
+and invokes `siso ninja`:
+
+```bash
+autoninja -C out/Default chrome
+```
+
+The repository's own Chromium example does the same thing from a script:
+<SourceLink file="deploy/chromium-example/build_chromium_tests.sh" symbol="deploy/chromium-example/build_chromium_tests.sh" />.
+Chromium's Siso config also expects a `backend.star` that names the
+platform properties (`OSFamily`, `container-image`) your workers must
+advertise; see [Chromium](/getting-started/connect-your-build/chromium#worker-requirements).
+
+## Production TLS settings [#production-tls-settings]
+
+For a secured NativeLink endpoint, set the Siso TLS variables instead
+of `RBE_service_no_security=true`:
+
+```bash
+export SISO_REAPI_ADDRESS=cas.nativelink.internal:50051
+export SISO_REAPI_INSTANCE=main
+export RBE_service_no_security=false
+export RBE_tls_client_auth_cert=/etc/nativelink/tls/client.crt
+export RBE_tls_client_auth_key=/etc/nativelink/tls/client.key
+export RBE_tls_ca_cert=/etc/nativelink/tls/ca.crt
+```
+
+## Confirm it is working [#confirm-it-is-working]
+
+On a warm cache, cache hits should climb and network errors should stay at
+zero. If actions fall back to local execution, compare the platform
+properties Siso requests with the properties your NativeLink workers
+advertise.
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+  <Accordion title="Is RBE_service_no_security=true safe?" id="is-rbe-service-no-security-true-safe">
+    Only for TLS-free local development. Against any shared endpoint, use
+    the TLS variables shown above instead.
+  </Accordion>
+  <Accordion title="Siso or recc: which do I want?" id="siso-or-recc-which-do-i-want">
+    Siso replaces Ninja and speaks full remote execution; it's the path
+    for Chromium-style builds. recc is a compiler launcher for ordinary
+    CMake projects that want caching with minimal setup; see
+    [CMake with recc](/getting-started/connect-your-build/cmake-recc).
+  </Accordion>
+</Accordions>
+
+<NextStep href="/getting-started/shared-cache" title="Share the cache">
+  Siso is pointed at NativeLink. Next is making that endpoint one your team and your CI both hit.
+</NextStep>

@@ -33,9 +33,9 @@ const pillars = [
     ),
   },
   {
-    eyebrow: "Cloud & self-host",
-    title: "Hosted by us. Or run by you.",
-    body: "Start free on NativeLink Cloud in ten minutes. Move to dedicated infrastructure when your scale demands it. Or self-host the source-available release with one Docker command. Same code path. Same performance.",
+    eyebrow: "Self-host",
+    title: "Run it on your own infrastructure.",
+    body: "Self-host the source-available release with one Docker command, and move to dedicated infrastructure when your scale demands it. Same code path. Same performance.",
     metric: "<10m",
     metricLabel: "time to first hit",
     icon: (
@@ -93,7 +93,7 @@ const faqItems: FAQItem[] = [
   },
   {
     q: "Is NativeLink free?",
-    a: "Most of the monorepo is FSL-1.1-Apache-2.0. Individual cache use does not need a commercial license. Metrics and remote persistent workers are Business Source License modules; Cloud, Enterprise, or a very inexpensive separate license covers shared production use.",
+    a: "Most of the monorepo is FSL-1.1-Apache-2.0. Individual cache use does not need a commercial license. Metrics and remote persistent workers are Business Source License modules; Enterprise or a very inexpensive separate license covers shared production use.",
   },
   {
     q: "Why Rust?",
@@ -144,7 +144,7 @@ export default function ProductPage() {
                   <a href="/docs">Start in 10 minutes</a>
                 </Button>
                 <Button size="lg" variant="outline" asChild>
-                  <a href="mailto:contact@nativelink.com">Talk to us</a>
+                  <a href="mailto:contact@tracemachina.com">Talk to us</a>
                 </Button>
               </div>
             </div>

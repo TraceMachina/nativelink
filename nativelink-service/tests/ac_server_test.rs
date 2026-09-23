@@ -116,7 +116,7 @@ async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert!(err.message().is_empty());
+    assert_eq!(err.message(), "");
 
     Ok(())
 }
@@ -161,7 +161,7 @@ async fn single_item_wrong_digest_size() -> Result<(), Box<dyn core::error::Erro
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert!(err.message().is_empty());
+    assert_eq!(err.message(), "");
     Ok(())
 }
 
@@ -198,7 +198,9 @@ async fn one_item_update_test() -> Result<(), Box<dyn core::error::Error>> {
         ..Default::default()
     };
 
-    let size_bytes = get_encoded_proto_size(&action_result)? as i64;
+    let size_bytes = get_encoded_proto_size(&action_result)?
+        .try_into()
+        .unwrap_or(i64::MAX);
 
     let raw_response = update_action_result(
         &ac_server,

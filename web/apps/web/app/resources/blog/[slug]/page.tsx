@@ -40,7 +40,7 @@ export default async function BlogPostPage({
     <>
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[400px] bg-[radial-gradient(ellipse_900px_400px_at_50%_-10%,rgb(var(--nl-color-brand)/0.10),transparent_70%)]" />
-        <Section width="default" className="pt-24 pb-10 md:pt-32">
+        <Section width="default" className="pt-24 pb-6 md:pt-32 md:pb-8">
           <div className="mx-auto max-w-[760px]">
             <a
               href="/resources/blog"
@@ -55,10 +55,10 @@ export default async function BlogPostPage({
                 </Badge>
               ))}
             </div>
-            <h1 className="mt-5 text-balance text-[34px] font-semibold leading-[1.1] tracking-[-0.03em] md:text-[46px]">
+            <h1 className="mt-5 text-balance text-[32px] font-semibold leading-[1.12] tracking-[-0.03em] md:text-[42px]">
               {post.title}
             </h1>
-            <p className="mt-5 font-mono text-sm text-muted">
+            <p className="mt-4 font-mono text-xs tracking-wide text-muted">
               {formatPostDate(post.pubDate)}
               {post.readTime ? ` · ${post.readTime}` : null}
             </p>
@@ -66,10 +66,10 @@ export default async function BlogPostPage({
         </Section>
       </section>
 
-      <Section width="default" className="pb-28">
+      <Section width="default" className="pt-2 pb-28 md:pt-0">
         <div className="mx-auto max-w-[760px]">
           <Prose
-            className="max-w-none [&_img]:my-6 [&_img]:max-w-full [&_img]:rounded-xl"
+            className="blog-prose max-w-none [&_img:not(.glance-logo)]:my-6 [&_img:not(.glance-logo)]:max-w-full [&_img:not(.glance-logo)]:rounded-xl"
             // biome-ignore lint/security/noDangerouslySetInnerHtml: Post bodies are trusted repo content, rendered from markdown at build time.
             dangerouslySetInnerHTML={{ __html: html }}
           />

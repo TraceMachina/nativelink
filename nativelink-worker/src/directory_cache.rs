@@ -108,6 +108,19 @@ pub struct DirectoryCacheConfig {
     pub experimental_get_tree_prefetch: bool,
 }
 
+/// Receives every CAS digest before the directory cache starts materializing
+/// that node. Action workers use this hook to keep the digest pinned in their
+/// local eviction-managed CAS tiers for the duration of the action.
+pub trait DigestLease: Send + Sync {
+    fn acquire(&self, digest: &DigestInfo);
+}
+
+fn acquire_digest(lease: Option<&dyn DigestLease>, digest: &DigestInfo) {
+    if let Some(lease) = lease {
+        lease.acquire(digest);
+    }
+}
+
 impl Default for DirectoryCacheConfig {
     fn default() -> Self {
         Self {
@@ -405,8 +418,25 @@ impl DirectoryCache {
     /// * `Ok(false)` - Cache miss (directory was constructed)
     /// * `Err` - Error during construction or hardlinking
     pub async fn get_or_create(&self, digest: DigestInfo, dest_path: &Path) -> Result<bool, Error> {
+        self.get_or_create_with_lease(digest, dest_path, None).await
+    }
+
+    /// Gets or creates a cached directory while optionally reserving each CAS
+    /// digest used by a construction.
+    ///
+    /// Existing cache hits only hardlink from the already-materialized cache
+    /// entry, whose own pin protects the source tree. On a miss, the lease is
+    /// called before the root, file, and child-directory digests are fetched
+    /// or populated, closing the admission-to-eviction race for active
+    /// actions.
+    pub async fn get_or_create_with_lease(
+        &self,
+        digest: DigestInfo,
+        dest_path: &Path,
+        lease: Option<&dyn DigestLease>,
+    ) -> Result<bool, Error> {
         let (hit, _size) = self
-            .get_or_create_entry(digest, dest_path, None, true)
+            .get_or_create_entry(digest, dest_path, None, true, lease)
             .await?;
         Ok(hit)
     }
@@ -430,8 +460,10 @@ impl DirectoryCache {
         dest_path: &Path,
         protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
         prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
     ) -> Result<(bool, u64), Error> {
         self.maybe_log_summary();
+        acquire_digest(lease, &digest);
 
         // Fast path: serve from an existing entry.
         if let Some(size) = self.try_materialize_from_cache(&digest, dest_path).await {
@@ -459,12 +491,10 @@ impl DirectoryCache {
         let _guard = construction_lock.lock().await;
 
         // Run the construction/materialization under the per-digest guard,
-        // then drop the per-digest mutex from the stampede map regardless of
-        // outcome so it cannot grow unbounded. The guard (`_guard`) is still
-        // held until the end of this function — `forget_construction_lock`
-        // only unmaps the Arc; any waiter already cloned it before blocking.
+        // then remove its lock from the map if no other callers are waiting.
+        // Waiters must keep sharing this flight even if construction failed.
         let result = self
-            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss)
+            .construct_and_materialize(digest, dest_path, protos, prefetch_on_miss, lease)
             .await;
         self.forget_construction_lock(&digest).await;
         result
@@ -516,8 +546,8 @@ impl DirectoryCache {
     }
 
     /// The cache-miss body, run while holding the per-digest construction
-    /// guard. Split out so `get_or_create_entry` can unconditionally clean up
-    /// the construction-lock map entry afterwards on every exit path.
+    /// guard. Split out so `get_or_create_entry` can retire an unused
+    /// construction lock after either success or failure.
     /// `protos` and `prefetch_on_miss` are documented on
     /// [`Self::get_or_create_entry`].
     async fn construct_and_materialize(
@@ -526,6 +556,7 @@ impl DirectoryCache {
         dest_path: &Path,
         protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
         prefetch_on_miss: bool,
+        lease: Option<&dyn DigestLease>,
     ) -> Result<(bool, u64), Error> {
         // Re-check: another task may have just constructed this digest while
         // we waited on the construction lock. If the entry turns out to be
@@ -567,7 +598,10 @@ impl DirectoryCache {
         let protos = prefetched.as_ref().or(protos);
         let temp_path = self.allocate_scratch_path(TEMP_PREFIX);
         let mut temp_guard = ScratchGuard::new(temp_path.clone());
-        let size = match self.construct_directory(digest, &temp_path, protos).await {
+        let size = match self
+            .construct_directory(digest, &temp_path, protos, lease)
+            .await
+        {
             Ok(size) => size,
             Err(e) => {
                 temp_guard.disarm();
@@ -748,17 +782,20 @@ impl DirectoryCache {
         ))
     }
 
-    /// Drops the per-digest construction mutex from the stampede map once
-    /// construction (or the post-construction recheck) for `digest` is done.
-    /// Without this the map grows unbounded over the worker's lifetime.
-    ///
-    /// Safe to call while holding the construction guard: a concurrent waiter
-    /// already cloned the `Arc<Mutex>` before blocking, so removing the map
-    /// entry only prevents *future* callers from joining this exact mutex —
-    /// they will create a fresh one, re-check the cache, find the entry, and
-    /// take the fast hardlink path. It never causes a redundant construct.
+    /// Removes an idle construction lock after the last caller finishes.
+    /// Keep it mapped while another caller owns an `Arc`: after a failed
+    /// construction that caller may retry before a cache entry exists, and
+    /// giving new callers a different mutex would allow concurrent publication
+    /// to the same path. The map lock prevents new clones during this check.
     async fn forget_construction_lock(&self, digest: &DigestInfo) {
-        self.construction_locks.lock().await.remove(digest);
+        let mut locks = self.construction_locks.lock().await;
+        // The map and this function's caller each own one strong reference.
+        if locks
+            .get(digest)
+            .is_some_and(|lock| Arc::strong_count(lock) == 2)
+        {
+            locks.remove(digest);
+        }
     }
 
     /// Constructs a directory from the CAS at the given path and returns the
@@ -858,9 +895,12 @@ impl DirectoryCache {
         digest: DigestInfo,
         dest_path: &'a Path,
         protos: Option<&'a HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&'a dyn DigestLease>,
     ) -> Pin<Box<dyn Future<Output = Result<u64, Error>> + Send + 'a>> {
         Box::pin(async move {
             debug!(?digest, ?dest_path, "Constructing directory");
+            // The root is reserved by `get_or_create_entry`; child digests are
+            // reserved before their recursive futures are queued below.
 
             // Use the prefetched proto when available; otherwise fetch it
             // (permit held only for the fetch). A prefetch-map miss (e.g.
@@ -885,6 +925,9 @@ impl DirectoryCache {
                 if let Some(file_digest) = &file.digest {
                     // size_bytes is non-negative; clamp defensively.
                     total_size += u64::try_from(file_digest.size_bytes).unwrap_or(0);
+                    if let Ok(file_digest) = DigestInfo::try_from(file_digest) {
+                        acquire_digest(lease, &file_digest);
+                    }
                 }
             }
 
@@ -905,8 +948,13 @@ impl DirectoryCache {
                 }));
             }
             for dir_node in &directory.directories {
+                if let Some(dir_digest) = &dir_node.digest
+                    && let Ok(dir_digest) = DigestInfo::try_from(dir_digest)
+                {
+                    acquire_digest(lease, &dir_digest);
+                }
                 node_futures.push(Box::pin(
-                    self.create_subdirectory(dest_path, dir_node, protos),
+                    self.create_subdirectory(dest_path, dir_node, protos, lease),
                 ));
             }
             for symlink in &directory.symlinks {
@@ -1111,6 +1159,7 @@ impl DirectoryCache {
         parent: &Path,
         dir_node: &DirectoryNode,
         protos: Option<&HashMap<DigestInfo, ProtoDirectory>>,
+        lease: Option<&dyn DigestLease>,
     ) -> Result<u64, Error> {
         let dir_path = parent.join(&dir_node.name);
         let digest =
@@ -1130,7 +1179,7 @@ impl DirectoryCache {
             // through this method, so nested subtrees get their own entries
             // too (leaf-level reuse).
             let (hit, _size) = self
-                .get_or_create_entry(digest, &dir_path, protos, false)
+                .get_or_create_entry(digest, &dir_path, protos, false, lease)
                 .await?;
             let counter = if hit {
                 &self.subtree_hits
@@ -1150,7 +1199,8 @@ impl DirectoryCache {
         }
 
         // Recursively construct subdirectory
-        self.construct_directory(digest, &dir_path, protos).await
+        self.construct_directory(digest, &dir_path, protos, lease)
+            .await
     }
 
     /// Creates a symlink from a `SymlinkNode`
@@ -2264,6 +2314,49 @@ mod tests {
         let dest = temp_dir.path().join("dest");
         assert!(!cache.get_or_create(dir_digest, &dest).await?);
         assert!(dest.join("test.txt").exists());
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn queued_construction_retry_excludes_new_requests() -> Result<(), Error> {
+        let temp_dir = TempDir::new().unwrap();
+        let (store, digest) = setup_test_store(&temp_dir).await;
+        let cache = DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: temp_dir.path().join("cache"),
+                ..Default::default()
+            },
+            store,
+        )
+        .await?;
+        // Reproduce a failed constructor handing its lock to a waiting retry.
+        // No entry has been published yet, so new requests must join
+        // that same flight rather than race to replace the same cache path.
+        let constructor = Arc::new(Mutex::new(()));
+        cache
+            .construction_locks
+            .lock()
+            .await
+            .insert(digest, constructor.clone());
+        let retry = constructor.clone();
+        let retry_guard = retry.lock().await;
+        cache.forget_construction_lock(&digest).await;
+        drop(constructor);
+
+        let dest = temp_dir.path().join("dest");
+        let request = cache.get_or_create(digest, &dest);
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), request.as_mut())
+                .await
+                .is_err(),
+            "a new request bypassed an existing construction retry"
+        );
+        drop(retry_guard);
+        drop(retry);
+        assert!(!request.await?);
+        assert!(dest.join("test.txt").exists());
+        assert!(cache.construction_locks.lock().await.is_empty());
         Ok(())
     }
 }

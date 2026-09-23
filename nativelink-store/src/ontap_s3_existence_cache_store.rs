@@ -228,7 +228,7 @@ where
         Ok(objects)
     }
 
-    async fn parse_key_to_digest(&self, key: &str) -> Option<DigestInfo> {
+    fn parse_key_to_digest(&self, key: &str) -> Option<DigestInfo> {
         // Remove the prefix if it exists
         let relative_key = key
             .strip_prefix(self.key_prefix.as_deref().unwrap_or(""))
@@ -310,7 +310,7 @@ where
         // Process objects in chunks to avoid long processing times
         for chunk in objects.chunks(1000) {
             for obj_key in chunk {
-                if let Some(digest) = self.parse_key_to_digest(obj_key).await {
+                if let Some(digest) = self.parse_key_to_digest(obj_key) {
                     new_digests.insert(digest);
                 }
             }
@@ -415,7 +415,7 @@ where
 }
 
 async fn create_s3_client(spec: &ExperimentalOntapS3Spec) -> Result<Client, Error> {
-    let http_client = TlsClient::new(&spec.common);
+    let http_client = TlsClient::new(&spec.common)?;
     let credentials_provider = DefaultCredentialsChain::builder()
         .configure(
             ProviderConfig::without_region()

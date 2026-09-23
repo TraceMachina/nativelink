@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26]
+        os: [ubuntu-24.04]
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -49,34 +49,16 @@ jobs:
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
                 || secrets.NATIVELINK_STAGING_API_KEY_RO }}
           mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+          # Remote execution only on Linux; the action hard-fails exec on
+          # non-Linux runners, so macOS lanes fall back to cache.
+          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
       - name: Invoke Bazel build in Nix shell
         run: |
-          set -o pipefail
-
-          # Bazel's downloader retry only covers truncated downloads, not HTTP 5xx/403 failures,
-          # so a flaky GitHub fetch aborts the build with no retry. We retry the download in this case.
-          delay=5
-          for attempt in 1 2 3; do
-            if nix develop --impure --command \
-                bazel test //... \
-                  --verbose_failures \
-                  --lockfile_mode=error \
-                2>&1 | tee bazel.log; then
-              exit 0
-            fi
-            grep -E '^ERROR:' bazel.log \
-              | grep -Eq 'GET returned (403|429|5[0-9][0-9])|Bad Gateway|Connection (reset|timed out)|read timed out|Could not resolve host' || {
-              echo "::error::Bazel failed (non-transient); not retrying."
-              exit 1
-            }
-            [ "$attempt" -lt 3 ] || break
-            echo "::warning::Transient fetch error (attempt $attempt); retrying in ${delay}s..."
-            sleep "$delay"
-            delay=$((delay * 2))
-          done
-          echo "::error::Bazel still failing after 3 attempts."
-          exit 1
+          nix develop --impure --command \
+            bazel-retry test //... \
+              --verbose_failures \
+              --lockfile_mode=error \
 
       - name: Teardown Worker
         uses: ./.github/actions/end-nix
@@ -88,7 +70,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26]
+        os: [ubuntu-24.04]
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -123,7 +105,6 @@ jobs:
       matrix:
         os:
           - ubuntu-24.04
-          - macos-26
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180

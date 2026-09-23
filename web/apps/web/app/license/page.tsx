@@ -92,8 +92,8 @@ export default function LicensePage() {
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                 Metrics and remote persistent workers are licensed under the
                 Business Source License. Teams using those modules in shared,
-                production, or commercial settings should use NativeLink Cloud,
-                Enterprise, or a separate commercial license.
+                production, or commercial settings should use NativeLink
+                Enterprise or a separate commercial license.
               </p>
               <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
                 The separate commercial license is intentionally very inexpensive.
@@ -121,7 +121,7 @@ export default function LicensePage() {
                 file and source headers are the authoritative licensing text. For
                 commercial terms, contact
                 {" "}
-                <a href="mailto:contact@nativelink.com">contact@nativelink.com</a>.
+                <a href="mailto:contact@tracemachina.com">contact@tracemachina.com</a>.
               </p>
             </Reveal>
           </article>

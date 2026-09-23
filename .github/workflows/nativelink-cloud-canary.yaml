@@ -88,12 +88,25 @@ jobs:
             "$RUNNER_TEMP/bep.json")
           invocation=$(jq -rs '[.[] | select(.id.started != null)
             | .started.uuid][0] // empty' "$RUNNER_TEMP/bep.json")
+          action_events=$(jq -s '[.[]
+            | select(.id.actionCompleted != null)] | length' \
+            "$RUNNER_TEMP/bep.json")
+          target_summaries=$(jq -s '[.[]
+            | select(.id.targetSummary != null)] | length' \
+            "$RUNNER_TEMP/bep.json")
+          metadata_run_id=$(jq -rs '[.[]
+            | select(.id.buildMetadata != null)
+            | .buildMetadata.metadata.GITHUB_RUN_ID][0] // empty' \
+            "$RUNNER_TEMP/bep.json")
 
           echo "Remote cache hits on rebuild: ${hits}/${total} (invocation ${invocation})"
           {
             echo "### NativeLink Cloud canary"
             echo "- Remote cache hits on rebuild: **${hits}/${total}**"
             echo "- Invocation: \`${invocation}\`"
+            echo "- Action events: **${action_events}**"
+            echo "- Target summaries: **${target_summaries}**"
+            echo "- Metadata run ID: \`${metadata_run_id}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "$total" -eq 0 ]]; then
@@ -104,3 +117,52 @@ jobs:
             echo "FAIL: remote cache hit rate below 90% on an unchanged rebuild" >&2
             exit 1
           fi
+          if [[ "$action_events" -eq 0 ]]; then
+            echo "FAIL: BEP contains no ActionExecuted events" >&2
+            exit 1
+          fi
+          if [[ "$target_summaries" -eq 0 ]]; then
+            echo "FAIL: BEP contains no TargetSummary events" >&2
+            exit 1
+          fi
+          if [[ "$metadata_run_id" != "$GITHUB_RUN_ID" ]]; then
+            echo "FAIL: BEP is missing the expected GitHub run metadata" >&2
+            exit 1
+          fi
+
+  # Daily safety net for integration tests that must upload locally-built
+  # results to the cache (chunking_cache_test, simple_cache_test). The repo-wide
+  # --remote_upload_local_results=false keeps PR/developer lanes read-only, so
+  # these tests self-skip unless NL_LOCAL_UPLOADS=1 -- set here (and on merges to
+  # main in main.yaml). Never runs on PRs: no upload lane, keeps the canary's PR
+  # leg light.
+  upload-integration-tests:
+    name: Upload-dependent integration tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Docker Buildx
+        uses: >- # v3.9.0
+          docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
+
+      - name: Build image
+        uses: >- # v6.13.0
+          docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+        with:
+          context: .
+          file: ./deployment-examples/docker-compose/Dockerfile
+          build-args: |
+            OPT_LEVEL=fastbuild
+            ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
+          load: true # Brings the image into `docker images` for docker-compose.
+          tags: trace_machina/nativelink:latest
+
+      - name: Run upload-dependent integration tests
+        env:
+          NL_LOCAL_UPLOADS: '1'
+        run: ./run_integration_tests.sh chunking_cache_test.sh simple_cache_test.sh

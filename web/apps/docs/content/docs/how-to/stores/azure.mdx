@@ -1,0 +1,245 @@
+---
+title: Azure Blob Storage
+description: "Back the cache with an Azure Blob container: account and container naming, the endpoint override for Azurite, and when a SAS URL replaces everything else."
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone running NativeLink on Azure who wants the durable
+tier to be a Blob Storage container. **What you'll have at the end:** a
+container-backed CAS behind a local fast tier. **Time:** twenty minutes, most
+of it access configuration.
+
+<Prerequisites>
+  A config file you can edit (see [Configuration](/configuration)), and an Azure storage account you can write to.
+</Prerequisites>
+
+Azure Blob is one `provider` value of the same cloud object store used by
+[S3 and compatible](/how-to/stores/s3-and-compatible),
+[GCS](/how-to/stores/gcs) and
+[OCI Object Storage](/how-to/stores/oci-object-storage). The composition around
+it is identical; only the provider block changes.
+
+## The recipe [#the-recipe]
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    fast_slow: {
+      fast: {
+        filesystem: {
+          content_path: "/var/lib/nativelink/cas/content",
+          temp_path: "/var/lib/nativelink/cas/tmp",
+          eviction_policy: { max_bytes: "50gb" },
+        },
+      },
+      slow: {
+        experimental_cloud_object_store: {
+          provider: "azure",
+          account_name: "mystorageaccount",
+          container: "nativelink-cas",
+          key_prefix: "cas/",
+          retry: { max_retries: 6, delay: 0.3, jitter: 0.5 },
+        },
+      },
+    },
+  },
+],
+```
+
+`account_name` and `container` are the pair you have to set. From them the store
+builds the endpoint `https://{account_name}.blob.core.windows.net/{container}`.
+The container is a blob container inside the storage account. Create it before
+starting NativeLink; the store does not create it for you.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="ExperimentalAzureSpec" />
+
+## Three ways to point at a container [#three-ways-to-point-at-a-container]
+
+**Account plus container.** The default above. The endpoint is derived, and
+the store authenticates with Entra ID Workload Identity and nothing else: it
+reads `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_FEDERATED_TOKEN_FILE`
+(the variables AKS workload identity injects into a pod) and fails at startup
+if they are missing. A VM managed identity, a storage account key or an
+`az login` session are not tried. Nothing secret is in the config.
+
+<SourceLink file="nativelink-store/src/azure_blob_store.rs" symbol="AzureBlobStore" />
+
+**An endpoint override.** `endpoint` replaces the host portion only; the
+container is still appended to whatever you give. This is how you point the
+store at an emulator such as Azurite:
+
+```json5
+{
+  name: "CAS_SLOW_STORE",
+  experimental_cloud_object_store: {
+    provider: "azure",
+    account_name: "devstoreaccount1",
+    container: "nativelink-cas",
+    endpoint: "http://127.0.0.1:10000/devstoreaccount1",
+  },
+},
+```
+
+That address is Azurite's default. Plain `http://` is accepted as-is; the
+Azure store does not read `insecure_allow_http`. Workload Identity is still
+the credential in this mode, so the three environment variables must be
+present; if the emulator cannot accept such a token, use `sas_url` instead.
+
+**A SAS URL.** `sas_url` takes precedence over all of the above: when it is
+set, `account_name`, `container` and `endpoint` are ignored for URL
+construction and no credential is attached, because the signature in the URL
+*is* the credential.
+
+```json5
+{
+  name: "CAS_SLOW_STORE",
+  experimental_cloud_object_store: {
+    provider: "azure",
+    account_name: "mystorageaccount",
+    container: "nativelink-cas",
+    sas_url: "${AZURE_CAS_SAS_URL}",
+  },
+},
+```
+
+<Callout type="warn" title="A SAS URL is a bearer credential with an expiry">
+  Anyone holding the URL has whatever the signature grants, so keep it in the
+  environment rather than the config file, and note that the store will start
+  failing the moment the signature expires, with an authentication error.
+  Prefer Workload Identity where you have the choice.
+</Callout>
+
+## Options worth setting [#options-worth-setting]
+
+| Field | Default | What it decides |
+| --- | --- | --- |
+| `key_prefix` | none | Namespacing inside one container; give the CAS `cas/` and the AC `ac/` |
+| `endpoint` | derived | Host override; ignored when `sas_url` is set |
+| `sas_url` | none | Full pre-signed URL; overrides the derived endpoint and the credential |
+| `retry` | | Exponential backoff with jitter, shared with every other provider |
+| `consider_expired_after_s` | `0` (never) | How old a blob may be and still count as present |
+| `max_retry_buffer_per_request` | 5 MiB | How much of a single-request upload is buffered so it can be retried |
+| `multipart_max_concurrent_uploads` | 10 | Concurrent staged-block uploads within one large blob |
+
+Blobs under 5 MiB with a known size are uploaded in one request; anything
+larger, or of unknown size, is staged as blocks of at least 5 MiB and
+committed with a block list. `retry` and `consider_expired_after_s` behave as
+described in [the shared options section](/how-to/stores/s3-and-compatible);
+`insecure_allow_http` and `disable_http2` are accepted but not read by the
+Azure store.
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Create the storage account and container** in the region your workers run
+in. A standard general-purpose v2 account on hot tier is the right default;
+cool and archive tiers price retrieval in a way a build cache cannot afford.
+
+</li>
+
+<li>
+
+**Grant access.** Assign the workload identity the Storage Blob Data
+Contributor role scoped to the container, or mint a SAS with read and write.
+The store never lists or deletes blobs.
+
+</li>
+
+<li>
+
+**Set the Workload Identity variables** (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
+`AZURE_FEDERATED_TOKEN_FILE`) in the process environment, unless you use
+`sas_url`. Uncommitted blocks left by a process killed mid-upload are discarded
+by Azure after a week on their own.
+
+</li>
+
+<li>
+
+**Add the store** as the `slow` half of a `fast_slow` pair whose `fast` half is
+a local [filesystem store](/how-to/stores/filesystem).
+
+</li>
+
+<li>
+
+**Run a build twice**: once cold, once after emptying the local fast tier.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- Blobs appear under `key_prefix` in the container during the first build.
+- The second build is a cache hit even after `content_path` is emptied, which
+  proves reads fall through to the container.
+- Container request counts are far lower than blob counts, which proves the
+  fast tier is absorbing repeat reads.
+- No uncommitted blocks accumulate between builds.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Every request fails with a permission error" id="every-request-fails-with-a-permission-error">
+
+Either the workload identity lacks Storage Blob Data Contributor on the
+container, or a `sas_url` has expired. A SAS expiry surfaces as an
+authentication failure, so check the signature's window before assuming the
+role assignment is wrong. If the store did not start at all with a message
+about the Workload Identity credential, the `AZURE_*` variables are missing.
+
+</Accordion>
+
+<Accordion title="Requests go somewhere unexpected" id="requests-go-somewhere-unexpected">
+
+`sas_url` wins over everything. If it is set, `account_name`, `container` and
+`endpoint` play no part in building the URL. Unset it to go back to the derived
+endpoint.
+
+</Accordion>
+
+<Accordion title="The container is not found" id="the-container-is-not-found">
+
+The store does not create containers. Create it in the storage account first,
+and check that `container` matches exactly; container names are lowercase.
+
+</Accordion>
+
+<Accordion title="Connecting to Azurite fails" id="connecting-to-azurite-fails">
+
+`endpoint` must include the account path segment:
+`http://127.0.0.1:10000/devstoreaccount1`, not just the host and port. The
+container is appended to whatever you give. Without `sas_url` the store still
+needs the Workload Identity variables to start, and the emulator has to accept
+the resulting token; a `sas_url` minted for the emulator avoids both.
+
+</Accordion>
+
+<Accordion title="Blobs exist in the container but NativeLink reports them missing" id="blobs-exist-in-the-container-but-nativelink-reports-them-missing">
+
+Check `consider_expired_after_s`. A non-zero value makes blobs older than that
+window invisible on purpose, so they pair with a matching lifecycle rule. If
+you didn't intend that, set it back to `0`.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  Deduplication, compression and existence caching in front of the container,
+  the layers that decide what it actually costs.
+</NextStep>
+
+<NextStep href="/how-to/stores/s3-and-compatible" kind="aside" title="S3 and compatible">
+  The same store type with a different provider, and the shared options in
+  full.
+</NextStep>

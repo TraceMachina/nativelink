@@ -48,8 +48,8 @@ pub struct GcsObject {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Timestamp {
-    pub seconds: i64,
-    pub nanos: i32,
+    pub seconds: u64,
+    pub nanos: u32,
 }
 
 #[derive(Clone, Debug)]
