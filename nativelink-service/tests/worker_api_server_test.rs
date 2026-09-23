@@ -179,7 +179,8 @@ async fn setup_api_server_with_task_limit(
         60, // unacknowledged_kill_timeout_s
         worker_registry,
         None,
-        false, // has_peers
+        false,                   // has_peers
+        Duration::from_secs(15), // record_ttl (unused while has_peers = false)
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
@@ -583,7 +584,11 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
 
     let selected_worker = test_context
         .scheduler
-        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .find_worker_for_action(
+            &PlatformProperties::new(HashMap::new()),
+            true,
+            make_system_time(BASE_NOW_S),
+        )
         .await;
     assert_eq!(
         selected_worker,
@@ -636,7 +641,11 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
 
     let selected_worker = test_context
         .scheduler
-        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .find_worker_for_action(
+            &PlatformProperties::new(HashMap::new()),
+            true,
+            make_system_time(BASE_NOW_S),
+        )
         .await;
     assert_eq!(
         selected_worker,

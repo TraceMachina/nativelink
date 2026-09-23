@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -71,6 +72,29 @@ const FLEET_EXCHANGE_INTERVAL: Duration = Duration::from_secs(5);
 /// How many exchange intervals a published fleet record outlives its last
 /// refresh, so one missed refresh does not make a peer's workers vanish.
 const FLEET_RECORD_TTL_INTERVALS: u32 = 3;
+
+/// Floor on how many queued actions one matching pass fails as unsatisfiable.
+/// The cap bleeds a large burst over several (back-to-back) passes instead of
+/// failing a whole shape-class at once, and bounds the cumulative
+/// version-conflict backoff sleeps a single pass can incur.
+const MAX_UNSATISFIABLE_FAILS_PER_PASS: usize = 16;
+
+/// A backlog larger than `floor * DIVISOR` raises the cap to `backlog /
+/// DIVISOR`, so a large single-shape burst drains in ~DIVISOR back-to-back
+/// passes rather than `backlog / floor` of them (whose tail could outlast a
+/// client's own timeout).
+const UNSATISFIABLE_FAIL_BACKLOG_DIVISOR: usize = 4;
+
+/// The per-pass unsatisfiable-fail cap for a pass, given the previous pass's
+/// unsatisfiable backlog: the floor, or a fraction of the backlog if larger.
+const fn unsatisfiable_fail_cap(last_backlog: usize) -> usize {
+    let scaled = last_backlog / UNSATISFIABLE_FAIL_BACKLOG_DIVISOR;
+    if scaled > MAX_UNSATISFIABLE_FAILS_PER_PASS {
+        scaled
+    } else {
+        MAX_UNSATISFIABLE_FAILS_PER_PASS
+    }
+}
 
 /// Default timeout for a sent kill to be acknowledged in seconds.
 /// If this changes, remember to change the documentation in the config.
@@ -181,6 +205,11 @@ pub struct SimpleScheduler {
     /// How long each action property shape has gone without any worker able
     /// to run it.
     unsatisfiable_tracker: Mutex<UnsatisfiableTracker>,
+
+    /// The number of unsatisfiable actions still queued at the end of the last
+    /// matching pass, used to size the next pass's per-pass fail cap so a large
+    /// burst drains in a few passes. See `unsatisfiable_fail_cap`.
+    last_unsatisfiable_backlog: AtomicUsize,
 
     /// The clock the state manager uses.
     now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
@@ -312,12 +341,16 @@ impl SimpleScheduler {
 
     /// Stands in for the fleet exchange with peer schedulers.
     pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
-        self.worker_scheduler.set_peer_fleet(Some(peer_fleet)).await;
+        self.worker_scheduler
+            .set_peer_fleet(Some(peer_fleet), (self.now_fn)())
+            .await;
     }
 
     /// Stands in for a failed fleet exchange with peer schedulers.
     pub async fn set_peers_unknown_for_test(&self) {
-        self.worker_scheduler.set_peer_fleet(None).await;
+        self.worker_scheduler
+            .set_peer_fleet(None, (self.now_fn)())
+            .await;
     }
 
     /// A counter that changes every time the fleet does.
@@ -345,6 +378,11 @@ impl SimpleScheduler {
             tracker: &'a Mutex<UnsatisfiableTracker>,
             now: SystemTime,
             fleet_generation: u64,
+            /// Most actions this pass may fail as unsatisfiable (blast-radius
+            /// cap, sized from the last pass's backlog by `unsatisfiable_fail_cap`).
+            cap: usize,
+            /// How many it has failed so far this pass.
+            fails_this_pass: AtomicUsize,
         }
 
         /// Logs an action no worker can run and, once its property shape has
@@ -391,6 +429,15 @@ impl SimpleScheduler {
             if workers.fleet_generation().await != pass.fleet_generation {
                 return Ok(());
             }
+
+            // Blast-radius cap: fail at most `cap` actions per pass. Over-cap
+            // actions were still observed above (their timers keep running) and
+            // are reconsidered next pass, so a large burst bleeds off over a few
+            // back-to-back passes rather than failing all at once.
+            if pass.fails_this_pass.load(Ordering::Relaxed) >= pass.cap {
+                return Ok(());
+            }
+            pass.fails_this_pass.fetch_add(1, Ordering::Relaxed);
 
             let operation_id = {
                 let (action_state, _origin_metadata) = action_state_result
@@ -451,7 +498,11 @@ impl SimpleScheduler {
             // Try to find a worker for the action.
             let worker_id = {
                 match workers
-                    .find_worker_for_action(&action_info.platform_properties, full_worker_logging)
+                    .find_worker_for_action(
+                        &action_info.platform_properties,
+                        full_worker_logging,
+                        unsatisfiable_pass.now,
+                    )
                     .await
                 {
                     MatchOutcome::Matched(worker_id) => worker_id,
@@ -553,6 +604,8 @@ impl SimpleScheduler {
             tracker: &self.unsatisfiable_tracker,
             now: (self.now_fn)(),
             fleet_generation: self.worker_scheduler.fleet_generation().await,
+            cap: unsatisfiable_fail_cap(self.last_unsatisfiable_backlog.load(Ordering::Relaxed)),
+            fails_this_pass: AtomicUsize::new(0),
         };
 
         let mut stream = self
@@ -588,6 +641,12 @@ impl SimpleScheduler {
             .lock()
             .end_pass(unsatisfiable_pass.now, unsatisfiable_pass.fleet_generation);
         record_unsatisfiable_queued(unsatisfiable_queued);
+        // Remember this pass's backlog so the next pass can size its fail cap:
+        // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
+        self.last_unsatisfiable_backlog.store(
+            usize::try_from(unsatisfiable_queued).unwrap_or(usize::MAX),
+            Ordering::Relaxed,
+        );
 
         let total_elapsed = start.elapsed();
         if total_elapsed > Duration::from_secs(5) {
@@ -725,6 +784,15 @@ impl SimpleScheduler {
             let now_fn = now_fn.clone();
             Box::new(move || now_fn().now())
         };
+        // A second SystemTime clock for the fleet-exchange task, cloned before
+        // `now_fn` is moved into the state manager below.
+        let exchange_now_fn: Box<dyn Fn() -> SystemTime + Send + Sync> = {
+            let now_fn = now_fn.clone();
+            Box::new(move || now_fn().now())
+        };
+        // One peer-record TTL: the fleet-exchange record's lifetime and the
+        // census warm-up / staleness bound the worker scheduler applies.
+        let record_ttl = fleet_exchange_interval * FLEET_RECORD_TTL_INTERVALS;
 
         let has_peers = awaited_action_db.shares_state();
         let state_manager = SimpleSchedulerStateManager::new(
@@ -747,6 +815,7 @@ impl SimpleScheduler {
             worker_registry,
             maybe_origin_event_tx.clone(),
             has_peers,
+            record_ttl,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -787,7 +856,6 @@ impl SimpleScheduler {
             let state_manager = Arc::downgrade(&state_manager);
             let local_fleet_change_notify = worker_scheduler.local_fleet_change_notify().clone();
             let worker_scheduler = Arc::downgrade(&worker_scheduler);
-            let record_ttl = fleet_exchange_interval * FLEET_RECORD_TTL_INTERVALS;
             spawn!("simple_scheduler_task_fleet_exchange", async move {
                 if !has_peers {
                     return;
@@ -809,7 +877,9 @@ impl SimpleScheduler {
                                 info!("Exchanging fleet capabilities with peer schedulers again");
                             }
                             last_exchange_ok = true;
-                            worker_scheduler.set_peer_fleet(Some(peer_fleet)).await;
+                            worker_scheduler
+                                .set_peer_fleet(Some(peer_fleet), exchange_now_fn())
+                                .await;
                         }
                         Err(err) => {
                             // A peer that cannot be seen might have a worker
@@ -822,7 +892,9 @@ impl SimpleScheduler {
                                 );
                             }
                             last_exchange_ok = false;
-                            worker_scheduler.set_peer_fleet(None).await;
+                            worker_scheduler
+                                .set_peer_fleet(None, exchange_now_fn())
+                                .await;
                         }
                     }
                     drop((state_manager, worker_scheduler));
@@ -1005,6 +1077,7 @@ impl SimpleScheduler {
                 unsatisfiable_tracker: Mutex::new(UnsatisfiableTracker::new(
                     unsatisfiable_action_timeout,
                 )),
+                last_unsatisfiable_backlog: AtomicUsize::new(0),
                 now_fn: scheduler_now_fn,
             }
         });
@@ -1101,3 +1174,37 @@ impl WorkerScheduler for SimpleScheduler {
 }
 
 impl RootMetricsComponent for SimpleScheduler {}
+
+#[cfg(test)]
+mod unsatisfiable_fail_cap_tests {
+    use super::{
+        MAX_UNSATISFIABLE_FAILS_PER_PASS, UNSATISFIABLE_FAIL_BACKLOG_DIVISOR,
+        unsatisfiable_fail_cap,
+    };
+
+    #[test]
+    fn small_backlog_stays_at_the_floor() {
+        // Zero and any backlog whose fraction is below the floor use the floor.
+        assert_eq!(unsatisfiable_fail_cap(0), MAX_UNSATISFIABLE_FAILS_PER_PASS);
+        assert_eq!(unsatisfiable_fail_cap(20), MAX_UNSATISFIABLE_FAILS_PER_PASS);
+        // Exactly at the boundary (floor * divisor) still yields the floor.
+        let boundary = MAX_UNSATISFIABLE_FAILS_PER_PASS * UNSATISFIABLE_FAIL_BACKLOG_DIVISOR;
+        assert_eq!(
+            unsatisfiable_fail_cap(boundary),
+            MAX_UNSATISFIABLE_FAILS_PER_PASS
+        );
+    }
+
+    #[test]
+    fn large_backlog_scales_to_drain_in_a_few_passes() {
+        // A big burst drains in ~DIVISOR back-to-back passes.
+        assert_eq!(
+            unsatisfiable_fail_cap(4000),
+            4000 / UNSATISFIABLE_FAIL_BACKLOG_DIVISOR
+        );
+        // Just past the boundary crosses over to the fraction.
+        let over = MAX_UNSATISFIABLE_FAILS_PER_PASS * UNSATISFIABLE_FAIL_BACKLOG_DIVISOR
+            + UNSATISFIABLE_FAIL_BACKLOG_DIVISOR;
+        assert!(unsatisfiable_fail_cap(over) > MAX_UNSATISFIABLE_FAILS_PER_PASS);
+    }
+}

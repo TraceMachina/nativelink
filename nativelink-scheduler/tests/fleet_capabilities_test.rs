@@ -221,6 +221,11 @@ async fn scheduler_defers_to_a_peers_worker_it_cannot_see() -> Result<(), Error>
     tokio::time::sleep(SETTLE).await;
     scheduler_a.do_try_match_for_test().await?;
     MockClock::advance(Duration::from_secs(TIMEOUT_S));
+    // Let the exchange re-publish at the advanced clock so the peer census is
+    // fresh again: the staleness guard fails open on a census not refreshed
+    // within a record TTL, and jumping the mock clock without an exchange
+    // running looks exactly like a stalled exchange task.
+    tokio::time::sleep(SETTLE).await;
     scheduler_a.do_try_match_for_test().await?;
 
     let (state, _origin_metadata) = waiting.as_state().await?;

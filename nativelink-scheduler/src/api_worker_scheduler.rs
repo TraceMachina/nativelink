@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use futures::{StreamExt, future};
@@ -158,6 +158,28 @@ struct ApiWorkerSchedulerImpl {
     /// judged unsatisfiable, since a peer might have a worker for it.
     peer_fleet: Option<Vec<PlatformProperties>>,
 
+    /// Whether this scheduler shares its state with peers. A non-shared db is
+    /// the whole fleet, so peer-absence is authoritative at once; a shared one
+    /// applies the census warm-up / staleness checks below before it trusts
+    /// peer-absence to fail an action.
+    shared: bool,
+
+    /// One peer-record TTL, used for both the census warm-up and staleness
+    /// bounds below.
+    record_ttl: Duration,
+
+    /// When the peer census last became known (a `None` -> `Some` exchange).
+    /// Peer-absence is only trusted to fail an action once it has been known
+    /// for `record_ttl`, so a peer publishing on its own cadence has had time
+    /// to appear. Cleared whenever the census goes unknown.
+    peer_fleet_known_since: Option<SystemTime>,
+
+    /// When the peer census was last refreshed by a successful exchange. If the
+    /// exchange task dies or stalls this stops advancing, and after `record_ttl`
+    /// the census is treated as stale and peer-absence is no longer trusted
+    /// (fail open). Cleared whenever the census goes unknown.
+    peer_fleet_last_refresh: Option<SystemTime>,
+
     /// Woken when a worker joins or leaves this scheduler, so peers hear
     /// about it without waiting for the next periodic exchange.
     local_fleet_change_notify: Arc<Notify>,
@@ -167,6 +189,47 @@ struct ApiWorkerSchedulerImpl {
     /// depends only on what workers registered with, so it holds until the
     /// fleet changes, at which point the map is emptied.
     static_verdicts: HashMap<PropertyShape, Option<Arc<UnsatisfiableReason>>>,
+}
+
+/// Whether peer-absence can be trusted to fail an action, given the census
+/// state and the current time. A free function so its edge cases (warm-up,
+/// staleness, clock skew, db kind) can be unit-tested without a scheduler.
+fn peer_census_trusted(
+    shared: bool,
+    peer_fleet_known: bool,
+    peer_fleet_known_since: Option<SystemTime>,
+    peer_fleet_last_refresh: Option<SystemTime>,
+    record_ttl: Duration,
+    now: SystemTime,
+) -> bool {
+    // Unknown (a shared db before its first exchange or after a failed one): a
+    // peer we cannot see might run the action. Checked before the non-shared
+    // short-circuit so a deliberately-unknown census is never trusted.
+    if !peer_fleet_known {
+        return false;
+    }
+    // A non-shared db is the whole fleet; peer-absence is authoritative at
+    // once, with no warm-up or staleness delay.
+    if !shared {
+        return true;
+    }
+    let (Some(known_since), Some(last_refresh)) = (peer_fleet_known_since, peer_fleet_last_refresh)
+    else {
+        return false;
+    };
+    // Warm: the census must have been known for a full record TTL, so a peer
+    // publishing on its own ~interval cadence has had time to appear. A clock
+    // going backwards (Err) is treated as not-yet-warm: don't fail.
+    let warm = now
+        .duration_since(known_since)
+        .is_ok_and(|elapsed| elapsed >= record_ttl);
+    // Fresh: a successful exchange within the last record TTL. If the exchange
+    // task died or stalled this goes stale and we stop trusting peer-absence
+    // (fail open). A future-dated refresh (clock skew) counts as fresh.
+    let fresh = now
+        .duration_since(last_refresh)
+        .map_or(true, |elapsed| elapsed <= record_ttl);
+    warm && fresh
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -295,7 +358,7 @@ impl ApiWorkerSchedulerImpl {
             .collect()
     }
 
-    fn set_peer_fleet(&mut self, peer_fleet: Option<Vec<PlatformProperties>>) {
+    fn set_peer_fleet(&mut self, peer_fleet: Option<Vec<PlatformProperties>>, now: SystemTime) {
         // Peers list their workers in no particular order and may share
         // shapes, so sort and dedup before comparing, or an unchanged fleet
         // would look changed on every exchange and empty `static_verdicts`.
@@ -308,6 +371,21 @@ impl ApiWorkerSchedulerImpl {
             keyed.dedup_by(|a, b| a.0 == b.0);
             keyed.into_iter().map(|(_, totals)| totals).collect()
         });
+        // Freshness bookkeeping (docs/scim-cas-rbac): update the warm-up /
+        // staleness clocks BEFORE the unchanged-shapes early return, so a
+        // successful exchange that happens to return the same shapes still
+        // refreshes the staleness clock (otherwise a steady fleet would look
+        // like a stalled exchange task).
+        if peer_fleet.is_some() {
+            self.peer_fleet_last_refresh = Some(now);
+            // Start the warm-up only on the unknown -> known transition.
+            if self.peer_fleet.is_none() {
+                self.peer_fleet_known_since = Some(now);
+            }
+        } else {
+            self.peer_fleet_known_since = None;
+            self.peer_fleet_last_refresh = None;
+        }
         if self.peer_fleet == peer_fleet {
             return;
         }
@@ -327,6 +405,20 @@ impl ApiWorkerSchedulerImpl {
         worker.is_draining = is_draining;
         self.worker_change_notify.notify_one();
         Ok(())
+    }
+
+    /// Whether peer-absence can be trusted to fail an action right now — a
+    /// shared census must be known, warm and fresh; a non-shared db is trusted
+    /// as soon as it is known. See the free `peer_census_trusted`.
+    fn peer_census_trusted(&self, now: SystemTime) -> bool {
+        peer_census_trusted(
+            self.shared,
+            self.peer_fleet.is_some(),
+            self.peer_fleet_known_since,
+            self.peer_fleet_last_refresh,
+            self.record_ttl,
+            now,
+        )
     }
 
     /// Works out whether any of the `candidates` the capability index picked
@@ -447,6 +539,7 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
+        now: SystemTime,
     ) -> MatchOutcome {
         if self.workers.is_empty() {
             if full_worker_logging {
@@ -483,6 +576,19 @@ impl ApiWorkerSchedulerImpl {
             candidates.as_ref(),
             full_worker_logging,
         ) {
+            // The intrinsic verdict (nobody could run it) is cached by shape;
+            // the census freshness check is applied live here, OUTSIDE the
+            // cache, so a verdict computed while the census was trusted can
+            // never outlive a staleness transition (nor a warm-up one). On a
+            // shared db, trust peer-absence to fail only once the census is
+            // warm and fresh; otherwise a peer we cannot fully account for
+            // might run it, so wait rather than fail.
+            if !self.peer_census_trusted(now) {
+                if full_worker_logging {
+                    info!("No idle worker matched; peer census not yet trusted, waiting");
+                }
+                return MatchOutcome::WaitingForCapacity;
+            }
             if full_worker_logging {
                 info!(%reason, "No connected worker can ever run this action");
             }
@@ -784,7 +890,12 @@ impl ApiWorkerScheduler {
         worker_registry: SharedWorkerRegistry,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
         has_peers: bool,
+        record_ttl: Duration,
     ) -> Arc<Self> {
+        debug_assert!(
+            !record_ttl.is_zero(),
+            "record_ttl must be non-zero; a zero TTL degenerates the census warm-up/staleness checks"
+        );
         let local_fleet_change_notify = Arc::new(Notify::new());
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
@@ -798,6 +909,10 @@ impl ApiWorkerScheduler {
                 fleet_generation: 0,
                 // Without peers there is nothing to wait for.
                 peer_fleet: (!has_peers).then(Vec::new),
+                shared: has_peers,
+                record_ttl,
+                peer_fleet_known_since: None,
+                peer_fleet_last_refresh: None,
                 local_fleet_change_notify: local_fleet_change_notify.clone(),
                 static_verdicts: HashMap::new(),
             }),
@@ -862,8 +977,12 @@ impl ApiWorkerScheduler {
 
     /// Records what the workers connected to peer schedulers can run, or
     /// `None` when that is not known.
-    pub async fn set_peer_fleet(&self, peer_fleet: Option<Vec<PlatformProperties>>) {
-        self.inner.lock().await.set_peer_fleet(peer_fleet);
+    pub async fn set_peer_fleet(
+        &self,
+        peer_fleet: Option<Vec<PlatformProperties>>,
+        now: SystemTime,
+    ) {
+        self.inner.lock().await.set_peer_fleet(peer_fleet, now);
     }
 
     /// Woken when a worker joins or leaves this scheduler.
@@ -880,6 +999,7 @@ impl ApiWorkerScheduler {
         &self,
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
+        now: SystemTime,
     ) -> MatchOutcome {
         let start = Instant::now();
         self.metrics
@@ -888,7 +1008,8 @@ impl ApiWorkerScheduler {
 
         let mut inner = self.inner.lock().await;
         let worker_count = inner.workers.len() as u64;
-        let result = inner.inner_find_worker_for_action(platform_properties, full_worker_logging);
+        let result =
+            inner.inner_find_worker_for_action(platform_properties, full_worker_logging, now);
 
         // Track workers iterated (worst case is all workers)
         self.metrics
@@ -1289,3 +1410,109 @@ impl WorkerScheduler for ApiWorkerScheduler {
 }
 
 impl RootMetricsComponent for ApiWorkerScheduler {}
+
+#[cfg(test)]
+mod peer_census_trusted_tests {
+    use super::{Duration, SystemTime, UNIX_EPOCH, peer_census_trusted};
+
+    const TTL: Duration = Duration::from_secs(15);
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1000 + secs)
+    }
+
+    #[test]
+    fn unknown_census_is_never_trusted() {
+        // Even a non-shared db, if explicitly unknown, is not trusted.
+        assert!(!peer_census_trusted(false, false, None, None, TTL, at(0)));
+        assert!(!peer_census_trusted(
+            true,
+            false,
+            Some(at(0)),
+            Some(at(0)),
+            TTL,
+            at(100)
+        ));
+    }
+
+    #[test]
+    fn non_shared_known_is_trusted_immediately() {
+        // The whole fleet is local; no warm-up or staleness applies.
+        assert!(peer_census_trusted(false, true, None, None, TTL, at(0)));
+    }
+
+    #[test]
+    fn shared_known_needs_both_timestamps() {
+        assert!(!peer_census_trusted(true, true, None, None, TTL, at(100)));
+        assert!(!peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            None,
+            TTL,
+            at(100)
+        ));
+    }
+
+    #[test]
+    fn shared_trusts_only_when_warm_and_fresh() {
+        // Known at 0, refreshed at 100, evaluated at 100: warm and fresh.
+        assert!(peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(100)),
+            TTL,
+            at(100)
+        ));
+        // Exactly one TTL since known counts as warm.
+        assert!(peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(15)),
+            TTL,
+            at(15)
+        ));
+    }
+
+    #[test]
+    fn shared_not_warm_is_not_trusted() {
+        // Known only half a TTL ago: a peer may not have published yet.
+        assert!(!peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(7)),
+            TTL,
+            at(7)
+        ));
+    }
+
+    #[test]
+    fn shared_stale_refresh_is_not_trusted() {
+        // Warm, but the last successful exchange was more than a TTL ago (the
+        // exchange task died/stalled): fail open.
+        assert!(!peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(50)),
+            TTL,
+            at(100)
+        ));
+    }
+
+    #[test]
+    fn future_dated_refresh_counts_as_fresh() {
+        // Clock skew: a refresh timestamped ahead of `now` is treated as fresh
+        // (the safe direction). Still requires warm.
+        assert!(peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(120)),
+            TTL,
+            at(100)
+        ));
+    }
+}
