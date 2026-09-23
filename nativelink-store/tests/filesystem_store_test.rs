@@ -76,6 +76,9 @@ trait FileEntryHooks {
     fn on_read_error() -> impl Future<Output = ()> + Send {
         core::future::ready(())
     }
+    fn on_get_file_path_locked() -> impl Future<Output = ()> + Send {
+        core::future::ready(())
+    }
     fn on_drop<Fe: FileEntry>(_entry: &Fe) {}
 }
 
@@ -169,6 +172,7 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
         &self,
         handler: F,
     ) -> Result<T, Error> {
+        Hooks::on_get_file_path_locked().await;
         self.inner
             .as_ref()
             .unwrap()
@@ -1887,8 +1891,12 @@ async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
     );
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
-    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest1}"));
-    store.get_executable_hardlink_source(&digest1).await?;
+    let variant_path = store.get_executable_hardlink_source(&digest1).await?;
+    assert!(
+        Path::new(&variant_path).starts_with(format!("{content_path}.exec/{DIGEST_FOLDER_V2}")),
+        "Executable variant should live in the .exec sibling, got {}",
+        variant_path.display()
+    );
     fs::metadata(&variant_path)
         .await
         .err_tip(|| "Executable variant should exist right after creation")?;
@@ -1904,6 +1912,186 @@ async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
         err.code,
         Code::NotFound,
         "Expected the executable variant to be gone, got: {err:?}"
+    );
+
+    Ok(())
+}
+
+/// Regression test: the cleanup of an evicted generation must not delete an
+/// executable variant built afterwards for a newer generation of the digest.
+///
+/// Eviction removes the map entry under the map lock, but the file cleanup it
+/// queues runs after the lock is released. While variants were named by
+/// digest alone, this interleaving failed actions:
+/// - Inserting another blob evicted digest1, queuing its cleanup.
+/// - An action fetched digest1 again and rebuilt its executable variant.
+/// - The queued cleanup ran and deleted the rebuilt variant, so the action's
+///   batched hardlink failed with `NotFound` ("file was likely evicted").
+///
+/// Holding the evicted generation's `unref` and replaying digest1's remove
+/// callbacks until after the rebuild reproduces that ordering.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn stale_eviction_must_not_delete_rebuilt_executable_variant() -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    static UNREF_GATE: Semaphore = Semaphore::const_new(0);
+
+    struct GatedUnrefHooks;
+    impl FileEntryHooks for GatedUnrefHooks {
+        async fn on_unref_async<Fe: FileEntry>(entry: &Fe) {
+            if entry.len() == VALUE1.len() as u64 {
+                let _permit = UNREF_GATE
+                    .acquire()
+                    .await
+                    .expect("unref gate closed unexpectedly");
+            }
+        }
+    }
+
+    // Sized apart from VALUE1 so the hook can tell the two unrefs apart.
+    let other_value = "y".repeat(64);
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, other_value.len())?;
+    let temp_path = make_temp_path("temp_path");
+
+    let store = Arc::new(
+        FilesystemStore::<TestFileEntry<GatedUnrefHooks>>::new(&FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+    let evicted_variant = store.get_executable_hardlink_source(&digest1).await?;
+
+    // Evict digest1, suspending its unref.
+    let evicting_store = store.clone();
+    let eviction = spawn!("stale_variant_eviction", async move {
+        evicting_store
+            .update_oneshot(digest2, other_value.into())
+            .await
+    });
+    while store.has(digest1).await?.is_some() {
+        tokio::task::yield_now().await;
+    }
+
+    // An action fetches digest1 again and rebuilds its executable variant.
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+    let variant = store.get_executable_hardlink_source(&digest1).await?;
+
+    // Only now does the eviction's cleanup run: the evicted generation's
+    // unref, then the remove callbacks for digest1 as an insert descheduled
+    // right after releasing the map lock would deliver them.
+    UNREF_GATE.add_permits(1);
+    eviction
+        .await
+        .expect("eviction task panicked")
+        .err_tip(|| "Failed to insert digest2")?;
+    store
+        .get_evicting_map()
+        .fire_remove_callbacks(&StoreKey::Digest(digest1))
+        .await;
+
+    let variant_meta = fs::metadata(&variant)
+        .await
+        .err_tip(|| "Stale eviction cleanup deleted the rebuilt executable variant")?;
+    assert_eq!(
+        variant_meta.mode() & 0o777,
+        0o555,
+        "rebuilt executable variant must stay read-only executable"
+    );
+    let dest = OsString::from(format!("{temp_path}/materialized_exec"));
+    fs::hard_link(&variant, &dest)
+        .await
+        .err_tip(|| "Rebuilt executable variant must stay linkable")?;
+
+    // The evicted generation still cleans up the variant it owned.
+    assert_ne!(
+        evicted_variant, variant,
+        "each generation must own a distinct executable variant"
+    );
+    let err = fs::metadata(&evicted_variant)
+        .await
+        .expect_err("the evicted generation's executable variant must be deleted");
+    assert_eq!(err.code, Code::NotFound, "unexpected error: {err:?}");
+
+    Ok(())
+}
+
+/// A variant still being built when its generation is evicted must not be
+/// published afterwards: nothing would own it, so it would never be deleted,
+/// and the caller must resolve the digest again rather than link a file
+/// outside eviction accounting.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn executable_variant_not_published_for_evicted_generation() -> Result<(), Error> {
+    static BUILD_STARTED: Semaphore = Semaphore::const_new(0);
+    static BUILD_GATE: Semaphore = Semaphore::const_new(0);
+
+    struct GatedBuildHooks;
+    impl FileEntryHooks for GatedBuildHooks {
+        async fn on_get_file_path_locked() {
+            BUILD_STARTED.add_permits(1);
+            BUILD_GATE
+                .acquire()
+                .await
+                .expect("build gate closed unexpectedly")
+                .forget();
+        }
+    }
+
+    let content_path = make_temp_path("content_path");
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+
+    let store = Arc::new(
+        FilesystemStore::<TestFileEntry<GatedBuildHooks>>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+
+    // Start building digest1's variant and hold it before it reads the blob.
+    let building_store = store.clone();
+    let build = spawn!("evicted_variant_build", async move {
+        building_store
+            .get_executable_hardlink_source(&digest1)
+            .await
+    });
+    BUILD_STARTED
+        .acquire()
+        .await
+        .expect("build started semaphore closed unexpectedly")
+        .forget();
+
+    // Evict digest1 completely while the build is in flight.
+    store.update_oneshot(digest2, VALUE2.into()).await?;
+    assert_eq!(store.has(digest1).await?, None, "digest1 should be evicted");
+
+    BUILD_GATE.add_permits(1);
+    let err = build
+        .await
+        .expect("build task panicked")
+        .expect_err("a variant must not be published for an evicted generation");
+    assert_eq!(err.code, Code::NotFound, "unexpected error: {err:?}");
+    assert_eq!(
+        list_file_names(&format!("{content_path}.exec/{DIGEST_FOLDER_V2}")).await?,
+        Vec::<String>::new(),
+        "no executable variant or temp file may outlive the evicted generation"
     );
 
     Ok(())

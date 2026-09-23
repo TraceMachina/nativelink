@@ -44,8 +44,6 @@ use nativelink_util::fs::FileSlot;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 #[cfg(unix)]
 use nativelink_util::spawn_blocking;
-#[cfg(unix)]
-use nativelink_util::store_trait::RemoveItemCallback;
 use nativelink_util::store_trait::{
     RemoveCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
@@ -76,7 +74,7 @@ enum Version {
     V2,
 }
 
-/// Suffix for the sibling directory that holds per-digest read-only
+/// Suffix for the sibling directory that holds per-generation read-only
 /// **executable** (0o555) variants of CAS blobs (see
 /// [`FilesystemStore::get_executable_hardlink_source`]). It is a sibling of
 /// `content_path` rather than a child so the normal content/temp scan and prune
@@ -146,6 +144,11 @@ pub struct EncodedFilePath {
     key: StoreKey<'static>,
     generation: Generation,
     version: Version,
+    /// The executable variant built from this generation. Kept behind the
+    /// same lock as the path, so publishing a variant and retiring the
+    /// generation in `unref` cannot interleave.
+    #[cfg(unix)]
+    executable_variant: ExecutableVariant,
 }
 
 impl EncodedFilePath {
@@ -159,6 +162,58 @@ impl EncodedFilePath {
             self.version,
         )
     }
+
+    /// Deletes this generation's executable variant, if one was published,
+    /// and refuses any publish still in flight. Only `unref` calls this, with
+    /// the path lock held exclusively. The variant is named after this
+    /// generation, so this can never delete a newer generation's variant.
+    #[cfg(unix)]
+    async fn retire_executable_variant(&mut self) {
+        let previous = core::mem::replace(&mut self.executable_variant, ExecutableVariant::Retired);
+        let (ExecutableVariant::Published, StoreKey::Digest(digest)) = (previous, &self.key) else {
+            return;
+        };
+        let variant_path =
+            executable_variant_path(&self.shared_context.content_path, digest, self.generation);
+        match fs::remove_file(&variant_path).await {
+            Ok(()) => debug!(
+                ?variant_path,
+                "Deleted executable variant of retired generation"
+            ),
+            Err(err) if err.code == Code::NotFound => {}
+            Err(err) => warn!(
+                ?variant_path,
+                ?err,
+                "Failed to delete executable variant of retired generation"
+            ),
+        }
+    }
+}
+
+/// Where a generation's executable variant is in its lifecycle.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutableVariant {
+    /// No variant has been published for this generation.
+    Absent,
+    /// A variant was published, and retiring the generation deletes it.
+    Published,
+    /// `unref` retired the generation. A variant published now would be
+    /// owned by nothing and never deleted, so publishing is refused.
+    Retired,
+}
+
+/// Path of the read-only executable (0o555) variant built from `generation`
+/// of `digest`. The generation in the name gives each variant exactly one
+/// owning entry, so cleanup of one generation cannot delete a variant that an
+/// action resolved for another.
+#[cfg(unix)]
+fn executable_variant_path(
+    content_path: &str,
+    digest: &DigestInfo,
+    generation: Generation,
+) -> OsString {
+    format!("{content_path}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}-{generation}").into()
 }
 
 #[inline]
@@ -742,6 +797,10 @@ impl LenEntry for FileEntryImpl {
     #[inline]
     async fn unref(&self) {
         let mut encoded_file_path = self.encoded_file_path.write().await;
+        // Retire the executable variant on every path below, including the
+        // failed renames that leave this entry marked as content.
+        #[cfg(unix)]
+        encoded_file_path.retire_executable_variant().await;
         if encoded_file_path.path_type == PathType::Temp {
             // We are already a temp file that is now marked for deletion on drop.
             // This is very rare, but most likely the rename into the content path failed.
@@ -888,6 +947,8 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 key: key.borrow().into_owned(),
                 generation,
                 version,
+                #[cfg(unix)]
+                executable_variant: ExecutableVariant::Absent,
             }),
         ));
         let time_since_anchor = if let Ok(d) = anchor_time.duration_since(atime) {
@@ -1282,50 +1343,6 @@ where
     Ok(false)
 }
 
-/// Deletes a digest's `.exec` variant (see
-/// [`FilesystemStore::get_executable_hardlink_source`]) when that digest is
-/// evicted or replaced in the primary CAS `evicting_map`. Without this, the
-/// `.exec` directory is invisible to `max_bytes` and is only ever cleared by
-/// the startup `remove_dir_all`, so it grows without bound at runtime (#2474).
-/// Tying its lifetime to the primary entry instead bounds total disk use to
-/// roughly `2 * max_bytes` in the worst case (every blob also executable).
-#[cfg(unix)]
-#[derive(Debug)]
-struct ExecutableVariantRemover {
-    content_path: String,
-}
-
-#[cfg(unix)]
-impl RemoveItemCallback for ExecutableVariantRemover {
-    fn callback<'a>(
-        &'a self,
-        store_key: StoreKey<'a>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            let StoreKey::Digest(digest) = store_key else {
-                return;
-            };
-            let variant_path = format!(
-                "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
-                self.content_path
-            );
-            match fs::remove_file(&variant_path).await {
-                Ok(()) => debug!(
-                    ?variant_path,
-                    "Deleted executable variant for evicted digest"
-                ),
-                // Common case: no variant was ever materialized for this digest.
-                Err(err) if err.code == Code::NotFound => {}
-                Err(err) => warn!(
-                    ?variant_path,
-                    ?err,
-                    "Failed to delete executable variant for evicted digest"
-                ),
-            }
-        })
-    }
-}
-
 #[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
@@ -1404,11 +1421,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let migrate = temp_dirs_writable && content_dirs_writable;
 
         // Executable-variant directory: a sibling of `content_path` holding
-        // per-digest 0o555 copies used as hardlink sources for executable
+        // per-generation 0o555 copies used as hardlink sources for executable
         // inputs (see `get_executable_hardlink_source`). Cleared on writable
         // startup — the variants are regenerable and we never want a stale one
         // to leak across runs. If a read-only filesystem prevents the wipe,
-        // ordinary CAS reads remain enabled but executable variants do not.
+        // ordinary CAS reads remain enabled but executable variants do not,
+        // so surviving variants stay quarantined and are never deleted either.
         // Unix-only: the executable bit (and the ETXTBSY race it guards
         // against) does not apply on Windows.
         #[cfg(unix)]
@@ -1419,16 +1437,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                     executable_dir = %format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path),
                     "Executable directory is not writable; serving CAS reads with executable variants disabled"
                 );
-            }
-            if enabled {
-                // Only register cleanup when executable variants are enabled.
-                // Otherwise surviving variants are deliberately quarantined,
-                // and repeated deletion warnings would obscure the fallback.
-                evicting_map.add_remove_callback(RemoveCallbackHolder::new(Arc::new(
-                    ExecutableVariantRemover {
-                        content_path: spec.content_path.clone(),
-                    },
-                )));
             }
             enabled
         };
@@ -1530,16 +1538,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             })
     }
 
-    /// Path of the read-only executable (0o555) variant for `digest`.
-    #[cfg(unix)]
-    fn executable_variant_path(&self, digest: &DigestInfo) -> OsString {
-        format!(
-            "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
-            self.shared_context.content_path
-        )
-        .into()
-    }
-
     /// Resolves the executable variant for many digests at once, batching the
     /// warm path's existence checks into a single dispatch.
     ///
@@ -1572,31 +1570,43 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
     }
 
-    /// Reports which digests already have an executable variant on disk, in one
-    /// batched existence check.
+    /// Reports which digests already have an executable variant on disk for
+    /// their resident generation, in one batched existence check.
     #[cfg(unix)]
     async fn materialized_variants(&self, digests: &[DigestInfo]) -> Vec<Option<OsString>> {
-        let paths: Vec<OsString> = digests
-            .iter()
-            .map(|digest| self.executable_variant_path(digest))
-            .collect();
-
         // Variants disabled and a failed batch are the same situation: nothing
         // is known to exist, so every digest takes the per-digest path, which
         // reports real errors per file.
-        let exists = if self.executable_variants_enabled {
-            fs::exists_many(paths.iter().map(Into::into).collect())
-                .await
-                .ok()
-        } else {
-            None
+        if !self.executable_variants_enabled {
+            return vec![None; digests.len()];
         }
-        .unwrap_or_else(|| vec![false; paths.len()]);
 
+        // A variant is named after the generation it was built from, so only
+        // the resident generation's variant can answer for a digest. A digest
+        // with no resident entry is left to the per-digest path too.
+        let mut paths = Vec::with_capacity(digests.len());
+        for digest in digests {
+            paths.push(self.evicting_map.get(&digest.into()).await.map(|entry| {
+                executable_variant_path(
+                    &self.shared_context.content_path,
+                    digest,
+                    entry.generation(),
+                )
+            }));
+        }
+        let candidates: Vec<_> = paths.iter().flatten().map(Into::into).collect();
+        let exists = if candidates.is_empty() {
+            Vec::new()
+        } else {
+            fs::exists_many(candidates).await.unwrap_or_default()
+        };
+
+        // `exists` answers the resident digests in order, and a failed batch
+        // answers none of them.
+        let mut exists = exists.into_iter();
         paths
             .into_iter()
-            .zip(exists)
-            .map(|(path, hit)| hit.then_some(path))
+            .map(|path| path.filter(|_| exists.next() == Some(true)))
             .collect()
     }
 
@@ -1623,6 +1633,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     /// **once** — writer fd fsync'd and closed, then atomically renamed into
     /// place before the inode is ever hardlinked or executed — and hardlinking
     /// it thereafter keeps the per-action path hardlink-only.
+    ///
+    /// The variant belongs to the resident generation of `digest`: it is named
+    /// after it and deleted when that generation is evicted or replaced, which
+    /// bounds the executable directory by the store's own eviction policy
+    /// (#2474) to roughly `2 * max_bytes` if every blob is also executable.
+    /// Returns `NotFound` when `digest` is not resident, or was evicted while
+    /// its variant was built, so the caller can populate and retry.
     #[cfg(unix)]
     pub async fn get_executable_hardlink_source(
         &self,
@@ -1634,7 +1651,17 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 "Executable hardlink sources are disabled because the startup wipe could not safely clear the read-only executable directory"
             ));
         }
-        let variant_path = self.executable_variant_path(digest);
+        // Resolve the on-disk CAS blob (0o444) the variant is built from. Must
+        // be present in this tier; callers populate the fast store first.
+        let file_entry = self
+            .get_file_entry_for_digest(digest)
+            .await
+            .err_tip(|| "Resolving CAS blob for executable variant")?;
+        let variant_path = executable_variant_path(
+            &self.shared_context.content_path,
+            digest,
+            file_entry.generation(),
+        );
 
         // Fast path: the variant already exists, so the caller can hardlink it
         // with no writable fd anywhere in sight.
@@ -1664,24 +1691,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             return Ok(variant_path);
         }
 
-        let result = self.create_executable_variant(digest, &variant_path).await;
-
-        // The digest may have been evicted mid-copy: its eviction callback ran
-        // before the rename published the variant, so nothing owns the file
-        // anymore. This orphans the variant from eviction accounting, but the
-        // race is rare enough (needs an eviction to land in the narrow window
-        // between rename and this check, on a digest's first-ever variant
-        // materialization) that it's a self-limiting leak, not a systemic one
-        // — cheaper to log and let this action succeed with the still-valid
-        // file than to fail an otherwise-successful action over it.
-        if result.is_ok() && self.evicting_map.get(&digest.into()).await.is_none() {
-            warn!(
-                %digest,
-                ?variant_path,
-                "Digest evicted while materializing its executable variant; \
-                 variant is now untracked by eviction accounting"
-            );
-        }
+        let result = self
+            .create_executable_variant(digest, &file_entry, &variant_path)
+            .await;
 
         // Drop the per-digest lock entry regardless of outcome so the map
         // cannot grow unbounded; a concurrent waiter already cloned the Arc.
@@ -1710,33 +1722,28 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .remove(digest);
     }
 
-    /// Materializes the 0o555 executable variant for `digest`. Must be called
-    /// under the per-digest single-flight guard.
+    /// Materializes the 0o555 executable variant of `file_entry`'s generation
+    /// at `variant_path`. Must be called under the per-digest single-flight
+    /// guard.
     #[cfg(unix)]
     async fn create_executable_variant(
         &self,
         digest: &DigestInfo,
+        file_entry: &Fe,
         variant_path: &OsStr,
     ) -> Result<(), Error> {
-        // Resolve the on-disk CAS blob (0o444) to copy from. Must be present in
-        // this tier; callers populate the fast store first.
-        let file_entry = self
-            .get_file_entry_for_digest(digest)
-            .await
-            .err_tip(|| "Resolving CAS blob for executable variant")?;
         let src_path = file_entry
             .get_file_path_locked(|p| async move { Ok(p) })
             .await?;
 
-        let variant_owned = variant_path.to_os_string();
-        let mut temp_owned = variant_path.to_os_string();
-        temp_owned.push(".tmp");
-        let rename_fn = self.rename_fn;
+        let mut temp_path = variant_path.to_os_string();
+        temp_path.push(".tmp");
+        let temp_owned = temp_path.clone();
 
         // All of this is blocking std::fs; run it off the async runtime. The
         // writable fd opened by `copy` is fully closed before the `rename`
-        // publishes the inode, so no reachable hardlink of the variant ever has
-        // an open writer.
+        // below publishes the inode, so no reachable hardlink of the variant
+        // ever has an open writer.
         spawn_blocking!(
             "filesystem_store_executable_variant",
             move || -> Result<(), Error> {
@@ -1780,14 +1787,41 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 flush_result
                     .map_err(|e| make_err!(Code::Internal, "executable-variant fsync: {e:?}"))?;
                 drop(f);
-                rename_fn(temp_owned.as_os_str(), variant_owned.as_os_str()).map_err(|e| {
-                    make_err!(Code::Internal, "executable-variant rename failed: {e:?}")
-                })?;
                 Ok(())
             }
         )
         .await
-        .err_tip(|| "executable-variant spawn_blocking join failed")?
+        .err_tip(|| "executable-variant spawn_blocking join failed")??;
+
+        // Publish under the entry's path lock, which `unref` holds exclusively
+        // while it retires the generation. Either the variant is published
+        // first and deleted with the generation, or the generation is already
+        // retired and a published variant would belong to nothing.
+        let mut encoded_file_path = file_entry.get_encoded_file_path().write().await;
+        if encoded_file_path.executable_variant == ExecutableVariant::Retired {
+            drop(encoded_file_path);
+            if let Err(err) = fs::remove_file(&temp_path).await {
+                warn!(
+                    ?temp_path,
+                    ?err,
+                    "Failed to delete unpublished executable variant"
+                );
+            }
+            return Err(make_err!(
+                Code::NotFound,
+                "{digest} was evicted while its executable variant was being built"
+            ));
+        }
+        let variant_owned = variant_path.to_os_string();
+        let rename_fn = self.rename_fn;
+        spawn_blocking!("filesystem_store_executable_variant_publish", move || {
+            rename_fn(&temp_path, &variant_owned)
+                .map_err(|e| make_err!(Code::Internal, "executable-variant rename failed: {e:?}"))
+        })
+        .await
+        .err_tip(|| "executable-variant publish spawn_blocking join failed")??;
+        encoded_file_path.executable_variant = ExecutableVariant::Published;
+        Ok(())
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
@@ -2058,6 +2092,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 key: temp_key,
                 generation,
                 version: Version::V2,
+                #[cfg(unix)]
+                executable_variant: ExecutableVariant::Absent,
             },
         )
         .await
@@ -2222,6 +2258,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 key: key.borrow().into_owned(),
                 generation,
                 version: Version::V2,
+                #[cfg(unix)]
+                executable_variant: ExecutableVariant::Absent,
             }),
         );
         // We are done with the file, if we hold a reference to the file here, it could
