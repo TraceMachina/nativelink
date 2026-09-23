@@ -139,14 +139,27 @@ struct State<
     /// Size and entry-count changes waiting to be reported as `cache.size` and
     /// `cache.entries`. Recording to `OpenTelemetry` costs far more than the
     /// plain atomic counters beside it, so the mutation paths only do integer
-    /// arithmetic here and the totals are flushed once the lock is released.
-    /// A flush that is missed only delays the next update, it never loses a
-    /// change.
+    /// arithmetic here. Each critical section takes what has accumulated just
+    /// before it releases the lock and records it afterwards, so reporting
+    /// never acquires the lock a second time. A section that does not take
+    /// the changes only delays them to the next one, it never loses them.
     pending_size_delta: i64,
     pending_entries_delta: i64,
+    /// Set under the lock when `cache.size` and `cache.entries` reporting is
+    /// enabled, so every change is either part of the initial totals or taken
+    /// by exactly one later critical section, never both.
+    cache_size_metrics_enabled: bool,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Size and entry-count changes taken from the state under its lock, to be
+/// reported as `cache.size` and `cache.entries` once the lock is released.
+#[derive(Debug, Clone, Copy)]
+struct CacheSizeDelta {
+    size: i64,
+    entries: i64,
+}
 
 impl<
     K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
@@ -309,6 +322,19 @@ impl<
     fn add_remove_callback(&mut self, callback: C) {
         self.remove_callbacks.push(callback);
     }
+
+    /// Takes the size and entry-count changes accumulated since the last
+    /// call, or `None` while reporting is off or nothing changed.
+    fn take_cache_size_delta(&mut self) -> Option<CacheSizeDelta> {
+        if !self.cache_size_metrics_enabled {
+            return None;
+        }
+        let delta = CacheSizeDelta {
+            size: core::mem::take(&mut self.pending_size_delta),
+            entries: core::mem::take(&mut self.pending_entries_delta),
+        };
+        (delta.size != 0 || delta.entries != 0).then_some(delta)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -417,6 +443,7 @@ where
                 remove_callbacks: Vec::new(),
                 pending_size_delta: 0,
                 pending_entries_delta: 0,
+                cache_size_metrics_enabled: false,
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -434,38 +461,30 @@ where
         if self.cache_size_attrs.set(attrs).is_err() {
             return;
         }
-        // Nothing has been reported yet, so the first flush is the map's
-        // current totals. Overwrite rather than add: the mutations that filled
-        // the map accumulated deltas too, and counting those as well would
-        // report everything already resident twice.
-        {
+        let cache_size_delta = {
             let mut state = self.state.lock();
+            // Nothing has been reported yet, so the first report is the map's
+            // current totals. Overwrite rather than add: the mutations that
+            // filled the map accumulated deltas too, and counting those as well
+            // would report everything already resident twice.
             state.pending_size_delta = saturating_i64(state.sum_store_size);
             state.pending_entries_delta = i64::try_from(state.lru.len()).unwrap_or(i64::MAX);
-        }
-        self.flush_cache_size_metrics();
+            state.cache_size_metrics_enabled = true;
+            state.take_cache_size_delta()
+        };
+        self.record_cache_size_delta(cache_size_delta);
     }
 
-    /// Records the size and entry-count changes accumulated under the lock.
+    /// Records changes taken with `State::take_cache_size_delta`.
     ///
     /// Call after releasing the state lock: reporting to `OpenTelemetry` is
     /// much costlier than the counters updated inside it, and the state lock is
     /// contended across the whole store.
-    fn flush_cache_size_metrics(&self) {
-        let Some(attrs) = self.cache_size_attrs.get() else {
+    fn record_cache_size_delta(&self, delta: Option<CacheSizeDelta>) {
+        let (Some(delta), Some(attrs)) = (delta, self.cache_size_attrs.get()) else {
             return;
         };
-        let (size_delta, entries_delta) = {
-            let mut state = self.state.lock();
-            (
-                core::mem::take(&mut state.pending_size_delta),
-                core::mem::take(&mut state.pending_entries_delta),
-            )
-        };
-        if size_delta == 0 && entries_delta == 0 {
-            return;
-        }
-        record_cache_entries_delta(size_delta, entries_delta, attrs);
+        record_cache_entries_delta(delta.size, delta.entries, attrs);
     }
 
     // Only used for tests
@@ -631,7 +650,7 @@ where
         // to be able to borrow a `Q`.
         R: Borrow<Q> + Send,
     {
-        let (removal_futures, data_to_unref) = {
+        let (removal_futures, data_to_unref, cache_size_delta) = {
             let mut state = self.state.lock();
 
             let lru_len = state.lru.len();
@@ -673,11 +692,15 @@ where
                     None => *result = None,
                 }
             }
-            (removal_futures, data_to_unref)
+            (
+                removal_futures,
+                data_to_unref,
+                state.take_cache_size_delta(),
+            )
         };
 
         // Perform the async callbacks outside of the lock
-        self.flush_cache_size_metrics();
+        self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
         let mut callbacks: FuturesUnordered<_> =
@@ -716,7 +739,7 @@ where
         // Lazily reap *only* the requested entry if it is itself expired;
         // leave the rest for inserts (which already run the global eviction
         // loop).
-        let (data, expired_data, removal_futures) = {
+        let (data, expired_data, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
             let lru_len = state.lru.len();
             let is_leased = state.touch_evictable(key.borrow());
@@ -731,15 +754,15 @@ where
                     .expect("entry was just observed via get_mut");
                 info!(?popped_key, "Item expired, evicting");
                 let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
-                (None, Some(data), futures)
+                (None, Some(data), futures, state.take_cache_size_delta())
             } else {
                 entry.seconds_since_anchor = self.elapsed_seconds();
-                (Some(entry.data.clone()), None, Vec::new())
+                (Some(entry.data.clone()), None, Vec::new(), None)
             }
         };
 
         // Drain remove_callbacks and unref the reaped entry outside the lock.
-        self.flush_cache_size_metrics();
+        self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
         if let Some(d) = expired_data {
@@ -787,7 +810,7 @@ where
     where
         F: FnOnce(&T, &T) -> bool + Send,
     {
-        let (items_to_unref, removal_futures) = {
+        let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
 
             state.touch_evictable(key.borrow());
@@ -797,10 +820,16 @@ where
                 return (false, None);
             }
 
-            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+            let (items_to_unref, removal_futures) =
+                self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor);
+            (
+                items_to_unref,
+                removal_futures,
+                state.take_cache_size_delta(),
+            )
         };
 
-        self.flush_cache_size_metrics();
+        self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
 
@@ -831,12 +860,18 @@ where
             return Vec::new();
         }
 
-        let (items_to_unref, removal_futures) = {
+        let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
-            self.inner_insert_many(&mut state, inserts, self.elapsed_seconds())
+            let (items_to_unref, removal_futures) =
+                self.inner_insert_many(&mut state, inserts, self.elapsed_seconds());
+            (
+                items_to_unref,
+                removal_futures,
+                state.take_cache_size_delta(),
+            )
         };
 
-        self.flush_cache_size_metrics();
+        self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
 
@@ -880,7 +915,7 @@ where
         <It as IntoIterator>::IntoIter: Send,
         R: Borrow<Q> + Send,
     {
-        let (items_to_unref, removal_futures) = {
+        let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
             let mut released_any = false;
             for key in keys {
@@ -892,13 +927,18 @@ where
                 }
             }
             if released_any {
-                self.evict_items(&mut state)
+                let (items_to_unref, removal_futures) = self.evict_items(&mut state);
+                (
+                    items_to_unref,
+                    removal_futures,
+                    state.take_cache_size_delta(),
+                )
             } else {
-                (Vec::new(), Vec::new())
+                (Vec::new(), Vec::new(), None)
             }
         };
 
-        self.flush_cache_size_metrics();
+        self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
 
@@ -950,7 +990,7 @@ where
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
-        let (items_to_unref, removed_item, removal_futures) = {
+        let (items_to_unref, removed_item, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
 
             // First perform eviction
@@ -965,10 +1005,15 @@ where
                 None
             };
 
-            (evicted_items, removed, removal_futures)
+            (
+                evicted_items,
+                removed,
+                removal_futures,
+                state.take_cache_size_delta(),
+            )
         };
 
-        self.flush_cache_size_metrics();
+        self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
 
@@ -993,7 +1038,7 @@ where
     where
         F: FnOnce(&T) -> bool + Send,
     {
-        let (evicted_items, removal_futures, removed_item) = {
+        let (evicted_items, removal_futures, removed_item, cache_size_delta) = {
             let mut state = self.state.lock();
             state.touch_evictable(key.borrow());
             let Some(entry) = state.lru.get(key.borrow()) else {
@@ -1015,11 +1060,16 @@ where
                 None
             };
 
-            (evicted_items, removal_futures, removed_item)
+            (
+                evicted_items,
+                removal_futures,
+                removed_item,
+                state.take_cache_size_delta(),
+            )
         };
 
         // Perform the async callbacks outside of the lock
-        self.flush_cache_size_metrics();
+        self.record_cache_size_delta(cache_size_delta);
         let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while removal_futures.next().await.is_some() {}
 
