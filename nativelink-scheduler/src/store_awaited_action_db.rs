@@ -1220,6 +1220,10 @@ where
             .err_tip(|| "In StoreAwaitedActionDb::exchange_fleet_capabilities collect")
     }
 
+    fn shares_state(&self) -> bool {
+        true
+    }
+
     async fn get_range_of_actions(
         &self,
         state: SortedAwaitedActionState,

@@ -201,10 +201,15 @@ pub struct SimpleSpec {
     /// restrict workers that do not declare it.
     ///
     /// When several schedulers share one Redis backend, each publishes what
-    /// its workers can run every 5 seconds, and an action is only failed
-    /// when no scheduler has a worker that could run it. A worker that
-    /// joins a peer is seen here within about 5 seconds, and one that leaves
-    /// stops counting within 15, so keep this well above that.
+    /// its workers can run whenever a worker joins or leaves and at least
+    /// every 5 seconds, and reads what the others publish every 5 seconds.
+    /// An action is only failed when no scheduler has a worker that could
+    /// run it, and never while the other schedulers cannot be read. A
+    /// worker that joins or leaves a peer is seen here within about 5
+    /// seconds, and the workers of a peer that stops altogether stop
+    /// counting within about 20, so keep this well above that. Schedulers
+    /// publish whatever this is set to, so roll out a version that has this
+    /// setting to every scheduler before setting it on any of them.
     ///
     /// Such actions are logged and counted in the
     /// `scheduler.unsatisfiable.queued` metric whatever this is set to.

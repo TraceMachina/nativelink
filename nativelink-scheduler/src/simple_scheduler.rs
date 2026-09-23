@@ -312,7 +312,17 @@ impl SimpleScheduler {
 
     /// Stands in for the fleet exchange with peer schedulers.
     pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
-        self.worker_scheduler.set_peer_fleet(peer_fleet).await;
+        self.worker_scheduler.set_peer_fleet(Some(peer_fleet)).await;
+    }
+
+    /// Stands in for a failed fleet exchange with peer schedulers.
+    pub async fn set_peers_unknown_for_test(&self) {
+        self.worker_scheduler.set_peer_fleet(None).await;
+    }
+
+    /// A counter that changes every time the fleet does.
+    pub async fn fleet_generation_for_test(&self) -> u64 {
+        self.worker_scheduler.fleet_generation().await
     }
 
     /// What this scheduler would publish to peer schedulers.
@@ -716,6 +726,7 @@ impl SimpleScheduler {
             Box::new(move || now_fn().now())
         };
 
+        let has_peers = awaited_action_db.shares_state();
         let state_manager = SimpleSchedulerStateManager::new(
             max_job_retries,
             Duration::from_secs(worker_timeout_s),
@@ -735,6 +746,7 @@ impl SimpleScheduler {
             unacknowledged_kill_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
+            has_peers,
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -767,20 +779,20 @@ impl SimpleScheduler {
                 }
             });
 
-        // Only matters when the state is shared, and only for deciding that
-        // an action is unsatisfiable, so it stays off unless that decision
-        // can fail an action. The db decides whether it has peers to talk
-        // to; the in-memory one returns nothing.
+        // Only runs when the state is shared. It runs whatever the timeout,
+        // so that a peer which does fail actions sees these workers even
+        // while this scheduler is still rolling out or has the timeout off.
         let task_fleet_exchange_spawn = {
             let scheduler_id = Uuid::new_v4().hyphenated().to_string();
             let state_manager = Arc::downgrade(&state_manager);
+            let local_fleet_change_notify = worker_scheduler.local_fleet_change_notify().clone();
             let worker_scheduler = Arc::downgrade(&worker_scheduler);
-            let enabled = unsatisfiable_action_timeout.is_some();
             let record_ttl = fleet_exchange_interval * FLEET_RECORD_TTL_INTERVALS;
             spawn!("simple_scheduler_task_fleet_exchange", async move {
-                if !enabled {
+                if !has_peers {
                     return;
                 }
+                let mut last_exchange_ok = true;
                 loop {
                     let (Some(state_manager), Some(worker_scheduler)) =
                         (state_manager.upgrade(), worker_scheduler.upgrade())
@@ -792,13 +804,34 @@ impl SimpleScheduler {
                         .exchange_fleet_capabilities(&scheduler_id, local, record_ttl)
                         .await
                     {
-                        Ok(peer_fleet) => worker_scheduler.set_peer_fleet(peer_fleet).await,
+                        Ok(peer_fleet) => {
+                            if !last_exchange_ok {
+                                info!("Exchanging fleet capabilities with peer schedulers again");
+                            }
+                            last_exchange_ok = true;
+                            worker_scheduler.set_peer_fleet(Some(peer_fleet)).await;
+                        }
                         Err(err) => {
-                            error!(?err, "Error while exchanging fleet capabilities");
+                            // A peer that cannot be seen might have a worker
+                            // for any action, so no action is judged
+                            // unsatisfiable until the peers can be read again.
+                            if last_exchange_ok {
+                                warn!(
+                                    ?err,
+                                    "Could not exchange fleet capabilities with peer schedulers, no queued action is failed as unsatisfiable until this recovers"
+                                );
+                            }
+                            last_exchange_ok = false;
+                            worker_scheduler.set_peer_fleet(None).await;
                         }
                     }
                     drop((state_manager, worker_scheduler));
-                    tokio::time::sleep(fleet_exchange_interval).await;
+                    // A worker joining or leaving here is published straight
+                    // away, so peers see it within one of their intervals.
+                    tokio::select! {
+                        () = tokio::time::sleep(fleet_exchange_interval) => {}
+                        () = local_fleet_change_notify.notified() => {}
+                    }
                 }
             })
         };

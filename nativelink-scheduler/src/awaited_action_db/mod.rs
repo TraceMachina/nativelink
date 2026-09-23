@@ -211,4 +211,10 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
     ) -> impl Future<Output = Result<Vec<PlatformProperties>, Error>> + Send {
         async { Ok(Vec::new()) }
     }
+
+    /// Whether other schedulers may share this state, and so have workers
+    /// of their own that `exchange_fleet_capabilities` reports.
+    fn shares_state(&self) -> bool {
+        false
+    }
 }

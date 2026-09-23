@@ -409,6 +409,54 @@ async fn a_peer_schedulers_capable_worker_prevents_the_failure() -> Result<(), E
 }
 
 #[nativelink_test]
+async fn unknown_peers_never_fail_an_action() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
+
+    // The exchange with peer schedulers failed, so one of them might have a
+    // GPU worker.
+    scheduler.set_peers_unknown_for_test().await;
+
+    let action = add_action(&scheduler, 1, gpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    MockClock::advance(Duration::from_secs(TIMEOUT_S * 10));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+
+    // Once the peers are known to have none, the clock starts from there.
+    scheduler.set_peer_fleet_for_test(Vec::new()).await;
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+    MockClock::advance(Duration::from_secs(TIMEOUT_S));
+    scheduler.do_try_match_for_test().await?;
+    assert_failed_as_unsatisfiable(&stage_of(action.as_ref()).await?);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn peer_fleet_in_another_order_is_not_a_fleet_change() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let cpu = cpu_worker_properties();
+    let gpu = gpu_worker_properties();
+
+    scheduler
+        .set_peer_fleet_for_test(vec![cpu.clone(), gpu.clone()])
+        .await;
+    let generation = scheduler.fleet_generation_for_test().await;
+
+    // Peers list their workers in no particular order, and two peers may
+    // have the same kind of worker.
+    scheduler
+        .set_peer_fleet_for_test(vec![gpu.clone(), cpu.clone(), gpu])
+        .await;
+    assert_eq!(scheduler.fleet_generation_for_test().await, generation);
+
+    scheduler.set_peer_fleet_for_test(vec![cpu]).await;
+    assert_ne!(scheduler.fleet_generation_for_test().await, generation);
+    Ok(())
+}
+
+#[nativelink_test]
 async fn priority_value_mismatch_still_matches() -> Result<(), Error> {
     let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
     let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
