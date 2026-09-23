@@ -44,7 +44,7 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 // Metric attribute keys for the scheduler.
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
 /// The platform properties no worker could satisfy, comma separated.
-pub const SCHEDULER_UNSATISFIED_PROPERTIES: &str = "scheduler.unsatisfied.properties";
+pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
 
 // Metric attribute keys for tiered stores.
 pub const STORE_TIER: &str = "store.tier";
@@ -1086,7 +1086,10 @@ pub fn record_unsatisfiable_queued(count: u64) {
 pub fn record_unsatisfiable_failed(properties: String) {
     SCHEDULER_METRICS.unsatisfiable_failed.add(
         1,
-        &[KeyValue::new(SCHEDULER_UNSATISFIED_PROPERTIES, properties)],
+        &[KeyValue::new(
+            SCHEDULER_UNSATISFIABLE_PROPERTIES,
+            properties,
+        )],
     );
 }
 

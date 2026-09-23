@@ -71,10 +71,17 @@ impl UnsatisfiableReason {
             .collect::<Vec<_>>()
             .join(",")
     }
-}
 
-impl fmt::Display for UnsatisfiableReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// The reason as told to the client that submitted the action: the
+    /// properties it asked for, without the values workers were registered
+    /// with, which can name internal images or pools. The largest total of
+    /// a `minimum` property is kept, as it is only a number.
+    #[must_use]
+    pub const fn for_client(&self) -> ClientReason<'_> {
+        ClientReason(self)
+    }
+
+    fn write(&self, f: &mut fmt::Formatter<'_>, with_offered_values: bool) -> fmt::Result {
         if self.combination_only {
             f.write_str("no single worker satisfies the combination of: ")?;
         } else {
@@ -100,14 +107,32 @@ impl fmt::Display for UnsatisfiableReason {
                 f.write_str(", no worker declares this property")?;
             } else if matches!(property.requested, PlatformPropertyValue::Minimum(_)) {
                 write!(f, ", largest worker total {}", property.offered[0])?;
-            } else {
+            } else if with_offered_values {
                 write!(f, ", workers offer [{}]", property.offered.join(", "))?;
                 if property.offered_omitted > 0 {
                     write!(f, " and {} more", property.offered_omitted)?;
                 }
+            } else {
+                f.write_str(", no worker offers it")?;
             }
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for UnsatisfiableReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write(f, true)
+    }
+}
+
+/// See `UnsatisfiableReason::for_client`.
+#[derive(Debug, Clone, Copy)]
+pub struct ClientReason<'a>(&'a UnsatisfiableReason);
+
+impl fmt::Display for ClientReason<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.write(f, false)
     }
 }
 
@@ -115,7 +140,7 @@ impl fmt::Display for UnsatisfiableReason {
 /// run it, in a form that can key a map. `Ignore` properties never restrict
 /// matching and a `Priority` property only requires the key, so actions that
 /// differ only in those share a shape.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PropertyShape(Vec<(String, PlatformPropertyValue)>);
 
 impl From<&PlatformProperties> for PropertyShape {

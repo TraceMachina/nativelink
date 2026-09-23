@@ -342,23 +342,43 @@ impl SimpleScheduler {
         async fn handle_unsatisfiable(
             action_state_result: &dyn ActionStateResult,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
+            workers: &ApiWorkerScheduler,
             platform_properties: &PlatformProperties,
             reason: &UnsatisfiableReason,
             pass: &UnsatisfiablePass<'_>,
         ) -> Result<(), Error> {
-            let observation = pass.tracker.lock().observe(
-                PropertyShape::from(platform_properties),
-                pass.now,
-                pass.fleet_generation,
-            );
-            if observation.should_warn {
-                warn!(
-                    %reason,
-                    waited_s = observation.waited.as_secs(),
-                    "Queued action cannot run on any connected worker"
+            let (observation, fails_actions) = {
+                let mut tracker = pass.tracker.lock();
+                let observation = tracker.observe(
+                    PropertyShape::from(platform_properties),
+                    pass.now,
+                    pass.fleet_generation,
                 );
+                (observation, tracker.fails_actions())
+            };
+            if observation.should_warn {
+                // Without a timeout nothing is failed, and a pool that
+                // scales up from zero shows up here on every cold start.
+                if fails_actions {
+                    warn!(
+                        %reason,
+                        waited_s = observation.waited.as_secs(),
+                        "Queued action cannot run on any connected worker"
+                    );
+                } else {
+                    info!(
+                        %reason,
+                        waited_s = observation.waited.as_secs(),
+                        "Queued action cannot run on any connected worker"
+                    );
+                }
             }
             if !observation.is_due {
+                return Ok(());
+            }
+            // A worker that joined here or on a peer since the pass began may
+            // be able to run it, so leave it for the next pass to judge.
+            if workers.fleet_generation().await != pass.fleet_generation {
                 return Ok(());
             }
 
@@ -369,9 +389,12 @@ impl SimpleScheduler {
                     .err_tip(|| "Failed to get state of an unsatisfiable action")?;
                 action_state.client_operation_id.clone()
             };
+            // The client only hears what it asked for; what workers offer
+            // stays in the server log above.
             let err = make_err!(
                 Code::FailedPrecondition,
-                "Action cannot be scheduled, {reason}. No capable worker connected within {}s.",
+                "Action cannot be scheduled, {}. No capable worker has been connected for {}s.",
+                reason.for_client(),
                 observation.waited.as_secs()
             );
             let failed = matching_engine_state_manager
@@ -431,6 +454,7 @@ impl SimpleScheduler {
                         return handle_unsatisfiable(
                             action_state_result,
                             matching_engine_state_manager,
+                            workers,
                             &action_info.platform_properties,
                             &reason,
                             unsatisfiable_pass,

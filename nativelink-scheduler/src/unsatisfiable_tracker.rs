@@ -45,7 +45,7 @@ struct ShapeState {
     seen_this_pass: bool,
     seen_last_pass: bool,
     last_warned: Option<SystemTime>,
-    /// Consecutive passes in which the shape was due but still seen queued.
+    /// Passes in which the shape was due but still seen queued.
     due_passes: u32,
 }
 
@@ -87,6 +87,7 @@ impl UnsatisfiableTracker {
         fleet_generation: u64,
     ) -> Observation {
         self.seen_this_pass += 1;
+        let timeout = self.timeout;
         let state = self.shapes.entry(shape).or_insert(ShapeState {
             first_unsatisfiable: now,
             last_seen: now,
@@ -96,9 +97,10 @@ impl UnsatisfiableTracker {
             last_warned: None,
             due_passes: 0,
         });
+        let first_this_pass = !state.seen_this_pass;
         // A shape kept from an earlier build only carries over the time it
         // was actually queued, not the idle gap since.
-        if !state.seen_last_pass && !state.seen_this_pass {
+        if !state.seen_last_pass && first_this_pass {
             let gap = now.duration_since(state.last_seen).unwrap_or_default();
             state.first_unsatisfiable += gap;
         }
@@ -116,8 +118,9 @@ impl UnsatisfiableTracker {
         let waited = now
             .duration_since(state.first_unsatisfiable)
             .unwrap_or_default();
-        let is_due = self.timeout.is_some_and(|timeout| waited >= timeout);
-        if is_due {
+        let is_due = timeout.is_some_and(|timeout| waited >= timeout);
+        // Counted once per pass, however many actions share the shape.
+        if is_due && first_this_pass {
             state.due_passes = state.due_passes.saturating_add(1);
         }
         Observation {
@@ -125,6 +128,12 @@ impl UnsatisfiableTracker {
             is_due,
             should_warn,
         }
+    }
+
+    /// Whether a shape that stays unsatisfiable is ever failed.
+    #[must_use]
+    pub const fn fails_actions(&self) -> bool {
+        self.timeout.is_some()
     }
 
     /// Closes a matching pass and returns how many unsatisfiable actions it

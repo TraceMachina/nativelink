@@ -436,7 +436,7 @@ async fn undeclared_property_is_not_unsatisfiable_when_a_worker_lacks_the_key() 
 }
 
 #[nativelink_test]
-async fn exact_mismatch_names_what_workers_offer() -> Result<(), Error> {
+async fn exact_mismatch_names_what_workers_offer_only_in_the_log() -> Result<(), Error> {
     let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
     let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
 
@@ -447,10 +447,16 @@ async fn exact_mismatch_names_what_workers_offer() -> Result<(), Error> {
     MockClock::advance(Duration::from_secs(TIMEOUT_S));
     scheduler.do_try_match_for_test().await?;
     let message = assert_failed_as_unsatisfiable(&stage_of(action.as_ref()).await?);
+    // Worker values can name internal images or pools, so the client only
+    // hears what it asked for.
     assert!(
-        message.contains("'ISA' requested aarch64, workers offer [x86-64]"),
+        message.contains("'ISA' requested aarch64, no worker offers it"),
         "Unexpected message: {message}"
     );
+    assert!(!message.contains("x86-64"), "Unexpected message: {message}");
+    assert!(logs_contain(
+        "'ISA' requested aarch64, workers offer [x86-64]"
+    ));
     Ok(())
 }
 
