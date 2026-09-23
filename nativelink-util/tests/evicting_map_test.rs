@@ -1260,6 +1260,51 @@ async fn get_of_expired_key_reaps_only_that_key() -> Result<(), Error> {
     Ok(())
 }
 
+// Eviction, replacement and expiry are logged after the map lock is
+// released; every event must still be written once it is.
+#[nativelink_test]
+async fn eviction_events_are_still_logged() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 10,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let key1 = DigestInfo::try_new(HASH1, 0)?;
+    let key2 = DigestInfo::try_new(HASH2, 0)?;
+    let key3 = DigestInfo::try_new(HASH3, 0)?;
+
+    evicting_map
+        .insert(key1, Bytes::from_static(b"1").into())
+        .await;
+    evicting_map
+        .insert(key1, Bytes::from_static(b"2").into())
+        .await;
+    assert!(logs_contain("Evicting old item"));
+
+    evicting_map
+        .insert(key2, Bytes::from_static(b"3").into())
+        .await;
+    assert!(logs_contain(&format!("Evicting key={key1:?}")));
+
+    MockClock::advance(Duration::from_secs(11));
+    assert_eq!(evicting_map.get(&key2).await, None);
+    assert!(logs_contain("Item expired, evicting"));
+
+    evicting_map.lease_key(key3);
+    evicting_map
+        .insert(key3, Bytes::from_static(b"4").into())
+        .await;
+    assert!(logs_contain(
+        "Eviction requested, but every resident entry is leased"
+    ));
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn snapshot_display_empty() -> Result<(), Error> {
     let policies = vec![

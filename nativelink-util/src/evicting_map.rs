@@ -31,7 +31,7 @@ use nativelink_metric::MetricsComponent;
 use opentelemetry::KeyValue;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{Level, debug, info};
 
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics::{record_cache_entries_delta, saturating_i64};
@@ -159,6 +159,58 @@ type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 struct CacheSizeDelta {
     size: i64,
     entries: i64,
+}
+
+/// Counters captured when an eviction pass finds every resident entry leased.
+#[derive(Debug, Clone, Copy)]
+struct AllLeasedSnapshot {
+    resident_items: usize,
+    evictable_items: usize,
+    lease_keys: usize,
+    leased_items: u64,
+    leased_bytes: u64,
+    resident_bytes: u64,
+}
+
+/// Eviction and replacement log events gathered under the state lock and
+/// written by `emit` once it is released. The stdout log layer writes
+/// synchronously, so logging inside the critical section would hold the
+/// store-wide lock across a `write(2)` per entry.
+#[derive(Debug)]
+struct EvictionLogs<K> {
+    replaced: Vec<K>,
+    evicted: Vec<K>,
+    all_leased: Option<AllLeasedSnapshot>,
+}
+
+impl<K: Debug> EvictionLogs<K> {
+    const fn new() -> Self {
+        Self {
+            replaced: Vec::new(),
+            evicted: Vec::new(),
+            all_leased: None,
+        }
+    }
+
+    fn emit(self) {
+        for key in &self.replaced {
+            debug!(?key, "Evicting old item");
+        }
+        if let Some(snapshot) = self.all_leased {
+            debug!(
+                resident_items = snapshot.resident_items,
+                evictable_items = snapshot.evictable_items,
+                lease_keys = snapshot.lease_keys,
+                leased_items = snapshot.leased_items,
+                leased_bytes = snapshot.leased_bytes,
+                resident_bytes = snapshot.resident_bytes,
+                "Eviction requested, but every resident entry is leased",
+            );
+        }
+        for key in &self.evicted {
+            debug!(?key, "Evicting");
+        }
+    }
 }
 
 impl<
@@ -533,17 +585,19 @@ where
         self.state.lock().lru.len()
     }
 
+    /// `now` is `elapsed_seconds()` read once per operation, before taking the
+    /// state lock, so the clock is never read inside the critical section.
     fn should_evict(
         &self,
         lru_len: usize,
         peek_entry: &EvictionItem<T>,
         sum_store_size: u64,
         max_bytes: u64,
+        now: i32,
     ) -> bool {
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
-        let elapsed_seconds = self.elapsed_seconds();
-        let evict_older_than_seconds = elapsed_seconds.saturating_sub(self.max_seconds);
+        let evict_older_than_seconds = now.saturating_sub(self.max_seconds);
         let old_item_exists =
             self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
 
@@ -571,18 +625,22 @@ where
     }
 
     #[must_use]
-    fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
+    fn evict_items(
+        &self,
+        state: &mut State<K, Q, T, C>,
+        now: i32,
+        logs: &mut EvictionLogs<K>,
+    ) -> (Vec<T>, Vec<RemoveFuture>) {
         let Some(first_entry) = state.peek_evictable() else {
             if !state.lru.is_empty() {
-                debug!(
-                    resident_items = state.lru.len(),
-                    evictable_items = state.evictable_lru.len(),
-                    lease_keys = state.leases.len(),
-                    leased_items = state.leased_items,
-                    leased_bytes = state.leased_bytes,
-                    resident_bytes = state.sum_store_size,
-                    "Eviction requested, but every resident entry is leased",
-                );
+                logs.all_leased = Some(AllLeasedSnapshot {
+                    resident_items: state.lru.len(),
+                    evictable_items: state.evictable_lru.len(),
+                    lease_keys: state.leases.len(),
+                    leased_items: state.leased_items,
+                    leased_bytes: state.leased_bytes,
+                    resident_bytes: state.sum_store_size,
+                });
             }
             return (Vec::new(), Vec::new());
         };
@@ -596,6 +654,7 @@ where
                 first_entry,
                 state.sum_store_size,
                 self.max_bytes,
+                now,
             ) {
             self.max_bytes.saturating_sub(self.evict_bytes)
         } else {
@@ -604,21 +663,26 @@ where
 
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
+        // Evicted keys are only kept for the log when debug logging is on;
+        // otherwise they are dropped here, as before.
+        let log_evictions = tracing::enabled!(Level::DEBUG);
 
         // Pop the candidate index directly instead of collecting and cloning
         // all victim keys. Both indexes are protected by the same lock.
         while let Some(entry) = state.peek_evictable() {
-            if !self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes) {
+            if !self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes, now) {
                 break;
             }
 
             let (key, eviction_item) = state
                 .pop_evictable()
                 .expect("Evictable LRU key disappeared while state was locked");
-            debug!(?key, "Evicting");
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures);
+            if log_evictions {
+                logs.evicted.push(key);
+            }
         }
 
         (items_to_unref, removal_futures)
@@ -650,12 +714,14 @@ where
         // to be able to borrow a `Q`.
         R: Borrow<Q> + Send,
     {
-        let (removal_futures, data_to_unref, cache_size_delta) = {
+        let now = self.elapsed_seconds();
+        let (removal_futures, data_to_unref, expired_keys, cache_size_delta) = {
             let mut state = self.state.lock();
 
             let lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
             let mut removal_futures = Vec::new();
+            let mut expired_keys = Vec::new();
             for (key, result) in keys.into_iter().zip(results.iter_mut()) {
                 let is_leased = if peek {
                     state.is_leased(key.borrow())
@@ -672,19 +738,19 @@ where
                         // Note: We need to check eviction because the item might be expired
                         // based on the current time. In such case, we remove the item while
                         // we are here.
-                        if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX) {
+                        if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX, now) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                                info!(?key, "Item expired, evicting");
                                 let (data, futures) =
                                     state.remove(key.borrow(), &eviction_item, false);
                                 // Store data for later unref - we can't drop state here as we're still iterating
                                 data_to_unref.push(data);
                                 removal_futures.extend(futures);
+                                expired_keys.push(key);
                             }
                         } else {
                             if !peek {
-                                entry.seconds_since_anchor = self.elapsed_seconds();
+                                entry.seconds_since_anchor = now;
                             }
                             *result = Some(entry.data.len());
                         }
@@ -695,11 +761,15 @@ where
             (
                 removal_futures,
                 data_to_unref,
+                expired_keys,
                 state.take_cache_size_delta(),
             )
         };
 
-        // Perform the async callbacks outside of the lock
+        // Log and perform the async callbacks outside of the lock
+        for key in &expired_keys {
+            info!(?key, "Item expired, evicting");
+        }
         self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
@@ -739,7 +809,8 @@ where
         // Lazily reap *only* the requested entry if it is itself expired;
         // leave the rest for inserts (which already run the global eviction
         // loop).
-        let (data, expired_data, removal_futures, cache_size_delta) = {
+        let now = self.elapsed_seconds();
+        let (data, expired, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
             let lru_len = state.lru.len();
             let is_leased = state.touch_evictable(key.borrow());
@@ -747,25 +818,33 @@ where
             // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
             // consult TTL / count predicates — never the global byte budget.
             // Mirrors the per-key reap path in `sizes_for_keys`.
-            if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX) {
+            if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX, now) {
                 let (popped_key, eviction_item) = state
                     .lru
                     .pop_entry(key.borrow())
                     .expect("entry was just observed via get_mut");
-                info!(?popped_key, "Item expired, evicting");
                 let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
-                (None, Some(data), futures, state.take_cache_size_delta())
+                (
+                    None,
+                    Some((popped_key, data)),
+                    futures,
+                    state.take_cache_size_delta(),
+                )
             } else {
-                entry.seconds_since_anchor = self.elapsed_seconds();
+                entry.seconds_since_anchor = now;
                 (Some(entry.data.clone()), None, Vec::new(), None)
             }
         };
 
-        // Drain remove_callbacks and unref the reaped entry outside the lock.
+        // Log, drain remove_callbacks and unref the reaped entry outside the
+        // lock.
+        if let Some((popped_key, _)) = &expired {
+            info!(?popped_key, "Item expired, evicting");
+        }
         self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
-        if let Some(d) = expired_data {
+        if let Some((_, d)) = expired {
             d.unref().await;
         }
 
@@ -810,6 +889,8 @@ where
     where
         F: FnOnce(&T, &T) -> bool + Send,
     {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
         let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
 
@@ -820,8 +901,13 @@ where
                 return (false, None);
             }
 
-            let (items_to_unref, removal_futures) =
-                self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor);
+            let (items_to_unref, removal_futures) = self.inner_insert_many(
+                &mut state,
+                [(key, data)],
+                seconds_since_anchor,
+                now,
+                &mut logs,
+            );
             (
                 items_to_unref,
                 removal_futures,
@@ -829,6 +915,7 @@ where
             )
         };
 
+        logs.emit();
         self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
@@ -860,10 +947,12 @@ where
             return Vec::new();
         }
 
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
         let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
             let (items_to_unref, removal_futures) =
-                self.inner_insert_many(&mut state, inserts, self.elapsed_seconds());
+                self.inner_insert_many(&mut state, inserts, now, now, &mut logs);
             (
                 items_to_unref,
                 removal_futures,
@@ -871,6 +960,7 @@ where
             )
         };
 
+        logs.emit();
         self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
@@ -915,6 +1005,8 @@ where
         <It as IntoIterator>::IntoIter: Send,
         R: Borrow<Q> + Send,
     {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
         let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
             let mut released_any = false;
@@ -927,7 +1019,8 @@ where
                 }
             }
             if released_any {
-                let (items_to_unref, removal_futures) = self.evict_items(&mut state);
+                let (items_to_unref, removal_futures) =
+                    self.evict_items(&mut state, now, &mut logs);
                 (
                     items_to_unref,
                     removal_futures,
@@ -938,6 +1031,7 @@ where
             }
         };
 
+        logs.emit();
         self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
@@ -946,11 +1040,15 @@ where
         while futures.next().await.is_some() {}
     }
 
+    /// `seconds_since_anchor` stamps the inserted entries; `now` is the
+    /// current time the eviction pass that follows compares ages against.
     fn inner_insert_many<It>(
         &self,
         state: &mut State<K, Q, T, C>,
         inserts: It,
         seconds_since_anchor: i32,
+        now: i32,
+        logs: &mut EvictionLogs<K>,
     ) -> (Vec<T>, Vec<RemoveFuture>)
     where
         It: IntoIterator<Item = (K, T)> + Send,
@@ -960,6 +1058,7 @@ where
     {
         let mut replaced_items = Vec::new();
         let mut removal_futures = Vec::new();
+        let log_replacements = tracing::enabled!(Level::DEBUG);
         for (key, data) in inserts {
             let new_item_size = data.len();
             let eviction_item = EvictionItem {
@@ -969,8 +1068,10 @@ where
 
             if let Some((old_item, futures)) = state.put(&key, eviction_item) {
                 removal_futures.extend(futures);
-                debug!(?key, "Evicting old item");
                 replaced_items.push(old_item);
+                if log_replacements {
+                    logs.replaced.push(key);
+                }
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
@@ -979,7 +1080,7 @@ where
         }
 
         // Perform eviction after all insertions
-        let (items_to_unref, futures) = self.evict_items(state);
+        let (items_to_unref, futures) = self.evict_items(state, now, logs);
         removal_futures.extend(futures);
 
         // Note: We cannot drop the state lock here since we're borrowing it,
@@ -990,11 +1091,13 @@ where
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
         let (items_to_unref, removed_item, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
 
             // First perform eviction
-            let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
+            let (evicted_items, mut removal_futures) = self.evict_items(&mut state, now, &mut logs);
 
             // Then try to remove the requested item
             let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
@@ -1013,6 +1116,7 @@ where
             )
         };
 
+        logs.emit();
         self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
@@ -1038,6 +1142,8 @@ where
     where
         F: FnOnce(&T) -> bool + Send,
     {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
         let (evicted_items, removal_futures, removed_item, cache_size_delta) = {
             let mut state = self.state.lock();
             state.touch_evictable(key.borrow());
@@ -1049,7 +1155,7 @@ where
             }
 
             // First perform eviction
-            let (evicted_items, mut removal_futures) = self.evict_items(&mut state);
+            let (evicted_items, mut removal_futures) = self.evict_items(&mut state, now, &mut logs);
 
             // Then try to remove the requested item
             let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
@@ -1068,7 +1174,8 @@ where
             )
         };
 
-        // Perform the async callbacks outside of the lock
+        // Log and perform the async callbacks outside of the lock
+        logs.emit();
         self.record_cache_size_delta(cache_size_delta);
         let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while removal_futures.next().await.is_some() {}
