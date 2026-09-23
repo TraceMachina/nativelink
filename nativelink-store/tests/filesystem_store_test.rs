@@ -1170,6 +1170,49 @@ async fn get_file_entry_for_zero_digest_returns_not_found() -> Result<(), Error>
     Ok(())
 }
 
+// The batched lookup answers every digest exactly like
+// `get_file_entry_for_digest`, in input order: the same entry for a hit and
+// the same `NotFound` for a miss or a zero digest.
+#[nativelink_test]
+async fn get_file_entries_for_digests_matches_single_lookups() -> Result<(), Error> {
+    let zero_digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
+    let resident = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let missing = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(resident, VALUE1.into()).await?;
+
+    let digests = [missing, resident, zero_digest, resident];
+    let entries = store.get_file_entries_for_digests(&digests).await;
+    assert_eq!(entries.len(), digests.len());
+    for (digest, batched) in digests.iter().zip(entries) {
+        match (batched, store.get_file_entry_for_digest(digest).await) {
+            (Ok(batched), Ok(single)) => {
+                assert!(Arc::ptr_eq(&batched, &single), "{digest}");
+            }
+            (Err(batched), Err(single)) => {
+                assert_eq!(batched.code, Code::NotFound, "{digest}");
+                assert_eq!(batched, single, "{digest}");
+            }
+            (batched, single) => {
+                panic!("{digest}: batched {batched:?}, single {single:?}");
+            }
+        }
+    }
+    assert!(
+        store.get_file_entries_for_digests(&[]).await.is_empty(),
+        "an empty batch has no results",
+    );
+    Ok(())
+}
+
 /// Regression test for: <https://github.com/TraceMachina/nativelink/issues/495>.
 #[nativelink_test(flavor = "multi_thread")]
 async fn update_file_future_drops_before_rename() -> Result<(), Error> {

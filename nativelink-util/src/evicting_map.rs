@@ -161,6 +161,26 @@ struct CacheSizeDelta {
     entries: i64,
 }
 
+/// Most keys a batched call handles per acquisition of the state lock, so a
+/// large batch still lets other callers in between chunks.
+const MAX_KEYS_PER_LOCK: usize = 1024;
+
+/// Entries a read found expired and removed under the state lock. Logging,
+/// remove callbacks and `unref()` for them run once the lock is released.
+struct Reaped<K, T> {
+    entries: Vec<(K, T)>,
+    removal_futures: Vec<RemoveFuture>,
+}
+
+impl<K, T> Reaped<K, T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            removal_futures: Vec::new(),
+        }
+    }
+}
+
 /// Counters captured when an eviction pass finds every resident entry leased.
 #[derive(Debug, Clone, Copy)]
 struct AllLeasedSnapshot {
@@ -805,48 +825,99 @@ where
     /// inserts; it is not driven by reads, since `sum_store_size` cannot
     /// grow without an insert.
     pub async fn get(&self, key: &Q) -> Option<T> {
-        // Lazily reap *only* the requested entry if it is itself expired;
-        // leave the rest for inserts (which already run the global eviction
-        // loop).
         let now = self.elapsed_seconds();
-        let (data, expired, removal_futures, cache_size_delta) = {
+        let mut reaped = Reaped::new();
+        let (data, cache_size_delta) = {
             let mut state = self.state.lock();
-            let lru_len = state.lru.len();
-            let (entry, is_leased) = state.get_resident(key, false)?;
-            // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
-            // consult TTL / count predicates — never the global byte budget.
-            // Mirrors the per-key reap path in `sizes_for_keys`.
-            if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX, now) {
-                let (popped_key, eviction_item) = state
-                    .lru
-                    .pop_entry(key.borrow())
-                    .expect("entry was just observed via get_resident");
-                let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
-                (
-                    None,
-                    Some((popped_key, data)),
-                    futures,
-                    state.take_cache_size_delta(),
-                )
-            } else {
-                entry.seconds_since_anchor = now;
-                (Some(entry.data.clone()), None, Vec::new(), None)
-            }
+            let data = self.get_locked(&mut state, key, now, &mut reaped);
+            (data, state.take_cache_size_delta())
         };
+        self.finish_reaped(reaped, cache_size_delta).await;
+        data
+    }
 
-        // Log, drain remove_callbacks and unref the reaped entry outside the
-        // lock.
-        if let Some((popped_key, _)) = &expired {
+    /// Same as `get()` for each of `keys`, returning the results in input
+    /// order.
+    ///
+    /// Takes the state lock once per `MAX_KEYS_PER_LOCK` keys instead of once
+    /// per key. Every key gets exactly what a `get()` of it would at that
+    /// point: a live entry is promoted and its age refreshed, and an expired,
+    /// unleased entry is reaped and reported as `None`.
+    pub async fn get_many<It, R>(&self, keys: It) -> Vec<Option<T>>
+    where
+        It: IntoIterator<Item = R> + Send,
+        // Note: It's not enough to have the keys themselves be Send. The
+        // returned iterator should be Send as well.
+        <It as IntoIterator>::IntoIter: Send,
+        R: Borrow<Q> + Send,
+    {
+        let mut keys = keys.into_iter().peekable();
+        let mut results = Vec::with_capacity(keys.size_hint().0);
+        while keys.peek().is_some() {
+            let now = self.elapsed_seconds();
+            let mut reaped = Reaped::new();
+            let cache_size_delta = {
+                let mut state = self.state.lock();
+                for key in keys.by_ref().take(MAX_KEYS_PER_LOCK) {
+                    results.push(self.get_locked(&mut state, key.borrow(), now, &mut reaped));
+                }
+                state.take_cache_size_delta()
+            };
+            self.finish_reaped(reaped, cache_size_delta).await;
+        }
+        results
+    }
+
+    /// The part of `get()` that runs under the state lock. Returns a live
+    /// entry's value after refreshing its age, or moves an expired entry into
+    /// `reaped` and returns `None`.
+    ///
+    /// Lazily reaps *only* the requested entry if it is itself expired; the
+    /// rest are left for inserts, which already run the global eviction loop.
+    fn get_locked(
+        &self,
+        state: &mut State<K, Q, T, C>,
+        key: &Q,
+        now: i32,
+        reaped: &mut Reaped<K, T>,
+    ) -> Option<T> {
+        let lru_len = state.lru.len();
+        let (entry, is_leased) = state.get_resident(key, false)?;
+        // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
+        // consult TTL / count predicates — never the global byte budget.
+        // Mirrors the per-key reap path in `sizes_for_keys`.
+        if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX, now) {
+            let (popped_key, eviction_item) = state
+                .lru
+                .pop_entry(key)
+                .expect("entry was just observed via get_resident");
+            let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
+            reaped.removal_futures.extend(futures);
+            reaped.entries.push((popped_key, data));
+            return None;
+        }
+        entry.seconds_since_anchor = now;
+        Some(entry.data.clone())
+    }
+
+    /// Logs, drains remove callbacks and unrefs what reads reaped. Call after
+    /// releasing the state lock.
+    async fn finish_reaped(&self, reaped: Reaped<K, T>, cache_size_delta: Option<CacheSizeDelta>) {
+        self.record_cache_size_delta(cache_size_delta);
+        if reaped.entries.is_empty() {
+            return;
+        }
+        for (popped_key, _) in &reaped.entries {
             info!(?popped_key, "Item expired, evicting");
         }
-        self.record_cache_size_delta(cache_size_delta);
-        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
+        let mut callbacks: FuturesUnordered<_> = reaped.removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
-        if let Some((_, d)) = expired {
-            d.unref().await;
-        }
-
-        data
+        let mut callbacks: FuturesUnordered<_> = reaped
+            .entries
+            .iter()
+            .map(|(_, data)| data.unref())
+            .collect();
+        while callbacks.next().await.is_some() {}
     }
 
     /// Returns the replaced item if any.
@@ -983,6 +1054,21 @@ where
     /// are used for deliberate deletion and filesystem self-healing.
     pub fn lease_key(&self, key: K) {
         self.state.lock().lease(key);
+    }
+
+    /// Same as `lease_key()` for each of `keys`, taking the state lock once
+    /// per `MAX_KEYS_PER_LOCK` keys instead of once per key.
+    pub fn lease_keys<It>(&self, keys: It)
+    where
+        It: IntoIterator<Item = K>,
+    {
+        let mut keys = keys.into_iter().peekable();
+        while keys.peek().is_some() {
+            let mut state = self.state.lock();
+            for key in keys.by_ref().take(MAX_KEYS_PER_LOCK) {
+                state.lease(key);
+            }
+        }
     }
 
     /// Release one lease and trim any entries that were retained while the

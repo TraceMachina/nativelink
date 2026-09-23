@@ -910,6 +910,21 @@ const SIMULTANEOUS_METADATA_READS: usize = 200;
 type FsEvictingMap<'a, Fe> =
     EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveCallbackHolder>;
 
+fn zero_digest_file_entry_error(digest: &DigestInfo) -> Error {
+    make_err!(
+        Code::NotFound,
+        "{digest} is a zero-digest; FilesystemStore does not persist zero-byte files. \
+         Callers must materialise empty files directly rather than going through get_file_entry_for_digest."
+    )
+}
+
+fn missing_file_entry_error(digest: &DigestInfo) -> Error {
+    make_err!(
+        Code::NotFound,
+        "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."
+    )
+}
+
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &FsEvictingMap<'_, Fe>,
     anchor_time: &SystemTime,
@@ -1517,6 +1532,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.evicting_map.lease_key(StoreKeyBorrow::from(key));
     }
 
+    /// Same as [`Self::lease_digest`] for every digest in `digests`, taking
+    /// the eviction lock once per chunk of digests instead of once per digest.
+    pub fn lease_digests(&self, digests: &[DigestInfo]) {
+        self.evicting_map.lease_keys(
+            digests
+                .iter()
+                .map(|digest| StoreKeyBorrow::from(StoreKey::from(*digest))),
+        );
+    }
+
     /// Release a batch of action-input leases and trim retained entries once.
     pub async fn release_digests(&self, digests: &[DigestInfo]) {
         self.evicting_map
@@ -1833,16 +1858,43 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // execution directories. Return NotFound so callers are forced to
         // take the explicit zero-digest path (e.g. fs::create_file).
         if is_zero_digest(digest) {
-            return Err(make_err!(
-                Code::NotFound,
-                "{digest} is a zero-digest; FilesystemStore does not persist zero-byte files. \
-                 Callers must materialise empty files directly rather than going through get_file_entry_for_digest."
-            ));
+            return Err(zero_digest_file_entry_error(digest));
         }
         self.evicting_map
             .get(&digest.into())
             .await
-            .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
+            .ok_or_else(|| missing_file_entry_error(digest))
+    }
+
+    /// Same as [`Self::get_file_entry_for_digest`] for every digest in
+    /// `digests`, with results in the same order.
+    ///
+    /// An input tree resolves thousands of entries at once, and looking each
+    /// one up separately takes the store-wide eviction lock once per file.
+    /// This takes it once per chunk of digests instead.
+    pub async fn get_file_entries_for_digests(
+        &self,
+        digests: &[DigestInfo],
+    ) -> Vec<Result<Arc<Fe>, Error>> {
+        // Zero digests never reach the map, exactly as in the single lookup.
+        let keys: Vec<StoreKey<'static>> = digests
+            .iter()
+            .filter(|digest| !is_zero_digest(*digest))
+            .map(|digest| (*digest).into())
+            .collect();
+        let mut entries = self.evicting_map.get_many(keys.iter()).await.into_iter();
+        digests
+            .iter()
+            .map(|digest| {
+                if is_zero_digest(digest) {
+                    return Err(zero_digest_file_entry_error(digest));
+                }
+                entries
+                    .next()
+                    .flatten()
+                    .ok_or_else(|| missing_file_entry_error(digest))
+            })
+            .collect()
     }
 
     async fn update_file(

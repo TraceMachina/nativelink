@@ -395,6 +395,28 @@ impl ActionInputLease {
         }
     }
 
+    /// Same as `lease_digest` for every digest in `batch`. Each filesystem
+    /// tier leases the new ones in one call, which takes its eviction lock
+    /// once per chunk rather than once per digest.
+    fn lease_digests(&self, batch: &[DigestInfo]) {
+        let mut digests = self.digests.lock();
+        let Some(digests) = digests.as_mut() else {
+            return;
+        };
+        let mut new_digests = Vec::with_capacity(batch.len());
+        for digest in batch {
+            if digests.insert(*digest) {
+                new_digests.push(*digest);
+            }
+        }
+        if new_digests.is_empty() {
+            return;
+        }
+        for filesystem_store in &self.filesystem_stores {
+            filesystem_store.lease_digests(&new_digests);
+        }
+    }
+
     fn take_release_work(&self) -> Option<(Vec<Arc<FilesystemStore>>, Vec<DigestInfo>)> {
         let digests = self.digests.lock().take()?.into_iter().collect();
         Some((self.filesystem_stores.clone(), digests))
@@ -612,20 +634,23 @@ async fn resolve_links(
 ///
 /// The blob is nearly always resident, and `populate_fast_store` would take the
 /// store's eviction lock only to discover that, so resolving the entry directly
-/// answers the same question and yields the path. Only a genuine miss pays the
-/// populate round trip.
+/// answers the same question and yields the path. The whole tree is resolved in
+/// one batched lookup, which takes that lock once per chunk of files instead of
+/// once per file. Only a genuine miss pays the populate round trip.
 async fn resolve_plain_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
 ) -> Result<Vec<PendingLink>, Error> {
+    let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
+    let entries = filesystem_store
+        .get_file_entries_for_digests(&digests)
+        .await;
+
     let mut tasks = Vec::with_capacity(files.len());
-    for file in files {
+    for (file, entry) in files.into_iter().zip(entries) {
         tasks.push(async move {
-            let file_entry = if let Ok(entry) = filesystem_store
-                .get_file_entry_for_digest(&file.digest)
-                .await
-            {
+            let file_entry = if let Ok(entry) = entry {
                 entry
             } else {
                 cas_store
@@ -727,6 +752,9 @@ fn collect_download_links<'a>(
         let mut futures = Vec::new();
         let mut pending_files = Vec::new();
         let mut inline_nodes = Vec::new();
+        // Digests of this level's files and child directories, leased in one
+        // batch before anything below is awaited.
+        let mut to_lease = Vec::new();
 
         for file in directory.files {
             let digest: DigestInfo = file
@@ -740,8 +768,8 @@ fn collect_download_links<'a>(
                 Some(properties) => (properties.mtime, properties.unix_mode),
                 None => (None, None),
             };
-            if let Some(input_lease) = &input_lease {
-                input_lease.lease_digest(&digest);
+            if input_lease.is_some() {
+                to_lease.push(digest);
             }
             // Hot path: nothing to stamp, so the file needs nothing from the
             // walk beyond its digest. Hand it up unresolved and let the caller
@@ -771,12 +799,8 @@ fn collect_download_links<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let new_directory_path = format!("{}/{}", current_directory, sub_directory.name);
-            if let Some(input_lease) = &input_lease {
-                // Reserve queued child directories before their futures are
-                // polled. Without this, a large parent can leave later
-                // directory digests exposed to slow-tier eviction while the
-                // first batch of children is being materialized.
-                input_lease.lease_digest(&digest);
+            if input_lease.is_some() {
+                to_lease.push(digest);
             }
             let input_lease = input_lease.clone();
             futures.push(
@@ -794,6 +818,14 @@ fn collect_download_links<'a>(
                 }
                 .boxed(),
             );
+        }
+
+        if let Some(input_lease) = &input_lease {
+            // Reserve queued child directories before their futures are
+            // polled. Without this, a large parent can leave later
+            // directory digests exposed to slow-tier eviction while the
+            // first batch of children is being materialized.
+            input_lease.lease_digests(&to_lease);
         }
 
         #[cfg(target_family = "unix")]
