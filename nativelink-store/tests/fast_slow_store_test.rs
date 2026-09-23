@@ -1024,6 +1024,53 @@ async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
     Ok(())
 }
 
+/// A slow store that ends a read early with a clean EOF (e.g. the blob was
+/// evicted mid-read) must fail the read and must not leave the truncated
+/// data in the fast store under the full digest.
+/// Regression test for: <https://github.com/TraceMachina/nativelink/issues/2242>.
+#[nativelink_test]
+async fn truncated_slow_store_read_does_not_populate_fast_store() -> Result<(), Error> {
+    let original_data = make_random_data(1024);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+
+    // The slow store reports the digest size from `has()` but streams one
+    // byte less before its EOF.
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data: original_data[..original_data.len() - 1].to_vec(),
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(None),
+    });
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast_store.clone(),
+        Store::new(slow),
+    ));
+
+    let err = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("A truncated slow store read must fail");
+    assert!(
+        err.message_string()
+            .contains("Slow store returned 1023 bytes"),
+        "Got wrong error: {err:?}"
+    );
+    assert_eq!(
+        fast_store.has(digest).await?,
+        None,
+        "The fast store must not keep a truncated blob"
+    );
+    Ok(())
+}
+
 /// While one writer's slow-store write is in flight, a concurrent `has()`
 /// must report the blob as present so the second writer does not race and
 /// re-upload the same data.

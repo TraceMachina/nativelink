@@ -1953,6 +1953,54 @@ async fn deferred_write_error_does_not_emplace_truncated_file() -> Result<(), Er
     Ok(())
 }
 
+/// A stream that ends short of the `ExactSize` it was uploaded with must fail
+/// and must not publish the truncated data under the key.
+/// Regression test for: <https://github.com/TraceMachina/nativelink/issues/2242>.
+#[nativelink_test]
+async fn update_ending_short_of_exact_size_is_not_stored() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: content_path.clone(),
+        temp_path: temp_path.clone(),
+        ..Default::default()
+    })
+    .await?;
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+
+    let (mut tx, rx) = make_buf_channel_pair();
+    let send_fut = async move {
+        tx.send(VALUE1[..VALUE1.len() - 1].into()).await?;
+        tx.send_eof()
+    };
+    let (update_result, send_result) = tokio::join!(
+        store.update(digest, rx, UploadSizeInfo::ExactSize(VALUE1.len() as u64)),
+        send_fut,
+    );
+    send_result?;
+    let err = update_result.expect_err("A short stream must not be stored");
+    assert_eq!(err.code, Code::InvalidArgument, "Got wrong error: {err:?}");
+
+    assert_eq!(
+        store.has(digest).await?,
+        None,
+        "Entry should not be in store"
+    );
+    assert!(
+        !content_file_exists(&content_path, &digest.into()).await?,
+        "No file may reach the content path"
+    );
+    // The temp file is deleted in the background.
+    let temp_dir = format!("{temp_path}/{DIGEST_FOLDER_V2}");
+    for _ in 0..1000 {
+        if list_file_names(&temp_dir).await?.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(1)).await;
+    }
+    check_storage_dir_empty(&temp_path).await
+}
+
 async fn setup_store_for_duplicates()
 -> Result<(DigestInfo, core::pin::Pin<Box<Arc<FilesystemStore>>>), Error> {
     let content_path = make_temp_path("content_path");

@@ -244,6 +244,23 @@ impl FastSlowStore {
         self.weak_self.upgrade()
     }
 
+    /// The upload size to give the fast store when populating it, given the
+    /// size the slow store's `has()` reported.
+    ///
+    /// That size is only the number of bytes `get()` streams when the slow
+    /// store keeps blobs verbatim: a `CompressionStore` reports its encoded
+    /// size and a `GrpcStore` for the AC reports `u64::MAX`. So it is only
+    /// trusted as exact when it matches the digest size, as it does for CAS
+    /// blobs, and is otherwise left unbounded.
+    const fn populate_upload_size(key: &StoreKey<'_>, slow_store_size: u64) -> UploadSizeInfo {
+        match key {
+            StoreKey::Digest(digest) if digest.size_bytes() == slow_store_size => {
+                UploadSizeInfo::ExactSize(slow_store_size)
+            }
+            _ => UploadSizeInfo::MaxSize(u64::MAX),
+        }
+    }
+
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
         // Get a single loader instance that's used to populate the fast store
         // for this digest.  If another request comes in then it's de-duplicated.
@@ -288,28 +305,28 @@ impl FastSlowStore {
             );
             UploadSizeInfo::MaxSize(u64::MAX)
         } else {
-            UploadSizeInfo::ExactSize(self
-                    .slow_store
-                    .has(key.borrow())
-                    .await
-                    .err_tip(|| "Failed to run has() on slow store")?
-                    .ok_or_else(|| {
-                        let err = make_err!(
-                            Code::NotFound,
-                            "Object {} not found in either fast or slow store. \
-                                If using multiple workers, ensure all workers share the same CAS storage path.",
-                            key.as_str()
-                        );
-                        if let StoreKey::Digest(d) = key.borrow() {
-                            err.with_context(ErrorContext::MissingDigest {
-                                hash: d.packed_hash().to_string(),
-                                size: d.size_bytes().try_into().unwrap_or(i64::MAX),
-                            })
-                        } else {
-                            err
-                        }
-                    })?
-            )
+            let slow_store_size = self
+                .slow_store
+                .has(key.borrow())
+                .await
+                .err_tip(|| "Failed to run has() on slow store")?
+                .ok_or_else(|| {
+                    let err = make_err!(
+                        Code::NotFound,
+                        "Object {} not found in either fast or slow store. \
+                            If using multiple workers, ensure all workers share the same CAS storage path.",
+                        key.as_str()
+                    );
+                    if let StoreKey::Digest(d) = key.borrow() {
+                        err.with_context(ErrorContext::MissingDigest {
+                            hash: d.packed_hash().to_string(),
+                            size: d.size_bytes().try_into().unwrap_or(i64::MAX),
+                        })
+                    } else {
+                        err
+                    }
+                })?;
+            Self::populate_upload_size(&key, slow_store_size)
         };
 
         let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
@@ -318,6 +335,7 @@ impl FastSlowStore {
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
+        let error_key = key.borrow();
         let data_stream_fut = async move {
             let mut maybe_writer_pin = maybe_writer.map(Pin::new);
             loop {
@@ -326,6 +344,21 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to read data data buffer from slow store")?;
                 if output_buf.is_empty() {
+                    // A slow store can end a read early with a clean EOF, for
+                    // example when the blob is evicted mid-read. Fail instead
+                    // of sending EOF, so neither the fast store nor the reader
+                    // accepts the truncated data as the whole blob.
+                    if let UploadSizeInfo::ExactSize(expected_size) = reader_stream_size
+                        && bytes_received != expected_size
+                    {
+                        return Err(make_err!(
+                            Code::DataLoss,
+                            "Slow store returned {} bytes for {}, expected {}",
+                            bytes_received,
+                            error_key.as_str(),
+                            expected_size
+                        ));
+                    }
                     // Write out our EOF.
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.

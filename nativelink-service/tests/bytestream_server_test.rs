@@ -1878,7 +1878,10 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
         // Test to ensure if we send exactly our max message size, it will succeed.
         let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            // The digest size must match the data, or the write is rejected
+            // as short. It has as many digits as `MAX_MESSAGE_SIZE`, so the
+            // wrapper size is unchanged.
+            resource_name: make_resource_name(data.len()),
             write_offset: 0,
             finish_write: true,
             data,
@@ -1956,6 +1959,99 @@ async fn write_too_many_bytes_fails() -> Result<(), Box<dyn core::error::Error>>
         err.to_string().contains("Sent too much data"),
         "Got wrong error: {err:?}"
     );
+    Ok(())
+}
+
+// Regression test for: https://github.com/TraceMachina/nativelink/issues/2242.
+// A single message with `finish_write` takes the oneshot path.
+#[nativelink_test]
+async fn oneshot_write_finished_short_of_digest_size_fails()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12345";
+    // The resource name promises one byte more than the client sends.
+    const DIGEST_SIZE: usize = WRITE_DATA.len() + 1;
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_resource_name(DIGEST_SIZE),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+
+    let status = join_handle
+        .await?
+        .expect_err("Expected an error for finishing a write short");
+    assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+    assert!(
+        status
+            .message()
+            .contains("Write finished after 5 bytes, expected 6"),
+        "Got wrong error: {status:?}"
+    );
+    assert_eq!(
+        store.has(DigestInfo::try_new(HASH1, DIGEST_SIZE)?).await?,
+        None,
+        "A short write must not be stored under the full digest"
+    );
+    drop(tx);
+    Ok(())
+}
+
+// Regression test for: https://github.com/TraceMachina/nativelink/issues/2242.
+// A write spread over several messages takes the streaming path.
+#[nativelink_test]
+async fn streamed_write_finished_short_of_digest_size_fails()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    const BYTE_SPLIT_OFFSET: usize = 8;
+    // The resource name promises one byte more than the client sends.
+    const DIGEST_SIZE: usize = WRITE_DATA.len() + 1;
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server, None);
+    let mut write_request = WriteRequest {
+        resource_name: make_resource_name(DIGEST_SIZE),
+        write_offset: 0,
+        finish_write: false,
+        data: WRITE_DATA[..BYTE_SPLIT_OFFSET].into(),
+    };
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
+    write_request.write_offset = BYTE_SPLIT_OFFSET.try_into()?;
+    write_request.finish_write = true;
+    write_request.data = WRITE_DATA[BYTE_SPLIT_OFFSET..].into();
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
+
+    let status = join_handle
+        .await?
+        .expect_err("Expected an error for finishing a write short");
+    assert_eq!(status.code(), Code::InvalidArgument, "{status:?}");
+    assert!(
+        status
+            .message()
+            .contains("Write finished after 19 bytes, expected 20"),
+        "Got wrong error: {status:?}"
+    );
+    assert_eq!(
+        store.has(DigestInfo::try_new(HASH1, DIGEST_SIZE)?).await?,
+        None,
+        "A short write must not be stored under the full digest"
+    );
+    drop(tx);
     Ok(())
 }
 

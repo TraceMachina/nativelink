@@ -32,7 +32,7 @@ use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
@@ -1817,6 +1817,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         mut temp_file: FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let mut data_size = 0;
         loop {
@@ -1833,6 +1834,20 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 .await
                 .err_tip(|| "Failed to write data into filesystem store")?;
             data_size += data_len as u64;
+        }
+
+        // Never publish a stream that ended at the wrong size under
+        // `final_key`, or it is served as the whole blob until evicted.
+        // Returning drops `entry`, which deletes the temp file.
+        if let UploadSizeInfo::ExactSize(expected_size) = upload_size
+            && data_size != expected_size
+        {
+            return Err(make_input_err!(
+                "Received {} bytes for {}, expected {}",
+                data_size,
+                final_key.as_str(),
+                expected_size
+            ));
         }
 
         let permit = if let Some(sem) = &self.write_semaphore {
@@ -2093,7 +2108,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
-        _upload_size: UploadSizeInfo,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         if is_zero_digest(key.borrow()) {
             // don't need to add, because zero length files are just assumed to exist.
@@ -2112,7 +2127,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         let (entry, temp_file, temp_full_path) = self.make_temp_file(temp_key).await?;
 
-        self.update_file(entry, temp_file, key.into_owned(), reader)
+        self.update_file(entry, temp_file, key.into_owned(), reader, upload_size)
             .await
             .err_tip(|| {
                 format!(
