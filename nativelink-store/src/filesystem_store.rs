@@ -1608,17 +1608,25 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
         // A variant is named after the generation it was built from, so only
         // the resident generation's variant can answer for a digest. A digest
-        // with no resident entry is left to the per-digest path too.
-        let mut paths = Vec::with_capacity(digests.len());
-        for digest in digests {
-            paths.push(self.evicting_map.get(&digest.into()).await.map(|entry| {
-                executable_variant_path(
-                    &self.shared_context.content_path,
-                    digest,
-                    entry.generation(),
-                )
-            }));
-        }
+        // with no resident entry is left to the per-digest path too. The
+        // entries are looked up in one batch rather than one lock per digest.
+        let keys: Vec<StoreKey<'static>> = digests.iter().map(|digest| (*digest).into()).collect();
+        let paths: Vec<Option<OsString>> = self
+            .evicting_map
+            .get_many(keys.iter())
+            .await
+            .into_iter()
+            .zip(digests)
+            .map(|(entry, digest)| {
+                entry.map(|entry| {
+                    executable_variant_path(
+                        &self.shared_context.content_path,
+                        digest,
+                        entry.generation(),
+                    )
+                })
+            })
+            .collect();
         let candidates: Vec<_> = paths.iter().flatten().map(Into::into).collect();
         let exists = if candidates.is_empty() {
             Vec::new()
