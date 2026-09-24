@@ -43,6 +43,8 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 
 // Metric attribute keys for the scheduler.
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
+/// The platform properties no worker could satisfy, comma separated.
+pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
 
 // Metric attribute keys for tiered stores.
 pub const STORE_TIER: &str = "store.tier";
@@ -1022,6 +1024,20 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_description("Matching passes run, by result")
             .with_unit("{pass}")
             .build(),
+
+        unsatisfiable_queued: meter
+            .u64_gauge("scheduler.unsatisfiable.queued")
+            .with_description(
+                "Queued actions that no worker connected to this scheduler could run even when idle",
+            )
+            .with_unit("{action}")
+            .build(),
+
+        unsatisfiable_failed: meter
+            .u64_counter("scheduler.unsatisfiable.failed")
+            .with_description("Queued actions failed because no worker could ever run them")
+            .with_unit("{action}")
+            .build(),
     }
 });
 
@@ -1036,6 +1052,13 @@ pub struct SchedulerOtlpMetrics {
     pub matching_duration: metrics::Histogram<f64>,
     /// Matching passes, by result.
     pub matching_passes: metrics::Counter<u64>,
+    /// Queued actions seen in the last matching pass that no worker
+    /// connected to this scheduler could run even when idle. Per scheduler
+    /// instance, judged against that instance's own workers.
+    pub unsatisfiable_queued: metrics::Gauge<u64>,
+    /// Queued actions failed because no worker could ever run them, by
+    /// the properties that could not be satisfied.
+    pub unsatisfiable_failed: metrics::Counter<u64>,
 }
 
 /// Records a completed matching pass.
@@ -1048,6 +1071,24 @@ pub fn record_matching_pass(duration_secs: f64, succeeded: bool) {
         &[KeyValue::new(
             SCHEDULER_MATCH_RESULT,
             if succeeded { "ok" } else { "error" },
+        )],
+    );
+}
+
+/// Records how many unsatisfiable queued actions a matching pass saw.
+pub fn record_unsatisfiable_queued(count: u64) {
+    SCHEDULER_METRICS.unsatisfiable_queued.record(count, &[]);
+}
+
+/// Records a queued action failed for being unsatisfiable. `properties`
+/// names the ones no worker could satisfy, sorted and comma separated, so
+/// the label set is bounded by the declared platform properties.
+pub fn record_unsatisfiable_failed(properties: String) {
+    SCHEDULER_METRICS.unsatisfiable_failed.add(
+        1,
+        &[KeyValue::new(
+            SCHEDULER_UNSATISFIABLE_PROPERTIES,
+            properties,
         )],
     );
 }
