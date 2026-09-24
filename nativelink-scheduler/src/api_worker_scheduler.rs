@@ -371,7 +371,7 @@ impl ApiWorkerSchedulerImpl {
             keyed.dedup_by(|a, b| a.0 == b.0);
             keyed.into_iter().map(|(_, totals)| totals).collect()
         });
-        // Freshness bookkeeping (docs/scim-cas-rbac): update the warm-up /
+        // Freshness bookkeeping: update the warm-up /
         // staleness clocks BEFORE the unchanged-shapes early return, so a
         // successful exchange that happens to return the same shapes still
         // refreshes the staleness clock (otherwise a steady fleet would look

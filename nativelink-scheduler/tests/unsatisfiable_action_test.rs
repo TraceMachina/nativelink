@@ -288,6 +288,71 @@ async fn actions_queued_together_fail_within_one_timeout() -> Result<(), Error> 
 }
 
 #[nativelink_test]
+async fn later_action_waits_from_its_own_submission() -> Result<(), Error> {
+    // The shape being due is necessary but not sufficient: an action queued
+    // while its shape was already waiting fails a full timeout after its own
+    // submission, not when the shape comes due and not on a restarted clock.
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
+
+    let first = add_action(&scheduler, 1, gpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+
+    MockClock::advance(Duration::from_secs(30));
+    let second = add_action(&scheduler, 2, gpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+
+    // The shape comes due: the first action has waited 60, the second 30.
+    MockClock::advance(Duration::from_secs(TIMEOUT_S - 30));
+    scheduler.do_try_match_for_test().await?;
+    assert_failed_as_unsatisfiable(&stage_of(first.as_ref()).await?);
+    assert_eq!(stage_of(second.as_ref()).await?, ActionStage::Queued);
+
+    MockClock::advance(Duration::from_secs(29));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(second.as_ref()).await?, ActionStage::Queued);
+
+    MockClock::advance(Duration::from_secs(1));
+    scheduler.do_try_match_for_test().await?;
+    assert_failed_as_unsatisfiable(&stage_of(second.as_ref()).await?);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn young_actions_do_not_back_off_the_wake_for_their_shape() -> Result<(), Error> {
+    // While a due shape only has actions that are still too young, nothing is
+    // stuck, so the loop must not back off for it: it wakes when the youngest
+    // action becomes eligible and fails it on that pass.
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
+
+    let first = add_action(&scheduler, 1, gpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    MockClock::advance(Duration::from_secs(TIMEOUT_S));
+    scheduler.do_try_match_for_test().await?;
+    assert_failed_as_unsatisfiable(&stage_of(first.as_ref()).await?);
+
+    let second = add_action(&scheduler, 2, gpu_action_properties()).await?;
+    // Six passes with the second action still young would have saturated the
+    // recheck backoff at 32 seconds.
+    for _ in 0..6 {
+        MockClock::advance(Duration::from_secs(1));
+        scheduler.do_try_match_for_test().await?;
+        assert_eq!(stage_of(second.as_ref()).await?, ActionStage::Queued);
+    }
+    assert_eq!(
+        scheduler.unsatisfiable_deadline_for_test(),
+        Some(Duration::from_secs(TIMEOUT_S - 6)),
+        "the loop must wake when the action becomes eligible, not after a backoff"
+    );
+
+    MockClock::advance(Duration::from_secs(TIMEOUT_S - 6));
+    scheduler.do_try_match_for_test().await?;
+    assert_failed_as_unsatisfiable(&stage_of(second.as_ref()).await?);
+    Ok(())
+}
+
+#[nativelink_test]
 async fn capable_worker_joining_runs_the_action() -> Result<(), Error> {
     let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
     let _cpu_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
@@ -326,7 +391,9 @@ async fn unsatisfiable_clock_restarts_after_a_capable_worker_leaves() -> Result<
     assert_eq!(stage_of(second.as_ref()).await?, ActionStage::Queued);
 
     // The verdict from when the GPU worker was connected must not linger.
-    MockClock::advance(Duration::from_secs(1));
+    // Two seconds rather than one, so the second action's own wait is past
+    // the timeout instead of sitting exactly on it.
+    MockClock::advance(Duration::from_secs(2));
     scheduler.do_try_match_for_test().await?;
     assert_failed_as_unsatisfiable(&stage_of(second.as_ref()).await?);
     Ok(())
@@ -776,7 +843,7 @@ async fn property_shape_ignores_what_does_not_restrict_matching() -> Result<(), 
 async fn tracker_comes_due_after_the_timeout() -> Result<(), Error> {
     let mut tracker = UnsatisfiableTracker::new(Some(Duration::from_secs(TIMEOUT_S)));
 
-    let observation = tracker.observe(shape(1), at(0), 1);
+    let observation = tracker.observe(shape(1), at(0), 1, at(0));
     assert!(!observation.is_due);
     assert!(observation.should_warn);
     assert_eq!(tracker.end_pass(at(0), 1), 1);
@@ -785,7 +852,7 @@ async fn tracker_comes_due_after_the_timeout() -> Result<(), Error> {
         Some(Duration::from_secs(TIMEOUT_S - 10))
     );
 
-    let observation = tracker.observe(shape(1), at(TIMEOUT_S), 1);
+    let observation = tracker.observe(shape(1), at(TIMEOUT_S), 1, at(0));
     assert!(observation.is_due);
     assert!(observation.should_warn);
     assert_eq!(observation.waited, Duration::from_secs(TIMEOUT_S));
@@ -795,10 +862,10 @@ async fn tracker_comes_due_after_the_timeout() -> Result<(), Error> {
 #[nativelink_test]
 async fn tracker_warns_once_a_minute_per_shape() -> Result<(), Error> {
     let mut tracker = UnsatisfiableTracker::new(None);
-    assert!(tracker.observe(shape(1), at(0), 1).should_warn);
-    assert!(!tracker.observe(shape(1), at(1), 1).should_warn);
-    assert!(tracker.observe(shape(2), at(1), 1).should_warn);
-    assert!(tracker.observe(shape(1), at(60), 1).should_warn);
+    assert!(tracker.observe(shape(1), at(0), 1, at(0)).should_warn);
+    assert!(!tracker.observe(shape(1), at(1), 1, at(0)).should_warn);
+    assert!(tracker.observe(shape(2), at(1), 1, at(0)).should_warn);
+    assert!(tracker.observe(shape(1), at(60), 1, at(0)).should_warn);
     Ok(())
 }
 
@@ -807,7 +874,7 @@ async fn tracker_only_counts_time_a_shape_was_queued() -> Result<(), Error> {
     let mut tracker = UnsatisfiableTracker::new(Some(Duration::from_secs(TIMEOUT_S)));
     // Queued for 30 seconds, then the build is cancelled.
     for secs in [0, 10, 20, 30] {
-        assert!(!tracker.observe(shape(1), at(secs), 1).is_due);
+        assert!(!tracker.observe(shape(1), at(secs), 1, at(0)).is_due);
         tracker.end_pass(at(secs), 1);
     }
     // Not seen, but within the timeout and the fleet is unchanged.
@@ -816,18 +883,18 @@ async fn tracker_only_counts_time_a_shape_was_queued() -> Result<(), Error> {
 
     // A new build queues the same shape: the 30 seconds carry over, the idle
     // gap does not.
-    let observation = tracker.observe(shape(1), at(100), 1);
+    let observation = tracker.observe(shape(1), at(100), 1, at(0));
     assert!(!observation.is_due);
     assert_eq!(observation.waited, Duration::from_secs(30));
     tracker.end_pass(at(100), 1);
-    assert!(!tracker.observe(shape(1), at(129), 1).is_due);
+    assert!(!tracker.observe(shape(1), at(129), 1, at(0)).is_due);
     tracker.end_pass(at(129), 1);
-    assert!(tracker.observe(shape(1), at(130), 1).is_due);
+    assert!(tracker.observe(shape(1), at(130), 1, at(0)).is_due);
     tracker.end_pass(at(130), 1);
 
     // Unseen for a whole timeout, so the shape is forgotten.
     tracker.end_pass(at(130 + TIMEOUT_S), 1);
-    let observation = tracker.observe(shape(1), at(130 + TIMEOUT_S), 1);
+    let observation = tracker.observe(shape(1), at(130 + TIMEOUT_S), 1, at(0));
     assert!(!observation.is_due);
     assert_eq!(observation.waited, Duration::ZERO);
     Ok(())
@@ -836,7 +903,7 @@ async fn tracker_only_counts_time_a_shape_was_queued() -> Result<(), Error> {
 #[nativelink_test]
 async fn tracker_backs_off_while_a_due_shape_stays_queued() -> Result<(), Error> {
     let mut tracker = UnsatisfiableTracker::new(Some(Duration::from_secs(TIMEOUT_S)));
-    tracker.observe(shape(1), at(0), 1);
+    tracker.observe(shape(1), at(0), 1, at(0));
     tracker.end_pass(at(0), 1);
     assert_eq!(
         tracker.next_deadline(at(0)),
@@ -844,7 +911,7 @@ async fn tracker_backs_off_while_a_due_shape_stays_queued() -> Result<(), Error>
     );
 
     for want in [2, 4, 8, 16, 32, 32] {
-        assert!(tracker.observe(shape(1), at(TIMEOUT_S), 1).is_due);
+        assert!(tracker.observe(shape(1), at(TIMEOUT_S), 1, at(0)).is_due);
         tracker.end_pass(at(TIMEOUT_S), 1);
         assert_eq!(
             tracker.next_deadline(at(TIMEOUT_S)),
@@ -855,22 +922,56 @@ async fn tracker_backs_off_while_a_due_shape_stays_queued() -> Result<(), Error>
 }
 
 #[nativelink_test]
+async fn tracker_wakes_for_a_young_action_without_backing_off() -> Result<(), Error> {
+    let mut tracker = UnsatisfiableTracker::new(Some(Duration::from_secs(TIMEOUT_S)));
+    // An old action brings the shape due and is failed.
+    tracker.observe(shape(1), at(0), 1, at(0));
+    tracker.end_pass(at(0), 1);
+    let observation = tracker.observe(shape(1), at(TIMEOUT_S), 1, at(0));
+    assert!(observation.is_due && observation.action_eligible);
+    tracker.note_failed(&shape(1));
+    // Every eligible action was retired, so nothing is stuck: no backoff, and
+    // nothing to wake for.
+    assert_eq!(tracker.end_pass(at(TIMEOUT_S), 1), 1);
+    assert_eq!(tracker.next_deadline(at(TIMEOUT_S)), None);
+
+    // A young action of the due shape is not eligible yet. The loop wakes
+    // when it will be, and repeated passes do not back that off.
+    for pass_at in [70, 80, 90] {
+        let observation = tracker.observe(shape(1), at(pass_at), 1, at(70));
+        assert!(observation.is_due && !observation.action_eligible);
+        tracker.end_pass(at(pass_at), 1);
+        assert_eq!(
+            tracker.next_deadline(at(pass_at)),
+            Some(Duration::from_secs(70 + TIMEOUT_S - pass_at))
+        );
+    }
+
+    // Once eligible but still not failed, the shape is stuck and backs off.
+    let observation = tracker.observe(shape(1), at(130), 1, at(70));
+    assert!(observation.action_eligible);
+    tracker.end_pass(at(130), 1);
+    assert_eq!(tracker.next_deadline(at(130)), Some(Duration::from_secs(2)));
+    Ok(())
+}
+
+#[nativelink_test]
 async fn tracker_drops_an_unseen_shape_when_the_fleet_changes() -> Result<(), Error> {
     let mut tracker = UnsatisfiableTracker::new(Some(Duration::from_secs(TIMEOUT_S)));
-    tracker.observe(shape(1), at(0), 1);
+    tracker.observe(shape(1), at(0), 1, at(0));
     tracker.end_pass(at(0), 1);
 
     tracker.end_pass(at(1), 2);
-    assert!(!tracker.observe(shape(1), at(TIMEOUT_S), 2).is_due);
+    assert!(!tracker.observe(shape(1), at(TIMEOUT_S), 2, at(0)).is_due);
     Ok(())
 }
 
 #[nativelink_test]
 async fn tracker_without_a_timeout_is_never_due() -> Result<(), Error> {
     let mut tracker = UnsatisfiableTracker::new(None);
-    tracker.observe(shape(1), at(0), 1);
+    tracker.observe(shape(1), at(0), 1, at(0));
     tracker.end_pass(at(0), 1);
-    assert!(!tracker.observe(shape(1), at(1_000_000), 1).is_due);
+    assert!(!tracker.observe(shape(1), at(1_000_000), 1, at(0)).is_due);
     assert_eq!(tracker.next_deadline(at(1_000_000)), None);
     Ok(())
 }

@@ -194,7 +194,12 @@ pub struct SimpleSpec {
     /// each action must also have been queued for this long itself before
     /// it is failed. Actions that queue together therefore fail within
     /// about one timeout of each other, while during a pool outage later
-    /// actions fail as they age rather than in an immediate burst.
+    /// actions fail as they age rather than in an immediate burst. An
+    /// action's own wait is measured from its original submission, which
+    /// is not reset when a second client attaches to the same action or
+    /// when it is queued again after its worker is lost; in those cases
+    /// the per-shape clock still guarantees no capable worker was seen for
+    /// the full timeout before it is failed.
     ///
     /// Roll this out with the timeout at 0 on every scheduler first and
     /// watch the `scheduler.unsatisfiable.queued` metric for a while:
@@ -216,6 +221,9 @@ pub struct SimpleSpec {
     /// counting within about 20, so keep this well above that. Schedulers
     /// publish whatever this is set to, so roll out a version that has this
     /// setting to every scheduler before setting it on any of them.
+    /// (The 5 and 20 seconds follow from `FLEET_EXCHANGE_INTERVAL` and
+    /// `FLEET_RECORD_TTL_INTERVALS` in the scheduler; if those change,
+    /// remember to change this documentation.)
     ///
     /// Such actions are logged and counted in the
     /// `scheduler.unsatisfiable.queued` metric whatever this is set to.

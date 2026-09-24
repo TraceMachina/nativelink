@@ -363,6 +363,14 @@ impl SimpleScheduler {
         self.worker_scheduler.fleet_shapes().await
     }
 
+    /// How long until the matching loop would next wake on behalf of an
+    /// unsatisfiable shape, if at all.
+    pub fn unsatisfiable_deadline_for_test(&self) -> Option<Duration> {
+        self.unsatisfiable_tracker
+            .lock()
+            .next_deadline((self.now_fn)())
+    }
+
     // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
     // can create a map of capabilities of each worker and then try and match
     // the actions to the worker using the map lookup (ie. map reduce).
@@ -397,14 +405,16 @@ impl SimpleScheduler {
             reason: &UnsatisfiableReason,
             pass: &UnsatisfiablePass<'_>,
         ) -> Result<(), Error> {
-            let (observation, fails_actions, timeout) = {
+            let shape = PropertyShape::from(platform_properties);
+            let (observation, fails_actions) = {
                 let mut tracker = pass.tracker.lock();
                 let observation = tracker.observe(
-                    PropertyShape::from(platform_properties),
+                    shape.clone(),
                     pass.now,
                     pass.fleet_generation,
+                    insert_timestamp,
                 );
-                (observation, tracker.fails_actions(), tracker.timeout())
+                (observation, tracker.fails_actions())
             };
             if observation.should_warn {
                 // Without a timeout nothing is failed, and a pool that
@@ -430,13 +440,8 @@ impl SimpleScheduler {
             // arrives while its shape is already due is not failed on sight.
             // Actions queued together still fail within about one timeout;
             // during a pool outage later actions fail as they age instead of
-            // in an immediate burst. A clock that went backwards reads as not
-            // yet waited, the safe direction.
-            let action_waited = pass
-                .now
-                .duration_since(insert_timestamp)
-                .unwrap_or_default();
-            if timeout.is_some_and(|timeout| action_waited < timeout) {
+            // in an immediate burst. The tracker wakes the loop when it does.
+            if !observation.action_eligible {
                 return Ok(());
             }
             // A worker that joined here or on a peer since the pass began may
@@ -475,6 +480,9 @@ impl SimpleScheduler {
                 .err_tip(|| "Failed to fail an unsatisfiable action in do_try_match")?;
             if failed {
                 record_unsatisfiable_failed(reason.property_names());
+                // So a pass that retires every eligible action of the shape
+                // does not read as stuck and back off the next wake.
+                pass.tracker.lock().note_failed(&shape);
             }
             Ok(())
         }
