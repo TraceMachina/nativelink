@@ -386,23 +386,25 @@ impl SimpleScheduler {
         }
 
         /// Logs an action no worker can run and, once its property shape has
-        /// been unsatisfiable for the configured timeout, fails it.
+        /// been unsatisfiable for the configured timeout and the action has
+        /// itself been queued that long, fails it.
         async fn handle_unsatisfiable(
             action_state_result: &dyn ActionStateResult,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             workers: &ApiWorkerScheduler,
             platform_properties: &PlatformProperties,
+            insert_timestamp: SystemTime,
             reason: &UnsatisfiableReason,
             pass: &UnsatisfiablePass<'_>,
         ) -> Result<(), Error> {
-            let (observation, fails_actions) = {
+            let (observation, fails_actions, timeout) = {
                 let mut tracker = pass.tracker.lock();
                 let observation = tracker.observe(
                     PropertyShape::from(platform_properties),
                     pass.now,
                     pass.fleet_generation,
                 );
-                (observation, tracker.fails_actions())
+                (observation, tracker.fails_actions(), tracker.timeout())
             };
             if observation.should_warn {
                 // Without a timeout nothing is failed, and a pool that
@@ -422,6 +424,19 @@ impl SimpleScheduler {
                 }
             }
             if !observation.is_due {
+                return Ok(());
+            }
+            // The action must also have waited the timeout itself, so one that
+            // arrives while its shape is already due is not failed on sight.
+            // Actions queued together still fail within about one timeout;
+            // during a pool outage later actions fail as they age instead of
+            // in an immediate burst. A clock that went backwards reads as not
+            // yet waited, the safe direction.
+            let action_waited = pass
+                .now
+                .duration_since(insert_timestamp)
+                .unwrap_or_default();
+            if timeout.is_some_and(|timeout| action_waited < timeout) {
                 return Ok(());
             }
             // A worker that joined here or on a peer since the pass began may
@@ -517,6 +532,7 @@ impl SimpleScheduler {
                             matching_engine_state_manager,
                             workers,
                             &action_info.platform_properties,
+                            action_info.inner.insert_timestamp,
                             &reason,
                             unsatisfiable_pass,
                         )

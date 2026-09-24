@@ -156,9 +156,9 @@ async fn add_action(
     digest_byte: u8,
     platform_properties: HashMap<String, String>,
 ) -> Result<Box<dyn ActionStateResult>, Error> {
-    let insert_timestamp = UNIX_EPOCH
-        .checked_add(Duration::from_secs(NOW_TIME))
-        .unwrap();
+    // Stamp from the mock clock the scheduler reads, so an action added after
+    // the clock advanced is as old as it would be in production.
+    let insert_timestamp = UNIX_EPOCH + MockClock::time();
     let mut action_info =
         make_base_action_info(insert_timestamp, DigestInfo::new([digest_byte; 32], 512));
     Arc::make_mut(&mut action_info).platform_properties = platform_properties;
@@ -233,7 +233,7 @@ async fn gpu_action_on_cpu_fleet_fails_after_timeout() -> Result<(), Error> {
 }
 
 #[nativelink_test]
-async fn later_action_of_a_due_shape_fails_on_first_pass() -> Result<(), Error> {
+async fn later_action_of_a_due_shape_waits_its_own_timeout() -> Result<(), Error> {
     let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
     let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
 
@@ -243,12 +243,47 @@ async fn later_action_of_a_due_shape_fails_on_first_pass() -> Result<(), Error> 
     scheduler.do_try_match_for_test().await?;
     assert_failed_as_unsatisfiable(&stage_of(first.as_ref()).await?);
 
-    // Differs only in a property that does not restrict matching.
+    // Differs only in a property that does not restrict matching, so it
+    // shares the (now due) shape. It still waits its own timeout rather than
+    // failing on sight, so a pool outage does not become an immediate burst.
     let mut properties = gpu_action_properties();
     properties.insert("OSFamily".to_string(), "Linux_h100".to_string());
     let second = add_action(&scheduler, 2, properties).await?;
     scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(second.as_ref()).await?, ActionStage::Queued);
+
+    MockClock::advance(Duration::from_secs(TIMEOUT_S - 1));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(second.as_ref()).await?, ActionStage::Queued);
+
+    MockClock::advance(Duration::from_secs(1));
+    scheduler.do_try_match_for_test().await?;
     assert_failed_as_unsatisfiable(&stage_of(second.as_ref()).await?);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn actions_queued_together_fail_within_one_timeout() -> Result<(), Error> {
+    // A build whose GPU actions all queue at once waits once, not once per
+    // action: every one of them has waited the timeout at the same moment.
+    const TOTAL: u8 = 5;
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let _worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
+
+    let mut actions = Vec::new();
+    for i in 1..=TOTAL {
+        actions.push(add_action(&scheduler, i, gpu_action_properties()).await?);
+    }
+    scheduler.do_try_match_for_test().await?;
+    for action in &actions {
+        assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+    }
+
+    MockClock::advance(Duration::from_secs(TIMEOUT_S));
+    scheduler.do_try_match_for_test().await?;
+    for action in &actions {
+        assert_failed_as_unsatisfiable(&stage_of(action.as_ref()).await?);
+    }
     Ok(())
 }
 

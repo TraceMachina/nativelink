@@ -190,15 +190,21 @@ pub struct SimpleSpec {
     /// properties that could not be satisfied. Bazel does not retry this,
     /// and runs the action locally if `--remote_local_fallback` is set.
     ///
-    /// The time is measured per distinct set of platform properties, so
-    /// once one action has waited this long, later actions asking for the
-    /// same properties fail straight away until a capable worker connects.
+    /// The time is measured per distinct set of platform properties, and
+    /// each action must also have been queued for this long itself before
+    /// it is failed. Actions that queue together therefore fail within
+    /// about one timeout of each other, while during a pool outage later
+    /// actions fail as they age rather than in an immediate burst.
     ///
-    /// Set this higher than the time a worker pool needs to scale up from
-    /// zero and register, or actions that the pool would have served are
-    /// failed. Only properties listed in `supported_platform_properties`
-    /// are enforced strictly; a property that is not listed does not
-    /// restrict workers that do not declare it.
+    /// Roll this out with the timeout at 0 on every scheduler first and
+    /// watch the `scheduler.unsatisfiable.queued` metric for a while:
+    /// anything that appears there during normal operation is an action
+    /// this setting would have failed. Then set it above the longest time
+    /// a worker pool needs to provision or restart, such as scaling up from
+    /// zero, a rolling restart of the whole pool, or spot preemption, not
+    /// above the typical queue wait. Only properties listed in
+    /// `supported_platform_properties` are enforced strictly; a property
+    /// that is not listed does not restrict workers that do not declare it.
     ///
     /// When several schedulers share one Redis backend, each publishes what
     /// its workers can run whenever a worker joins or leaves and at least

@@ -15,10 +15,11 @@
 //! Tracks how long each action property shape has gone without any worker
 //! able to run it.
 //!
-//! Time is kept per shape rather than per operation. Once a shape has been
-//! unsatisfiable for the whole timeout, later actions with the same shape are
-//! due on the first pass that sees them, so a build with many such actions
-//! waits once rather than once per action.
+//! Time is kept per shape rather than per operation, so a build whose actions
+//! all queue together waits once rather than once per action. The scheduler
+//! additionally requires each action to have been queued for the timeout
+//! itself before failing it, so an action that arrives while its shape is
+//! already due is not failed on sight.
 
 use core::time::Duration;
 use std::collections::HashMap;
@@ -136,13 +137,20 @@ impl UnsatisfiableTracker {
         self.timeout.is_some()
     }
 
+    /// The configured timeout; `None` never fails an action.
+    #[must_use]
+    pub const fn timeout(&self) -> Option<Duration> {
+        self.timeout
+    }
+
     /// Closes a matching pass and returns how many unsatisfiable actions it
     /// saw.
     ///
-    /// A shape that was not seen is kept for one timeout period, so that
-    /// actions arriving one after another do not each wait the full timeout.
-    /// It is dropped at once if the fleet changed, because a new worker may be
-    /// able to run it.
+    /// A shape that was not seen is kept for one timeout period so its clock
+    /// keeps running and it stays due for actions that arrive one after
+    /// another; each such action still waits its own minimum before it is
+    /// failed. The shape is dropped at once if the fleet changed, because a
+    /// new worker may be able to run it.
     pub fn end_pass(&mut self, now: SystemTime, fleet_generation: u64) -> u64 {
         let linger = self.timeout.unwrap_or_default();
         self.shapes.retain(|_, state| {
