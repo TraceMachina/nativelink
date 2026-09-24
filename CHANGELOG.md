@@ -3,6 +3,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.2](https://github.com/TraceMachina/nativelink/compare/v1.7.1..v1.7.2) - 2026-09-24
+
+
+
+### ⛰️  Features
+
+- Add worker lifecycle management ([#2787](https://github.com/TraceMachina/nativelink/issues/2787)) - ([9e83b48](https://github.com/TraceMachina/nativelink/commit/9e83b48b1ad7a7ad5224812b56423734ca41c1cc))
+- fail queued actions with criteria no worker can meet ([#2784](https://github.com/TraceMachina/nativelink/issues/2784)) - ([67cebb5](https://github.com/TraceMachina/nativelink/commit/67cebb5bb85555142470ab8c329326fd43769877))
+
+### 🐛 Bug Fixes
+
+- Fix signal-terminated worker property commands ([#2780](https://github.com/TraceMachina/nativelink/issues/2780)) - ([8f2c884](https://github.com/TraceMachina/nativelink/commit/8f2c8847d2d869d4ad73e600e221cfabc6d4b488))
+- keep directory construction retries on the same lock ([#2750](https://github.com/TraceMachina/nativelink/issues/2750)) - ([d48a7f0](https://github.com/TraceMachina/nativelink/commit/d48a7f0695d147b206a252c2bfcdd6226f136cb2))
+- Fix remaining refs to rustls 0.23.45 ([#2775](https://github.com/TraceMachina/nativelink/issues/2775)) - ([f4d0266](https://github.com/TraceMachina/nativelink/commit/f4d0266d408883511f7c78c22a180206d43b37e9))
+
+### 📚 Documentation
+
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2771](https://github.com/TraceMachina/nativelink/issues/2771)) - ([00f8a96](https://github.com/TraceMachina/nativelink/commit/00f8a96b048f4cf18cd316dbf6f43b17fe51bd8f))
+
+### 🧪 Testing & CI
+
+- Prefetch flake inputs with retries in CI ([#2567](https://github.com/TraceMachina/nativelink/issues/2567)) - ([45a3b1b](https://github.com/TraceMachina/nativelink/commit/45a3b1b4ab96b657eb1b2ca26ecb29826fd3c63d))
+
+### ⚙️ Miscellaneous
+
+- Be clearer about where running_actions_manager is working from ([#2783](https://github.com/TraceMachina/nativelink/issues/2783)) - ([d109ce2](https://github.com/TraceMachina/nativelink/commit/d109ce2da95f93501daf7670d814b961339868f8))
+
+### ⬆️ Bumps & Version Updates
+
+- Upgrade curl to 8.5.0-2ubuntu10.15 ([#2790](https://github.com/TraceMachina/nativelink/issues/2790)) - ([d20df95](https://github.com/TraceMachina/nativelink/commit/d20df95f7c7ac55390168349d6b68de5d68905e9))
+- baseline-browser-mapping to 2.11.0 ([#2776](https://github.com/TraceMachina/nativelink/issues/2776)) - ([cc06e62](https://github.com/TraceMachina/nativelink/commit/cc06e62e17f8fd107ecb9823773f543191d20672))
+
 ## [1.7.1](https://github.com/TraceMachina/nativelink/compare/v1.7.0..v1.7.1) - 2026-09-17
 
 ### ⛰️  Features
