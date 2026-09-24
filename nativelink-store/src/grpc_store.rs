@@ -356,7 +356,40 @@ impl GrpcStore {
         }))
     }
 
+    async fn with_rpc_deadline<R>(
+        &self,
+        operation: impl Future<Output = Result<R, Error>>,
+    ) -> Result<R, Error> {
+        // Connection acquisition may wait indefinitely while reconnecting.
+        // Every unary attempt and stream opener shares this deadline owner,
+        // including StoreDriver reads that have their own resume/retry loop.
+        if self.rpc_timeout.is_zero() {
+            operation.await
+        } else {
+            tokio::time::timeout(self.rpc_timeout, operation)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(make_err!(
+                        Code::DeadlineExceeded,
+                        "GrpcStore request exceeded {} second deadline",
+                        self.rpc_timeout.as_secs()
+                    ))
+                })
+        }
+    }
+
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
+    where
+        F: FnMut(I) -> Fut + Send + Copy,
+        Fut: Future<Output = Result<R, Error>> + Send,
+        R: Send,
+        I: Send + Clone,
+    {
+        self.retry_request(input, move |input| self.with_rpc_deadline(request(input)))
+            .await
+    }
+
+    async fn retry_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
     where
         F: FnMut(I) -> Fut + Send + Copy,
         Fut: Future<Output = Result<R, Error>> + Send,
@@ -805,25 +838,28 @@ impl GrpcStore {
         &self,
         request: ReadRequest,
     ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
-        let channel = self
-            .connection_manager
-            .connection(format!("read_internal: {}", request.resource_name))
-            .await
-            .err_tip(|| "in read_internal")?;
-        let mut response = ByteStreamClient::new(channel)
-            .read(enrich_request(
-                Request::new(request),
-                &self.headers,
-                &self.forward_headers,
-            ))
-            .await
-            .err_tip(|| "in GrpcStore::read")?
-            .into_inner();
-        let first_response = response
-            .message()
-            .await
-            .err_tip(|| "Fetching first chunk in GrpcStore::read()")?;
-        Ok(FirstStream::new(first_response, response))
+        self.with_rpc_deadline(async {
+            let channel = self
+                .connection_manager
+                .connection(format!("read_internal: {}", request.resource_name))
+                .await
+                .err_tip(|| "in read_internal")?;
+            let mut response = ByteStreamClient::new(channel)
+                .read(enrich_request(
+                    Request::new(request),
+                    &self.headers,
+                    &self.forward_headers,
+                ))
+                .await
+                .err_tip(|| "in GrpcStore::read")?
+                .into_inner();
+            let first_response = response
+                .message()
+                .await
+                .err_tip(|| "Fetching first chunk in GrpcStore::read()")?;
+            Ok(FirstStream::new(first_response, response))
+        })
+        .await
     }
 
     pub async fn read<R>(
@@ -839,7 +875,7 @@ impl GrpcStore {
         );
 
         let request = self.get_read_request(grpc_request.into_request().into_inner())?;
-        self.perform_request(request, |request| async move {
+        self.retry_request(request, |request| async move {
             self.read_internal(request).await
         })
         .await

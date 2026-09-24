@@ -43,6 +43,130 @@ use tracing::info;
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const RAW_INPUT: &str = "123";
 
+#[nativelink_test]
+async fn readonly_fast_hits_do_not_wait_for_upstream() -> Result<(), Error> {
+    use bytes::Bytes;
+    use nativelink_config::stores::{FastSlowSpec, MemorySpec, StoreDirection, StoreSpec};
+    use nativelink_store::fast_slow_store::FastSlowStore;
+    use nativelink_store::memory_store::MemoryStore;
+    use nativelink_util::store_trait::Store;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut upstream_spec = test_spec(format!("http://{}", listener.local_addr().unwrap()), false);
+    // A local hit must not depend on a connection or a timeout upstream.
+    upstream_spec.rpc_timeout_s = 0;
+    let slow = Store::new(GrpcStore::new(&upstream_spec)?);
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let digest = DigestInfo::try_new(VALID_HASH, 3)?;
+    fast.update_oneshot(digest, Bytes::from_static(b"123"))
+        .await?;
+    let view = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Grpc(upstream_spec),
+            fast_direction: StoreDirection::Both,
+            slow_direction: StoreDirection::ReadOnly,
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast,
+        slow,
+    ));
+    let results = timeout(
+        Duration::from_secs(15),
+        view.has_many(&[digest.into(), digest.into()]),
+    )
+    .await
+    .expect("local hits waited for the unavailable upstream")?;
+    assert_eq!(results, vec![Some(3), Some(3)]);
+    Ok(())
+}
+
+async fn store_read_deadline(compressed: bool) -> Result<(), Error> {
+    use nativelink_error::Code;
+    use nativelink_util::store_trait::Store;
+
+    // Exercise the StoreDriver route used by fast/slow cache misses, not the
+    // public RPC forwarding methods. Both identity and compressed reads open
+    // ByteStream streams directly and must retain the configured deadline.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut spec = test_spec(format!("http://{}", listener.local_addr().unwrap()), false);
+    spec.retry.max_retries = 0;
+    spec.experimental_remote_cache_compression = Some(compressed);
+    let store = Store::new(GrpcStore::new(&spec)?);
+    let digest = DigestInfo::try_new(VALID_HASH, 1_048_576)?;
+    let error = timeout(
+        Duration::from_secs(15),
+        store.get_part_unchunked(digest, 0, None),
+    )
+    .await
+    .expect("store read bypassed its configured stream-opening deadline")
+    .unwrap_err();
+    assert_eq!(error.code, Code::DeadlineExceeded);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn identity_store_read_obeys_rpc_deadline() -> Result<(), Error> {
+    store_read_deadline(false).await
+}
+
+#[nativelink_test]
+async fn compressed_store_read_obeys_rpc_deadline() -> Result<(), Error> {
+    store_read_deadline(true).await
+}
+
+#[nativelink_test]
+async fn unavailable_upstream_obeys_read_rpc_deadline() -> Result<(), Error> {
+    use nativelink_error::Code;
+    use nativelink_proto::build::bazel::remote::execution::v2::GetActionResultRequest;
+    // Hold the port without serving: TCP may connect, but no gRPC response
+    // can arrive. The deadline must cover connection acquisition as well.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut spec = test_spec(format!("http://{}", listener.local_addr().unwrap()), false);
+    spec.retry.max_retries = 0;
+    let digest = Digest {
+        hash: VALID_HASH.into(),
+        size_bytes: 3,
+    };
+    let cas = GrpcStore::new(&spec)?;
+    let missing = timeout(
+        Duration::from_secs(15),
+        cas.find_missing_blobs(Request::new(FindMissingBlobsRequest {
+            blob_digests: vec![digest.clone()],
+            ..Default::default()
+        })),
+    )
+    .await
+    .expect("CAS lookup ignored its configured deadline")
+    .unwrap_err();
+    assert_eq!(missing.code, Code::DeadlineExceeded);
+    let read = timeout(
+        Duration::from_secs(15),
+        cas.batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            digests: vec![digest.clone()],
+            ..Default::default()
+        })),
+    )
+    .await
+    .expect("CAS read ignored its configured deadline")
+    .unwrap_err();
+    assert_eq!(read.code, Code::DeadlineExceeded);
+    spec.store_type = StoreType::Ac;
+    let ac = GrpcStore::new(&spec)?;
+    let lookup = timeout(
+        Duration::from_secs(15),
+        ac.get_action_result(Request::new(GetActionResultRequest {
+            action_digest: Some(digest),
+            ..Default::default()
+        })),
+    )
+    .await
+    .expect("AC lookup ignored its configured deadline")
+    .unwrap_err();
+    assert_eq!(lookup.code, Code::DeadlineExceeded);
+    Ok(())
+}
+
 fn test_spec<T: Into<String>>(endpoint: T, use_legacy_resource_names: bool) -> GrpcSpec {
     GrpcSpec {
         instance_name: String::new(),
@@ -99,6 +223,7 @@ struct FakeStreamServer {
     /// Record every `WriteRequest`, not just the first, so a test can assert
     /// on how the client chunked the stream.
     drain_all: bool,
+    first_chunk_delay: Duration,
 }
 
 impl FakeStreamServer {
@@ -107,6 +232,7 @@ impl FakeStreamServer {
             write_requests: Arc::new(Mutex::new(vec![])),
             read_requests: Arc::new(Mutex::new(vec![])),
             drain_all: false,
+            first_chunk_delay: Duration::ZERO,
         }
     }
 
@@ -153,10 +279,12 @@ impl ByteStream for FakeStreamServer {
             metadata: request_metadata,
         });
 
-        let folded = unfold(ReaderState { responded: false }, async move |state| {
+        let first_chunk_delay = self.first_chunk_delay;
+        let folded = unfold(ReaderState { responded: false }, move |state| async move {
             if state.responded {
                 return None;
             }
+            tokio::time::sleep(first_chunk_delay).await;
             let response = ReadResponse {
                 data: RAW_INPUT.as_bytes().into(),
             };
@@ -203,6 +331,72 @@ impl ByteStream for FakeStreamServer {
 
 async fn make_fake_bytestream_server_draining() -> (FakeStreamServer, u16) {
     spawn_bytestream_server(FakeStreamServer::new_draining()).await
+}
+
+#[nativelink_test]
+async fn stream_open_deadline_includes_first_chunk_for_all_read_routes() -> Result<(), Error> {
+    use nativelink_error::Code;
+    use nativelink_util::store_trait::Store;
+
+    let (server, port) = spawn_bytestream_server(FakeStreamServer {
+        first_chunk_delay: Duration::from_mins(1),
+        ..FakeStreamServer::new()
+    })
+    .await;
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
+    spec.retry.max_retries = 0;
+    let cas = GrpcStore::new(&spec)?;
+    let error = timeout(
+        Duration::from_secs(15),
+        cas.read(ReadRequest {
+            resource_name: format!("blobs/{VALID_HASH}/3"),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("RPC stream opener did not time out")
+    .err()
+    .expect("stalled RPC stream succeeded");
+    assert_eq!(error.code, Code::DeadlineExceeded);
+    for compressed in [false, true] {
+        spec.experimental_remote_cache_compression = Some(compressed);
+        let store = Store::new(GrpcStore::new(&spec)?);
+        let error = timeout(
+            Duration::from_secs(15),
+            store.get_part_unchunked(DigestInfo::try_new(VALID_HASH, 1_048_576)?, 0, None),
+        )
+        .await
+        .expect("StoreDriver stream opener did not time out")
+        .unwrap_err();
+        assert_eq!(error.code, Code::DeadlineExceeded);
+    }
+    assert!(server.read_requests.lock().await.iter().any(|read| {
+        read.request
+            .resource_name
+            .contains("compressed-blobs/zstd/")
+    }));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn zero_rpc_deadline_preserves_delayed_stream_reads() -> Result<(), Error> {
+    use nativelink_util::store_trait::Store;
+
+    let (_, port) = spawn_bytestream_server(FakeStreamServer {
+        first_chunk_delay: Duration::from_millis(1100),
+        ..FakeStreamServer::new()
+    })
+    .await;
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
+    spec.rpc_timeout_s = 0;
+    let store = Store::new(GrpcStore::new(&spec)?);
+    let bytes = timeout(
+        Duration::from_secs(15),
+        store.get_part_unchunked(DigestInfo::try_new(VALID_HASH, 3)?, 0, None),
+    )
+    .await??;
+    assert_eq!(bytes, RAW_INPUT);
+    Ok(())
 }
 
 async fn make_fake_bytestream_server() -> (FakeStreamServer, u16) {

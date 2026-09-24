@@ -11063,6 +11063,18 @@ what each half participates in: `update` means writes land here but reads
 never consult it, which only makes sense on the fast half; `get`, `read_only`
 and the default `both` do what they sound like.
 
+On `main` (not yet released), setting `slow_direction` to `read_only` or `get`
+also changes existence checks: a blob in either tier counts as present. A blob
+found in `fast` needs no lookup in `slow`. This lets a cache reuse local files
+while consuming a shared cache that it cannot update. With a writable slow
+tier, existence checks still require the blob in `slow`, so clients upload
+anything that needs to be stored there. To share tiers between writable and
+read-only views, point both views at the individual stores with `ref_store`.
+Nesting a writable pair inside the read-only view keeps the inner pair's
+durability check.
+
+<SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
+
 `bypass_dedup_threshold_bytes` makes reads at or above a given size skip the
 fast tier entirely and stream straight from `slow`. It defaults to `0`, which
 disables the bypass; 256 MiB is a reasonable starting point if huge artifacts
@@ -11267,6 +11279,15 @@ restart.
 `grpc` points at another REAPI cache upstream, and can attach `headers` and
 forward selected headers from the incoming request. Use it to front an existing
 cache.
+
+Set `rpc_timeout_s` to bound each upstream request attempt; `0` disables it.
+On `main` (not yet released), it also covers ordinary requests and opening a
+streaming read, including the wait for a connection and the first response.
+This applies to both ordinary and compressed reads. Later chunks in an open
+stream have no timeout from this setting. Retries can make the total operation
+take longer than one timeout interval.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="GrpcSpec" />
 
 `noop` takes nothing at all and discards everything written to it, reporting
 every read as a miss. It is how you deliberately turn a half of something off.
@@ -20052,10 +20073,11 @@ backends, or N) is declared alongside the terminal specs.
     chunking then runs over an already-compressed stream whose bytes change
     completely on any edit.
     <SourceLink file="nativelink-config/src/stores.rs" symbol="DedupSpec" />
-  - `fast_slow` never checks whether an object in `fast` also exists in
-    `slow`. If you need a durability guarantee (e.g. remote execution
-    artifacts that must survive a `fast`-tier wipe), write-through both
-    tiers deliberately rather than assuming it.
+  - A `fast_slow` read can use `fast` without checking `slow`. With a writable
+    slow tier, existence checks instead require presence in `slow`, including
+    pending uploads. On `main` (not yet released), a `read_only` or `get` slow
+    tier makes existence checks accept either tier. That establishes
+    availability, not durability after the fast tier is lost.
     <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   - `existence_cache` and `size_partitioning` are CAS-only; `completeness_checking`
     is AC-only. Using them on the other store type produces confusing
@@ -20134,9 +20156,11 @@ instead of declaring the same backend twice:
 
 <Accordions type="multiple">
   <Accordion title="Does fast_slow guarantee the slow tier has everything?" id="does-fast-slow-guarantee-the-slow-tier-has-everything">
-    No; it never checks that an object in `fast` also made it to `slow`.
-    If an artifact must survive a fast-tier wipe, make sure the write
-    path covers both tiers deliberately.
+    A read from `fast` does not establish presence in `slow`. With a writable
+    slow tier, existence checks do require it, including pending uploads.
+    If an artifact must survive a fast-tier wipe, make sure the write path
+    covers both tiers deliberately. Read-only existence checks on `main`
+    (not yet released) accept either tier and carry no durability guarantee.
     <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   </Accordion>
   <Accordion title="Why pair redis_store with size_partitioning?" id="why-pair-redis-store-with-size-partitioning">

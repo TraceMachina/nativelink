@@ -96,10 +96,11 @@ backends, or N) is declared alongside the terminal specs.
     chunking then runs over an already-compressed stream whose bytes change
     completely on any edit.
     <SourceLink file="nativelink-config/src/stores.rs" symbol="DedupSpec" />
-  - `fast_slow` never checks whether an object in `fast` also exists in
-    `slow`. If you need a durability guarantee (e.g. remote execution
-    artifacts that must survive a `fast`-tier wipe), write-through both
-    tiers deliberately rather than assuming it.
+  - A `fast_slow` read can use `fast` without checking `slow`. With a writable
+    slow tier, existence checks instead require presence in `slow`, including
+    pending uploads. On `main` (not yet released), a `read_only` or `get` slow
+    tier makes existence checks accept either tier. That establishes
+    availability, not durability after the fast tier is lost.
     <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   - `existence_cache` and `size_partitioning` are CAS-only; `completeness_checking`
     is AC-only. Using them on the other store type produces confusing
@@ -178,9 +179,11 @@ instead of declaring the same backend twice:
 
 <Accordions type="multiple">
   <Accordion title="Does fast_slow guarantee the slow tier has everything?" id="does-fast-slow-guarantee-the-slow-tier-has-everything">
-    No; it never checks that an object in `fast` also made it to `slow`.
-    If an artifact must survive a fast-tier wipe, make sure the write
-    path covers both tiers deliberately.
+    A read from `fast` does not establish presence in `slow`. With a writable
+    slow tier, existence checks do require it, including pending uploads.
+    If an artifact must survive a fast-tier wipe, make sure the write path
+    covers both tiers deliberately. Read-only existence checks on `main`
+    (not yet released) accept either tier and carry no durability guarantee.
     <SourceLink file="nativelink-store/src/fast_slow_store.rs" symbol="FastSlowStore" />
   </Accordion>
   <Accordion title="Why pair redis_store with size_partitioning?" id="why-pair-redis-store-with-size-partitioning">

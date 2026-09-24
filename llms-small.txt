@@ -4280,9 +4280,11 @@ backends, or N) is declared alongside the terminal specs.
 
 ## FAQ
 
-No; it never checks that an object in `fast` also made it to `slow`.
-    If an artifact must survive a fast-tier wipe, make sure the write
-    path covers both tiers deliberately.
+A read from `fast` does not establish presence in `slow`. With a writable
+    slow tier, existence checks do require it, including pending uploads.
+    If an artifact must survive a fast-tier wipe, make sure the write path
+    covers both tiers deliberately. Read-only existence checks on `main`
+    (not yet released) accept either tier and carry no durability guarantee.
 
 ## What's next
 
