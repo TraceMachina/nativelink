@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_lock::Mutex;
 use bytes::Bytes;
@@ -74,6 +75,8 @@ pub(crate) struct MockWorkerApiClient {
     rx_resp: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiReturns>>>,
     tx_resp: mpsc::UnboundedSender<WorkerClientApiReturns>,
     keep_alives_count: u8,
+    pub going_away_count: Arc<AtomicU64>,
+    pub execution_complete_count: Arc<AtomicU64>,
 }
 
 impl MockWorkerApiClient {
@@ -86,6 +89,8 @@ impl MockWorkerApiClient {
             rx_resp: Arc::new(Mutex::new(rx_resp)),
             tx_resp,
             keep_alives_count: 0,
+            going_away_count: Arc::new(AtomicU64::new(0)),
+            execution_complete_count: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -172,7 +177,8 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     }
 
     async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
-        unreachable!();
+        self.going_away_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn execution_response(&mut self, request: ExecuteResult) -> Result<(), Error> {
@@ -193,6 +199,8 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     }
 
     async fn execution_complete(&mut self, _request: ExecuteComplete) -> Result<(), Error> {
+        self.execution_complete_count
+            .fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -240,7 +248,7 @@ pub(crate) async fn setup_local_worker_with_config(
         maybe_streaming_response: Some(streaming_response),
         maybe_tx_stream: Some(tx_stream),
 
-        _drop_guard: drop_guard,
+        drop_guard,
     }
 }
 
@@ -266,5 +274,13 @@ pub(crate) struct TestContext {
     pub maybe_streaming_response: Option<Response<Streaming<UpdateForWorker>>>,
     pub maybe_tx_stream: Option<mpsc::Sender<Frame<Bytes>>>,
 
-    _drop_guard: JoinHandleDropGuard<Result<(), Error>>,
+    drop_guard: JoinHandleDropGuard<Result<(), Error>>,
+}
+
+impl TestContext {
+    pub(crate) async fn finish(self) -> Result<(), Error> {
+        self.drop_guard
+            .await
+            .map_err(|err| nativelink_error::make_input_err!("Worker task failed: {err}"))?
+    }
 }

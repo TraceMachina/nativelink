@@ -96,11 +96,19 @@ the merge rule, the ordering rule and the retry rule.
 A worker fetches the action's inputs from the CAS, materialises them into a
 directory, runs the command, uploads the outputs, and reports back.
 
-Workers hold no durable state; a worker that dies mid-action costs you that
+Workers hold no durable state. A worker that dies mid-action costs you that
 action, not your cache. What they do hold is a local filesystem that is
 deliberately not clean between actions;
 [worker execution](/explanations/worker-execution) explains why, and what it
 means for hermeticity.
+
+The development configuration adds an opt-in
+[`single_use` worker lifecycle](/reference/nativelink-config/main#localworkerconfig).
+A worker accepts one action, uploads its results, and exits. Run it as the only
+worker in its process and have the launcher replace the whole container with
+fresh writable volumes. This removes local files, processes, and caches left
+by previous actions. Restarting a process inside an existing container does
+not provide that isolation. The shared CAS and action cache remain available.
 
 <Callout type="warn" title="The worker writes the action cache, not the scheduler">
   It is natural to assume the scheduler records the result, since the

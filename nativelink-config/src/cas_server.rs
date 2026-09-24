@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 #[cfg(feature = "dev-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -954,6 +954,18 @@ pub struct LocalWorkerConfig {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_inflight_tasks: u64,
 
+    /// Accept one action, upload its results, and exit the worker process.
+    /// The worker advertises one execution slot and never accepts a second
+    /// action, including after a scheduler disconnect. A launcher must create
+    /// a fresh container and fresh writable volumes for its replacement.
+    /// Use one local worker per process, with no scheduler or services other
+    /// than health checks. Reusing the container or its writable volumes does
+    /// not provide isolation from the previous action.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub single_use: bool,
+
     /// If timeout is handled in `entrypoint` or another wrapper script.
     /// If set to true `NativeLink` will not honor the timeout the action requested
     /// and instead will always force kill the action after `max_action_timeout`
@@ -1257,8 +1269,58 @@ impl CasConfig {
                 Self::check_store_conflict(services)?;
             }
         }
+        config.validate_single_use_worker()?;
         config.apply_zstd_grpc_store_defaults();
         Ok(config)
+    }
+
+    fn validate_single_use_worker(&self) -> Result<(), Error> {
+        let workers = self.workers.as_deref().unwrap_or_default();
+        if !workers.iter().any(|worker| match worker {
+            WorkerConfig::Local(worker) => worker.single_use,
+        }) {
+            return Ok(());
+        }
+        if workers.len() != 1 || self.schedulers.as_ref().is_some_and(|s| !s.is_empty()) {
+            return Err(make_input_err!(
+                "single_use requires exactly one worker and no scheduler in the process"
+            ));
+        }
+        for services in self
+            .servers
+            .iter()
+            .filter_map(|server| server.services.as_ref())
+        {
+            let ServicesConfig {
+                cas,
+                ac,
+                capabilities,
+                execution,
+                bytestream,
+                fetch,
+                push,
+                worker_api,
+                experimental_bep,
+                admin,
+                health: _,
+            } = services;
+            if cas.is_some()
+                || ac.is_some()
+                || capabilities.is_some()
+                || execution.is_some()
+                || bytestream.is_some()
+                || fetch.is_some()
+                || push.is_some()
+                || worker_api.is_some()
+                || experimental_bep.is_some()
+                || admin.is_some()
+            {
+                return Err(make_input_err!(
+                    "single_use worker processes may expose only health services"
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn zstd_wire_compression_enabled_anywhere(&self) -> bool {
@@ -1361,6 +1423,34 @@ mod tests {
     use tracing_test::traced_test;
 
     use super::*;
+
+    #[test]
+    fn single_use_worker_defaults_off_and_rejects_shared_processes() {
+        assert!(!LocalWorkerConfig::default().single_use);
+        let mut config = CasConfig::try_from_json5_str("{ stores: [], servers: [] }").unwrap();
+        config.workers = Some(vec![WorkerConfig::Local(LocalWorkerConfig {
+            single_use: true,
+            ..Default::default()
+        })]);
+        config.validate_single_use_worker().unwrap();
+        config
+            .workers
+            .as_mut()
+            .unwrap()
+            .push(WorkerConfig::Local(LocalWorkerConfig::default()));
+        assert!(config.validate_single_use_worker().is_err());
+        config.workers.as_mut().unwrap().pop();
+        config.servers = serde_json5::from_str(
+            r#"[{
+            listener: { http: { socket_address: "127.0.0.1:50061" } },
+            services: { health: { path: "/health" } }
+        }]"#,
+        )
+        .unwrap();
+        config.validate_single_use_worker().unwrap();
+        config.servers[0].services.as_mut().unwrap().cas = Some(vec![]);
+        assert!(config.validate_single_use_worker().is_err());
+    }
 
     fn grpc_compression_configs(config: &CasConfig) -> Vec<(bool, Option<bool>)> {
         let mut configs = Vec::new();
