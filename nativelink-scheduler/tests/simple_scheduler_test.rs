@@ -2786,7 +2786,7 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
     assert!(logs_contain(
         "Property mismatch on worker property prop. Minimum(0) < Minimum(1)"
     ));
-    assert!(logs_contain("No workers matched"));
+    assert!(logs_contain("No connected worker can ever run this action"));
 
     Ok(())
 }

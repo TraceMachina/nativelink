@@ -177,6 +177,61 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub unacknowledged_kill_timeout_s: u64,
 
+    /// Fail a queued action once no connected worker has been able to run
+    /// it for this many seconds, instead of leaving it queued forever. An
+    /// action counts as impossible to run when no connected worker could
+    /// take it even when idle: an `exact` value no worker has, a required
+    /// key no worker declares, or a `minimum` larger than any worker's
+    /// total. An action that is only waiting for a busy worker is never
+    /// failed by this setting, and neither is any action while no workers
+    /// are connected at all.
+    ///
+    /// The action fails with `FAILED_PRECONDITION` and a message naming the
+    /// properties that could not be satisfied. Bazel does not retry this,
+    /// and runs the action locally if `--remote_local_fallback` is set.
+    ///
+    /// The time is measured per distinct set of platform properties, and
+    /// each action must also have been queued for this long itself before
+    /// it is failed. Actions that queue together therefore fail within
+    /// about one timeout of each other, while during a pool outage later
+    /// actions fail as they age rather than in an immediate burst. An
+    /// action's own wait is measured from its original submission, which
+    /// is not reset when a second client attaches to the same action or
+    /// when it is queued again after its worker is lost; in those cases
+    /// the per-shape clock still guarantees no capable worker was seen for
+    /// the full timeout before it is failed.
+    ///
+    /// Roll this out with the timeout at 0 on every scheduler first and
+    /// watch the `scheduler.unsatisfiable.queued` metric for a while:
+    /// anything that appears there during normal operation is an action
+    /// this setting would have failed. Then set it above the longest time
+    /// a worker pool needs to provision or restart, such as scaling up from
+    /// zero, a rolling restart of the whole pool, or spot preemption, not
+    /// above the typical queue wait. Only properties listed in
+    /// `supported_platform_properties` are enforced strictly; a property
+    /// that is not listed does not restrict workers that do not declare it.
+    ///
+    /// When several schedulers share one Redis backend, each publishes what
+    /// its workers can run whenever a worker joins or leaves and at least
+    /// every 5 seconds, and reads what the others publish every 5 seconds.
+    /// An action is only failed when no scheduler has a worker that could
+    /// run it, and never while the other schedulers cannot be read. A
+    /// worker that joins or leaves a peer is seen here within about 5
+    /// seconds, and the workers of a peer that stops altogether stop
+    /// counting within about 20, so keep this well above that. Schedulers
+    /// publish whatever this is set to, so roll out a version that has this
+    /// setting to every scheduler before setting it on any of them.
+    /// (The 5 and 20 seconds follow from `FLEET_EXCHANGE_INTERVAL` and
+    /// `FLEET_RECORD_TTL_INTERVALS` in the scheduler; if those change,
+    /// remember to change this documentation.)
+    ///
+    /// Such actions are logged and counted in the
+    /// `scheduler.unsatisfiable.queued` metric whatever this is set to.
+    ///
+    /// Default: 0 (never fail)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub unsatisfiable_action_timeout_s: u64,
+
     /// If a job returns an internal error or times out this many times when
     /// attempting to run on a worker the scheduler will return the last error
     /// to the client. Jobs will be retried and this configuration is to help

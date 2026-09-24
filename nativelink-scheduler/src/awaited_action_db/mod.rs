@@ -22,6 +22,7 @@ use futures::{Future, Stream};
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{ActionInfo, ActionStage, OperationId};
+use nativelink_util::platform_properties::PlatformProperties;
 use serde::{Deserialize, Serialize};
 
 use crate::worker_registry::SharedWorkerRegistry;
@@ -195,4 +196,25 @@ pub trait AwaitedActionDb: Send + Sync + MetricsComponent + Unpin + 'static {
     /// executing action was abandoned. Only shared-state implementations
     /// need it, so the default ignores the registry.
     fn set_worker_registry(&mut self, _worker_registry: SharedWorkerRegistry) {}
+
+    /// Tells other schedulers on the same state what the workers connected
+    /// here can run, and returns what the workers connected to those
+    /// schedulers can run. `local` holds the properties each distinct kind
+    /// of worker registered with, and stays visible to peers for `ttl`.
+    /// Only shared-state implementations need it; the default shares
+    /// nothing and sees nothing.
+    fn exchange_fleet_capabilities(
+        &self,
+        _scheduler_id: &str,
+        _local: Vec<PlatformProperties>,
+        _ttl: Duration,
+    ) -> impl Future<Output = Result<Vec<PlatformProperties>, Error>> + Send {
+        async { Ok(Vec::new()) }
+    }
+
+    /// Whether other schedulers may share this state, and so have workers
+    /// of their own that `exchange_fleet_capabilities` reports.
+    fn shares_state(&self) -> bool {
+        false
+    }
 }

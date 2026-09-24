@@ -195,12 +195,18 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                                 if let Some(key_value) = fields.get(field)
                                     && *key_value == Value::BulkString(value.as_bytes().to_vec())
                                 {
-                                    results.push(Value::Array(vec![
+                                    let mut record = vec![
                                         Value::BulkString(b"data".to_vec()),
                                         fields.get("data").expect("No data field").clone(),
-                                        Value::BulkString(b"version".to_vec()),
-                                        fields.get("version").expect("No version field").clone(),
-                                    ]));
+                                    ];
+                                    // LOAD leaves out fields the hash does not
+                                    // have, so a non-versioned record comes
+                                    // back without a version.
+                                    if let Some(version) = fields.get("version") {
+                                        record.push(Value::BulkString(b"version".to_vec()));
+                                        record.push(version.clone());
+                                    }
+                                    results.push(Value::Array(record));
                                 }
                             }
                         }

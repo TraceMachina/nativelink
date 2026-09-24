@@ -35,6 +35,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
+use nativelink_scheduler::match_outcome::MatchOutcome;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::worker::ActionInfoWithProps;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -178,6 +179,8 @@ async fn setup_api_server_with_task_limit(
         60, // unacknowledged_kill_timeout_s
         worker_registry,
         None,
+        false,                   // has_peers
+        Duration::from_secs(15), // record_ttl (unused while has_peers = false)
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
@@ -581,11 +584,15 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
 
     let selected_worker = test_context
         .scheduler
-        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .find_worker_for_action(
+            &PlatformProperties::new(HashMap::new()),
+            true,
+            make_system_time(BASE_NOW_S),
+        )
         .await;
     assert_eq!(
         selected_worker,
-        Some(test_context.worker_id.clone()),
+        MatchOutcome::Matched(test_context.worker_id.clone()),
         "Expected worker to permit tasks to begin with"
     );
 
@@ -634,10 +641,15 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
 
     let selected_worker = test_context
         .scheduler
-        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .find_worker_for_action(
+            &PlatformProperties::new(HashMap::new()),
+            true,
+            make_system_time(BASE_NOW_S),
+        )
         .await;
     assert_eq!(
-        selected_worker, None,
+        selected_worker,
+        MatchOutcome::WaitingForCapacity,
         "Expected not to be able to give worker a second task"
     );
 

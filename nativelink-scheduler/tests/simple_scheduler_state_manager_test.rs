@@ -452,3 +452,121 @@ async fn the_sweep_retires_queued_actions_no_client_is_waiting_on() -> Result<()
     assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 0);
     Ok(())
 }
+
+/// Adds a queued action through the client side and returns the operation
+/// id the matching engine sees for it.
+async fn queued_operation_id(
+    state_mgr: &(impl ClientStateManager + MatchingEngineStateManager),
+) -> Result<
+    (
+        OperationId,
+        Box<dyn nativelink_util::operation_state_manager::ActionStateResult>,
+    ),
+    Error,
+> {
+    let client = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+    let mut queued = MatchingEngineStateManager::filter_operations(
+        state_mgr,
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let operation = queued.next().await.expect("one queued operation");
+    let operation_id = operation.as_state().await?.0.client_operation_id.clone();
+    Ok((operation_id, client))
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_completes_a_queued_action() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    let (operation_id, client) = queued_operation_id(state_mgr.as_ref()).await?;
+
+    let failed = state_mgr
+        .fail_queued_operation(
+            &operation_id,
+            make_err!(Code::FailedPrecondition, "no worker"),
+        )
+        .await?;
+    assert!(failed);
+
+    let (state, _origin_metadata) = client.as_state().await?;
+    let ActionStage::Completed(result) = &state.stage else {
+        panic!("expected Completed, got {:?}", state.stage);
+    };
+    let err = result.error.as_ref().expect("error carried through");
+    assert_eq!(err.code, Code::FailedPrecondition);
+    assert_eq!(err.messages, vec!["no worker".to_string()]);
+    assert_eq!(state.last_transition_timestamp, make_system_time(0));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_leaves_an_executing_action_alone() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    let (operation_id, client) = queued_operation_id(state_mgr.as_ref()).await?;
+    let worker_id = WorkerId::from(String::from("worker"));
+    state_mgr
+        .assign_operation(&operation_id, Ok(&worker_id))
+        .await?;
+
+    let failed = state_mgr
+        .fail_queued_operation(
+            &operation_id,
+            make_err!(Code::FailedPrecondition, "no worker"),
+        )
+        .await?;
+    assert!(!failed);
+    assert_eq!(client.as_state().await?.0.stage, ActionStage::Executing);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_ignores_an_unknown_action() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+
+    let failed = state_mgr
+        .fail_queued_operation(
+            &OperationId::default(),
+            make_err!(Code::FailedPrecondition, "no worker"),
+        )
+        .await?;
+    assert!(!failed);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_ignores_a_completed_action() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    let (operation_id, client) = queued_operation_id(state_mgr.as_ref()).await?;
+    assert!(
+        state_mgr
+            .fail_queued_operation(&operation_id, make_err!(Code::FailedPrecondition, "first"))
+            .await?
+    );
+
+    // A second failure must not overwrite the first result.
+    let failed = state_mgr
+        .fail_queued_operation(&operation_id, make_err!(Code::Internal, "second"))
+        .await?;
+    assert!(!failed);
+    let (state, _origin_metadata) = client.as_state().await?;
+    let ActionStage::Completed(result) = &state.stage else {
+        panic!("expected Completed, got {:?}", state.stage);
+    };
+    assert_eq!(
+        result.error.as_ref().unwrap().code,
+        Code::FailedPrecondition
+    );
+    Ok(())
+}
