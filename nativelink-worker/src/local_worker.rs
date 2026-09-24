@@ -15,7 +15,7 @@
 use core::hash::BuildHasher;
 use core::pin::Pin;
 use core::str;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -114,6 +114,7 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     // always be zero if there are no actions running and no actions being waited
     // on by the scheduler.
     actions_in_transit: Arc<AtomicU64>,
+    accepted_action: AtomicBool,
     metrics: Arc<Metrics>,
 }
 
@@ -186,6 +187,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // always be zero if there are no actions running and no actions being waited
             // on by the scheduler.
             actions_in_transit: Arc::new(AtomicU64::new(0)),
+            accepted_action: AtomicBool::new(false),
             metrics,
         }
     }
@@ -260,6 +262,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         let mut shutting_down = false;
 
         loop {
+            if self.config.single_use
+                && self.accepted_action.load(Ordering::Acquire)
+                && actions_in_flight.load(Ordering::Acquire) == 0
+            {
+                // The action, CAS/AC uploads, cleanup, and execution_response
+                // acknowledgment have all completed. This container is spent.
+                if let Err(err) = self
+                    .grpc_client
+                    .clone()
+                    .going_away(GoingAwayRequest {})
+                    .await
+                {
+                    warn!(?err, "Could not unregister completed single-use worker");
+                }
+                return Ok(());
+            }
             select! {
                 maybe_update = update_for_worker_stream.next() => if !shutting_down || maybe_update.is_some() {
                     match maybe_update
@@ -292,7 +310,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         }
                         Update::StartAction(start_execute) => {
                             // Don't accept any new requests if we're shutting down.
-                            if shutting_down {
+                            if shutting_down || (self.config.single_use
+                                && self.accepted_action.swap(true, Ordering::AcqRel)) {
                                 if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
                                     self.grpc_client.clone().execution_response(
                                         ExecuteResult{
@@ -345,6 +364,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 let complete = ExecuteComplete {
                                     operation_id: operation_id.clone(),
                                 };
+                                let single_use = self.config.single_use;
                                 self.metrics.clone().wrap(move |metrics| async move {
                                     metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
@@ -364,8 +384,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
                                             .and_then(|result| async move {
-                                                // Notify that execution has completed so it can schedule a new action.
-                                                drop(grpc_client.execution_complete(complete).await);
+                                                // Reusable workers release their slot during upload.
+                                                // A single-use worker must never advertise another slot.
+                                                if !single_use {
+                                                    drop(grpc_client.execution_complete(complete).await);
+                                                }
                                                 Ok(result)
                                             })
                                             .and_then(RunningAction::upload_results)
@@ -826,7 +849,11 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             self.config.name.clone(),
             &self.config.platform_properties,
             &extra_envs,
-            self.config.max_inflight_tasks,
+            if self.config.single_use {
+                1
+            } else {
+                self.config.max_inflight_tasks
+            },
         )
         .await?;
         let mut update_for_worker_stream = client
@@ -942,12 +969,19 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     );
                 }
 
-                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
 
+                if self.config.single_use && inner.accepted_action.load(Ordering::Acquire) {
+                    return Err(
+                        err.append("Single-use worker disconnected after accepting its action")
+                    );
+                }
+                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 (error_handler)(err).await; // Try to connect again.
+            } else if self.config.single_use {
+                return Ok(());
             }
         }
         // Unreachable.

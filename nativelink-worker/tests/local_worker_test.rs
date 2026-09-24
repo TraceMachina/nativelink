@@ -363,7 +363,25 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn simple_worker_start_action_test() -> Result<(), Error> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    start_action_lifecycle_test(false).await
+}
+
+#[nativelink_test]
+async fn single_use_worker_rejects_second_action_and_waits_for_uploads() -> Result<(), Error> {
+    start_action_lifecycle_test(true).await
+}
+
+async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        single_use,
+        max_inflight_tasks: if single_use { 9 } else { 0 },
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -372,7 +390,13 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                max_inflight_tasks: u64::from(single_use),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -459,6 +483,31 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
+    if single_use {
+        // Even a scheduler that sends more than our advertised capacity must
+        // not run a second action in this container.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        execute_request: Some((&action_info).into()),
+                        operation_id: "second-action".to_string(),
+                        worker_id: expected_worker_id.clone(),
+                        ..Default::default()
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        let rejected = test_context.client.expect_execution_response(Ok(())).await;
+        assert_eq!(rejected.operation_id, "second-action");
+        let Some(execute_result::Result::InternalError(status)) = rejected.result else {
+            panic!("Second action must be rejected before execution");
+        };
+        assert_eq!(status.code, Code::ResourceExhausted as i32);
+    }
+
     // Now the RunningAction needs to send a series of state updates. This shortcuts them
     // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
     running_action
@@ -473,6 +522,20 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
     assert_eq!(stored_digest, action_digest);
     assert_eq!(stored_result, action_result.clone());
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
+    assert_eq!(
+        test_context
+            .client
+            .going_away_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        test_context
+            .client
+            .execution_complete_count
+            .load(std::sync::atomic::Ordering::Relaxed),
+        u64::from(!single_use)
+    );
 
     // Now our client should be notified that our runner finished.
     let execution_response = test_context.client.expect_execution_response(Ok(())).await;
@@ -489,6 +552,14 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
             resource_usage: None,
         }
     );
+
+    if single_use {
+        let going_away = test_context.client.going_away_count.clone();
+        tokio::time::timeout(Duration::from_secs(5), test_context.finish())
+            .await
+            .map_err(|_| make_input_err!("Single-use worker did not exit"))??;
+        assert_eq!(going_away.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
 
     Ok(())
 }
@@ -1110,7 +1181,24 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
 /// whole process in colocated deployments.
 #[nativelink_test]
 async fn disconnect_with_action_in_transit_reconnects_test() -> Result<(), Error> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    disconnect_with_action_in_transit(false).await
+}
+
+#[nativelink_test]
+async fn single_use_worker_never_reconnects_after_accepting_an_action() -> Result<(), Error> {
+    disconnect_with_action_in_transit(true).await
+}
+
+async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        single_use,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -1119,7 +1207,13 @@ async fn disconnect_with_action_in_transit_reconnects_test() -> Result<(), Error
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                max_inflight_tasks: u64::from(single_use),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -1188,6 +1282,11 @@ async fn disconnect_with_action_in_transit_reconnects_test() -> Result<(), Error
     tokio::time::timeout(Duration::from_secs(10), async {
         // The worker must clean up...
         test_context.actions_manager.expect_kill_all().await;
+
+        if single_use {
+            assert!(test_context.finish().await.is_err());
+            return;
+        }
 
         // ...and auto reconnect, checking our properties again.
         let (_, streaming_response) = setup_grpc_stream();
