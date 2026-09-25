@@ -395,6 +395,28 @@ impl ActionInputLease {
         }
     }
 
+    /// Same as `lease_digest` for every digest in `batch`. Each filesystem
+    /// tier leases the new ones in one call, which takes its eviction lock
+    /// once per chunk rather than once per digest.
+    fn lease_digests(&self, batch: &[DigestInfo]) {
+        let mut digests = self.digests.lock();
+        let Some(digests) = digests.as_mut() else {
+            return;
+        };
+        let mut new_digests = Vec::with_capacity(batch.len());
+        for digest in batch {
+            if digests.insert(*digest) {
+                new_digests.push(*digest);
+            }
+        }
+        if new_digests.is_empty() {
+            return;
+        }
+        for filesystem_store in &self.filesystem_stores {
+            filesystem_store.lease_digests(&new_digests);
+        }
+    }
+
     fn take_release_work(&self) -> Option<(Vec<Arc<FilesystemStore>>, Vec<DigestInfo>)> {
         let digests = self.digests.lock().take()?.into_iter().collect();
         Some((self.filesystem_stores.clone(), digests))
@@ -473,16 +495,13 @@ fn download_to_directory_with_lease<'a>(
         let (dirs, files, inline_nodes) =
             collect_download_links(cas_store, digest, current_directory, input_lease).await?;
 
-        let (exec_files, plain_files): (Vec<_>, Vec<_>) =
-            files.into_iter().partition(|file| file.executable);
-        let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
-        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+        let links = resolve_links(cas_store, filesystem_store, files).await?;
 
         // Every directory exists before anything is written into one, so no
         // later pass has to create a parent it happens to need.
         fs::create_dir_many(dirs).await?;
         materialize_inline_nodes(cas_store, filesystem_store, inline_nodes).await?;
-        materialize_links(filesystem_store, links).await
+        materialize_links(cas_store, filesystem_store, links).await
     }
     .boxed()
 }
@@ -492,27 +511,28 @@ fn download_to_directory_with_lease<'a>(
 /// `spawn_blocking` dispatch per file.
 struct PendingLink {
     src: PathBuf,
-    dst: PathBuf,
+    /// The file `src` was resolved for, kept so the link can be resolved
+    /// again if `src` is retired before the batch runs.
+    file: PendingFile,
     /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
     /// inode cannot be dropped out from under the batch. `None` for an
     /// executable variant, which is a private file outside the entry map and so
     /// has no entry to hold.
     ///
-    /// Neither case is fully closed: a held entry pins the inode but does not
-    /// stop an eviction from *renaming* the blob, and a variant is deleted
-    /// outright by the eviction callback. Both races predate batching, which
-    /// widens the window from a single file to a whole input tree. An operator
-    /// seeing `NotFound` during staging should enable
+    /// Neither case pins the path: a held entry does not stop an eviction from
+    /// *renaming* the blob, and evicting a generation deletes the variant built
+    /// from it. Batching widens that window from a single file to a whole input
+    /// tree, so [`materialize_links`] resolves such a link again once. An
+    /// operator still seeing `NotFound` during staging should enable
     /// `experimental_active_input_leases`, since a leased digest is not
-    /// evicted, or raise the store's `max_bytes`. The durable fix is a
-    /// `hard_link_locked_many` holding every read guard across the batch.
+    /// evicted, or raise the store's `max_bytes`.
     _keepalive: Option<Arc<FileEntryImpl>>,
 }
 
 /// A file whose CAS blob has not been resolved to a path yet.
 struct PendingFile {
     digest: DigestInfo,
-    dst: String,
+    dst: PathBuf,
     executable: bool,
 }
 
@@ -521,16 +541,51 @@ struct PendingFile {
 type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
 
 /// Executes every deferred hardlink of an input tree in one batched pass.
+///
+/// Eviction can retire a source between resolution and the batch: it renames
+/// a CAS blob away and deletes the executable variant built from it. Those
+/// links are resolved again, which fetches or rebuilds the source for the
+/// digest's resident generation, and linked in a second batch before any
+/// failure is reported.
 async fn materialize_links(
+    cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     links: Vec<PendingLink>,
 ) -> Result<(), Error> {
+    let retired = link_batch(filesystem_store, links, true).await?;
+    if retired.is_empty() {
+        return Ok(());
+    }
+    debug!(
+        count = retired.len(),
+        "Resolving hardlink sources retired during input staging again"
+    );
+    let links = resolve_links(cas_store, filesystem_store, retired).await?;
+    link_batch(filesystem_store, links, false).await?;
+    Ok(())
+}
+
+/// Hardlinks `links` in one batch. With `retry_missing`, a link whose source
+/// is gone is handed back for resolving again instead of failing the batch.
+async fn link_batch(
+    filesystem_store: Pin<&FilesystemStore>,
+    links: Vec<PendingLink>,
+    retry_missing: bool,
+) -> Result<Vec<PendingFile>, Error> {
     let pairs = links
         .iter()
-        .map(|link| (link.src.clone(), link.dst.clone()))
+        .map(|link| (link.src.clone(), link.file.dst.clone()))
         .collect();
-    for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
-        let (src_path, dest) = (&link.src, &link.dst);
+    let mut retired = Vec::new();
+    for (link, result) in links.into_iter().zip(fs::hard_link_many(pairs).await?) {
+        if let Err(e) = &result
+            && retry_missing
+            && e.code == Code::NotFound
+        {
+            retired.push(link.file);
+            continue;
+        }
+        let (src_path, dest) = (&link.src, &link.file.dst);
         result.map_err(|e| {
             let src_metadata = std::fs::metadata(src_path);
             let dest_metadata = std::fs::metadata(dest);
@@ -558,27 +613,44 @@ async fn materialize_links(
             }
         })?;
     }
-    Ok(())
+    Ok(retired)
+}
+
+/// Resolves the files of an input tree to the sources their hardlinks are
+/// made from: the CAS blob, or the executable variant for executable files.
+async fn resolve_links(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    files: Vec<PendingFile>,
+) -> Result<Vec<PendingLink>, Error> {
+    let (exec_files, plain_files): (Vec<_>, Vec<_>) =
+        files.into_iter().partition(|file| file.executable);
+    let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
+    links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+    Ok(links)
 }
 
 /// Resolves every non-executable file of an input tree to its CAS blob path.
 ///
 /// The blob is nearly always resident, and `populate_fast_store` would take the
 /// store's eviction lock only to discover that, so resolving the entry directly
-/// answers the same question and yields the path. Only a genuine miss pays the
-/// populate round trip.
+/// answers the same question and yields the path. The whole tree is resolved in
+/// one batched lookup, which takes that lock once per chunk of files instead of
+/// once per file. Only a genuine miss pays the populate round trip.
 async fn resolve_plain_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
 ) -> Result<Vec<PendingLink>, Error> {
+    let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
+    let entries = filesystem_store
+        .get_file_entries_for_digests(&digests)
+        .await;
+
     let mut tasks = Vec::with_capacity(files.len());
-    for file in files {
+    for (file, entry) in files.into_iter().zip(entries) {
         tasks.push(async move {
-            let file_entry = if let Ok(entry) = filesystem_store
-                .get_file_entry_for_digest(&file.digest)
-                .await
-            {
+            let file_entry = if let Ok(entry) = entry {
                 entry
             } else {
                 cas_store
@@ -597,7 +669,7 @@ async fn resolve_plain_files(
                 .err_tip(|| format!("for digest {}", file.digest))?;
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
-                dst: PathBuf::from(file.dst),
+                file,
                 _keepalive: Some(file_entry),
             })
         });
@@ -650,7 +722,7 @@ async fn resolve_exec_files(
             };
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
-                dst: PathBuf::from(file.dst),
+                file,
                 _keepalive: None,
             })
         });
@@ -680,6 +752,9 @@ fn collect_download_links<'a>(
         let mut futures = Vec::new();
         let mut pending_files = Vec::new();
         let mut inline_nodes = Vec::new();
+        // Digests of this level's files and child directories, leased in one
+        // batch before anything below is awaited.
+        let mut to_lease = Vec::new();
 
         for file in directory.files {
             let digest: DigestInfo = file
@@ -693,8 +768,8 @@ fn collect_download_links<'a>(
                 Some(properties) => (properties.mtime, properties.unix_mode),
                 None => (None, None),
             };
-            if let Some(input_lease) = &input_lease {
-                input_lease.lease_digest(&digest);
+            if input_lease.is_some() {
+                to_lease.push(digest);
             }
             // Hot path: nothing to stamp, so the file needs nothing from the
             // walk beyond its digest. Hand it up unresolved and let the caller
@@ -702,7 +777,7 @@ fn collect_download_links<'a>(
             if mtime.is_none() && custom_unix_mode.is_none() && !is_zero_digest(digest) {
                 pending_files.push(PendingFile {
                     digest,
-                    dst: dest,
+                    dst: PathBuf::from(dest),
                     executable: is_executable,
                 });
                 continue;
@@ -724,12 +799,8 @@ fn collect_download_links<'a>(
                 .try_into()
                 .err_tip(|| "In Directory::file::digest")?;
             let new_directory_path = format!("{}/{}", current_directory, sub_directory.name);
-            if let Some(input_lease) = &input_lease {
-                // Reserve queued child directories before their futures are
-                // polled. Without this, a large parent can leave later
-                // directory digests exposed to slow-tier eviction while the
-                // first batch of children is being materialized.
-                input_lease.lease_digest(&digest);
+            if input_lease.is_some() {
+                to_lease.push(digest);
             }
             let input_lease = input_lease.clone();
             futures.push(
@@ -747,6 +818,14 @@ fn collect_download_links<'a>(
                 }
                 .boxed(),
             );
+        }
+
+        if let Some(input_lease) = &input_lease {
+            // Reserve queued child directories before their futures are
+            // polled. Without this, a large parent can leave later
+            // directory digests exposed to slow-tier eviction while the
+            // first batch of children is being materialized.
+            input_lease.lease_digests(&to_lease);
         }
 
         #[cfg(target_family = "unix")]
@@ -3591,4 +3670,76 @@ pub struct Metrics {
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]
     directory_cache: Option<Weak<crate::directory_cache::DirectoryCache>>,
+}
+
+#[cfg(all(test, target_family = "unix"))]
+mod tests {
+    use nativelink_config::stores::{
+        FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+    };
+    use nativelink_macro::nativelink_test;
+    use nativelink_store::memory_store::MemoryStore;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// Eviction can retire a link's source between resolution and the batch:
+    /// the CAS blob is renamed away, and the executable variant built from it
+    /// is deleted. Such a link must be resolved again and made, rather than
+    /// failing the action with "file was likely evicted".
+    #[nativelink_test]
+    async fn materialize_links_resolves_retired_sources_again() -> Result<(), Error> {
+        const CONTENT: &[u8] = b"#!/bin/sh\necho hi\n";
+
+        let temp_dir = TempDir::new()?;
+        let path = |name: &str| temp_dir.path().join(name);
+        let fast_spec = FilesystemSpec {
+            content_path: path("content").to_string_lossy().into_owned(),
+            temp_path: path("temp").to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let slow_spec = MemorySpec::default();
+        let fast_store = FilesystemStore::new(&fast_spec).await?;
+        let slow_store = MemoryStore::new(&slow_spec);
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_spec),
+                slow: StoreSpec::Memory(slow_spec),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(fast_store.clone()),
+            Store::new(slow_store.clone()),
+        );
+        let digest = DigestInfo::new([7; 32], CONTENT.len() as u64);
+        Store::new(slow_store)
+            .update_oneshot(digest, CONTENT.into())
+            .await?;
+
+        // Both sources were resolved, then retired before the batch ran.
+        let work_dir = path("work");
+        std::fs::create_dir(&work_dir)?;
+        let links = [("data", false), ("tool", true)].map(|(name, executable)| PendingLink {
+            src: path("retired").join(name),
+            file: PendingFile {
+                digest,
+                dst: work_dir.join(name),
+                executable,
+            },
+            _keepalive: None,
+        });
+        materialize_links(&cas_store, Pin::new(fast_store.as_ref()), links.into()).await?;
+
+        for (name, mode) in [("data", 0o444), ("tool", 0o555)] {
+            let dst = work_dir.join(name);
+            assert_eq!(std::fs::read(&dst)?, CONTENT, "{name} must hold the blob");
+            assert_eq!(
+                std::fs::metadata(&dst)?.permissions().mode() & 0o777,
+                mode,
+                "{name} must link the source resolved for its kind"
+            );
+        }
+        Ok(())
+    }
 }

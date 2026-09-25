@@ -43,6 +43,7 @@ use tokio::sync::OnceCell;
 use tracing::{debug, info, trace, warn};
 
 use crate::filesystem_store::FilesystemStore;
+use crate::memory_store::MemoryStore;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -244,6 +245,23 @@ impl FastSlowStore {
         self.weak_self.upgrade()
     }
 
+    /// The upload size to give the fast store when populating it, given the
+    /// size the slow store's `has()` reported.
+    ///
+    /// That size is only the number of bytes `get()` streams when the slow
+    /// store keeps blobs verbatim: a `CompressionStore` reports its encoded
+    /// size and a `GrpcStore` for the AC reports `u64::MAX`. So it is only
+    /// trusted as exact when it matches the digest size, as it does for CAS
+    /// blobs, and is otherwise left unbounded.
+    const fn populate_upload_size(key: &StoreKey<'_>, slow_store_size: u64) -> UploadSizeInfo {
+        match key {
+            StoreKey::Digest(digest) if digest.size_bytes() == slow_store_size => {
+                UploadSizeInfo::ExactSize(slow_store_size)
+            }
+            _ => UploadSizeInfo::MaxSize(u64::MAX),
+        }
+    }
+
     fn get_loader<'a>(&self, key: StoreKey<'a>) -> LoaderGuard<'a> {
         // Get a single loader instance that's used to populate the fast store
         // for this digest.  If another request comes in then it's de-duplicated.
@@ -288,28 +306,28 @@ impl FastSlowStore {
             );
             UploadSizeInfo::MaxSize(u64::MAX)
         } else {
-            UploadSizeInfo::ExactSize(self
-                    .slow_store
-                    .has(key.borrow())
-                    .await
-                    .err_tip(|| "Failed to run has() on slow store")?
-                    .ok_or_else(|| {
-                        let err = make_err!(
-                            Code::NotFound,
-                            "Object {} not found in either fast or slow store. \
-                                If using multiple workers, ensure all workers share the same CAS storage path.",
-                            key.as_str()
-                        );
-                        if let StoreKey::Digest(d) = key.borrow() {
-                            err.with_context(ErrorContext::MissingDigest {
-                                hash: d.packed_hash().to_string(),
-                                size: d.size_bytes().try_into().unwrap_or(i64::MAX),
-                            })
-                        } else {
-                            err
-                        }
-                    })?
-            )
+            let slow_store_size = self
+                .slow_store
+                .has(key.borrow())
+                .await
+                .err_tip(|| "Failed to run has() on slow store")?
+                .ok_or_else(|| {
+                    let err = make_err!(
+                        Code::NotFound,
+                        "Object {} not found in either fast or slow store. \
+                            If using multiple workers, ensure all workers share the same CAS storage path.",
+                        key.as_str()
+                    );
+                    if let StoreKey::Digest(d) = key.borrow() {
+                        err.with_context(ErrorContext::MissingDigest {
+                            hash: d.packed_hash().to_string(),
+                            size: d.size_bytes().try_into().unwrap_or(i64::MAX),
+                        })
+                    } else {
+                        err
+                    }
+                })?;
+            Self::populate_upload_size(&key, slow_store_size)
         };
 
         let send_range = offset..length.map_or(u64::MAX, |length| length + offset);
@@ -318,6 +336,7 @@ impl FastSlowStore {
 
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
+        let error_key = key.borrow();
         let data_stream_fut = async move {
             let mut maybe_writer_pin = maybe_writer.map(Pin::new);
             loop {
@@ -326,6 +345,21 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to read data data buffer from slow store")?;
                 if output_buf.is_empty() {
+                    // A slow store can end a read early with a clean EOF, for
+                    // example when the blob is evicted mid-read. Fail instead
+                    // of sending EOF, so neither the fast store nor the reader
+                    // accepts the truncated data as the whole blob.
+                    if let UploadSizeInfo::ExactSize(expected_size) = reader_stream_size
+                        && bytes_received != expected_size
+                    {
+                        return Err(make_err!(
+                            Code::DataLoss,
+                            "Slow store returned {} bytes for {}, expected {}",
+                            bytes_received,
+                            error_key.as_str(),
+                            expected_size
+                        ));
+                    }
                     // Write out our EOF.
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.
@@ -797,45 +831,56 @@ impl StoreDriver for FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // `has()` can report a stale map entry whose file is gone, so
-        // get_part may still return NotFound; fall through to the slow
-        // store unless we have already streamed bytes to the caller.
-        // One existence check, reused: this is the hot read path and `has()`
-        // on a filesystem fast store is a syscall.
-        let in_fast_store = self.fast_store.has(key.borrow()).await?.is_some();
-        if !in_fast_store {
-            record_store_tier_read("fast", "miss");
-        }
-        if in_fast_store {
-            let bytes_before = writer.get_bytes_written();
-            match self
-                .fast_store
-                .get_part(key.borrow(), writer.borrow_mut(), offset, length)
-                .await
-            {
-                Ok(()) => {
-                    self.metrics
-                        .fast_store_hit_count
-                        .fetch_add(1, Ordering::Acquire);
-                    self.metrics
-                        .fast_store_downloaded_bytes
-                        .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
-                    record_store_tier_read("fast", "hit");
-                    record_store_tier_io("fast", "read", writer.get_bytes_written());
-                    return Ok(());
-                }
-                Err(e)
-                    if e.code == Code::NotFound && writer.get_bytes_written() == bytes_before =>
-                {
-                    self.metrics
-                        .fast_store_stale_map_falls_through
-                        .fetch_add(1, Ordering::Acquire);
-                    record_store_tier_read("fast", "stale");
-                    warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
-                    // fall through to populate path
-                }
-                Err(e) => return Err(e),
+        // The fast store can hold a stale map entry whose file is gone, so a
+        // read of a key it reports present may still return NotFound; fall
+        // through to the slow store unless we have already streamed bytes
+        // to the caller. A key it does not hold at all is an ordinary miss.
+        let bytes_before = writer.get_bytes_written();
+        // A filesystem or memory fast store answers "is it here?" and streams
+        // it with one lookup in its eviction map, where `has()` followed by
+        // `get_part()` took that store-wide lock twice per read. Only the
+        // store itself qualifies: a wrapper around it may do more in `has()`
+        // or `get_part()`, so it keeps the separate existence check.
+        let fast_driver = self.fast_store.as_store_driver().as_any();
+        let fast_read =
+            if let Some(filesystem_store) = fast_driver.downcast_ref::<FilesystemStore>() {
+                Pin::new(filesystem_store)
+                    .get_part_if_present(key.borrow(), writer.borrow_mut(), offset, length)
+                    .await
+            } else if let Some(memory_store) = fast_driver.downcast_ref::<MemoryStore>() {
+                Pin::new(memory_store)
+                    .get_part_if_present(key.borrow(), writer.borrow_mut(), offset, length)
+                    .await
+            } else if self.fast_store.has(key.borrow()).await?.is_some() {
+                self.fast_store
+                    .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                    .await
+                    .map(|()| true)
+            } else {
+                Ok(false)
+            };
+        match fast_read {
+            Ok(true) => {
+                self.metrics
+                    .fast_store_hit_count
+                    .fetch_add(1, Ordering::Acquire);
+                self.metrics
+                    .fast_store_downloaded_bytes
+                    .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                record_store_tier_read("fast", "hit");
+                record_store_tier_io("fast", "read", writer.get_bytes_written());
+                return Ok(());
             }
+            Ok(false) => record_store_tier_read("fast", "miss"),
+            Err(e) if e.code == Code::NotFound && writer.get_bytes_written() == bytes_before => {
+                self.metrics
+                    .fast_store_stale_map_falls_through
+                    .fetch_add(1, Ordering::Acquire);
+                record_store_tier_read("fast", "stale");
+                warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
+                // fall through to populate path
+            }
+            Err(e) => return Err(e),
         }
 
         // If the fast store is noop or read only or update only then bypass it.

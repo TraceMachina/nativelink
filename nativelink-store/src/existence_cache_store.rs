@@ -14,12 +14,12 @@
 
 use core::pin::Pin;
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::StreamExt;
-use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
 use nativelink_error::{Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
@@ -32,7 +32,7 @@ use nativelink_util::store_trait::{
     RemoveCallback, RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 #[derive(Clone, Debug)]
 struct ExistenceItem(u64);
@@ -49,17 +49,67 @@ impl LenEntry for ExistenceItem {
     }
 }
 
+/// The updates of one key that are in flight, see `in_flight_updates`.
+#[derive(Debug, Default)]
+struct InFlightUpdates {
+    count: usize,
+    /// Whether the inner store evicted the key since the oldest of these
+    /// updates started.
+    evicted: bool,
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
     existence_cache: EvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>,
 
-    // We need to pause them temporarily when inserting into the inner store
-    // as if it immediately expires them, we should only apply the remove callbacks
-    // afterwards. If this is None, we're not pausing; if it's Some it's the location to
-    // store them in temporarily
-    pause_remove_callbacks: Mutex<Option<Vec<StoreKey<'static>>>>,
+    // The inner store can evict a key while an update of it is in flight,
+    // even as part of inserting it. The remove callback then runs before the
+    // update adds the key to the existence cache, so it removes nothing and
+    // the cache would report a blob that is gone. Updates register their key
+    // here and remove callbacks flag it, so the update knows not to cache it.
+    in_flight_updates: Mutex<HashMap<DigestInfo, InFlightUpdates>>,
+}
+
+/// Registers an update of `digest` in `in_flight_updates` until dropped.
+#[derive(Debug)]
+struct InFlightUpdateGuard<'a, I: InstantWrapper> {
+    store: &'a ExistenceCacheStore<I>,
+    digest: DigestInfo,
+}
+
+impl<'a, I: InstantWrapper> InFlightUpdateGuard<'a, I> {
+    fn new(store: &'a ExistenceCacheStore<I>, digest: DigestInfo) -> Self {
+        store
+            .in_flight_updates
+            .lock()
+            .entry(digest)
+            .or_default()
+            .count += 1;
+        Self { store, digest }
+    }
+
+    /// Whether the inner store evicted the key since the update started.
+    fn evicted(&self) -> bool {
+        self.store
+            .in_flight_updates
+            .lock()
+            .get(&self.digest)
+            .is_some_and(|in_flight| in_flight.evicted)
+    }
+}
+
+impl<I: InstantWrapper> Drop for InFlightUpdateGuard<'_, I> {
+    fn drop(&mut self) {
+        let mut in_flight_updates = self.store.in_flight_updates.lock();
+        if let Entry::Occupied(mut entry) = in_flight_updates.entry(self.digest) {
+            entry.get_mut().count -= 1;
+            if entry.get().count == 0 {
+                entry.remove();
+            }
+        }
+    }
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -75,10 +125,15 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheStore<I> {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         debug!(?store_key, "Removing item from cache due to callback");
         let digest = store_key.borrow().into_digest();
+        if let Some(in_flight) = self.in_flight_updates.lock().get_mut(&digest) {
+            in_flight.evicted = true;
+        }
         Box::pin(async move {
             let deleted_key = self.existence_cache.remove(&digest).await;
             if !deleted_key {
-                info!(?store_key, "Failed to delete key from cache on callback");
+                // Expected for most keys: the inner store evicts plenty that
+                // were never queried through this cache.
+                trace!(?store_key, "Failed to delete key from cache on callback");
             }
         })
     }
@@ -96,17 +151,12 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let cache = self.cache.upgrade();
         if let Some(local_cache) = cache {
-            if let Some(callbacks) = local_cache.pause_remove_callbacks.lock().as_mut() {
-                callbacks.push(store_key.into_owned());
-            } else {
-                let store_key = store_key.into_owned();
-                return Box::pin(async move {
-                    local_cache.callback(store_key).await;
-                });
-            }
-        } else {
-            debug!("Cache dropped, so not doing callback");
+            let store_key = store_key.into_owned();
+            return Box::pin(async move {
+                local_cache.callback(store_key).await;
+            });
         }
+        debug!("Cache dropped, so not doing callback");
         Box::pin(async {})
     }
 }
@@ -122,7 +172,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         let existence_cache_store = Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
-            pause_remove_callbacks: Mutex::new(None),
+            in_flight_updates: Mutex::new(HashMap::new()),
         });
         let other_ref = Arc::downgrade(&existence_cache_store);
         existence_cache_store
@@ -251,29 +301,21 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(size);
         }
-        {
-            let mut locked_callbacks = self.pause_remove_callbacks.lock();
-            if locked_callbacks.is_none() {
-                locked_callbacks.replace(vec![]);
-            }
-        }
+        let in_flight_update = InFlightUpdateGuard::new(self.get_ref(), digest);
         trace!(?digest, "Inserting into inner cache");
         let result = self.inner_store.update(digest, reader, size_info).await;
-        if let Ok(size) = &result {
+        if let Ok(size) = &result
+            && !in_flight_update.evicted()
+        {
             trace!(?digest, "Inserting into existence cache");
             let _ = self
                 .existence_cache
                 .insert(digest, ExistenceItem(*size))
                 .await;
-        }
-        {
-            let maybe_keys = self.pause_remove_callbacks.lock().take();
-            if let Some(keys) = maybe_keys {
-                let mut callbacks: FuturesUnordered<_> = keys
-                    .into_iter()
-                    .map(|store_key| self.callback(store_key))
-                    .collect();
-                while callbacks.next().await.is_some() {}
+            // A remove callback that raced the insert may have run first and
+            // removed nothing, so check again now that the key is cached.
+            if in_flight_update.evicted() {
+                self.existence_cache.remove(&digest).await;
             }
         }
         result

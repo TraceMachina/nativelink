@@ -559,6 +559,68 @@ async fn leased_key_survives_ttl_until_released() -> Result<(), Error> {
     Ok(())
 }
 
+// A promoting read learns whether a key is leased from the eviction
+// candidate index, so reading a leased entry must neither reap it nor turn
+// it into a candidate.
+#[nativelink_test]
+async fn promoting_read_of_leased_key_neither_reaps_nor_exposes_it() -> Result<(), Error> {
+    const DATA: &str = "12345678";
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 5,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let leased_key = DigestInfo::try_new(HASH1, 0)?;
+    let other_key = DigestInfo::try_new(HASH2, 0)?;
+
+    evicting_map.lease_key(leased_key);
+    evicting_map
+        .insert(leased_key, Bytes::from(DATA).into())
+        .await;
+    MockClock::advance(Duration::from_secs(10));
+
+    assert_eq!(
+        evicting_map.get(&leased_key).await,
+        Some(Bytes::from(DATA).into()),
+        "TTL expiry must not reap a leased input on get",
+    );
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+        "TTL expiry must not reap a leased input on a promoting size lookup",
+    );
+
+    evicting_map
+        .insert(other_key, Bytes::from(DATA).into())
+        .await;
+    assert_eq!(
+        evicting_map.size_for_key(&other_key).await,
+        None,
+        "the unleased entry is the only eviction candidate",
+    );
+    assert_eq!(
+        evicting_map.get(&leased_key).await,
+        Some(Bytes::from(DATA).into()),
+        "reading a leased entry must not make it an eviction candidate",
+    );
+
+    // The reads above refreshed its age, so it outlives the release...
+    evicting_map.release_key(&leased_key).await;
+    assert_eq!(
+        evicting_map.size_for_key(&leased_key).await,
+        Some(DATA.len() as u64),
+    );
+    // ...and is reaped once it expires unleased.
+    MockClock::advance(Duration::from_secs(6));
+    assert_eq!(evicting_map.get(&leased_key).await, None);
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn insert_purges_to_low_watermark_at_max_bytes() -> Result<(), Error> {
     const DATA: &str = "12345678";
@@ -1260,6 +1322,51 @@ async fn get_of_expired_key_reaps_only_that_key() -> Result<(), Error> {
     Ok(())
 }
 
+// Eviction, replacement and expiry are logged after the map lock is
+// released; every event must still be written once it is.
+#[nativelink_test]
+async fn eviction_events_are_still_logged() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 10,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let key1 = DigestInfo::try_new(HASH1, 0)?;
+    let key2 = DigestInfo::try_new(HASH2, 0)?;
+    let key3 = DigestInfo::try_new(HASH3, 0)?;
+
+    evicting_map
+        .insert(key1, Bytes::from_static(b"1").into())
+        .await;
+    evicting_map
+        .insert(key1, Bytes::from_static(b"2").into())
+        .await;
+    assert!(logs_contain("Evicting old item"));
+
+    evicting_map
+        .insert(key2, Bytes::from_static(b"3").into())
+        .await;
+    assert!(logs_contain(&format!("Evicting key={key1:?}")));
+
+    MockClock::advance(Duration::from_secs(11));
+    assert_eq!(evicting_map.get(&key2).await, None);
+    assert!(logs_contain("Item expired, evicting"));
+
+    evicting_map.lease_key(key3);
+    evicting_map
+        .insert(key3, Bytes::from_static(b"4").into())
+        .await;
+    assert!(logs_contain(
+        "Eviction requested, but every resident entry is leased"
+    ));
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn snapshot_display_empty() -> Result<(), Error> {
     let policies = vec![
@@ -1327,5 +1434,199 @@ async fn snapshot_display_info() -> Result<(), Error> {
         format!("{snapshot}"),
         "Bytes: 3 of 11 (27.273%); Items: 1 of 6 (16.667%); Timeout: unlimited"
     );
+    Ok(())
+}
+
+fn bytes(data: &'static str) -> BytesWrapper {
+    Bytes::from_static(data.as_bytes()).into()
+}
+
+/// A distinct digest for each `index`, so tests can build large batches.
+fn indexed_digest(index: usize) -> DigestInfo {
+    let mut hash = [0u8; 32];
+    hash[..8].copy_from_slice(&(index as u64).to_le_bytes());
+    DigestInfo::new(hash, 0)
+}
+
+// `get_many` answers every key exactly like `get` would, in input order:
+// hits, misses, duplicates, an expired entry (reaped), and an expired but
+// leased entry (kept). Keys that are not asked about are left alone.
+#[nativelink_test]
+async fn get_many_matches_get_in_input_order() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 10,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let expired_key = DigestInfo::try_new(HASH1, 0)?;
+    let untouched_expired_key = DigestInfo::try_new(HASH2, 0)?;
+    let leased_expired_key = DigestInfo::try_new(HASH3, 0)?;
+    let fresh_key = DigestInfo::try_new(HASH4, 0)?;
+    let missing_key = indexed_digest(1);
+
+    evicting_map.insert(expired_key, bytes("1")).await;
+    evicting_map
+        .insert(untouched_expired_key, bytes("22"))
+        .await;
+    evicting_map.lease_key(leased_expired_key);
+    evicting_map.insert(leased_expired_key, bytes("333")).await;
+    MockClock::advance(Duration::from_secs(5));
+    evicting_map.insert(fresh_key, bytes("4444")).await;
+    // evict_older_than = 2: everything stored at T=0 has expired.
+    MockClock::advance(Duration::from_secs(7));
+
+    let results = evicting_map
+        .get_many([
+            &fresh_key,
+            &missing_key,
+            &expired_key,
+            &leased_expired_key,
+            &fresh_key,
+        ])
+        .await;
+    assert_eq!(
+        results,
+        vec![
+            Some(bytes("4444")),
+            None,
+            None,
+            Some(bytes("333")),
+            Some(bytes("4444")),
+        ],
+    );
+    assert!(logs_contain("Item expired, evicting"));
+    // Only the expired key that was asked for is reaped.
+    assert_eq!(evicting_map.len_for_test(), 3);
+    assert_eq!(evicting_map.get(&expired_key).await, None);
+
+    assert_eq!(
+        evicting_map
+            .get_many(core::iter::empty::<&DigestInfo>())
+            .await,
+        Vec::new(),
+    );
+
+    Ok(())
+}
+
+// Like `get`, `get_many` promotes each hit and refreshes its age.
+#[nativelink_test]
+async fn get_many_promotes_and_refreshes_like_get() -> Result<(), Error> {
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 3,
+            max_seconds: 10,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let key1 = DigestInfo::try_new(HASH1, 0)?;
+    let key2 = DigestInfo::try_new(HASH2, 0)?;
+    let key3 = DigestInfo::try_new(HASH3, 0)?;
+    let key4 = DigestInfo::try_new(HASH4, 0)?;
+
+    for key in [key1, key2, key3] {
+        evicting_map.insert(key, bytes("1")).await;
+    }
+    MockClock::advance(Duration::from_secs(5));
+    assert_eq!(evicting_map.get_many([&key1]).await, vec![Some(bytes("1"))]);
+
+    // Over max_count: key1 was promoted, so key2 is the LRU candidate.
+    evicting_map.insert(key4, bytes("1")).await;
+    assert_eq!(
+        evicting_map.get_many([&key2, &key1]).await,
+        vec![None, Some(bytes("1"))],
+    );
+
+    // At T=12 anything last touched at T=0 has expired, but key1's age was
+    // refreshed to T=5 by the read.
+    MockClock::advance(Duration::from_secs(7));
+    assert_eq!(
+        evicting_map.get_many([&key3, &key1]).await,
+        vec![None, Some(bytes("1"))],
+    );
+
+    Ok(())
+}
+
+// A batch larger than one lock chunk still answers every key in order.
+#[nativelink_test]
+async fn get_many_spans_lock_chunks() -> Result<(), Error> {
+    const RESIDENT: usize = 2500;
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    evicting_map
+        .insert_many((0..RESIDENT).map(|index| {
+            let data = Bytes::from(index.to_string());
+            (indexed_digest(index), BytesWrapper::from(data))
+        }))
+        .await;
+
+    // Newest first, with a miss after every resident key.
+    let keys: Vec<DigestInfo> = (0..RESIDENT)
+        .rev()
+        .flat_map(|index| [indexed_digest(index), indexed_digest(RESIDENT + index)])
+        .collect();
+    let results = evicting_map.get_many(keys.iter()).await;
+    assert_eq!(results.len(), keys.len());
+    for (key, result) in keys.iter().zip(results) {
+        assert_eq!(result, evicting_map.get(key).await, "for {key:?}");
+    }
+
+    Ok(())
+}
+
+// `lease_keys` counts references like repeated `lease_key` calls, across
+// lock chunks.
+#[nativelink_test]
+async fn lease_keys_matches_lease_key() -> Result<(), Error> {
+    const LEASED: usize = 1500;
+    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 1,
+            max_seconds: 0,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    let keys: Vec<DigestInfo> = (0..LEASED).map(indexed_digest).collect();
+    // The first key is leased twice.
+    evicting_map.lease_keys(keys.iter().copied().chain([keys[0]]));
+    for key in &keys {
+        evicting_map.insert(*key, bytes("1")).await;
+    }
+    assert_eq!(
+        evicting_map.len_for_test(),
+        LEASED,
+        "leased entries are never evicted",
+    );
+
+    evicting_map.release_keys(keys.iter()).await;
+    assert_eq!(
+        evicting_map.len_for_test(),
+        1,
+        "only the twice-leased key is still leased",
+    );
+    assert_eq!(evicting_map.size_for_key(&keys[0]).await, Some(1));
+
+    evicting_map.release_keys([&keys[0]]).await;
+    evicting_map
+        .insert(DigestInfo::try_new(HASH1, 0)?, bytes("1"))
+        .await;
+    assert_eq!(evicting_map.size_for_key(&keys[0]).await, None);
+
     Ok(())
 }

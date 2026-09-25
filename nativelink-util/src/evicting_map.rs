@@ -31,7 +31,7 @@ use nativelink_metric::MetricsComponent;
 use opentelemetry::KeyValue;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::{Level, debug, info};
 
 use crate::instant_wrapper::InstantWrapper;
 use crate::metrics::{record_cache_entries_delta, saturating_i64};
@@ -139,14 +139,99 @@ struct State<
     /// Size and entry-count changes waiting to be reported as `cache.size` and
     /// `cache.entries`. Recording to `OpenTelemetry` costs far more than the
     /// plain atomic counters beside it, so the mutation paths only do integer
-    /// arithmetic here and the totals are flushed once the lock is released.
-    /// A flush that is missed only delays the next update, it never loses a
-    /// change.
+    /// arithmetic here. Each critical section takes what has accumulated just
+    /// before it releases the lock and records it afterwards, so reporting
+    /// never acquires the lock a second time. A section that does not take
+    /// the changes only delays them to the next one, it never loses them.
     pending_size_delta: i64,
     pending_entries_delta: i64,
+    /// Set under the lock when `cache.size` and `cache.entries` reporting is
+    /// enabled, so every change is either part of the initial totals or taken
+    /// by exactly one later critical section, never both.
+    cache_size_metrics_enabled: bool,
 }
 
 type RemoveFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Size and entry-count changes taken from the state under its lock, to be
+/// reported as `cache.size` and `cache.entries` once the lock is released.
+#[derive(Debug, Clone, Copy)]
+struct CacheSizeDelta {
+    size: i64,
+    entries: i64,
+}
+
+/// Most keys a batched call handles per acquisition of the state lock, so a
+/// large batch still lets other callers in between chunks.
+const MAX_KEYS_PER_LOCK: usize = 1024;
+
+/// Entries a read found expired and removed under the state lock. Logging,
+/// remove callbacks and `unref()` for them run once the lock is released.
+struct Reaped<K, T> {
+    entries: Vec<(K, T)>,
+    removal_futures: Vec<RemoveFuture>,
+}
+
+impl<K, T> Reaped<K, T> {
+    const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            removal_futures: Vec::new(),
+        }
+    }
+}
+
+/// Counters captured when an eviction pass finds every resident entry leased.
+#[derive(Debug, Clone, Copy)]
+struct AllLeasedSnapshot {
+    resident_items: usize,
+    evictable_items: usize,
+    lease_keys: usize,
+    leased_items: u64,
+    leased_bytes: u64,
+    resident_bytes: u64,
+}
+
+/// Eviction and replacement log events gathered under the state lock and
+/// written by `emit` once it is released. The stdout log layer writes
+/// synchronously, so logging inside the critical section would hold the
+/// store-wide lock across a `write(2)` per entry.
+#[derive(Debug)]
+struct EvictionLogs<K> {
+    replaced: Vec<K>,
+    evicted: Vec<K>,
+    all_leased: Option<AllLeasedSnapshot>,
+}
+
+impl<K: Debug> EvictionLogs<K> {
+    const fn new() -> Self {
+        Self {
+            replaced: Vec::new(),
+            evicted: Vec::new(),
+            all_leased: None,
+        }
+    }
+
+    fn emit(self) {
+        for key in &self.replaced {
+            debug!(?key, "Evicting old item");
+        }
+        if let Some(snapshot) = self.all_leased {
+            debug!(
+                resident_items = snapshot.resident_items,
+                evictable_items = snapshot.evictable_items,
+                lease_keys = snapshot.lease_keys,
+                leased_items = snapshot.leased_items,
+                leased_bytes = snapshot.leased_bytes,
+                resident_bytes = snapshot.resident_bytes,
+                "Eviction requested, but every resident entry is leased",
+            );
+        }
+        for key in &self.evicted {
+            debug!(?key, "Evicting");
+        }
+    }
+}
 
 impl<
     K: Ord + Hash + Eq + Clone + Debug + Send + Sync + Borrow<Q>,
@@ -159,14 +244,23 @@ impl<
         self.leases.contains_key(key)
     }
 
-    /// Keep candidate recency aligned with a normal read from `lru`.
-    /// Returns whether the key is leased so callers do not repeat the lookup.
-    fn touch_evictable(&mut self, key: &Q) -> bool {
-        if self.is_leased(key) {
-            return true;
-        }
-        self.evictable_lru.get(key);
-        false
+    /// Looks up a resident entry and reports whether it is leased. Unless
+    /// `peek` is set, an unleased entry becomes the most recently used
+    /// eviction candidate.
+    ///
+    /// Only `evictable_lru` is re-linked. Eviction walks that index alone,
+    /// so the recency order of `lru` is never read and promoting there as
+    /// well would be a second re-link for nothing. A resident key is in
+    /// `evictable_lru` exactly when it is unleased, so the promoting lookup
+    /// also answers whether the key is leased.
+    fn get_resident(&mut self, key: &Q, peek: bool) -> Option<(&mut EvictionItem<T>, bool)> {
+        let entry = self.lru.peek_mut(key)?;
+        let is_leased = if peek {
+            self.leases.contains_key(key)
+        } else {
+            self.evictable_lru.get(key).is_none()
+        };
+        Some((entry, is_leased))
     }
 
     /// Add a newly written key to the candidate index unless it is reserved
@@ -309,6 +403,19 @@ impl<
     fn add_remove_callback(&mut self, callback: C) {
         self.remove_callbacks.push(callback);
     }
+
+    /// Takes the size and entry-count changes accumulated since the last
+    /// call, or `None` while reporting is off or nothing changed.
+    fn take_cache_size_delta(&mut self) -> Option<CacheSizeDelta> {
+        if !self.cache_size_metrics_enabled {
+            return None;
+        }
+        let delta = CacheSizeDelta {
+            size: core::mem::take(&mut self.pending_size_delta),
+            entries: core::mem::take(&mut self.pending_entries_delta),
+        };
+        (delta.size != 0 || delta.entries != 0).then_some(delta)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -417,6 +524,7 @@ where
                 remove_callbacks: Vec::new(),
                 pending_size_delta: 0,
                 pending_entries_delta: 0,
+                cache_size_metrics_enabled: false,
             }),
             anchor_time,
             max_bytes: config.max_bytes as u64,
@@ -434,38 +542,30 @@ where
         if self.cache_size_attrs.set(attrs).is_err() {
             return;
         }
-        // Nothing has been reported yet, so the first flush is the map's
-        // current totals. Overwrite rather than add: the mutations that filled
-        // the map accumulated deltas too, and counting those as well would
-        // report everything already resident twice.
-        {
+        let cache_size_delta = {
             let mut state = self.state.lock();
+            // Nothing has been reported yet, so the first report is the map's
+            // current totals. Overwrite rather than add: the mutations that
+            // filled the map accumulated deltas too, and counting those as well
+            // would report everything already resident twice.
             state.pending_size_delta = saturating_i64(state.sum_store_size);
             state.pending_entries_delta = i64::try_from(state.lru.len()).unwrap_or(i64::MAX);
-        }
-        self.flush_cache_size_metrics();
+            state.cache_size_metrics_enabled = true;
+            state.take_cache_size_delta()
+        };
+        self.record_cache_size_delta(cache_size_delta);
     }
 
-    /// Records the size and entry-count changes accumulated under the lock.
+    /// Records changes taken with `State::take_cache_size_delta`.
     ///
     /// Call after releasing the state lock: reporting to `OpenTelemetry` is
     /// much costlier than the counters updated inside it, and the state lock is
     /// contended across the whole store.
-    fn flush_cache_size_metrics(&self) {
-        let Some(attrs) = self.cache_size_attrs.get() else {
+    fn record_cache_size_delta(&self, delta: Option<CacheSizeDelta>) {
+        let (Some(delta), Some(attrs)) = (delta, self.cache_size_attrs.get()) else {
             return;
         };
-        let (size_delta, entries_delta) = {
-            let mut state = self.state.lock();
-            (
-                core::mem::take(&mut state.pending_size_delta),
-                core::mem::take(&mut state.pending_entries_delta),
-            )
-        };
-        if size_delta == 0 && entries_delta == 0 {
-            return;
-        }
-        record_cache_entries_delta(size_delta, entries_delta, attrs);
+        record_cache_entries_delta(delta.size, delta.entries, attrs);
     }
 
     // Only used for tests
@@ -514,17 +614,19 @@ where
         self.state.lock().lru.len()
     }
 
+    /// `now` is `elapsed_seconds()` read once per operation, before taking the
+    /// state lock, so the clock is never read inside the critical section.
     fn should_evict(
         &self,
         lru_len: usize,
         peek_entry: &EvictionItem<T>,
         sum_store_size: u64,
         max_bytes: u64,
+        now: i32,
     ) -> bool {
         let is_over_size = max_bytes != 0 && sum_store_size >= max_bytes;
 
-        let elapsed_seconds = self.elapsed_seconds();
-        let evict_older_than_seconds = elapsed_seconds.saturating_sub(self.max_seconds);
+        let evict_older_than_seconds = now.saturating_sub(self.max_seconds);
         let old_item_exists =
             self.max_seconds != 0 && peek_entry.seconds_since_anchor < evict_older_than_seconds;
 
@@ -552,18 +654,22 @@ where
     }
 
     #[must_use]
-    fn evict_items(&self, state: &mut State<K, Q, T, C>) -> (Vec<T>, Vec<RemoveFuture>) {
+    fn evict_items(
+        &self,
+        state: &mut State<K, Q, T, C>,
+        now: i32,
+        logs: &mut EvictionLogs<K>,
+    ) -> (Vec<T>, Vec<RemoveFuture>) {
         let Some(first_entry) = state.peek_evictable() else {
             if !state.lru.is_empty() {
-                debug!(
-                    resident_items = state.lru.len(),
-                    evictable_items = state.evictable_lru.len(),
-                    lease_keys = state.leases.len(),
-                    leased_items = state.leased_items,
-                    leased_bytes = state.leased_bytes,
-                    resident_bytes = state.sum_store_size,
-                    "Eviction requested, but every resident entry is leased",
-                );
+                logs.all_leased = Some(AllLeasedSnapshot {
+                    resident_items: state.lru.len(),
+                    evictable_items: state.evictable_lru.len(),
+                    lease_keys: state.leases.len(),
+                    leased_items: state.leased_items,
+                    leased_bytes: state.leased_bytes,
+                    resident_bytes: state.sum_store_size,
+                });
             }
             return (Vec::new(), Vec::new());
         };
@@ -577,6 +683,7 @@ where
                 first_entry,
                 state.sum_store_size,
                 self.max_bytes,
+                now,
             ) {
             self.max_bytes.saturating_sub(self.evict_bytes)
         } else {
@@ -585,21 +692,26 @@ where
 
         let mut items_to_unref = Vec::new();
         let mut removal_futures = Vec::new();
+        // Evicted keys are only kept for the log when debug logging is on;
+        // otherwise they are dropped here, as before.
+        let log_evictions = tracing::enabled!(Level::DEBUG);
 
         // Pop the candidate index directly instead of collecting and cloning
         // all victim keys. Both indexes are protected by the same lock.
         while let Some(entry) = state.peek_evictable() {
-            if !self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes) {
+            if !self.should_evict(state.lru.len(), entry, state.sum_store_size, max_bytes, now) {
                 break;
             }
 
             let (key, eviction_item) = state
                 .pop_evictable()
                 .expect("Evictable LRU key disappeared while state was locked");
-            debug!(?key, "Evicting");
             let (data, futures) = state.remove(key.borrow(), &eviction_item, false);
             items_to_unref.push(data);
             removal_futures.extend(futures);
+            if log_evictions {
+                logs.evicted.push(key);
+            }
         }
 
         (items_to_unref, removal_futures)
@@ -631,41 +743,33 @@ where
         // to be able to borrow a `Q`.
         R: Borrow<Q> + Send,
     {
-        let (removal_futures, data_to_unref) = {
+        let now = self.elapsed_seconds();
+        let (removal_futures, data_to_unref, expired_keys, cache_size_delta) = {
             let mut state = self.state.lock();
 
             let lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
             let mut removal_futures = Vec::new();
+            let mut expired_keys = Vec::new();
             for (key, result) in keys.into_iter().zip(results.iter_mut()) {
-                let is_leased = if peek {
-                    state.is_leased(key.borrow())
-                } else {
-                    state.touch_evictable(key.borrow())
-                };
-                let maybe_entry = if peek {
-                    state.lru.peek_mut(key.borrow())
-                } else {
-                    state.lru.get_mut(key.borrow())
-                };
-                match maybe_entry {
-                    Some(entry) => {
+                match state.get_resident(key.borrow(), peek) {
+                    Some((entry, is_leased)) => {
                         // Note: We need to check eviction because the item might be expired
                         // based on the current time. In such case, we remove the item while
                         // we are here.
-                        if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX) {
+                        if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX, now) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
-                                info!(?key, "Item expired, evicting");
                                 let (data, futures) =
                                     state.remove(key.borrow(), &eviction_item, false);
                                 // Store data for later unref - we can't drop state here as we're still iterating
                                 data_to_unref.push(data);
                                 removal_futures.extend(futures);
+                                expired_keys.push(key);
                             }
                         } else {
                             if !peek {
-                                entry.seconds_since_anchor = self.elapsed_seconds();
+                                entry.seconds_since_anchor = now;
                             }
                             *result = Some(entry.data.len());
                         }
@@ -673,11 +777,19 @@ where
                     None => *result = None,
                 }
             }
-            (removal_futures, data_to_unref)
+            (
+                removal_futures,
+                data_to_unref,
+                expired_keys,
+                state.take_cache_size_delta(),
+            )
         };
 
-        // Perform the async callbacks outside of the lock
-        self.flush_cache_size_metrics();
+        // Log and perform the async callbacks outside of the lock
+        for key in &expired_keys {
+            info!(?key, "Item expired, evicting");
+        }
+        self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
         let mut callbacks: FuturesUnordered<_> =
@@ -713,40 +825,99 @@ where
     /// inserts; it is not driven by reads, since `sum_store_size` cannot
     /// grow without an insert.
     pub async fn get(&self, key: &Q) -> Option<T> {
-        // Lazily reap *only* the requested entry if it is itself expired;
-        // leave the rest for inserts (which already run the global eviction
-        // loop).
-        let (data, expired_data, removal_futures) = {
+        let now = self.elapsed_seconds();
+        let mut reaped = Reaped::new();
+        let (data, cache_size_delta) = {
             let mut state = self.state.lock();
-            let lru_len = state.lru.len();
-            let is_leased = state.touch_evictable(key.borrow());
-            let entry = state.lru.get_mut(key.borrow())?;
-            // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
-            // consult TTL / count predicates — never the global byte budget.
-            // Mirrors the per-key reap path in `sizes_for_keys`.
-            if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX) {
-                let (popped_key, eviction_item) = state
-                    .lru
-                    .pop_entry(key.borrow())
-                    .expect("entry was just observed via get_mut");
-                info!(?popped_key, "Item expired, evicting");
-                let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
-                (None, Some(data), futures)
-            } else {
-                entry.seconds_since_anchor = self.elapsed_seconds();
-                (Some(entry.data.clone()), None, Vec::new())
-            }
+            let data = self.get_locked(&mut state, key, now, &mut reaped);
+            (data, state.take_cache_size_delta())
         };
-
-        // Drain remove_callbacks and unref the reaped entry outside the lock.
-        self.flush_cache_size_metrics();
-        let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
-        while callbacks.next().await.is_some() {}
-        if let Some(d) = expired_data {
-            d.unref().await;
-        }
-
+        self.finish_reaped(reaped, cache_size_delta).await;
         data
+    }
+
+    /// Same as `get()` for each of `keys`, returning the results in input
+    /// order.
+    ///
+    /// Takes the state lock once per `MAX_KEYS_PER_LOCK` keys instead of once
+    /// per key. Every key gets exactly what a `get()` of it would at that
+    /// point: a live entry is promoted and its age refreshed, and an expired,
+    /// unleased entry is reaped and reported as `None`.
+    pub async fn get_many<It, R>(&self, keys: It) -> Vec<Option<T>>
+    where
+        It: IntoIterator<Item = R> + Send,
+        // Note: It's not enough to have the keys themselves be Send. The
+        // returned iterator should be Send as well.
+        <It as IntoIterator>::IntoIter: Send,
+        R: Borrow<Q> + Send,
+    {
+        let mut keys = keys.into_iter().peekable();
+        let mut results = Vec::with_capacity(keys.size_hint().0);
+        while keys.peek().is_some() {
+            let now = self.elapsed_seconds();
+            let mut reaped = Reaped::new();
+            let cache_size_delta = {
+                let mut state = self.state.lock();
+                for key in keys.by_ref().take(MAX_KEYS_PER_LOCK) {
+                    results.push(self.get_locked(&mut state, key.borrow(), now, &mut reaped));
+                }
+                state.take_cache_size_delta()
+            };
+            self.finish_reaped(reaped, cache_size_delta).await;
+        }
+        results
+    }
+
+    /// The part of `get()` that runs under the state lock. Returns a live
+    /// entry's value after refreshing its age, or moves an expired entry into
+    /// `reaped` and returns `None`.
+    ///
+    /// Lazily reaps *only* the requested entry if it is itself expired; the
+    /// rest are left for inserts, which already run the global eviction loop.
+    fn get_locked(
+        &self,
+        state: &mut State<K, Q, T, C>,
+        key: &Q,
+        now: i32,
+        reaped: &mut Reaped<K, T>,
+    ) -> Option<T> {
+        let lru_len = state.lru.len();
+        let (entry, is_leased) = state.get_resident(key, false)?;
+        // Pass `sum_store_size=0` and `max_bytes=u64::MAX` so we only
+        // consult TTL / count predicates — never the global byte budget.
+        // Mirrors the per-key reap path in `sizes_for_keys`.
+        if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX, now) {
+            let (popped_key, eviction_item) = state
+                .lru
+                .pop_entry(key)
+                .expect("entry was just observed via get_resident");
+            let (data, futures) = state.remove(popped_key.borrow(), &eviction_item, false);
+            reaped.removal_futures.extend(futures);
+            reaped.entries.push((popped_key, data));
+            return None;
+        }
+        entry.seconds_since_anchor = now;
+        Some(entry.data.clone())
+    }
+
+    /// Logs, drains remove callbacks and unrefs what reads reaped. Call after
+    /// releasing the state lock.
+    async fn finish_reaped(&self, reaped: Reaped<K, T>, cache_size_delta: Option<CacheSizeDelta>) {
+        self.record_cache_size_delta(cache_size_delta);
+        if reaped.entries.is_empty() {
+            return;
+        }
+        for (popped_key, _) in &reaped.entries {
+            info!(?popped_key, "Item expired, evicting");
+        }
+        let mut callbacks: FuturesUnordered<_> = reaped.removal_futures.into_iter().collect();
+        while callbacks.next().await.is_some() {}
+        let mut callbacks: FuturesUnordered<_> = reaped
+            .entries
+            .iter()
+            .map(|(_, data)| data.unref())
+            .collect();
+        while callbacks.next().await.is_some() {}
     }
 
     /// Returns the replaced item if any.
@@ -787,20 +958,33 @@ where
     where
         F: FnOnce(&T, &T) -> bool + Send,
     {
-        let (items_to_unref, removal_futures) = {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
+        let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
 
-            state.touch_evictable(key.borrow());
-            if let Some(old_entry) = state.lru.get(key.borrow())
+            if let Some((old_entry, _)) = state.get_resident(key.borrow(), false)
                 && !cond(&old_entry.data, &data)
             {
                 return (false, None);
             }
 
-            self.inner_insert_many(&mut state, [(key, data)], seconds_since_anchor)
+            let (items_to_unref, removal_futures) = self.inner_insert_many(
+                &mut state,
+                [(key, data)],
+                seconds_since_anchor,
+                now,
+                &mut logs,
+            );
+            (
+                items_to_unref,
+                removal_futures,
+                state.take_cache_size_delta(),
+            )
         };
 
-        self.flush_cache_size_metrics();
+        logs.emit();
+        self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
 
@@ -831,12 +1015,21 @@ where
             return Vec::new();
         }
 
-        let (items_to_unref, removal_futures) = {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
+        let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
-            self.inner_insert_many(&mut state, inserts, self.elapsed_seconds())
+            let (items_to_unref, removal_futures) =
+                self.inner_insert_many(&mut state, inserts, now, now, &mut logs);
+            (
+                items_to_unref,
+                removal_futures,
+                state.take_cache_size_delta(),
+            )
         };
 
-        self.flush_cache_size_metrics();
+        logs.emit();
+        self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
 
@@ -863,6 +1056,21 @@ where
         self.state.lock().lease(key);
     }
 
+    /// Same as `lease_key()` for each of `keys`, taking the state lock once
+    /// per `MAX_KEYS_PER_LOCK` keys instead of once per key.
+    pub fn lease_keys<It>(&self, keys: It)
+    where
+        It: IntoIterator<Item = K>,
+    {
+        let mut keys = keys.into_iter().peekable();
+        while keys.peek().is_some() {
+            let mut state = self.state.lock();
+            for key in keys.by_ref().take(MAX_KEYS_PER_LOCK) {
+                state.lease(key);
+            }
+        }
+    }
+
     /// Release one lease and trim any entries that were retained while the
     /// lease was active.
     pub async fn release_key(&self, key: &Q) {
@@ -880,7 +1088,9 @@ where
         <It as IntoIterator>::IntoIter: Send,
         R: Borrow<Q> + Send,
     {
-        let (items_to_unref, removal_futures) = {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
+        let (items_to_unref, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
             let mut released_any = false;
             for key in keys {
@@ -892,13 +1102,20 @@ where
                 }
             }
             if released_any {
-                self.evict_items(&mut state)
+                let (items_to_unref, removal_futures) =
+                    self.evict_items(&mut state, now, &mut logs);
+                (
+                    items_to_unref,
+                    removal_futures,
+                    state.take_cache_size_delta(),
+                )
             } else {
-                (Vec::new(), Vec::new())
+                (Vec::new(), Vec::new(), None)
             }
         };
 
-        self.flush_cache_size_metrics();
+        logs.emit();
+        self.record_cache_size_delta(cache_size_delta);
         let mut futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while futures.next().await.is_some() {}
 
@@ -906,11 +1123,15 @@ where
         while futures.next().await.is_some() {}
     }
 
+    /// `seconds_since_anchor` stamps the inserted entries; `now` is the
+    /// current time the eviction pass that follows compares ages against.
     fn inner_insert_many<It>(
         &self,
         state: &mut State<K, Q, T, C>,
         inserts: It,
         seconds_since_anchor: i32,
+        now: i32,
+        logs: &mut EvictionLogs<K>,
     ) -> (Vec<T>, Vec<RemoveFuture>)
     where
         It: IntoIterator<Item = (K, T)> + Send,
@@ -920,6 +1141,7 @@ where
     {
         let mut replaced_items = Vec::new();
         let mut removal_futures = Vec::new();
+        let log_replacements = tracing::enabled!(Level::DEBUG);
         for (key, data) in inserts {
             let new_item_size = data.len();
             let eviction_item = EvictionItem {
@@ -929,8 +1151,10 @@ where
 
             if let Some((old_item, futures)) = state.put(&key, eviction_item) {
                 removal_futures.extend(futures);
-                debug!(?key, "Evicting old item");
                 replaced_items.push(old_item);
+                if log_replacements {
+                    logs.replaced.push(key);
+                }
             }
             state.sum_store_size += new_item_size;
             state.lifetime_inserted_bytes.add(new_item_size);
@@ -939,7 +1163,7 @@ where
         }
 
         // Perform eviction after all insertions
-        let (items_to_unref, futures) = self.evict_items(state);
+        let (items_to_unref, futures) = self.evict_items(state, now, logs);
         removal_futures.extend(futures);
 
         // Note: We cannot drop the state lock here since we're borrowing it,
@@ -950,11 +1174,13 @@ where
     }
 
     pub async fn remove(&self, key: &Q) -> bool {
-        let (items_to_unref, removed_item, removal_futures) = {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
+        let (items_to_unref, removed_item, removal_futures, cache_size_delta) = {
             let mut state = self.state.lock();
 
             // First perform eviction
-            let (evicted_items, mut removal_futures) = self.evict_items(&mut *state);
+            let (evicted_items, mut removal_futures) = self.evict_items(&mut state, now, &mut logs);
 
             // Then try to remove the requested item
             let removed = if let Some(entry) = state.lru.pop(key.borrow()) {
@@ -965,10 +1191,16 @@ where
                 None
             };
 
-            (evicted_items, removed, removal_futures)
+            (
+                evicted_items,
+                removed,
+                removal_futures,
+                state.take_cache_size_delta(),
+            )
         };
 
-        self.flush_cache_size_metrics();
+        logs.emit();
+        self.record_cache_size_delta(cache_size_delta);
         let mut callbacks: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while callbacks.next().await.is_some() {}
 
@@ -993,10 +1225,11 @@ where
     where
         F: FnOnce(&T) -> bool + Send,
     {
-        let (evicted_items, removal_futures, removed_item) = {
+        let now = self.elapsed_seconds();
+        let mut logs = EvictionLogs::new();
+        let (evicted_items, removal_futures, removed_item, cache_size_delta) = {
             let mut state = self.state.lock();
-            state.touch_evictable(key.borrow());
-            let Some(entry) = state.lru.get(key.borrow()) else {
+            let Some((entry, _)) = state.get_resident(key, false) else {
                 return false;
             };
             if !cond(&entry.data) {
@@ -1004,7 +1237,7 @@ where
             }
 
             // First perform eviction
-            let (evicted_items, mut removal_futures) = self.evict_items(&mut state);
+            let (evicted_items, mut removal_futures) = self.evict_items(&mut state, now, &mut logs);
 
             // Then try to remove the requested item
             let removed_item = if let Some(entry) = state.lru.pop(key.borrow()) {
@@ -1015,11 +1248,17 @@ where
                 None
             };
 
-            (evicted_items, removal_futures, removed_item)
+            (
+                evicted_items,
+                removal_futures,
+                removed_item,
+                state.take_cache_size_delta(),
+            )
         };
 
-        // Perform the async callbacks outside of the lock
-        self.flush_cache_size_metrics();
+        // Log and perform the async callbacks outside of the lock
+        logs.emit();
+        self.record_cache_size_delta(cache_size_delta);
         let mut removal_futures: FuturesUnordered<_> = removal_futures.into_iter().collect();
         while removal_futures.next().await.is_some() {}
 

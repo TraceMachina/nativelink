@@ -32,7 +32,7 @@ use bytes::{Bytes, BytesMut};
 use futures::stream::{StreamExt, TryStreamExt};
 use futures::{Future, TryFutureExt};
 use nativelink_config::stores::FilesystemSpec;
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{
@@ -44,8 +44,6 @@ use nativelink_util::fs::FileSlot;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 #[cfg(unix)]
 use nativelink_util::spawn_blocking;
-#[cfg(unix)]
-use nativelink_util::store_trait::RemoveItemCallback;
 use nativelink_util::store_trait::{
     RemoveCallback, StoreDriver, StoreKey, StoreKeyBorrow, StoreOptimizations, UploadSizeInfo,
 };
@@ -76,7 +74,7 @@ enum Version {
     V2,
 }
 
-/// Suffix for the sibling directory that holds per-digest read-only
+/// Suffix for the sibling directory that holds per-generation read-only
 /// **executable** (0o555) variants of CAS blobs (see
 /// [`FilesystemStore::get_executable_hardlink_source`]). It is a sibling of
 /// `content_path` rather than a child so the normal content/temp scan and prune
@@ -146,6 +144,11 @@ pub struct EncodedFilePath {
     key: StoreKey<'static>,
     generation: Generation,
     version: Version,
+    /// The executable variant built from this generation. Kept behind the
+    /// same lock as the path, so publishing a variant and retiring the
+    /// generation in `unref` cannot interleave.
+    #[cfg(unix)]
+    executable_variant: ExecutableVariant,
 }
 
 impl EncodedFilePath {
@@ -159,6 +162,58 @@ impl EncodedFilePath {
             self.version,
         )
     }
+
+    /// Deletes this generation's executable variant, if one was published,
+    /// and refuses any publish still in flight. Only `unref` calls this, with
+    /// the path lock held exclusively. The variant is named after this
+    /// generation, so this can never delete a newer generation's variant.
+    #[cfg(unix)]
+    async fn retire_executable_variant(&mut self) {
+        let previous = core::mem::replace(&mut self.executable_variant, ExecutableVariant::Retired);
+        let (ExecutableVariant::Published, StoreKey::Digest(digest)) = (previous, &self.key) else {
+            return;
+        };
+        let variant_path =
+            executable_variant_path(&self.shared_context.content_path, digest, self.generation);
+        match fs::remove_file(&variant_path).await {
+            Ok(()) => debug!(
+                ?variant_path,
+                "Deleted executable variant of retired generation"
+            ),
+            Err(err) if err.code == Code::NotFound => {}
+            Err(err) => warn!(
+                ?variant_path,
+                ?err,
+                "Failed to delete executable variant of retired generation"
+            ),
+        }
+    }
+}
+
+/// Where a generation's executable variant is in its lifecycle.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutableVariant {
+    /// No variant has been published for this generation.
+    Absent,
+    /// A variant was published, and retiring the generation deletes it.
+    Published,
+    /// `unref` retired the generation. A variant published now would be
+    /// owned by nothing and never deleted, so publishing is refused.
+    Retired,
+}
+
+/// Path of the read-only executable (0o555) variant built from `generation`
+/// of `digest`. The generation in the name gives each variant exactly one
+/// owning entry, so cleanup of one generation cannot delete a variant that an
+/// action resolved for another.
+#[cfg(unix)]
+fn executable_variant_path(
+    content_path: &str,
+    digest: &DigestInfo,
+    generation: Generation,
+) -> OsString {
+    format!("{content_path}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}-{generation}").into()
 }
 
 #[inline]
@@ -742,6 +797,10 @@ impl LenEntry for FileEntryImpl {
     #[inline]
     async fn unref(&self) {
         let mut encoded_file_path = self.encoded_file_path.write().await;
+        // Retire the executable variant on every path below, including the
+        // failed renames that leave this entry marked as content.
+        #[cfg(unix)]
+        encoded_file_path.retire_executable_variant().await;
         if encoded_file_path.path_type == PathType::Temp {
             // We are already a temp file that is now marked for deletion on drop.
             // This is very rare, but most likely the rename into the content path failed.
@@ -851,6 +910,21 @@ const SIMULTANEOUS_METADATA_READS: usize = 200;
 type FsEvictingMap<'a, Fe> =
     EvictingMap<StoreKeyBorrow, StoreKey<'a>, Arc<Fe>, SystemTime, RemoveCallbackHolder>;
 
+fn zero_digest_file_entry_error(digest: &DigestInfo) -> Error {
+    make_err!(
+        Code::NotFound,
+        "{digest} is a zero-digest; FilesystemStore does not persist zero-byte files. \
+         Callers must materialise empty files directly rather than going through get_file_entry_for_digest."
+    )
+}
+
+fn missing_file_entry_error(digest: &DigestInfo) -> Error {
+    make_err!(
+        Code::NotFound,
+        "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."
+    )
+}
+
 async fn add_files_to_cache<Fe: FileEntry>(
     evicting_map: &FsEvictingMap<'_, Fe>,
     anchor_time: &SystemTime,
@@ -888,6 +962,8 @@ async fn add_files_to_cache<Fe: FileEntry>(
                 key: key.borrow().into_owned(),
                 generation,
                 version,
+                #[cfg(unix)]
+                executable_variant: ExecutableVariant::Absent,
             }),
         ));
         let time_since_anchor = if let Ok(d) = anchor_time.duration_since(atime) {
@@ -1282,50 +1358,6 @@ where
     Ok(false)
 }
 
-/// Deletes a digest's `.exec` variant (see
-/// [`FilesystemStore::get_executable_hardlink_source`]) when that digest is
-/// evicted or replaced in the primary CAS `evicting_map`. Without this, the
-/// `.exec` directory is invisible to `max_bytes` and is only ever cleared by
-/// the startup `remove_dir_all`, so it grows without bound at runtime (#2474).
-/// Tying its lifetime to the primary entry instead bounds total disk use to
-/// roughly `2 * max_bytes` in the worst case (every blob also executable).
-#[cfg(unix)]
-#[derive(Debug)]
-struct ExecutableVariantRemover {
-    content_path: String,
-}
-
-#[cfg(unix)]
-impl RemoveItemCallback for ExecutableVariantRemover {
-    fn callback<'a>(
-        &'a self,
-        store_key: StoreKey<'a>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
-            let StoreKey::Digest(digest) = store_key else {
-                return;
-            };
-            let variant_path = format!(
-                "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
-                self.content_path
-            );
-            match fs::remove_file(&variant_path).await {
-                Ok(()) => debug!(
-                    ?variant_path,
-                    "Deleted executable variant for evicted digest"
-                ),
-                // Common case: no variant was ever materialized for this digest.
-                Err(err) if err.code == Code::NotFound => {}
-                Err(err) => warn!(
-                    ?variant_path,
-                    ?err,
-                    "Failed to delete executable variant for evicted digest"
-                ),
-            }
-        })
-    }
-}
-
 #[derive(Debug, MetricsComponent)]
 pub struct FilesystemStore<Fe: FileEntry = FileEntryImpl> {
     #[metric]
@@ -1404,11 +1436,12 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         let migrate = temp_dirs_writable && content_dirs_writable;
 
         // Executable-variant directory: a sibling of `content_path` holding
-        // per-digest 0o555 copies used as hardlink sources for executable
+        // per-generation 0o555 copies used as hardlink sources for executable
         // inputs (see `get_executable_hardlink_source`). Cleared on writable
         // startup — the variants are regenerable and we never want a stale one
         // to leak across runs. If a read-only filesystem prevents the wipe,
-        // ordinary CAS reads remain enabled but executable variants do not.
+        // ordinary CAS reads remain enabled but executable variants do not,
+        // so surviving variants stay quarantined and are never deleted either.
         // Unix-only: the executable bit (and the ETXTBSY race it guards
         // against) does not apply on Windows.
         #[cfg(unix)]
@@ -1419,16 +1452,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                     executable_dir = %format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path),
                     "Executable directory is not writable; serving CAS reads with executable variants disabled"
                 );
-            }
-            if enabled {
-                // Only register cleanup when executable variants are enabled.
-                // Otherwise surviving variants are deliberately quarantined,
-                // and repeated deletion warnings would obscure the fallback.
-                evicting_map.add_remove_callback(RemoveCallbackHolder::new(Arc::new(
-                    ExecutableVariantRemover {
-                        content_path: spec.content_path.clone(),
-                    },
-                )));
             }
             enabled
         };
@@ -1509,6 +1532,16 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         self.evicting_map.lease_key(StoreKeyBorrow::from(key));
     }
 
+    /// Same as [`Self::lease_digest`] for every digest in `digests`, taking
+    /// the eviction lock once per chunk of digests instead of once per digest.
+    pub fn lease_digests(&self, digests: &[DigestInfo]) {
+        self.evicting_map.lease_keys(
+            digests
+                .iter()
+                .map(|digest| StoreKeyBorrow::from(StoreKey::from(*digest))),
+        );
+    }
+
     /// Release a batch of action-input leases and trim retained entries once.
     pub async fn release_digests(&self, digests: &[DigestInfo]) {
         self.evicting_map
@@ -1528,16 +1561,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                     "Filesystem generation counter exhausted"
                 )
             })
-    }
-
-    /// Path of the read-only executable (0o555) variant for `digest`.
-    #[cfg(unix)]
-    fn executable_variant_path(&self, digest: &DigestInfo) -> OsString {
-        format!(
-            "{}{EXECUTABLE_DIR_SUFFIX}/{DIGEST_FOLDER_V2}/{digest}",
-            self.shared_context.content_path
-        )
-        .into()
     }
 
     /// Resolves the executable variant for many digests at once, batching the
@@ -1572,31 +1595,51 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .await
     }
 
-    /// Reports which digests already have an executable variant on disk, in one
-    /// batched existence check.
+    /// Reports which digests already have an executable variant on disk for
+    /// their resident generation, in one batched existence check.
     #[cfg(unix)]
     async fn materialized_variants(&self, digests: &[DigestInfo]) -> Vec<Option<OsString>> {
-        let paths: Vec<OsString> = digests
-            .iter()
-            .map(|digest| self.executable_variant_path(digest))
-            .collect();
-
         // Variants disabled and a failed batch are the same situation: nothing
         // is known to exist, so every digest takes the per-digest path, which
         // reports real errors per file.
-        let exists = if self.executable_variants_enabled {
-            fs::exists_many(paths.iter().map(Into::into).collect())
-                .await
-                .ok()
-        } else {
-            None
+        if !self.executable_variants_enabled {
+            return vec![None; digests.len()];
         }
-        .unwrap_or_else(|| vec![false; paths.len()]);
 
+        // A variant is named after the generation it was built from, so only
+        // the resident generation's variant can answer for a digest. A digest
+        // with no resident entry is left to the per-digest path too. The
+        // entries are looked up in one batch rather than one lock per digest.
+        let keys: Vec<StoreKey<'static>> = digests.iter().map(|digest| (*digest).into()).collect();
+        let paths: Vec<Option<OsString>> = self
+            .evicting_map
+            .get_many(keys.iter())
+            .await
+            .into_iter()
+            .zip(digests)
+            .map(|(entry, digest)| {
+                entry.map(|entry| {
+                    executable_variant_path(
+                        &self.shared_context.content_path,
+                        digest,
+                        entry.generation(),
+                    )
+                })
+            })
+            .collect();
+        let candidates: Vec<_> = paths.iter().flatten().map(Into::into).collect();
+        let exists = if candidates.is_empty() {
+            Vec::new()
+        } else {
+            fs::exists_many(candidates).await.unwrap_or_default()
+        };
+
+        // `exists` answers the resident digests in order, and a failed batch
+        // answers none of them.
+        let mut exists = exists.into_iter();
         paths
             .into_iter()
-            .zip(exists)
-            .map(|(path, hit)| hit.then_some(path))
+            .map(|path| path.filter(|_| exists.next() == Some(true)))
             .collect()
     }
 
@@ -1623,6 +1666,13 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     /// **once** — writer fd fsync'd and closed, then atomically renamed into
     /// place before the inode is ever hardlinked or executed — and hardlinking
     /// it thereafter keeps the per-action path hardlink-only.
+    ///
+    /// The variant belongs to the resident generation of `digest`: it is named
+    /// after it and deleted when that generation is evicted or replaced, which
+    /// bounds the executable directory by the store's own eviction policy
+    /// (#2474) to roughly `2 * max_bytes` if every blob is also executable.
+    /// Returns `NotFound` when `digest` is not resident, or was evicted while
+    /// its variant was built, so the caller can populate and retry.
     #[cfg(unix)]
     pub async fn get_executable_hardlink_source(
         &self,
@@ -1634,7 +1684,17 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 "Executable hardlink sources are disabled because the startup wipe could not safely clear the read-only executable directory"
             ));
         }
-        let variant_path = self.executable_variant_path(digest);
+        // Resolve the on-disk CAS blob (0o444) the variant is built from. Must
+        // be present in this tier; callers populate the fast store first.
+        let file_entry = self
+            .get_file_entry_for_digest(digest)
+            .await
+            .err_tip(|| "Resolving CAS blob for executable variant")?;
+        let variant_path = executable_variant_path(
+            &self.shared_context.content_path,
+            digest,
+            file_entry.generation(),
+        );
 
         // Fast path: the variant already exists, so the caller can hardlink it
         // with no writable fd anywhere in sight.
@@ -1664,24 +1724,9 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             return Ok(variant_path);
         }
 
-        let result = self.create_executable_variant(digest, &variant_path).await;
-
-        // The digest may have been evicted mid-copy: its eviction callback ran
-        // before the rename published the variant, so nothing owns the file
-        // anymore. This orphans the variant from eviction accounting, but the
-        // race is rare enough (needs an eviction to land in the narrow window
-        // between rename and this check, on a digest's first-ever variant
-        // materialization) that it's a self-limiting leak, not a systemic one
-        // — cheaper to log and let this action succeed with the still-valid
-        // file than to fail an otherwise-successful action over it.
-        if result.is_ok() && self.evicting_map.get(&digest.into()).await.is_none() {
-            warn!(
-                %digest,
-                ?variant_path,
-                "Digest evicted while materializing its executable variant; \
-                 variant is now untracked by eviction accounting"
-            );
-        }
+        let result = self
+            .create_executable_variant(digest, &file_entry, &variant_path)
+            .await;
 
         // Drop the per-digest lock entry regardless of outcome so the map
         // cannot grow unbounded; a concurrent waiter already cloned the Arc.
@@ -1710,33 +1755,28 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             .remove(digest);
     }
 
-    /// Materializes the 0o555 executable variant for `digest`. Must be called
-    /// under the per-digest single-flight guard.
+    /// Materializes the 0o555 executable variant of `file_entry`'s generation
+    /// at `variant_path`. Must be called under the per-digest single-flight
+    /// guard.
     #[cfg(unix)]
     async fn create_executable_variant(
         &self,
         digest: &DigestInfo,
+        file_entry: &Fe,
         variant_path: &OsStr,
     ) -> Result<(), Error> {
-        // Resolve the on-disk CAS blob (0o444) to copy from. Must be present in
-        // this tier; callers populate the fast store first.
-        let file_entry = self
-            .get_file_entry_for_digest(digest)
-            .await
-            .err_tip(|| "Resolving CAS blob for executable variant")?;
         let src_path = file_entry
             .get_file_path_locked(|p| async move { Ok(p) })
             .await?;
 
-        let variant_owned = variant_path.to_os_string();
-        let mut temp_owned = variant_path.to_os_string();
-        temp_owned.push(".tmp");
-        let rename_fn = self.rename_fn;
+        let mut temp_path = variant_path.to_os_string();
+        temp_path.push(".tmp");
+        let temp_owned = temp_path.clone();
 
         // All of this is blocking std::fs; run it off the async runtime. The
         // writable fd opened by `copy` is fully closed before the `rename`
-        // publishes the inode, so no reachable hardlink of the variant ever has
-        // an open writer.
+        // below publishes the inode, so no reachable hardlink of the variant
+        // ever has an open writer.
         spawn_blocking!(
             "filesystem_store_executable_variant",
             move || -> Result<(), Error> {
@@ -1780,14 +1820,41 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 flush_result
                     .map_err(|e| make_err!(Code::Internal, "executable-variant fsync: {e:?}"))?;
                 drop(f);
-                rename_fn(temp_owned.as_os_str(), variant_owned.as_os_str()).map_err(|e| {
-                    make_err!(Code::Internal, "executable-variant rename failed: {e:?}")
-                })?;
                 Ok(())
             }
         )
         .await
-        .err_tip(|| "executable-variant spawn_blocking join failed")?
+        .err_tip(|| "executable-variant spawn_blocking join failed")??;
+
+        // Publish under the entry's path lock, which `unref` holds exclusively
+        // while it retires the generation. Either the variant is published
+        // first and deleted with the generation, or the generation is already
+        // retired and a published variant would belong to nothing.
+        let mut encoded_file_path = file_entry.get_encoded_file_path().write().await;
+        if encoded_file_path.executable_variant == ExecutableVariant::Retired {
+            drop(encoded_file_path);
+            if let Err(err) = fs::remove_file(&temp_path).await {
+                warn!(
+                    ?temp_path,
+                    ?err,
+                    "Failed to delete unpublished executable variant"
+                );
+            }
+            return Err(make_err!(
+                Code::NotFound,
+                "{digest} was evicted while its executable variant was being built"
+            ));
+        }
+        let variant_owned = variant_path.to_os_string();
+        let rename_fn = self.rename_fn;
+        spawn_blocking!("filesystem_store_executable_variant_publish", move || {
+            rename_fn(&temp_path, &variant_owned)
+                .map_err(|e| make_err!(Code::Internal, "executable-variant rename failed: {e:?}"))
+        })
+        .await
+        .err_tip(|| "executable-variant publish spawn_blocking join failed")??;
+        encoded_file_path.executable_variant = ExecutableVariant::Published;
+        Ok(())
     }
 
     pub async fn get_file_entry_for_digest(&self, digest: &DigestInfo) -> Result<Arc<Fe>, Error> {
@@ -1799,16 +1866,43 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // execution directories. Return NotFound so callers are forced to
         // take the explicit zero-digest path (e.g. fs::create_file).
         if is_zero_digest(digest) {
-            return Err(make_err!(
-                Code::NotFound,
-                "{digest} is a zero-digest; FilesystemStore does not persist zero-byte files. \
-                 Callers must materialise empty files directly rather than going through get_file_entry_for_digest."
-            ));
+            return Err(zero_digest_file_entry_error(digest));
         }
         self.evicting_map
             .get(&digest.into())
             .await
-            .ok_or_else(|| make_err!(Code::NotFound, "{digest} not found in filesystem store. This may indicate the file was evicted due to cache pressure. Consider increasing 'max_bytes' in your filesystem store's eviction_policy configuration."))
+            .ok_or_else(|| missing_file_entry_error(digest))
+    }
+
+    /// Same as [`Self::get_file_entry_for_digest`] for every digest in
+    /// `digests`, with results in the same order.
+    ///
+    /// An input tree resolves thousands of entries at once, and looking each
+    /// one up separately takes the store-wide eviction lock once per file.
+    /// This takes it once per chunk of digests instead.
+    pub async fn get_file_entries_for_digests(
+        &self,
+        digests: &[DigestInfo],
+    ) -> Vec<Result<Arc<Fe>, Error>> {
+        // Zero digests never reach the map, exactly as in the single lookup.
+        let keys: Vec<StoreKey<'static>> = digests
+            .iter()
+            .filter(|digest| !is_zero_digest(*digest))
+            .map(|digest| (*digest).into())
+            .collect();
+        let mut entries = self.evicting_map.get_many(keys.iter()).await.into_iter();
+        digests
+            .iter()
+            .map(|digest| {
+                if is_zero_digest(digest) {
+                    return Err(zero_digest_file_entry_error(digest));
+                }
+                entries
+                    .next()
+                    .flatten()
+                    .ok_or_else(|| missing_file_entry_error(digest))
+            })
+            .collect()
     }
 
     async fn update_file(
@@ -1817,6 +1911,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         mut temp_file: FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let mut data_size = 0;
         loop {
@@ -1833,6 +1928,20 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 .await
                 .err_tip(|| "Failed to write data into filesystem store")?;
             data_size += data_len as u64;
+        }
+
+        // Never publish a stream that ended at the wrong size under
+        // `final_key`, or it is served as the whole blob until evicted.
+        // Returning drops `entry`, which deletes the temp file.
+        if let UploadSizeInfo::ExactSize(expected_size) = upload_size
+            && data_size != expected_size
+        {
+            return Err(make_input_err!(
+                "Received {} bytes for {}, expected {}",
+                data_size,
+                final_key.as_str(),
+                expected_size
+            ));
         }
 
         let permit = if let Some(sem) = &self.write_semaphore {
@@ -2008,6 +2117,81 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         }
     }
 
+    /// Streams `key` like `get_part`, but reports a key the store does not
+    /// hold as `Ok(false)` with nothing written, instead of as `NotFound`.
+    ///
+    /// A caller that would otherwise ask `has()` first, as `FastSlowStore`
+    /// does for its fast tier, learns whether the key is here and reads it
+    /// with one eviction-map lookup instead of two. A key the map holds but
+    /// whose file is gone is still an error: the open's `NotFound`, after the
+    /// stale entry is removed.
+    pub async fn get_part_if_present(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<bool, Error> {
+        if is_zero_digest(key.borrow()) {
+            self.has(key.borrow())
+                .await
+                .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
+            return Ok(true);
+        }
+        let owned_key = key.into_owned();
+        let Some(entry) = self.evicting_map.get(&owned_key).await else {
+            return Ok(false);
+        };
+        let read_limit = length.unwrap_or(u64::MAX);
+        let mut temp_file = match entry.read_file_part(offset, read_limit).await {
+            Ok(file) => file,
+            Err(err) => {
+                // If the file is not found, we need to remove it from the eviction map.
+                if err.code == Code::NotFound {
+                    // Map said the file was present but `open()` hit ENOENT.
+                    // Self-heals: we remove the stale entry below and a
+                    // fast/slow caller re-populates from the slow store, so
+                    // this is a recoverable warn, not a fatal error.
+                    warn!(
+                        ?err,
+                        key = ?owned_key,
+                        "Filesystem store map/disk divergence: removing entry; reader will fall through to slow store",
+                    );
+                    self.evicting_map
+                        .remove_if(&owned_key, |map_entry| Arc::ptr_eq(map_entry, &entry))
+                        .await;
+                }
+                return Err(err);
+            }
+        };
+
+        loop {
+            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
+            temp_file
+                .read_buf(&mut buf)
+                .await
+                .err_tip(|| "Failed to read data in filesystem store")?;
+            if buf.is_empty() {
+                break; // EOF.
+            }
+            writer
+                .send(buf.freeze())
+                .await
+                .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
+        }
+        if self.evict_page_cache {
+            temp_file.get_ref().advise_dontneed();
+        }
+        writer
+            .send_eof()
+            .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
+
+        Ok(true)
+    }
+
     pub fn get_eviction_snapshot(&self) -> EvictionSnapshot {
         self.evicting_map.get_snapshot()
     }
@@ -2043,6 +2227,8 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 key: temp_key,
                 generation,
                 version: Version::V2,
+                #[cfg(unix)]
+                executable_variant: ExecutableVariant::Absent,
             },
         )
         .await
@@ -2093,7 +2279,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
-        _upload_size: UploadSizeInfo,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         if is_zero_digest(key.borrow()) {
             // don't need to add, because zero length files are just assumed to exist.
@@ -2112,7 +2298,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         let (entry, temp_file, temp_full_path) = self.make_temp_file(temp_key).await?;
 
-        self.update_file(entry, temp_file, key.into_owned(), reader)
+        self.update_file(entry, temp_file, key.into_owned(), reader, upload_size)
             .await
             .err_tip(|| {
                 format!(
@@ -2207,6 +2393,8 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
                 key: key.borrow().into_owned(),
                 generation,
                 version: Version::V2,
+                #[cfg(unix)]
+                executable_variant: ExecutableVariant::Absent,
             }),
         );
         // We are done with the file, if we hold a reference to the file here, it could
@@ -2229,68 +2417,17 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        if is_zero_digest(key.borrow()) {
-            self.has(key.borrow())
-                .await
-                .err_tip(|| "Failed to check if zero digest exists in filesystem store")?;
-            writer
-                .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
+        if self
+            .get_part_if_present(key.borrow(), writer, offset, length)
+            .await?
+        {
             return Ok(());
         }
-        let owned_key = key.into_owned();
-        let entry = self.evicting_map.get(&owned_key).await.ok_or_else(|| {
-            make_err!(
-                Code::NotFound,
-                "{} not found in filesystem store here",
-                owned_key.as_str()
-            )
-        })?;
-        let read_limit = length.unwrap_or(u64::MAX);
-        let mut temp_file = match entry.read_file_part(offset, read_limit).await {
-            Ok(file) => file,
-            Err(err) => {
-                // If the file is not found, we need to remove it from the eviction map.
-                if err.code == Code::NotFound {
-                    // Map said the file was present but `open()` hit ENOENT.
-                    // Self-heals: we remove the stale entry below and a
-                    // fast/slow caller re-populates from the slow store, so
-                    // this is a recoverable warn, not a fatal error.
-                    warn!(
-                        ?err,
-                        key = ?owned_key,
-                        "Filesystem store map/disk divergence: removing entry; reader will fall through to slow store",
-                    );
-                    self.evicting_map
-                        .remove_if(&owned_key, |map_entry| Arc::ptr_eq(map_entry, &entry))
-                        .await;
-                }
-                return Err(err);
-            }
-        };
-
-        loop {
-            let mut buf = BytesMut::with_capacity(self.read_buffer_size);
-            temp_file
-                .read_buf(&mut buf)
-                .await
-                .err_tip(|| "Failed to read data in filesystem store")?;
-            if buf.is_empty() {
-                break; // EOF.
-            }
-            writer
-                .send(buf.freeze())
-                .await
-                .err_tip(|| "Failed to send chunk in filesystem store get_part")?;
-        }
-        if self.evict_page_cache {
-            temp_file.get_ref().advise_dontneed();
-        }
-        writer
-            .send_eof()
-            .err_tip(|| "Filed to send EOF in filesystem store get_part")?;
-
-        Ok(())
+        Err(make_err!(
+            Code::NotFound,
+            "{} not found in filesystem store here",
+            key.as_str()
+        ))
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {

@@ -23,7 +23,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use nativelink_config::stores::MemorySpec;
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
@@ -94,6 +94,51 @@ impl MemoryStore {
 
     pub async fn remove_entry(&self, key: StoreKey<'_>) -> bool {
         self.evicting_map.remove(&key.into_owned()).await
+    }
+
+    /// Streams `key` like `get_part`, but reports a key the store does not
+    /// hold as `Ok(false)` with nothing written, instead of as `NotFound`.
+    ///
+    /// A caller that would otherwise ask `has()` first, as `FastSlowStore`
+    /// does for its fast tier, learns whether the key is here and reads it
+    /// with one eviction-map lookup instead of two.
+    pub async fn get_part_if_present(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<bool, Error> {
+        let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
+        let length = length
+            .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
+            .transpose()?;
+
+        let owned_key = key.into_owned();
+        if is_zero_digest(owned_key.clone()) {
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
+            return Ok(true);
+        }
+
+        let Some(value) = self.evicting_map.get(&owned_key).await else {
+            return Ok(false);
+        };
+        let default_len = usize::try_from(value.len())
+            .err_tip(|| "Could not convert value.len() to usize")?
+            .saturating_sub(offset);
+        let length = length.unwrap_or(default_len).min(default_len);
+        if length > 0 {
+            writer
+                .send(value.0.slice(offset..(offset + length)))
+                .await
+                .err_tip(|| "Failed to write data in memory store")?;
+        }
+        writer
+            .send_eof()
+            .err_tip(|| "Failed to write EOF in memory store get_part")?;
+        Ok(true)
     }
 }
 
@@ -237,38 +282,17 @@ impl StoreDriver for MemoryStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        let offset = usize::try_from(offset).err_tip(|| "Could not convert offset to usize")?;
-        let length = length
-            .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
-            .transpose()?;
-
-        let owned_key = key.into_owned();
-        if is_zero_digest(owned_key.clone()) {
-            writer
-                .send_eof()
-                .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
+        if self
+            .get_part_if_present(key.borrow(), writer, offset, length)
+            .await?
+        {
             return Ok(());
         }
-
-        let value = self
-            .evicting_map
-            .get(&owned_key)
-            .await
-            .err_tip_with_code(|_| (Code::NotFound, format!("Key {owned_key:?} not found")))?;
-        let default_len = usize::try_from(value.len())
-            .err_tip(|| "Could not convert value.len() to usize")?
-            .saturating_sub(offset);
-        let length = length.unwrap_or(default_len).min(default_len);
-        if length > 0 {
-            writer
-                .send(value.0.slice(offset..(offset + length)))
-                .await
-                .err_tip(|| "Failed to write data in memory store")?;
-        }
-        writer
-            .send_eof()
-            .err_tip(|| "Failed to write EOF in memory store get_part")?;
-        Ok(())
+        Err(make_err!(
+            Code::NotFound,
+            "Key {:?} not found",
+            key.into_owned()
+        ))
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
