@@ -65,6 +65,11 @@ ARG OPT_LEVEL
 ARG ADDITIONAL_BAZEL_FLAGS
 # Add startup options to prevent Bazel server issues on ARM64
 RUN --mount=type=secret,id=nativelink-bazelrc,target=/root/nativelink/user.bazelrc \
+    --mount=type=secret,id=nativelink-attribution-config \
+    --mount=type=secret,id=nativelink-attribution-wrapper \
+    NATIVELINK_ATTRIBUTION_CONFIG=/run/secrets/nativelink-attribution-config \
+    NATIVELINK_BAZEL_WRAPPER=/run/secrets/nativelink-attribution-wrapper \
+    NATIVELINK_ATTRIBUTION_BAZELRC=/root/nativelink/user.bazelrc \
     bazel-retry \
     --batch \
     --output_base=/tmp/bazel_output \
