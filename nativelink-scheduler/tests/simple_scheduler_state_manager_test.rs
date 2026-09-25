@@ -79,6 +79,7 @@ fn action_info(started: SystemTime) -> ActionInfo {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: started,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: "main".to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,

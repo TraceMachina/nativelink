@@ -158,6 +158,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -493,6 +494,7 @@ async fn find_executing_action() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -572,6 +574,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     .await?;
 
     let mut expected_start_execute_for_worker1 = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest1.into()),
@@ -585,6 +588,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     };
 
     let mut expected_start_execute_for_worker2 = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest2.into()),
@@ -872,6 +876,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -971,6 +976,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -1018,6 +1024,20 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+#[nativelink_test]
+async fn overlapping_invocations_use_separate_workers() -> Result<(), Error> {
+    let notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(0, &notify, MockInstantWrapped::default),
+        || async {},
+        notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    utils::scheduler_utils::verify_overlapping_invocations(&scheduler).await
 }
 
 #[nativelink_test]
@@ -1323,6 +1343,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     .await?;
 
     let mut start_execute = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest.into()),
@@ -1792,6 +1813,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),

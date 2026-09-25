@@ -10,6 +10,7 @@ load(
 rust_library(
     name = "nativelink-worker",
     srcs = [
+        "src/buck2_file_capture.rs",
         "src/directory_cache.rs",
         "src/lib.rs",
         "src/local_worker.rs",

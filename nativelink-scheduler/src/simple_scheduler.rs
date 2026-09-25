@@ -252,6 +252,7 @@ impl SimpleScheduler {
             queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
             platform: Some((&action_info.platform_properties).into()),
             worker_id: worker_id.to_string(),
+            request_metadata: action_info.origin_metadata.bazel_metadata.clone(),
         };
         Event {
             event: Some(event::Event::Request(RequestEvent {

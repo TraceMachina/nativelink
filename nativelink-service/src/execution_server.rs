@@ -47,10 +47,14 @@ use nativelink_util::action_messages::{
     TypeUrl,
 };
 use nativelink_util::common::{self, DigestInfo};
-use nativelink_util::digest_hasher::{DigestHasherFunc, make_ctx_for_hash_func};
+use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
 use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
+use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_from_baggage};
 use nativelink_util::store_trait::{Store, StoreLike};
+use opentelemetry::Context;
+use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message as _;
 use tonic::{Code, Request, Response, Status};
 use tracing::{Instrument, Level, debug, error, error_span, instrument, warn};
@@ -161,6 +165,7 @@ impl fmt::Display for NativelinkOperationId {
 struct InstanceInfo {
     scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     cas_store: Store,
+    buck2_invocation_isolation: bool,
 }
 
 impl fmt::Debug for InstanceInfo {
@@ -172,6 +177,35 @@ impl fmt::Debug for InstanceInfo {
 }
 
 impl InstanceInfo {
+    fn execution_scope(&self) -> Option<String> {
+        if !self.buck2_invocation_isolation {
+            return None;
+        }
+        let context = Context::current();
+        let baggage = context.baggage();
+        let metadata =
+            request_metadata_from_baggage(baggage.get(BAZEL_METADATA_KEY)?.as_str()).ok()?;
+        if metadata.tool_invocation_id.is_empty()
+            || !metadata
+                .tool_details
+                .as_ref()
+                .is_some_and(|tool| tool.tool_name.eq_ignore_ascii_case("buck2"))
+        {
+            return None;
+        }
+        let identity = baggage
+            .get(ENDUSER_ID)
+            .map(opentelemetry::StringValue::as_str)
+            .unwrap_or_default();
+        let mut hash = DigestHasherFunc::Sha256.hasher();
+        // Length-prefix the identity so the two fields cannot alias. Use a
+        // fixed width so all scheduler architectures compute the same scope.
+        hash.update(&(identity.len() as u64).to_be_bytes());
+        hash.update(identity.as_bytes());
+        hash.update(metadata.tool_invocation_id.as_bytes());
+        Some(hash.finalize_digest().packed_hash().to_string())
+    }
+
     async fn build_action_info(
         &self,
         instance_name: String,
@@ -218,6 +252,7 @@ impl InstanceInfo {
         }
 
         let action_key = ActionUniqueKey {
+            execution_scope: self.execution_scope(),
             instance_name,
             digest_function,
             digest: action_digest,
@@ -274,6 +309,7 @@ impl ExecutionServer {
                 InstanceInfo {
                     scheduler,
                     cas_store,
+                    buck2_invocation_isolation: config.experimental_buck2_invocation_isolation,
                 },
             );
         }

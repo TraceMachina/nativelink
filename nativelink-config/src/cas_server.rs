@@ -278,6 +278,14 @@ pub struct CapabilitiesConfig {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExecutionConfig {
+    /// Keep identical in-flight Buck2 actions from different invocations on
+    /// separate workers. Completed action-cache results remain shared. Pair
+    /// this with single-use workers when capturing execution-container files.
+    /// Other build tools and requests without Buck2 invocation metadata retain
+    /// the default deduplication behavior. All schedulers serving the instance
+    /// must use a runtime supporting this execution scope before enabling it.
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub experimental_buck2_invocation_isolation: bool,
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
     /// This value must be a CAS store reference.
@@ -897,6 +905,53 @@ pub struct UploadActionResultConfig {
     pub failure_message_template: String,
 }
 
+/// Opt-in file capture for the actual container executing a Buck2 action.
+/// Requires a fresh single-use container with no outer execution wrapper or
+/// separate action mount namespace. For nested runtimes, run `NativeLink` and the
+/// capture helper inside the execution container. Other build tools never start
+/// capture. The helper uploads an archive before `NativeLink` cleans up the action.
+///
+/// The operator supplies the helper executable and its authenticated ingest
+/// service. `NativeLink` sends one JSON record on stdin and expects `ready\n`
+/// on stdout within 30 seconds. Closing stdin requests final capture; the helper
+/// must exit only after durable acknowledgement, or exit unsuccessfully if the
+/// archive is partial. See `nativelink-worker/README.md` for the control protocol.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct Buck2FileCaptureConfig {
+    /// Absolute path to the compatible `buck2-file-capture` executable.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub executable: String,
+    /// Authenticated ingest endpoint understood by the capture helper.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub gateway: String,
+    /// Private token file. The helper excludes its path and hard-link aliases.
+    /// The token is never included in the action environment or command line.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub token_file: String,
+    /// Private directory for the helper's bounded on-disk metadata index.
+    /// Mount a fresh empty volume here for each single-use container.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub state_directory: String,
+    /// Identity of the actual executing container, normally the pod UID.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub container_id: String,
+    /// Credential files/directories and platform configuration excluded from
+    /// browsing. Their inode aliases and private secret mounts are also denied.
+    #[serde(default, deserialize_with = "convert_vec_string_with_shellexpand")]
+    pub protected_paths: Vec<String>,
+    /// Internal CAS/cache paths excluded from browsing. Materialized action
+    /// inputs hard-linked from these caches remain visible in the action tree.
+    #[serde(default, deserialize_with = "convert_vec_string_with_shellexpand")]
+    pub internal_paths: Vec<String>,
+    /// Maximum final archive time before action cleanup proceeds. The helper
+    /// records a partial capture on timeout; build success/failure is unchanged.
+    /// Default: 120 seconds (zero selects this default).
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub finalize_timeout_s: usize,
+}
+
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -965,6 +1020,12 @@ pub struct LocalWorkerConfig {
     /// Default: false
     #[serde(default)]
     pub single_use: bool,
+
+    /// Capture full execution-container files for Buck2 builds only. Disabled
+    /// when absent. Requires `single_use`; read the capture configuration's
+    /// isolation requirements before enabling it for a worker pool.
+    #[serde(default)]
+    pub experimental_buck2_file_capture: Option<Buck2FileCaptureConfig>,
 
     /// If timeout is handled in `entrypoint` or another wrapper script.
     /// If set to true `NativeLink` will not honor the timeout the action requested
@@ -1276,6 +1337,47 @@ impl CasConfig {
 
     fn validate_single_use_worker(&self) -> Result<(), Error> {
         let workers = self.workers.as_deref().unwrap_or_default();
+        for WorkerConfig::Local(worker) in workers {
+            if let Some(capture) = &worker.experimental_buck2_file_capture {
+                if !worker.single_use
+                    || !worker.entrypoint.is_empty()
+                    || worker.use_mount_namespace == Some(true)
+                {
+                    return Err(make_input_err!(
+                        "Buck2 file capture requires a single_use worker inside the execution container, without an entrypoint wrapper or separate action mount namespace"
+                    ));
+                }
+                for path in [
+                    &capture.executable,
+                    &capture.token_file,
+                    &capture.state_directory,
+                ]
+                .into_iter()
+                .chain(capture.protected_paths.iter())
+                .chain(capture.internal_paths.iter())
+                {
+                    // These paths belong to the Linux execution container,
+                    // even when an operator validates the config on Windows.
+                    if !path.starts_with('/')
+                        || path.split('/').all(|part| part.is_empty() || part == ".")
+                        || path.contains('\0')
+                        || path.split('/').any(|part| part == "..")
+                    {
+                        return Err(make_input_err!(
+                            "Buck2 capture paths must be absolute and cannot select the filesystem root"
+                        ));
+                    }
+                }
+                if capture.gateway.is_empty()
+                    || capture.container_id.is_empty()
+                    || capture.finalize_timeout_s > 3600
+                {
+                    return Err(make_input_err!(
+                        "Buck2 capture requires a gateway, container identity, and finalization timeout no greater than one hour"
+                    ));
+                }
+            }
+        }
         if !workers.iter().any(|worker| match worker {
             WorkerConfig::Local(worker) => worker.single_use,
         }) {
@@ -1450,6 +1552,65 @@ mod tests {
         config.validate_single_use_worker().unwrap();
         config.servers[0].services.as_mut().unwrap().cas = Some(vec![]);
         assert!(config.validate_single_use_worker().is_err());
+    }
+
+    #[test]
+    fn buck2_capture_requires_an_isolated_execution_container() {
+        assert!(
+            LocalWorkerConfig::default()
+                .experimental_buck2_file_capture
+                .is_none()
+        );
+        let capture = Buck2FileCaptureConfig {
+            executable: "/shared/buck2-file-capture".to_string(),
+            gateway: "http://capture/api-auth/v1/buck2-files".to_string(),
+            token_file: "/capture-token/token".to_string(),
+            state_directory: "/capture-state".to_string(),
+            container_id: "pod-uid".to_string(),
+            protected_paths: vec!["/worker-config".to_string()],
+            internal_paths: vec!["/cas".to_string()],
+            finalize_timeout_s: 120,
+        };
+        for (single_use, entrypoint, mount_namespace, valid) in [
+            (true, "", None, true),
+            (true, "", Some(false), true),
+            (false, "", None, false),
+            (true, "/outer-container-wrapper", None, false),
+            (true, "", Some(true), false),
+        ] {
+            let mut config = CasConfig::try_from_json5_str("{ stores: [], servers: [] }").unwrap();
+            config.workers = Some(vec![WorkerConfig::Local(LocalWorkerConfig {
+                single_use,
+                entrypoint: entrypoint.to_string(),
+                use_mount_namespace: mount_namespace,
+                experimental_buck2_file_capture: Some(capture.clone()),
+                ..Default::default()
+            })]);
+            let result = config.validate_single_use_worker();
+            assert_eq!(result.is_ok(), valid, "{result:?}");
+        }
+        for invalid in [
+            "relative/helper",
+            "/",
+            "/./",
+            "//",
+            "/tmp/../token",
+            "C:\\capture\\token",
+            "/tmp/\0token",
+        ] {
+            let mut invalid_capture = capture.clone();
+            invalid_capture.token_file = invalid.to_string();
+            let mut config = CasConfig::try_from_json5_str("{ stores: [], servers: [] }").unwrap();
+            config.workers = Some(vec![WorkerConfig::Local(LocalWorkerConfig {
+                single_use: true,
+                experimental_buck2_file_capture: Some(invalid_capture),
+                ..Default::default()
+            })]);
+            assert!(
+                config.validate_single_use_worker().is_err(),
+                "accepted {invalid:?}"
+            );
+        }
     }
 
     fn grpc_compression_configs(config: &CasConfig) -> Vec<(bool, Option<bool>)> {

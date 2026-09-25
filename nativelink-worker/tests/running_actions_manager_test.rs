@@ -362,6 +362,7 @@ mod tests {
             .create_and_add_action(
                 "test-worker".to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
                         digest_function: ProtoDigestFunction::Sha256.into(),
@@ -393,6 +394,7 @@ mod tests {
             .create_and_add_action(
                 "test-worker".to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
                         digest_function: ProtoDigestFunction::Sha256.into(),
@@ -520,6 +522,7 @@ mod tests {
             .create_and_add_action(
                 "test-worker".to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
                         digest_function: ProtoDigestFunction::Sha256.into(),
@@ -1165,6 +1168,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: None,
@@ -1295,6 +1299,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: None,
@@ -1440,6 +1445,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: None,
@@ -1625,6 +1631,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: None,
@@ -1807,6 +1814,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: Some(queued_timestamp.into()),
@@ -2043,6 +2051,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: Some(queued_timestamp.into()),
@@ -2195,6 +2204,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: Some(queued_timestamp.into()),
@@ -2344,6 +2354,7 @@ mod tests {
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: Some(queued_timestamp.into()),
@@ -2498,6 +2509,7 @@ mod tests {
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -2614,6 +2626,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: None,
                 },
@@ -2683,6 +2696,7 @@ exit 0
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -2778,6 +2792,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([
                         (
@@ -2874,6 +2889,7 @@ exit 0
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -2967,6 +2983,7 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([(
                         "SIDE_CHANNEL_FILE".to_string(),
@@ -3036,6 +3053,7 @@ exit 1
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -3623,6 +3641,7 @@ exit 1
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: Some(make_system_time(1000).into()),
@@ -3715,6 +3734,7 @@ exit 1
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: Some(make_system_time(1000).into()),
@@ -3807,6 +3827,7 @@ exit 1
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: Some(make_system_time(1000).into()),
@@ -3940,6 +3961,7 @@ exit 1
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -4097,6 +4119,7 @@ exit 1
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -4256,6 +4279,7 @@ exit 1
                     .create_and_add_action(
                         WORKER_ID.to_string(),
                         StartExecute {
+                            request_metadata: None,
                             execute_request: Some(execute_request),
                             operation_id: format!("kill-race-{iteration}-{i}"),
                             queued_timestamp: Some(make_system_time(1000).into()),
@@ -4377,6 +4401,7 @@ exit 1
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         ..Default::default()
@@ -4492,6 +4517,7 @@ exit 1
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     ..Default::default()
@@ -4601,6 +4627,7 @@ exit 1
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(queued_timestamp.into()),
@@ -4617,6 +4644,201 @@ exit 1
             dir_stream.as_mut().next_entry().await?.is_none(),
             "Expected empty directory at {root_action_directory}"
         );
+        Ok(())
+    }
+
+    // Run real subprocesses and hold their archive acknowledgement open. Files
+    // must survive until acknowledgement on success, failure, kill and timeout.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn buck2_capture_finishes_before_cleanup_on_every_action_outcome()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use nativelink_config::cas_server::Buck2FileCaptureConfig;
+        use nativelink_proto::build::bazel::remote::execution::v2::{RequestMetadata, ToolDetails};
+
+        async fn wait_for_file(path: &std::path::Path) -> Result<(), tokio::time::error::Elapsed> {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !path.exists() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+        }
+
+        // Resolve tools in the test environment: Nix has no /bin/coreutils,
+        // and the collector deliberately receives an empty environment.
+        let shell = which::which("sh")?;
+        let cat = which::which("cat")?;
+        let copy = which::which("cp")?;
+        let sleep = which::which("sleep")?;
+
+        for outcome in ["success", "failure", "cancel", "timeout", "bazel"] {
+            let (_, _, cas_store, _) = setup_stores().await?;
+            let root = PathBuf::from(make_temp_path("buck2_capture"));
+            let actions = root.join("actions");
+            let helper = root.join("helper");
+            let control = root.join("helper.d");
+            std::fs::create_dir_all(&actions)?;
+            std::fs::create_dir_all(&control)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&helper)?
+                .write_all(
+                    format!(
+                        r#"#!{shell}
+set -eu
+IFS= read -r config
+printf '%s\n' "$config" >"$0.d/config"
+printf 'ready\n'
+"{cat}" >/dev/null
+IFS= read -r source <"$0.d/source"
+"{copy}" "$source" "$0.d/archive"
+: >"$0.d/finalizing"
+while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
+"#,
+                        shell = shell.display(),
+                        cat = cat.display(),
+                        copy = copy.display(),
+                        sleep = sleep.display(),
+                    )
+                    .as_bytes(),
+                )?;
+            let manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: actions.to_string_lossy().into_owned(),
+                execution_configuration: ExecutionConfiguration {
+                    buck2_file_capture: Some(Buck2FileCaptureConfig {
+                        executable: helper.to_string_lossy().into_owned(),
+                        gateway: "http://unused-test-gateway".to_string(),
+                        token_file: control.join("token").to_string_lossy().into_owned(),
+                        state_directory: control.join("state").to_string_lossy().into_owned(),
+                        container_id: "execution-container".to_string(),
+                        protected_paths: vec![],
+                        internal_paths: vec![],
+                        finalize_timeout_s: 1,
+                    }),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(1),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces::No,
+            })?);
+            let exit = match outcome {
+                "cancel" | "timeout" => format!("exec \"{}\" 30", sleep.display()),
+                "failure" => "exit 7".to_string(),
+                _ => "exit 0".to_string(),
+            };
+            let command_digest = serialize_and_upload_message(
+                &Command {
+                    arguments: vec![
+                        shell.to_string_lossy().into_owned(),
+                        "-c".to_string(),
+                        format!("printf 'final bytes' >tail.log; : >running; {exit}"),
+                    ],
+                    ..Default::default()
+                },
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let input_root_digest = serialize_and_upload_message(
+                &Directory::default(),
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action_digest = serialize_and_upload_message(
+                &Action {
+                    command_digest: Some(command_digest.into()),
+                    input_root_digest: Some(input_root_digest.into()),
+                    timeout: (outcome == "timeout").then_some(prost_types::Duration {
+                        seconds: 1,
+                        nanos: 0,
+                    }),
+                    ..Default::default()
+                },
+                cas_store.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let operation_id = OperationId::default();
+            let action = manager
+                .create_and_add_action(
+                    "worker".to_string(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
+                            ..Default::default()
+                        }),
+                        request_metadata: Some(RequestMetadata {
+                            tool_details: Some(ToolDetails {
+                                tool_name: if outcome == "bazel" { "bazel" } else { "buck2" }
+                                    .to_string(),
+                                ..Default::default()
+                            }),
+                            tool_invocation_id: "test-invocation".to_string(),
+                            ..Default::default()
+                        }),
+                        operation_id: operation_id.to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            let work = PathBuf::from(action.get_work_directory());
+            std::fs::write(
+                control.join("source"),
+                format!("{}\n", work.join("tail.log").display()),
+            )?;
+            let run = tokio::spawn(run_action(action));
+            if outcome == "cancel" {
+                wait_for_file(&work.join("running")).await?;
+                manager.kill_operation(&operation_id).await?;
+            }
+            if outcome == "bazel" {
+                assert!(
+                    !control.join("config").exists(),
+                    "Bazel launched the collector"
+                );
+            } else {
+                wait_for_file(&control.join("finalizing")).await?;
+                assert!(!run.is_finished(), "cleanup bypassed capture for {outcome}");
+                assert_eq!(std::fs::read(work.join("tail.log"))?, b"final bytes");
+                // Disconnect cleanup must also wait on the archive, then drain.
+                let draining_manager = manager.clone();
+                let drain = tokio::spawn(async move { draining_manager.kill_all().await });
+                tokio::task::yield_now().await;
+                assert!(!drain.is_finished());
+                std::fs::write(control.join("release"), b"")?;
+                tokio::time::timeout(Duration::from_secs(10), drain).await??;
+                assert_eq!(std::fs::read(control.join("archive"))?, b"final bytes");
+            }
+            let result = tokio::time::timeout(Duration::from_secs(10), run).await???;
+            match outcome {
+                "success" | "bazel" => assert_eq!(result.exit_code, 0),
+                "failure" => assert_eq!(result.exit_code, 7),
+                _ => assert_ne!(result.exit_code, 0),
+            }
+            assert!(
+                !work.exists(),
+                "action directory was not cleaned for {outcome}"
+            );
+            std::fs::remove_dir_all(&root)?;
+        }
         Ok(())
     }
 
@@ -4709,6 +4931,7 @@ exit 1
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(ExecuteRequest {
                             action_digest: Some(action_digest.into()),
                             digest_function: ProtoDigestFunction::Sha256.into(),
@@ -4931,6 +5154,7 @@ done
                 .create_and_add_action(
                     WORKER_ID.to_string(),
                     StartExecute {
+                        request_metadata: None,
                         execute_request: Some(execute_request),
                         operation_id,
                         queued_timestamp: None,
@@ -5118,6 +5342,7 @@ done
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -5149,6 +5374,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,
                 },
@@ -5242,6 +5468,7 @@ done
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id: operation_id.clone(),
                     queued_timestamp: Some(SystemTime::now().into()),
@@ -5295,6 +5522,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,
                 },
@@ -5358,6 +5586,7 @@ done
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request.clone()),
                     operation_id: operation_id.clone(),
                     queued_timestamp: Some(SystemTime::now().into()),
@@ -5379,6 +5608,7 @@ done
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id: operation_id.clone(),
                     queued_timestamp: Some(SystemTime::now().into()),
@@ -5480,6 +5710,7 @@ done
             .create_and_add_action(
                 "foo_worker_id".to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
                         digest_function: ProtoDigestFunction::Sha256.into(),
@@ -5635,6 +5866,7 @@ done
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(ExecuteRequest {
                         action_digest: Some(action_digest.into()),
                         digest_function: ProtoDigestFunction::Sha256.into(),
@@ -5764,6 +5996,7 @@ done
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: Some(make_system_time(1000).into()),
@@ -5986,6 +6219,7 @@ done
             .create_and_add_action(
                 WORKER_ID.to_string(),
                 StartExecute {
+                    request_metadata: None,
                     execute_request: Some(execute_request),
                     operation_id,
                     queued_timestamp: None,
