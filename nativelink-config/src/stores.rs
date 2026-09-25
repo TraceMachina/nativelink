@@ -1003,6 +1003,23 @@ pub struct FastSlowSpec {
     /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
+
+    /// Treat a hit in the `fast` store as proof that a blob exists when
+    /// answering existence checks (`FindMissingBlobs`, action result
+    /// completeness checks). The `fast` store is queried first and only the
+    /// keys it does not hold go to the `slow` store.
+    ///
+    /// When `false`, existence checks consult the `slow` store only. A blob
+    /// held solely by the `fast` tier then reads as missing, so the client
+    /// re-uploads it and the blob reaches durable storage. Setting this to
+    /// `true` gives up that guarantee in exchange for far fewer `slow` store
+    /// requests: if the `fast` tier evicts a blob that never reached the
+    /// `slow` tier, the blob is gone. Only enable this when the `fast` tier
+    /// does not evict, or when another path makes the `slow` tier
+    /// authoritative.
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub trust_fast_store_for_has: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
