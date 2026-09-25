@@ -71,6 +71,7 @@ commit_parsers = [
   { field = "scope", pattern = "config-reference", skip = true },
 
   # Custom rules for specific commits.
+
   { message = "Account for block size in filesystem store for eviction purposes", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Add ONTAP S3 Store with existence cache", group = "<!-- 1 -->⛰️  Features" },
   { message = "Add OSFamily property in basic_cas.json", group = "<!-- 3 -->📚 Documentation" },
@@ -112,7 +113,13 @@ commit_parsers = [
   { message = "Upgrade crossbeam-epoch and serial_test", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
   { message = "Upgrade to Bazel 9.1.1 and 8.7.0", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
   { message = "Use mimalloc", group = "<!-- 1 -->⛰️  Features" },
+  # Non-conventional types ("scheduler:", "worker:") keep the description out
+  # of the verb rules below, and the message rules see the whole commit body:
+  # #2784 landed in Testing & CI because its body discusses tests, #2750 in
+  # Features because its body says "Add". Pin both by their subject.
+  { message = "fail queued actions with criteria no worker can meet", group = "<!-- 1 -->⛰️  Features" },
   { message = "fix active counts when a client disappears", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "keep directory construction retries on the same lock", group = "<!-- 2 -->🐛 Bug Fixes" },
 
   # Get all breaking changes first.
   { message = "BREAKING", group = "<!-- 0 -->❌️  Breaking Changes" },
