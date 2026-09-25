@@ -3273,9 +3273,11 @@ provider).
 
 ## The sandbox is not a security boundary
 
-Workers can be configured with `use_namespaces: true` and
-`use_mount_namespace: true`. Both are real, and neither makes an action safe to
-run on your behalf.
+For isolation from state left by an earlier action, development builds offer
+the opt-in [`single_use` lifecycle](/reference/nativelink-config/main#localworkerconfig).
+It requires a launcher that replaces the container and its writable volumes
+after every action. This prevents reuse of local files, background processes,
+and worker caches.
 
 ## What to do, in order
 
