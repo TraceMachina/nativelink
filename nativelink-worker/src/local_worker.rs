@@ -597,6 +597,12 @@ pub async fn new_local_worker(
     ac_store: Option<Store>,
     historical_store: Store,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
+    #[cfg(not(target_os = "linux"))]
+    if config.experimental_buck2_file_capture.is_some() {
+        return Err(make_input_err!(
+            "Buck2 container file capture requires a Linux execution container"
+        ));
+    }
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
@@ -740,6 +746,7 @@ pub async fn new_local_worker(
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
+                buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
             },

@@ -230,6 +230,7 @@ async fn reconnects_when_action_stuck_in_transit_on_disconnect() -> Result<(), E
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::new([3u8; 32], 10),
@@ -243,6 +244,7 @@ async fn reconnects_when_action_stuck_in_transit_on_disconnect() -> Result<(), E
         .send(Frame::data(
             encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::StartAction(StartExecute {
+                    request_metadata: None,
                     execute_request: Some((&action_info).into()),
                     operation_id: String::new(),
                     queued_timestamp: None,
@@ -313,6 +315,7 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
@@ -325,6 +328,7 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -427,6 +431,7 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -439,6 +444,7 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -490,6 +496,7 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: "second-action".to_string(),
                         worker_id: expected_worker_id.clone(),
@@ -752,6 +759,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -764,6 +772,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -839,6 +848,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
@@ -852,6 +862,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: operation_id.to_string(),
                         queued_timestamp: None,
@@ -935,6 +946,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -946,6 +958,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -1046,6 +1059,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -1057,6 +1071,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -1244,6 +1259,7 @@ async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -1256,6 +1272,7 @@ async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,

@@ -49,11 +49,97 @@ pub(crate) fn make_base_action_info(
         load_timestamp: UNIX_EPOCH,
         insert_timestamp,
         unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
         }),
     })
+}
+
+/// Exercise the same overlapping-build contract against both scheduler databases.
+pub(crate) async fn verify_overlapping_invocations(
+    scheduler: &nativelink_scheduler::simple_scheduler::SimpleScheduler,
+) -> Result<(), Error> {
+    use nativelink_scheduler::worker::Worker;
+    use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+    use nativelink_util::action_messages::{ActionStage, WorkerId};
+    use nativelink_util::operation_state_manager::ClientStateManager;
+    use nativelink_util::platform_properties::PlatformProperties;
+    use tokio::sync::mpsc;
+
+    let digest = DigestInfo::new([51; 32], 123);
+    let mut listeners = Vec::new();
+    let mut receivers = Vec::new();
+    let mut assignments = Vec::new();
+    for (invocation, scope) in [
+        ("build-one", Some("1".repeat(64))),
+        ("build-two", Some("2".repeat(64))),
+        ("unscoped", None),
+    ] {
+        let worker_id = WorkerId(format!("fresh-worker-{invocation}"));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // One in-flight action per worker, matching the single-use deployment.
+        scheduler
+            .add_worker(Worker::new(
+                worker_id.clone(),
+                PlatformProperties::default(),
+                tx,
+                10_000,
+                1,
+            ))
+            .await?;
+        assert!(matches!(
+            rx.recv().await.unwrap().update,
+            Some(update_for_worker::Update::ConnectionResult(_))
+        ));
+        let mut info = make_base_action_info(UNIX_EPOCH, digest);
+        let ActionUniqueQualifier::Cacheable(key) = &mut Arc::make_mut(&mut info).unique_qualifier
+        else {
+            panic!("Expected cacheable action");
+        };
+        key.execution_scope = scope;
+        let listener = scheduler
+            .add_action(OperationId::from(invocation), info.clone())
+            .await?;
+        scheduler.do_try_match_for_test().await?;
+        let update = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect(
+                "Second invocation must receive a fresh worker while the first is still executing",
+            )
+            .expect("Worker must remain connected");
+        let Some(update_for_worker::Update::StartAction(assignment)) = update.update else {
+            panic!("Expected action assignment");
+        };
+        assert_eq!(assignment.worker_id, worker_id.to_string());
+        assert_eq!(
+            assignment.execute_request.as_ref().unwrap().action_digest,
+            Some(digest.into())
+        );
+        assert_eq!(listener.as_state().await?.0.stage, ActionStage::Executing);
+        // A reconnect within this invocation still follows the same execution.
+        let reconnect = scheduler
+            .add_action(OperationId::from(format!("{invocation}-reconnect")), info)
+            .await?;
+        assert_eq!(reconnect.as_state().await?.0.stage, ActionStage::Executing);
+        assignments.push(assignment);
+        listeners.push((listener, reconnect));
+        receivers.push(rx);
+    }
+    assert_ne!(assignments[0].operation_id, assignments[1].operation_id);
+    assert_ne!(assignments[0].worker_id, assignments[1].worker_id);
+    assert_ne!(assignments[0].operation_id, assignments[2].operation_id);
+    assert_ne!(assignments[1].operation_id, assignments[2].operation_id);
+    for (listener, reconnect) in &listeners {
+        assert_eq!(listener.as_state().await?.0.stage, ActionStage::Executing);
+        assert_eq!(reconnect.as_state().await?.0.stage, ActionStage::Executing);
+    }
+    scheduler.do_try_match_for_test().await?;
+    for rx in &mut receivers {
+        assert_eq!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+    Ok(())
 }
 
 pub(crate) struct TokioWatchActionStateResult {

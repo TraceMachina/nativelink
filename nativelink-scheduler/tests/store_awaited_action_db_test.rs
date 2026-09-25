@@ -136,6 +136,7 @@ async fn test_inner_update_awaited_action() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -176,6 +177,7 @@ fn make_cacheable_action_info() -> Arc<ActionInfo> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::zero_digest(),
@@ -400,6 +402,7 @@ async fn try_subscribe_skips_lookup_for_uncacheable_qualifier() -> Result<(), Er
     let db = build_db(store, false).await;
 
     let uncacheable = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+        execution_scope: None,
         instance_name: INSTANCE_NAME.to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::zero_digest(),
