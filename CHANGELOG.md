@@ -3,12 +3,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.7.2](https://github.com/TraceMachina/nativelink/compare/v1.7.1..v1.7.2) - 2026-09-24
+## [1.7.2](https://github.com/TraceMachina/nativelink/compare/v1.7.1..v1.7.2) - 2026-09-25
 
+### Major changes
 
+This release adds worker lifecycle management and opt-in experimental Buck2
+file capture with invocation isolation. It also fails queued actions when no
+worker can meet their requirements, fixes signal-terminated worker property
+commands, and keeps directory construction retries on the same lock.
 
 ### ⛰️  Features
 
+- Add opt-in experimental Buck2 file capture and invocation isolation ([#2791](https://github.com/TraceMachina/nativelink/issues/2791)) - ([b00fb48](https://github.com/TraceMachina/nativelink/commit/b00fb48ae53e879af23a82656a2160c1f12796c3))
 - Add worker lifecycle management ([#2787](https://github.com/TraceMachina/nativelink/issues/2787)) - ([9e83b48](https://github.com/TraceMachina/nativelink/commit/9e83b48b1ad7a7ad5224812b56423734ca41c1cc))
 - fail queued actions with criteria no worker can meet ([#2784](https://github.com/TraceMachina/nativelink/issues/2784)) - ([67cebb5](https://github.com/TraceMachina/nativelink/commit/67cebb5bb85555142470ab8c329326fd43769877))
 
@@ -20,6 +26,7 @@ All notable changes to this project will be documented in this file.
 
 ### 📚 Documentation
 
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2788](https://github.com/TraceMachina/nativelink/issues/2788)) - ([62c17a3](https://github.com/TraceMachina/nativelink/commit/62c17a34200a53e8f95b66145f51617aa499cb0b))
 - *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2771](https://github.com/TraceMachina/nativelink/issues/2771)) - ([00f8a96](https://github.com/TraceMachina/nativelink/commit/00f8a96b048f4cf18cd316dbf6f43b17fe51bd8f))
 
 ### 🧪 Testing & CI
