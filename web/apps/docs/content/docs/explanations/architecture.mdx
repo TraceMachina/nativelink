@@ -110,6 +110,23 @@ fresh writable volumes. This removes local files, processes, and caches left
 by previous actions. Restarting a process inside an existing container does
 not provide that isolation. The shared CAS and action cache remain available.
 
+Development builds also offer
+[`experimental_buck2_file_capture`](/reference/nativelink-config/main#buck2filecaptureconfig)
+for dedicated Linux execution containers. NativeLink starts an operator-supplied
+collector only for Buck2 assignments with invocation metadata, then waits for
+bounded final capture before deleting action files. The collector owns storage
+and access control. Capture failure does not change the action's execution result.
+This option requires the `single_use` lifecycle and does not add a file server to
+NativeLink.
+
+To keep overlapping Buck2 builds on separate workers, also enable
+[`experimental_buck2_invocation_isolation`](/reference/nativelink-config/main)
+on the Execution services for that instance. Identical in-flight actions from
+different invocations then schedule separately. Retries in the same invocation
+can still join their existing action. Completed action-cache hits remain shared
+and launch neither a worker nor a collector. Upgrade every scheduler serving the
+instance before enabling this option; it does not change other build tools.
+
 <Callout type="warn" title="The worker writes the action cache, not the scheduler">
   It is natural to assume the scheduler records the result, since the
   scheduler is what answered the client. It does not. The worker writes the

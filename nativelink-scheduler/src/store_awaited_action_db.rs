@@ -946,10 +946,18 @@ where
                 .await
                 .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
             tokio::pin!(stream);
-            maybe_awaited_action = stream
+            // This index search is by prefix. In particular, an unscoped key
+            // is a prefix of its scoped variants and must not join those jobs.
+            while let Some(candidate) = stream
                 .try_next()
                 .await
-                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?
+            {
+                if &candidate.action_info().unique_qualifier == unique_qualifier {
+                    maybe_awaited_action = Some(candidate);
+                    break;
+                }
+            }
             if maybe_awaited_action.is_some() {
                 break;
             }
@@ -1126,8 +1134,8 @@ where
                 });
 
             debug_assert!(
-                ActionStage::Queued == awaited_action.state().stage,
-                "Expected action to be queued"
+                !awaited_action.state().stage.is_finished(),
+                "Expected a queued or executing action; completed actions must be recreated"
             );
 
             let operation_id = awaited_action.operation_id().clone();

@@ -429,6 +429,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
     let instance_name = "instance_name".to_string();
 
     let unique_qualifier = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+        execution_scope: None,
         instance_name: instance_name.clone(),
         digest_function: DigestHasherFunc::Sha256,
         digest: action_digest,
@@ -600,6 +601,7 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
     let instance_name = "instance_name".to_string();
 
     let unique_qualifier = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+        execution_scope: None,
         instance_name: instance_name.clone(),
         digest_function: DigestHasherFunc::Sha256,
         digest: action_digest,

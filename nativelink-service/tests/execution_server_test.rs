@@ -24,7 +24,7 @@ use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::Execution;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Action, ExecuteRequest, digest_function,
+    Action, Command, ExecuteRequest, RequestMetadata, ToolDetails, digest_function,
 };
 use nativelink_proto::google::longrunning::operations_server::Operations;
 use nativelink_proto::google::longrunning::{
@@ -39,13 +39,19 @@ use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionStage, ActionState, OperationId, TypeUrl,
+    ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, OperationId, TypeUrl,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::operation_state_manager::{ActionStateResult, ActionStateResultStream};
-use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::origin_event::{
+    BAZEL_METADATA_KEY, OriginMetadata, request_metadata_to_baggage,
+};
 use nativelink_util::store_trait::StoreLike;
+use opentelemetry::KeyValue;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::{Context, FutureExt};
+use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message as _;
 use tonic::{Code as TonicCode, Request};
 
@@ -68,6 +74,13 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 fn make_execution_server(
     store_manager: &StoreManager,
 ) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
+    make_execution_server_with_isolation(store_manager, false)
+}
+
+fn make_execution_server_with_isolation(
+    store_manager: &StoreManager,
+    isolation: bool,
+) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
     let mut action_schedulers: HashMap<String, Arc<dyn KnownPlatformPropertyProvider>> =
         HashMap::new();
@@ -76,6 +89,7 @@ fn make_execution_server(
         &[WithInstanceName {
             instance_name: INSTANCE_NAME.to_string(),
             config: ExecutionConfig {
+                experimental_buck2_invocation_isolation: isolation,
                 cas_store: "main_cas".to_string(),
                 scheduler: "main_scheduler".to_string(),
             },
@@ -389,6 +403,82 @@ fn make_execute_request(action_digest: DigestInfo) -> ExecuteRequest {
 }
 
 #[nativelink_test]
+async fn buck2_execution_scope_preserves_cache_key_and_isolates_invocations() -> Result<(), Error> {
+    let store_manager = make_store_manager().await?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let command_digest = serialize_and_upload_message(
+        &Command::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let action_digest = upload_action(
+        &cas_store,
+        &Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(command_digest.into()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let mut scopes = Vec::new();
+    for (enabled, tool, invocation, identity) in [
+        (true, "buck2", "build-one", "person-one"),
+        (true, "buck2", "build-one", "person-one"),
+        (true, "Buck2", "build-two", "person-one"),
+        (true, "buck2", "build-one", "person-two"),
+        (false, "buck2", "build-one", "person-one"),
+        (true, "bazel", "build-one", "person-one"),
+        (true, "buck2", "", "person-one"),
+        (true, "", "", ""),
+    ] {
+        let (server, scheduler) = make_execution_server_with_isolation(&store_manager, enabled)?;
+        let mut baggage = vec![KeyValue::new(ENDUSER_ID, identity)];
+        if !tool.is_empty() {
+            baggage.push(KeyValue::new(
+                BAZEL_METADATA_KEY,
+                request_metadata_to_baggage(&RequestMetadata {
+                    tool_details: Some(ToolDetails {
+                        tool_name: tool.to_string(),
+                        ..Default::default()
+                    }),
+                    tool_invocation_id: invocation.to_string(),
+                    ..Default::default()
+                }),
+            ));
+        }
+        let state = MockActionStateResult {
+            states: vec![Arc::new(ActionState {
+                client_operation_id: OperationId::default(),
+                stage: ActionStage::Queued,
+                action_digest,
+                last_transition_timestamp: SystemTime::now(),
+            })],
+        };
+        let (response, (_, info)) = tokio::join!(
+            server
+                .execute(Request::new(make_execute_request(action_digest)))
+                .with_context(Context::current_with_baggage(baggage)),
+            scheduler.expect_add_action(Ok(Box::new(state))),
+        );
+        assert!(response.is_ok());
+        let ActionUniqueQualifier::Cacheable(key) = info.unique_qualifier else {
+            panic!("Isolation must preserve cacheability");
+        };
+        assert_eq!(key.digest, action_digest);
+        assert_eq!(key.instance_name, INSTANCE_NAME);
+        assert_eq!(key.digest_function, DigestHasherFunc::Sha256);
+        scopes.push(key.execution_scope);
+    }
+    assert!(scopes[0].is_some());
+    assert_eq!(scopes[0], scopes[1], "Retries in one invocation can join");
+    assert_ne!(scopes[0], scopes[2], "Different invocations cannot join");
+    assert_ne!(scopes[0], scopes[3], "Different identities cannot join");
+    assert!(scopes[4..].iter().all(Option::is_none));
+    Ok(())
+}
+
+#[nativelink_test]
 async fn execute_missing_action_returns_precondition_failure()
 -> Result<(), Box<dyn core::error::Error>> {
     let store_manager = make_store_manager().await?;
@@ -455,7 +545,7 @@ async fn execute_missing_input_root_returns_precondition_failure()
     let cas_store = store_manager.get_store("main_cas").unwrap();
 
     // Upload command, omit input_root.
-    let command_proto = nativelink_proto::build::bazel::remote::execution::v2::Command::default();
+    let command_proto = Command::default();
     let command_digest = serialize_and_upload_message(
         &command_proto,
         cas_store.as_pin(),
