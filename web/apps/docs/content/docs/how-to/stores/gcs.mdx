@@ -81,16 +81,38 @@ permission error on the first request.
 | --- | --- | --- |
 | `key_prefix` | none | Namespacing inside one bucket; give the CAS `cas/` and the AC `ac/` |
 | `resumable_chunk_size` | 2 MB | Chunk size for resumable uploads of large objects; can only be lowered |
+| `simple_upload_threshold` | unset | Lets an unknown-size upload whose declared maximum is strictly below this go up in one request; capped at 5 MiB |
 | `authentication_required` | `false` | Whether to error at startup when no credential is found |
 | `retry` | | Exponential backoff with jitter, shared with every other provider |
 | `consider_expired_after_s` | `0` (never) | How old an object may be and still count as present |
 
-Objects under 5 MB with a known size go up in one request; everything else
-uses a resumable upload, sent chunk by chunk with `resumable_chunk_size`
-bytes per request. The value is rounded to a multiple of 256 KiB and capped at
-the 2 MB default, so it can only be lowered, which trades more round trips per
-object for less memory held per in-flight upload. No setting
-raises it.
+Objects under 5 MB with a known size go up in one request; by default
+everything else uses a resumable upload, sent chunk by chunk with
+`resumable_chunk_size` bytes per request. The value is rounded to a multiple
+of 256 KiB and capped at the 2 MB default, so it can only be lowered, which
+trades more round trips per object for less memory held per in-flight upload.
+No setting raises it.
+
+To opt in to single-request uploads for small objects of unknown size, add
+the threshold to the provider block:
+
+```json5
+experimental_cloud_object_store: {
+  provider: "gcs",
+  bucket: "my-nativelink-cas",
+  key_prefix: "cas/",
+  simple_upload_threshold: 5242880, // 5 MiB, the cap
+},
+```
+
+With `simple_upload_threshold` set, an upload whose exact size is unknown can
+also use one request when its declared maximum is strictly below the effective
+threshold. Compression supplies a conservative maximum, so choose the threshold
+using that bound rather than the final compressed size. With the default 64 KiB
+compression blocks, even a tiny object has a declared maximum greater than
+64 KiB. Uploads buffer before waiting for a connection, so monitor memory as
+well as request counts when enabling this option. The remaining details are in
+the [`experimental_cloud_object_store` reference](/reference/nativelink-config/main#experimental_cloud_object_store).
 
 <SourceLink file="nativelink-store/src/gcs_store.rs" symbol="GcsStore" />
 
