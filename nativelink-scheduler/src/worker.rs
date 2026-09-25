@@ -269,6 +269,7 @@ impl Worker {
                     queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
                     platform: Some((&action_info.platform_properties).into()),
                     worker_id,
+                    request_metadata: action_info.origin_metadata.bazel_metadata.clone(),
                 };
                 reduce_platform_properties(
                     worker_platform_properties,

@@ -285,6 +285,18 @@ and worker caches. It does not create a new kernel boundary or make untrusted
 actions safe on a privileged container host. Continue applying the network
 and process restrictions described on this page.
 
+The development-only
+[`experimental_buck2_file_capture`](/reference/nativelink-config/main#buck2filecaptureconfig)
+option additionally runs an operator-supplied collector inside that dedicated
+Linux container. Configure it to exclude platform credentials and internal
+caches, and use narrowly scoped credentials for its ingest service. The hook
+does not isolate a token from action processes with the same user privileges.
+The collector and
+its ingest service must enforce authorization and filesystem boundaries.
+Invocation metadata identifies the client request; it does not authenticate its
+owner. Separate action mount namespaces and entrypoint wrappers are rejected so
+the collector cannot accidentally archive the outer worker's filesystem.
+
 Workers can be configured with `use_namespaces: true` and
 `use_mount_namespace: true`. Both are real, and neither makes an action safe to
 run on your behalf.

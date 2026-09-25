@@ -81,7 +81,7 @@ message ConnectWorkerRequest {
 /// The result of an ExecutionRequest.
 message ExecuteResult {
     /// The `instance_name` this task was initially assigned to. This is set by the client
-    /// that initially sent the job as part of the BRE protocol.
+    /// that initially sent the job as part of the RBE protocol.
     string instance_name = 1;
 
     /// The operation ID that was executed.
@@ -230,10 +230,14 @@ message StartExecute {
     string worker_id = 6;
 
     reserved 7; // NextId.
+
+    /// Original execution metadata, including the build tool and invocation.
+    /// Workers must not infer a Buck2 file session from an action digest alone.
+    build.bazel.remote.execution.v2.RequestMetadata request_metadata = 8;
 }
 
 /// This is a special message used to save actions into the CAS that can be used
-/// by programs like bb_browswer to inspect the history of a build.
+/// by programs like bb_browser to inspect the history of a build.
 /// Note: Ensure this is always compatible with:
 /// https://github.com/buildbarn/bb-remote-execution/blob/e95e066eb624dc9099682394ec18c12e218e8fc4/pkg/proto/cas/cas.proto#L23
 message HistoricalExecuteResponse {

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod buck2_file_capture;
 pub mod directory_cache;
 pub mod local_worker;
 #[cfg(target_os = "linux")]
