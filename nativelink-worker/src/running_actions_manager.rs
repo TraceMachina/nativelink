@@ -1928,6 +1928,10 @@ impl RunningActionImpl {
             let use_namespaces = self.running_actions_manager.use_namespaces;
 
             if !matches!(use_namespaces, UseNamespaces::No) {
+                let (mount, isolate_tmp) = match use_namespaces {
+                    UseNamespaces::YesAndMount { isolate_tmp } => (true, isolate_tmp),
+                    UseNamespaces::No | UseNamespaces::Yes => (false, false),
+                };
                 let root_action_directory = std::ffi::CString::new(
                     self.running_actions_manager.root_action_directory.clone(),
                 )
@@ -1940,7 +1944,8 @@ impl RunningActionImpl {
                 unsafe {
                     command_builder.pre_exec(move || {
                         crate::namespace_utils::configure_namespace(
-                            matches!(use_namespaces, UseNamespaces::YesAndMount),
+                            mount,
+                            isolate_tmp,
                             &root_action_directory,
                             &action_directory,
                         )
@@ -3041,7 +3046,11 @@ impl UploadActionResults {
 pub enum UseNamespaces {
     No,
     Yes,
-    YesAndMount,
+    /// Also unshare the mount namespace. With `isolate_tmp` each action gets
+    /// a private, empty `/tmp` on top of the masked root action directory.
+    YesAndMount {
+        isolate_tmp: bool,
+    },
 }
 
 #[derive(Debug)]

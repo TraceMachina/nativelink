@@ -402,8 +402,10 @@ workers: [{
 
 `use_namespaces` puts each action in its own process namespace;
 `use_mount_namespace` additionally isolates the worker root in a new mount
-namespace, and only works when `use_namespaces` is on. Both are off by default
-and both are recommended in production. The container
+namespace and gives each action a private, empty `/tmp`, and only works when
+`use_namespaces` is on. Both are off by default and both are recommended in
+production. Set `isolate_tmp: false` if actions must see the host's `/tmp`,
+for example because a tool they run lives there. The container
 running the worker needs the privileges to create namespaces; the reference
 Compose stack marks the executor service `privileged: true` for exactly this.
 
