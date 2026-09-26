@@ -48,6 +48,10 @@ pub(crate) struct FtAggregateOptions {
 /// busy `RediSearch` instance.
 const FT_AGGREGATE_TIMEOUT_MS: u64 = 10_000;
 
+/// The bound on a sorted aggregate. `RediSearch` sorts only this many rows
+/// and returns no more, and without it the bound is ten.
+const FT_AGGREGATE_SORT_MAX: u64 = 1_000_000;
+
 /// Calls `FT.AGGREGATE` in redis. redis-rs does not properly support this command
 /// so we have to manually handle it.
 pub(crate) async fn ft_aggregate<C>(
@@ -83,6 +87,14 @@ where
         .arg(options.sort_by.len() * 2);
     for key in &options.sort_by {
         ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg("ASC");
+    }
+    if !options.sort_by.is_empty() {
+        // A SORTBY without MAX makes RediSearch return ten rows, whatever
+        // the cursor's COUNT says: with 300 actions queued the scheduler
+        // listed 10, the matching pass took 10 per pass, the abandoned
+        // sweep retired 10 a minute, and the provisioner read demand as
+        // 10. MAX is the sort's bound, so it has to cover the whole set.
+        ft_aggregate_cmd = ft_aggregate_cmd.arg("MAX").arg(FT_AGGREGATE_SORT_MAX);
     }
     let res = ft_aggregate_cmd
         .query_async::<Value>(&mut connection_manager)
