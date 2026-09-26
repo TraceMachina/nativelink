@@ -29,7 +29,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
-    record_matching_pass, record_unsatisfiable_failed, record_unsatisfiable_queued,
+    record_awaited_action_orphan, record_matching_pass, record_queue_depth, record_sweep_failure,
+    record_unsatisfiable_failed, record_unsatisfiable_queued,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -498,10 +499,31 @@ impl SimpleScheduler {
             unsatisfiable_pass: &UnsatisfiablePass<'_>,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
-                action_state_result
-                    .as_action_info()
-                    .await
-                    .err_tip(|| "Failed to get action_info from as_action_info_result stream")?;
+                match action_state_result.as_action_info().await {
+                    Ok(found) => found,
+                    // Listed by the queue, and its record cannot be read:
+                    // gone from the store (eviction), or unreadable.
+                    // Nothing to match. Counted so an operator can see the
+                    // store losing records, skipped so the rest of the pass
+                    // still runs, and not an error, since an error here
+                    // made the pass rerun at once and log ten times a
+                    // second until the entry went away.
+                    Err(err) => {
+                        if err.code == Code::NotFound {
+                            debug!(
+                                ?err,
+                                "Queued operation listed but its record is gone; skipping"
+                            );
+                        } else {
+                            warn!(
+                                ?err,
+                                "Queued operation listed but its record cannot be read; skipping"
+                            );
+                        }
+                        record_awaited_action_orphan("matching");
+                        return Ok(());
+                    }
+                };
 
             // TODO(palfrey) We should not compute this every time and instead store
             // it with the ActionInfo when we receive it.
@@ -646,7 +668,9 @@ impl SimpleScheduler {
             );
         }
 
+        let mut queued_seen: u64 = 0;
         while let Some(action_state_result) = stream.next().await {
+            queued_seen += 1;
             result = result.merge(
                 match_action_to_worker(
                     action_state_result.as_ref(),
@@ -666,6 +690,7 @@ impl SimpleScheduler {
             .lock()
             .end_pass(unsatisfiable_pass.now, unsatisfiable_pass.fleet_generation);
         record_unsatisfiable_queued(unsatisfiable_queued);
+        record_queue_depth(queued_seen);
         // Remember this pass's backlog so the next pass can size its fail cap:
         // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
         self.last_unsatisfiable_backlog.store(
@@ -868,6 +893,7 @@ impl SimpleScheduler {
                         return;
                     };
                     if let Err(err) = state_manager.sweep_abandoned_queued_actions().await {
+                        record_sweep_failure();
                         error!(?err, "Error while sweeping abandoned queued actions");
                     }
                 }

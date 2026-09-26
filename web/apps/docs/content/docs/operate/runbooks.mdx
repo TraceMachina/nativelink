@@ -364,6 +364,50 @@ The new open file limit (1024) is below the recommended value of 24576.
 Consider raising max_open_files.
 ```
 
+## Every build stalls at `[Sched]` and nothing errors [#every-build-stalls-and-nothing-errors]
+
+Clients sit on `WaitExecution` for hours, the scheduler log is quiet apart
+from `Could not find AwaitedAction for the given operation id`, idle workers
+take nothing, and the provisioner reads demand as zero. The scheduler's
+records are being evicted from Redis.
+
+`maxmemory` and `maxmemory-policy` are per Redis server, not per database.
+A deployment that puts the scheduler's records in the same instance as the
+CAS's small blobs and the BEP event stream, under `allkeys-lru`, has agreed
+that growth in any of them may evict any of them. An evicted CAS blob is a
+cache miss. An evicted scheduler record is a client waiting on an operation
+nothing will ever finish, and a queue entry that, until v1.7.3, stopped the
+abandoned sweep at the first record it could not read, so the corpses behind
+it were never retired either.
+
+What to check, in order:
+
+1. `redis-cli info memory`: `used_memory` against `maxmemory`, and
+   `evicted_keys` in `info stats`. Any eviction at all on the scheduler's
+   instance is this incident in progress.
+2. What is growing. A stalled BEP consumer is the usual cause: count keys by
+   prefix. Postgres disk full stops the consumer, so check that too.
+3. The scheduler's own counters: `scheduler.awaited_action.orphans` (queue
+   entries whose record was gone on read), `scheduler.queue.depth`,
+   `scheduler.sweep.failures`, and `worker.connected.count`. Depth above
+   zero with no connected worker for minutes is the stall itself.
+
+What to change:
+
+- Give the scheduler its own Redis with `maxmemory-policy noeviction`. A
+  full instance then refuses writes, which is an error the scheduler reports
+  and a client sees, instead of a silent loss. The Helm chart deploys one as
+  `scheduler-redis`.
+- Bound the BEP stream with `key_ttl_s` sized for the longest consumer
+  outage you mean to survive, not for convenience.
+- Alert on Redis memory and evictions and on the counters above before the
+  queue does the alerting for you.
+
+From v1.7.3 the matching pass and the abandoned sweep skip a listed
+operation whose record is gone, count it, and carry on, so an eviction no
+longer makes the pile permanent. It still makes every affected client wait
+out its timeout.
+
 ## Restarting the scheduler [#restarting-the-scheduler]
 
 Not an incident so much as a procedure that behaves worse than you expect.
