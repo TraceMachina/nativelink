@@ -47,9 +47,9 @@ use tokio::sync::Notify;
 const INSTANCE_NAME: &str = "queue_order_instance";
 
 /// A distinct action (its own digest, so nothing coalesces) with the given
-/// priority and insert time.
-fn action(seed: u8, priority: i32, insert_secs: u64) -> Arc<ActionInfo> {
-    let insert = SystemTime::UNIX_EPOCH + Duration::from_secs(insert_secs);
+/// priority and insert time in milliseconds.
+fn action(seed: u8, priority: i32, insert_ms: u64) -> Arc<ActionInfo> {
+    let insert = SystemTime::UNIX_EPOCH + Duration::from_millis(insert_ms);
     Arc::new(ActionInfo {
         command_digest: DigestInfo::new([seed; 32], 1),
         input_root_digest: DigestInfo::new([seed; 32], 2),
@@ -67,26 +67,33 @@ fn action(seed: u8, priority: i32, insert_secs: u64) -> Arc<ActionInfo> {
     })
 }
 
-/// Queue three actions out of order and read them back the way the matcher
-/// does. Returns `(priority, insert_secs)` per action in dispatch order.
+/// Queue four actions out of order and read them back the way the matcher
+/// does. Returns `(priority, insert_ms)` per action in dispatch order.
 async fn queued_order<Db: AwaitedActionDb>(db: &Db) -> Result<Vec<(i32, u64)>, Error> {
     // Inserted newest-first and low-priority-first on purpose: the order the
-    // backend returns must not depend on insertion order.
+    // backend returns must not depend on insertion order. Two of them arrive
+    // within the same second, half a second apart.
     db.add_action(
         OperationId::from("client-a"),
-        action(1, 0, 100),
+        action(1, 0, 100_000),
+        Duration::from_secs(60),
+    )
+    .await?;
+    db.add_action(
+        OperationId::from("client-d"),
+        action(4, 0, 50_500),
         Duration::from_secs(60),
     )
     .await?;
     db.add_action(
         OperationId::from("client-b"),
-        action(2, 0, 50),
+        action(2, 0, 50_000),
         Duration::from_secs(60),
     )
     .await?;
     db.add_action(
         OperationId::from("client-c"),
-        action(3, 5, 150),
+        action(3, 5, 150_000),
         Duration::from_secs(60),
     )
     .await?;
@@ -104,18 +111,20 @@ async fn queued_order<Db: AwaitedActionDb>(db: &Db) -> Result<Vec<(i32, u64)>, E
     while let Some(subscriber) = stream.next().await {
         let awaited = subscriber?.borrow().await?;
         let info = awaited.action_info();
-        let secs = info
-            .insert_timestamp
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        order.push((info.priority, secs));
+        let ms = u64::try_from(
+            info.insert_timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        order.push((info.priority, ms));
     }
     Ok(order)
 }
 
-/// Highest priority first, then oldest first.
-const EXPECTED: [(i32, u64); 3] = [(5, 150), (0, 50), (0, 100)];
+/// Highest priority first, then oldest first, down to the sub-second arrival.
+const EXPECTED: [(i32, u64); 4] = [(5, 150_000), (0, 50_000), (0, 50_500), (0, 100_000)];
 
 #[nativelink_test]
 async fn memory_backend_serves_highest_priority_then_oldest() -> Result<(), Error> {

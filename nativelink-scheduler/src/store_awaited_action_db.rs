@@ -722,8 +722,9 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
             let sorted_awaited_action = SortedAwaitedAction::from(&self.0);
             output.push((
                 "sort_key",
-                // We encode to hex to ensure that the sort key is lexicographically sorted.
-                Bytes::from(format!("{:016x}", sorted_awaited_action.sort_key.as_u64())),
+                // We encode to fixed-width hex to ensure that the sort key is
+                // lexicographically sorted.
+                Bytes::from(format!("{:032x}", sorted_awaited_action.sort_key.as_u128())),
             ));
         }
         Ok(output)
