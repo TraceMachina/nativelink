@@ -604,6 +604,11 @@ impl SchedulerIndexProvider for SearchStateToAwaitedAction {
     const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
     const INDEX_NAME: &'static str = "state";
     const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    // The matcher walks the queue highest priority first, oldest first,
+    // which is descending over the packed sort key (see
+    // `AwaitedActionSortKey`). The memory backend does the same with
+    // `.rev()` over its `BTreeSet`.
+    const SORT_DESCENDING: bool = true;
     type Versioned = TrueValue;
     fn index_value(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.0)
@@ -1248,15 +1253,17 @@ where
         if !matches!(end, Bound::Unbounded) {
             return Err(make_err!(
                 Code::Unimplemented,
-                "Start bound is not supported in RedisAwaitedActionDb::get_range_of_actions",
+                "End bound is not supported in RedisAwaitedActionDb::get_range_of_actions",
             ));
         }
-        // TODO(palfrey) This API is not difficult to implement, but there is no code path
-        // that uses it, so no reason to implement it yet.
+        // The index is read in one direction, fixed by
+        // `SearchStateToAwaitedAction::SORT_DESCENDING`, and every caller
+        // asks for that direction. Ascending has no caller, so it is not
+        // implemented rather than silently served backwards.
         if !desc {
             return Err(make_err!(
                 Code::Unimplemented,
-                "Descending order is not supported in RedisAwaitedActionDb::get_range_of_actions",
+                "Ascending order is not supported in RedisAwaitedActionDb::get_range_of_actions",
             ));
         }
         Ok(self

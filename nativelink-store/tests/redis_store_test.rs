@@ -1359,6 +1359,86 @@ fn test_search_by_index() -> Result<(), Error> {
     Ok(())
 }
 
+/// A provider that reads its index descending, the way the scheduler's
+/// awaited-action index does.
+struct SearchByContentPrefixDesc {
+    prefix: String,
+}
+
+impl SchedulerIndexProvider for SearchByContentPrefixDesc {
+    const KEY_PREFIX: &'static str = "test:";
+    const INDEX_NAME: &'static str = "content_prefix_desc";
+    type Versioned = TrueValue;
+
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    const SORT_DESCENDING: bool = true;
+
+    fn index_value(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.prefix)
+    }
+}
+
+impl SchedulerStoreDecodeTo for SearchByContentPrefixDesc {
+    type DecodeOutput = TestSchedulerDataUnversioned;
+
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        TestSchedulerKey::decode(version, data)
+    }
+}
+
+// The direction on the wire follows the provider. The scheduler's queue index
+// is the descending one; serving it ascending is the bug that made the Redis
+// backend dispatch lowest priority first, newest first.
+#[nativelink_test]
+fn test_search_by_index_descending() -> Result<(), Error> {
+    let commands = vec![MockCmd::new(
+        redis::cmd("FT.AGGREGATE")
+            .arg("test:_content_prefix_desc_sort_key_3e762c15")
+            .arg("@content_prefix_desc:{ Searchable }")
+            .arg("TIMEOUT")
+            .arg(10000_u64)
+            .arg("LOAD")
+            .arg(2)
+            .arg("data")
+            .arg("version")
+            .arg("WITHCURSOR")
+            .arg("COUNT")
+            .arg(1500)
+            .arg("MAXIDLE")
+            .arg(30000)
+            .arg("SORTBY")
+            .arg(2usize)
+            .arg("@sort_key")
+            .arg("DESC"),
+        Ok(Value::Array(vec![
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Array(vec![
+                    Value::BulkString(b"data".to_vec()),
+                    Value::BulkString(b"1234".to_vec()),
+                    Value::BulkString(b"version".to_vec()),
+                    Value::BulkString(b"1".to_vec()),
+                ]),
+            ]),
+            Value::Int(0),
+        ])),
+    )];
+    let store = make_mock_store(commands).await;
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(SearchByContentPrefixDesc {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(search_results.len(), 1);
+    assert_eq!(search_results[0].content, "1234");
+    Ok(())
+}
+
 // A Sentinel master failover surfaces on the scheduler's index query as a
 // dropped connection / command timeout against the old master. The matching
 // loop must re-resolve the master and retry rather than spinning on the dead
@@ -1567,7 +1647,7 @@ fn test_search_by_index_failure() -> Result<(), Error> {
         "Client: TEST - Client: unexpected command", "Error with ft_create in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)", "---", "Client: TEST - Client: unexpected command", "Error with second ft_aggregate in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)"].iter().map(ToString::to_string).collect()));
 
     assert!(logs_contain(
-        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"] } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\"]"
+        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"], sort_desc: false } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\"]"
     ));
 
     Ok(())

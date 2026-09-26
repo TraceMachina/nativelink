@@ -2200,6 +2200,7 @@ where
                         max_idle: CURSOR_IDLE_MS,
                     },
                     sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
+                    sort_desc: K::SORT_DESCENDING,
                 },
             )
             .await
@@ -2237,7 +2238,7 @@ where
             // (Sentinel failover) — re-resolve it and retry rather than letting
             // the scheduler's matching loop spin on a stale handle. (A missing
             // index is not retryable here; it falls through to the create path
-            // below, which re-runs on the next matching cycle if needed.)
+            // below, which creates the index and retries the aggregate inline.)
             Err(err) if is_retryable_redis_error(&err) => {
                 let (connection_manager, _connect_id) =
                     self.connection_manager.reconnect(connect_id).await?;

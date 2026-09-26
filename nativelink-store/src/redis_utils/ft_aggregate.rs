@@ -33,6 +33,8 @@ pub(crate) struct FtAggregateOptions {
     pub load: Vec<String>,
     pub cursor: FtAggregateCursor,
     pub sort_by: Vec<String>,
+    /// Sort direction for every key in `sort_by`.
+    pub sort_desc: bool,
 }
 
 /// Per-query `FT.AGGREGATE` timeout in milliseconds.
@@ -81,8 +83,9 @@ where
         .arg(options.cursor.max_idle)
         .arg("SORTBY")
         .arg(options.sort_by.len() * 2);
+    let direction = if options.sort_desc { "DESC" } else { "ASC" };
     for key in &options.sort_by {
-        ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg("ASC");
+        ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg(direction);
     }
     let res = ft_aggregate_cmd
         .query_async::<Value>(&mut connection_manager)

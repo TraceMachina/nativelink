@@ -237,9 +237,14 @@ impl TryFrom<&[u8]> for AwaitedAction {
 /// The key used to sort the awaited actions.
 ///
 /// The rules for sorting are as follows:
-/// 1. priority of the action
-/// 2. insert order of the action (lower = higher priority)
-/// 3. (mostly random hash based on the action info)
+/// 1. priority of the action (higher runs sooner)
+/// 2. insert order of the action (older runs sooner)
+///
+/// The key packs both into one `u64`, priority in the high 32 bits and the
+/// insert timestamp, inverted, in the low 32 bits, so that reading the set in
+/// descending order gives the rules above. The timestamp has one-second
+/// resolution; actions inserted within the same second tie and their
+/// relative order is backend-defined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct AwaitedActionSortKey(u64);
