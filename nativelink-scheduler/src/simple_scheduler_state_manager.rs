@@ -455,7 +455,19 @@ where
 
         let mut retired = 0u64;
         while let Some(subscriber) = stream.next().await {
-            let subscriber = subscriber.err_tip(|| "In sweep_abandoned_queued_actions")?;
+            // The listing itself can hand back an unreadable entry; the same
+            // rule applies as for the read below.
+            let subscriber = match subscriber {
+                Ok(subscriber) => subscriber,
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        "Queued operation listed but its record cannot be read; skipping"
+                    );
+                    record_awaited_action_orphan("sweep");
+                    continue;
+                }
+            };
             let awaited_action = match subscriber.borrow().await {
                 Ok(awaited_action) => awaited_action,
                 // The queue listed it, the record is gone: the store lost

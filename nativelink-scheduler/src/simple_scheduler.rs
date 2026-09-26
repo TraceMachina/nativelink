@@ -501,21 +501,27 @@ impl SimpleScheduler {
             let (action_info, maybe_origin_metadata) =
                 match action_state_result.as_action_info().await {
                     Ok(found) => found,
-                    // Listed by the queue, gone from the store: nothing to
-                    // match. Counted so an operator can see the store losing
-                    // records; skipped so the rest of the pass still runs.
-                    Err(err) if err.code == Code::NotFound => {
-                        debug!(
-                            ?err,
-                            "Queued operation listed but its record is gone; skipping"
-                        );
+                    // Listed by the queue, and its record cannot be read:
+                    // gone from the store (eviction), or unreadable.
+                    // Nothing to match. Counted so an operator can see the
+                    // store losing records, skipped so the rest of the pass
+                    // still runs, and not an error, since an error here
+                    // made the pass rerun at once and log ten times a
+                    // second until the entry went away.
+                    Err(err) => {
+                        if err.code == Code::NotFound {
+                            debug!(
+                                ?err,
+                                "Queued operation listed but its record is gone; skipping"
+                            );
+                        } else {
+                            warn!(
+                                ?err,
+                                "Queued operation listed but its record cannot be read; skipping"
+                            );
+                        }
                         record_awaited_action_orphan("matching");
                         return Ok(());
-                    }
-                    Err(err) => {
-                        return Err(err).err_tip(
-                            || "Failed to get action_info from as_action_info_result stream",
-                        );
                     }
                 };
 
