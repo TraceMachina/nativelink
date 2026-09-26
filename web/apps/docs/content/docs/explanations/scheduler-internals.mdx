@@ -146,6 +146,22 @@ from the least-recently-used end spreads load; starting from the
 most-recently-used end packs work onto hot workers and leaves the rest idle
 long enough to be scaled down. Neither is a bin-packing algorithm.
 
+The admission ledger only subtracts what an action declares, so an action
+that declared too little is invisible to it. **`live_memory_veto`** names a
+`minimum` property, usually `memory_kb`, that the scheduler checks against the
+free memory each worker reports with its keepalive (the cgroup limit less
+current usage, or `MemAvailable` without a limit). A worker reporting less
+than the action asks for is skipped for that action; a worker that reports
+nothing, such as one older than v1.7.3, is never vetoed. Two metrics go with
+this: `worker.keepalive.gap` is the seconds between consecutive messages from
+a worker, which is what `worker_timeout_s` should be judged against, and
+`worker.disconnections` carries a `worker.disconnect.reason` of
+`disconnected`, `drained`, `timeout`, `kill_unacknowledged`, `error`,
+`removed` or `shutdown`.
+
+Within a priority the queue is ordered by insert time to the nanosecond, on
+both backends, so a burst submitted together dispatches in arrival order.
+
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
 Every property key a worker advertises has a declared type:

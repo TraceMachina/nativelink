@@ -20,7 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker, update_for_worker,
+    ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad,
+    update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
@@ -119,6 +120,10 @@ pub struct Worker {
     #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
     pub max_inflight_tasks: u64,
 
+    /// What the worker last reported having to spare, from its keepalive;
+    /// `None` until it reports, and for workers that never do.
+    pub last_load: Option<WorkerLoad>,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -171,6 +176,7 @@ impl Worker {
             is_paused: false,
             is_draining: false,
             max_inflight_tasks,
+            last_load: None,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)

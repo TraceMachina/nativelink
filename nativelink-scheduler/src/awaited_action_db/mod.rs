@@ -96,7 +96,7 @@ impl core::fmt::Display for SortedAwaitedAction {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         core::fmt::write(
             f,
-            format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
+            format_args!("{}-{}", self.sort_key.as_u128(), self.operation_id),
         )
     }
 }

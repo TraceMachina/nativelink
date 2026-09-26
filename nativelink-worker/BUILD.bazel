@@ -11,6 +11,7 @@ rust_library(
     name = "nativelink-worker",
     srcs = [
         "src/buck2_file_capture.rs",
+        "src/capacity.rs",
         "src/directory_cache.rs",
         "src/lib.rs",
         "src/local_worker.rs",
@@ -67,6 +68,7 @@ rust_test_suite(
     name = "integration",
     timeout = "short",
     srcs = [
+        "tests/capacity_test.rs",
         "tests/directory_cache_stress_test.rs",
         "tests/directory_cache_test.rs",
         "tests/local_worker_test.rs",

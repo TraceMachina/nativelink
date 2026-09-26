@@ -266,7 +266,8 @@ fn test_worker_disconnect_reason_labels() {
         WorkerDisconnectReason::Disconnected.as_str(),
         "disconnected"
     );
-    assert_eq!(WorkerDisconnectReason::Evicted.as_str(), "evicted");
+    assert_eq!(WorkerDisconnectReason::Timeout.as_str(), "timeout");
+    assert_eq!(WorkerDisconnectReason::Drained.as_str(), "drained");
 }
 
 #[test]
@@ -284,7 +285,7 @@ fn test_worker_metric_helpers_are_callable() {
     record_worker_connected();
     record_worker_state("draining", true);
     record_worker_state("paused", true);
-    record_worker_disconnected(WorkerDisconnectReason::Evicted, true, true);
+    record_worker_disconnected(WorkerDisconnectReason::Timeout, true, true);
 }
 
 #[test]

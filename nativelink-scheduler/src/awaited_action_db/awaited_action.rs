@@ -237,12 +237,23 @@ impl TryFrom<&[u8]> for AwaitedAction {
 /// The key used to sort the awaited actions.
 ///
 /// The rules for sorting are as follows:
-/// 1. priority of the action
-/// 2. insert order of the action (lower = higher priority)
-/// 3. (mostly random hash based on the action info)
+/// 1. priority of the action (higher runs sooner)
+/// 2. insert order of the action (older runs sooner)
+///
+/// The key packs both into one `u128`: priority in bits 64 to 95 and the
+/// insert time in nanoseconds since the epoch, inverted, in the low 64 bits,
+/// so that reading the set in descending order gives the rules above. The
+/// high 32 bits are zero. Before this the low half held whole seconds, so a
+/// burst inserted within one second had no order at all and each backend
+/// picked its own; nanoseconds order every arrival a clock can tell apart,
+/// and the operation id breaks the rest.
+///
+/// A key written by an older scheduler is a smaller number with the same
+/// priority prefix, so during a rolling upgrade its actions sort after new
+/// ones of the same priority until they drain. Old keys still parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(transparent)]
-pub struct AwaitedActionSortKey(u64);
+pub struct AwaitedActionSortKey(u128);
 
 impl MetricsComponent for AwaitedActionSortKey {
     fn publish(
@@ -250,60 +261,54 @@ impl MetricsComponent for AwaitedActionSortKey {
         _kind: MetricKind,
         _field_metadata: MetricFieldData,
     ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
-        Ok(MetricPublishKnownKindData::Counter(self.0))
+        // The priority and the top of the timestamp; the low bits are noise
+        // for a metric.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the high half is what is wanted"
+        )]
+        Ok(MetricPublishKnownKindData::Counter((self.0 >> 32) as u64))
     }
 }
 
 impl AwaitedActionSortKey {
-    const fn new(priority: i32, insert_timestamp: u32) -> Self {
+    const fn new(priority: i32, insert_nanos: u64) -> Self {
         // Shift the signed i32 range [i32::MIN, i32::MAX] to the unsigned u32 range
         // [0, u32::MAX] to preserve ordering when we convert to bytes for sorting.
         let priority_u32 = i32::MIN.unsigned_abs().wrapping_add_signed(priority);
-        let priority = priority_u32.to_be_bytes();
 
-        // Invert our timestamp so the larger the timestamp the lower the number.
-        // This makes timestamp descending order instead of ascending.
-        let timestamp = (insert_timestamp ^ u32::MAX).to_be_bytes();
+        // Invert the timestamp so the larger the timestamp the lower the
+        // number: descending order reads the oldest first.
+        let timestamp = insert_nanos ^ u64::MAX;
 
-        Self(u64::from_be_bytes([
-            priority[0],
-            priority[1],
-            priority[2],
-            priority[3],
-            timestamp[0],
-            timestamp[1],
-            timestamp[2],
-            timestamp[3],
-        ]))
+        Self(((priority_u32 as u128) << 64) | timestamp as u128)
     }
 
     fn new_with_unique_key(priority: i32, insert_timestamp: &SystemTime) -> Self {
-        let timestamp = u32::try_from(
+        let nanos = u64::try_from(
             insert_timestamp
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_secs(),
+                .as_nanos(),
         )
-        .unwrap_or(u32::MAX);
-        Self::new(priority, timestamp)
+        .unwrap_or(u64::MAX);
+        Self::new(priority, nanos)
     }
 
-    pub(crate) const fn as_u64(self) -> u64 {
+    pub(crate) const fn as_u128(self) -> u128 {
         self.0
     }
 }
 
-// Ensure the size of the sort key is the same as a `u64`.
-assert_eq_size!(AwaitedActionSortKey, u64);
+// Ensure the size of the sort key is the same as a `u128`.
+assert_eq_size!(AwaitedActionSortKey, u128);
 
 const_assert_eq!(
-    AwaitedActionSortKey::new(0x1234_5678, 0x9abc_def0).0,
+    AwaitedActionSortKey::new(0x1234_5678, 0x9abc_def0_1234_5678).0,
     // Note: Result has 0x12345678 + 0x80000000 = 0x92345678 because we need
     // to shift the `i32::MIN` value to be represented by zero.
-    // Note: `6543210f` are the inverted bits of `9abcdef0`.
-    // This effectively inverts the priority to now have the highest priority
-    // be the lowest timestamps.
-    AwaitedActionSortKey(0x9234_5678_6543_210f).0
+    // Note: `6543210f_edcb_a987` are the inverted bits of the timestamp.
+    AwaitedActionSortKey(0x9234_5678_6543_210f_edcb_a987).0
 );
 // Ensure the priority is used as the sort key first.
 const_assert!(
@@ -317,5 +322,7 @@ const_assert!(
     AwaitedActionSortKey::new(i32::MIN + 1, 0).0 > AwaitedActionSortKey::new(i32::MIN, 0).0
 );
 
-// Ensure the insert timestamp is used as the sort key second.
-const_assert!(AwaitedActionSortKey::new(0, u32::MIN).0 > AwaitedActionSortKey::new(0, u32::MAX).0);
+// Ensure the insert timestamp is used as the sort key second, and that one
+// nanosecond is enough to tell two arrivals apart.
+const_assert!(AwaitedActionSortKey::new(0, u64::MIN).0 > AwaitedActionSortKey::new(0, u64::MAX).0);
+const_assert!(AwaitedActionSortKey::new(0, 1_000).0 > AwaitedActionSortKey::new(0, 1_001).0);

@@ -246,6 +246,17 @@ pub struct SimpleSpec {
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
 
+    /// The name of a `minimum` platform property, usually `memory_kb`, that
+    /// the scheduler compares against the free memory each worker reports
+    /// with its keepalive: a worker reporting less than the action asks for
+    /// is skipped for that action, whatever the admission ledger says. The
+    /// ledger only subtracts what actions declare; this catches the ones
+    /// that declared too little. Workers older than v1.7.3 report nothing
+    /// and are never vetoed.
+    /// Default: unset (off)
+    #[serde(default)]
+    pub live_memory_veto: Option<String>,
+
     /// The storage backend to use for the scheduler.
     /// Default: memory
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,

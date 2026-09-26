@@ -31,16 +31,18 @@ use nativelink_metric::{
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, ResponseEvent, event, response_event,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ActionResourceUsage;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ActionResourceUsage, WorkerLoad,
+};
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_execution_cpu_time, record_execution_peak_memory,
     record_worker_connected, record_worker_disconnected, record_worker_keepalive,
-    record_worker_state,
+    record_worker_keepalive_gap, record_worker_state,
 };
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::origin_event::get_node_id;
-use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
@@ -135,6 +137,9 @@ struct ApiWorkerSchedulerImpl {
     worker_state_manager: Arc<dyn WorkerStateManager>,
     /// The allocation strategy for workers.
     allocation_strategy: WorkerAllocationStrategy,
+    /// The `minimum` property compared against each worker's reported free
+    /// memory before placement; unset means no veto.
+    live_memory_veto: Option<String>,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
     /// Worker registry for tracking worker liveness.
@@ -260,6 +265,7 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         let worker = self.workers.0.peek_mut(worker_id).ok_or_else(|| {
             make_input_err!(
@@ -273,7 +279,13 @@ impl ApiWorkerSchedulerImpl {
             worker.last_update_timestamp,
             timestamp
         );
+        record_worker_keepalive_gap(timestamp.saturating_sub(worker.last_update_timestamp));
         worker.last_update_timestamp = timestamp;
+        // A message without a load (an older worker, or a refresh from an
+        // execute result) leaves the last report in place.
+        if load.is_some() {
+            worker.last_load = load;
+        }
 
         trace!(
             ?worker_id,
@@ -511,6 +523,23 @@ impl ApiWorkerSchedulerImpl {
                 return false;
             }
 
+            // The ledger only knows what actions declared; the worker's own
+            // report of what it has left catches the ones that declared too
+            // little. A worker that reports nothing is never vetoed.
+            if let (Some(property), Some(load)) = (self.live_memory_veto.as_deref(), w.last_load)
+                && let Some(PlatformPropertyValue::Minimum(needed_kb)) =
+                    platform_properties.properties.get(property)
+                && *needed_kb > load.free_memory_kb
+            {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} vetoed for this action: it reports {} KiB free, the action asks {needed_kb} KiB ({property})",
+                        load.free_memory_kb
+                    );
+                }
+                return false;
+            }
+
             // Verify Minimum properties at runtime (their values are dynamic)
             platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging)
         };
@@ -616,8 +645,10 @@ impl ApiWorkerSchedulerImpl {
                 Code::Internal,
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
             );
-            return Result::<(), _>::Err(err.clone())
-                .merge(self.immediate_evict_worker(worker_id, err, false).await);
+            return Result::<(), _>::Err(err.clone()).merge(
+                self.immediate_evict_worker(worker_id, err, false, WorkerDisconnectReason::Error)
+                    .await,
+            );
         }
 
         let (is_finished, due_to_backpressure) = match &update {
@@ -730,8 +761,13 @@ impl ApiWorkerSchedulerImpl {
                     "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                 );
 
+                let reason = if is_disconnect {
+                    WorkerDisconnectReason::Disconnected
+                } else {
+                    WorkerDisconnectReason::Error
+                };
                 return Result::<(), _>::Err(err.clone()).merge(
-                    self.immediate_evict_worker(&worker_id, err, is_disconnect)
+                    self.immediate_evict_worker(&worker_id, err, is_disconnect, reason)
                         .await,
                 );
             }
@@ -791,8 +827,15 @@ impl ApiWorkerSchedulerImpl {
                 Code::Internal,
                 "Worker command failed, removing worker {worker_id} -- {err:?}",
             );
-            return Result::<(), _>::Err(err.clone())
-                .merge(self.immediate_evict_worker(worker_id, err, true).await);
+            return Result::<(), _>::Err(err.clone()).merge(
+                self.immediate_evict_worker(
+                    worker_id,
+                    err,
+                    true,
+                    WorkerDisconnectReason::Disconnected,
+                )
+                .await,
+            );
         }
         Ok(())
     }
@@ -803,6 +846,7 @@ impl ApiWorkerSchedulerImpl {
         worker_id: &WorkerId,
         err: Error,
         is_disconnect: bool,
+        reason: WorkerDisconnectReason,
     ) -> Result<(), Error> {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
@@ -818,15 +862,7 @@ impl ApiWorkerSchedulerImpl {
                 reason = %err.message_string(),
                 "Evicting worker from pool"
             );
-            record_worker_disconnected(
-                if is_disconnect {
-                    WorkerDisconnectReason::Disconnected
-                } else {
-                    WorkerDisconnectReason::Evicted
-                },
-                worker.is_draining,
-                worker.is_paused,
-            );
+            record_worker_disconnected(reason, worker.is_draining, worker.is_paused);
             // We don't care if we fail to send message to worker, this is only a best attempt.
             drop(worker.notify_update(WorkerUpdate::Disconnect).await);
             let update = if is_disconnect {
@@ -884,6 +920,7 @@ impl ApiWorkerScheduler {
         worker_state_manager: Arc<dyn WorkerStateManager>,
         platform_property_manager: Arc<PlatformPropertyManager>,
         allocation_strategy: WorkerAllocationStrategy,
+        live_memory_veto: Option<String>,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
@@ -902,6 +939,7 @@ impl ApiWorkerScheduler {
                 workers: Workers(LruCache::unbounded()),
                 worker_state_manager,
                 allocation_strategy,
+                live_memory_veto,
                 worker_change_notify,
                 worker_registry: worker_registry.clone(),
                 shutting_down: false,
@@ -1146,8 +1184,11 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
         if let Err(err) = result {
-            return Result::<(), _>::Err(err.clone())
-                .merge(inner.immediate_evict_worker(&worker_id, err, false).await);
+            return Result::<(), _>::Err(err.clone()).merge(
+                inner
+                    .immediate_evict_worker(&worker_id, err, false, WorkerDisconnectReason::Error)
+                    .await,
+            );
         }
 
         let now = UNIX_EPOCH + Duration::from_secs(worker_timestamp);
@@ -1171,11 +1212,12 @@ impl WorkerScheduler for ApiWorkerScheduler {
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         {
             let mut inner = self.inner.lock().await;
             inner
-                .refresh_lifetime(worker_id, timestamp)
+                .refresh_lifetime(worker_id, timestamp, load)
                 .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")?;
         }
         let now = UNIX_EPOCH + Duration::from_secs(timestamp);
@@ -1194,6 +1236,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 worker_id,
                 make_err!(Code::Internal, "Received request to remove worker"),
                 false,
+                WorkerDisconnectReason::Removed,
             )
             .await
     }
@@ -1211,6 +1254,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     &worker_id,
                     make_err!(Code::Internal, "Scheduler shutdown"),
                     true,
+                    WorkerDisconnectReason::Shutdown,
                 )
                 .await
             {
@@ -1303,7 +1347,16 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     "Worker {worker_id} timed out, removing from pool"
                 )
             };
-            result = result.merge(inner.immediate_evict_worker(worker_id, err, false).await);
+            let reason = if *kill_overdue {
+                WorkerDisconnectReason::KillUnacknowledged
+            } else {
+                WorkerDisconnectReason::Timeout
+            };
+            result = result.merge(
+                inner
+                    .immediate_evict_worker(worker_id, err, false, reason)
+                    .await,
+            );
         }
 
         result

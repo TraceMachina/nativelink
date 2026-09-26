@@ -174,6 +174,7 @@ async fn setup_api_server_with_task_limit(
         state_manager.clone(),
         platform_property_manager,
         WorkerAllocationStrategy::default(),
+        None,
         tasks_or_worker_change_notify,
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
@@ -333,7 +334,7 @@ pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn 
         // Now send keep alive.
         test_context
             .worker_stream
-            .send(Update::KeepAliveRequest(KeepAliveRequest {}))
+            .send(Update::KeepAliveRequest(KeepAliveRequest::default()))
             .await
             .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keep alive {e}"))?;
         // Wait for a moment to allow it to be processed.

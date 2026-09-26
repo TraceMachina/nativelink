@@ -25,7 +25,9 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, RequestEvent, event, request_event,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::StartExecute;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    StartExecute, WorkerLoad,
+};
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
@@ -834,6 +836,7 @@ impl SimpleScheduler {
             state_manager.clone(),
             platform_property_manager.clone(),
             spec.allocation_strategy,
+            spec.live_memory_veto.clone(),
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
@@ -1167,9 +1170,10 @@ impl WorkerScheduler for SimpleScheduler {
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         self.worker_scheduler
-            .worker_keep_alive_received(worker_id, timestamp)
+            .worker_keep_alive_received(worker_id, timestamp, load)
             .await
     }
 
