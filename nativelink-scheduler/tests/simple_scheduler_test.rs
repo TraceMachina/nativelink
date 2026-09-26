@@ -1393,7 +1393,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 
     // Keep worker 2 alive.
     scheduler
-        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S)
+        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S, None)
         .await?;
     // This should remove worker 1 (the one executing our job).
     scheduler
@@ -3424,7 +3424,7 @@ async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), E
     // Inside the acknowledgement window the fresh keepalives shield it from
     // the ordinary worker timeout and nothing is evicted.
     scheduler
-        .worker_keep_alive_received(&worker_id, NOW_TIME + 30)
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 30, None)
         .await?;
     scheduler.remove_timedout_workers(NOW_TIME + 30).await?;
     assert!(!logs_contain("Evicting worker from pool"));
@@ -3433,7 +3433,7 @@ async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), E
     // keepalives are exactly what would otherwise let the dead operation
     // hold the slot forever.
     scheduler
-        .worker_keep_alive_received(&worker_id, NOW_TIME + 61)
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
         .await?;
     drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
     assert!(logs_contain("did not acknowledge a kill in time"));

@@ -74,6 +74,7 @@ rust_test_suite(
         "tests/execution_active_count_test.rs",
         "tests/fleet_capabilities_test.rs",
         "tests/historical_resource_scheduler_test.rs",
+        "tests/live_memory_veto_test.rs",
         "tests/platform_property_manager_test.rs",
         "tests/property_modifier_scheduler_test.rs",
         "tests/queue_order_test.rs",

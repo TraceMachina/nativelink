@@ -33,7 +33,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForWorker, execute_result,
+    UpdateForWorker, WorkerLoad, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -217,7 +217,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             spawn!("keep alives", async move {
                 loop {
                     interval.tick().await;
-                    if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
+                    // What the worker has to spare rides on the keepalive, so a
+                    // scheduler with `live_memory_veto` can skip a worker whose
+                    // actions declared less than they use.
+                    let load = crate::capacity::free_memory_kb()
+                        .map(|free_memory_kb| WorkerLoad { free_memory_kb });
+                    if let Err(e) = grpc_client.keep_alive(KeepAliveRequest { load }).await {
                         error!(?e, "Failed to send KeepAlive in LocalWorker");
                         return;
                     }
