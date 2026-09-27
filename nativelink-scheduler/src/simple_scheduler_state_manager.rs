@@ -1012,18 +1012,23 @@ where
                     }
 
                     if awaited_action.attempts > self.max_job_retries {
+                        // FailedPrecondition, not Internal: Bazel resubmits an
+                        // Internal execute failure as a fresh operation with a
+                        // fresh attempt counter, so the cap never reached the
+                        // client and a crashing action cycled through the pool
+                        // for as long as the build ran.
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
                                 worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),
                                 ..ExecutionMetadata::default()
                             },
-                            error: Some(err.clone().merge(make_err!(
-                                Code::Internal,
+                            error: Some(make_err!(
+                                Code::FailedPrecondition,
                                 "Job cancelled because it attempted to execute too many times {} > {} times {}",
                                 awaited_action.attempts,
                                 self.max_job_retries,
                                 format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
-                            ))),
+                            ).merge(err.clone())),
                             ..ActionResult::default()
                         })
                     } else {
@@ -1048,8 +1053,8 @@ where
                                 ..ExecutionMetadata::default()
                             },
                             error: Some(make_err!(
-                                Code::Internal,
-                                "Worker disconnected repeatedly while executing this action ({} > {} attempts); the runner likely OOMKilled or the pod was evicted. {}",
+                                Code::FailedPrecondition,
+                                "Worker disconnected repeatedly while executing this action ({} > {} attempts); the worker was likely OOM-killed or its pod evicted. Give the action a memory reservation or raise the pool's memory limit before retrying. {}",
                                 awaited_action.attempts,
                                 self.max_job_retries,
                                 format!(

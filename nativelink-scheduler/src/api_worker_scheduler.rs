@@ -1221,6 +1221,19 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .await
     }
 
+    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.worker_registry.remove_worker(worker_id).await;
+
+        let mut inner = self.inner.lock().await;
+        inner
+            .immediate_evict_worker(
+                worker_id,
+                make_err!(Code::Unavailable, "Worker stream ended without going away"),
+                true,
+            )
+            .await
+    }
+
     async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
         let mut inner = self.inner.lock().await;
         inner.shutting_down = true; // should reject further worker registration

@@ -2423,6 +2423,11 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                         .contains("Job cancelled because it attempted to execute too many times"),
                     "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
                 );
+                assert_eq!(
+                    real_err.code,
+                    Code::FailedPrecondition,
+                    "the cap must use a code the client does not retry"
+                );
                 *real_err = err;
             }
         } else {
@@ -2542,6 +2547,12 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
             err.to_string()
                 .contains("Worker disconnected repeatedly while executing this action"),
             "Error message did not mention disconnect loop: {err}",
+        );
+        assert_eq!(
+            err.code,
+            Code::FailedPrecondition,
+            "the cap must use a code the client does not retry, got {:?}",
+            err.code
         );
     }
 
