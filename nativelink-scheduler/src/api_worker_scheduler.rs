@@ -630,9 +630,10 @@ impl ApiWorkerSchedulerImpl {
             }
             UpdateOperationType::UpdateWithDisconnect => (true, false),
             UpdateOperationType::ExecutionComplete => {
-                // No update here, just restoring platform properties.
-                worker.execution_complete(operation_id);
-                self.worker_change_notify.notify_one();
+                // The process has exited but the action is still resident on
+                // the worker until its result arrives, so nothing is released
+                // here; `complete_action` returns the budget and the slot
+                // together.
                 return Ok(());
             }
         };

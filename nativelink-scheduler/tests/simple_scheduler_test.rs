@@ -1916,6 +1916,132 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
     Ok(())
 }
 
+/// A worker's `ExecuteComplete` (process exited, upload still running) must
+/// not release the action's `Minimum` budget: the action is still resident and
+/// at its memory peak. Only the final result frees the capacity.
+#[nativelink_test]
+async fn execution_complete_keeps_platform_properties_reserved() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let mut supported_props = HashMap::new();
+    supported_props.insert("prop1".to_string(), PropertyType::Minimum);
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(supported_props),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let mut properties = HashMap::new();
+    properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
+    let platform_properties = PlatformProperties {
+        properties: properties.clone(),
+    };
+    let action_props: HashMap<String, String> = properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().into_owned()))
+        .collect();
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), platform_properties.clone())
+            .await
+            .unwrap();
+    let mut client1_action_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([11u8; 32], 512),
+        action_props.clone(),
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+    let mut client2_action_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([99u8; 32], 512),
+        action_props,
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+    let operation_id1 = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            OperationId::from(start_execute.operation_id)
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    {
+        let (state_1, _) = client1_action_listener.changed().await.unwrap();
+        let (state_2, _) = client2_action_listener.changed().await.unwrap();
+        assert_eq!(state_1.stage, ActionStage::Executing);
+        assert_eq!(state_2.stage, ActionStage::Queued);
+    }
+
+    // The worker reports the process finished; the upload is still ahead.
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id1,
+            UpdateOperationType::ExecutionComplete,
+        )
+        .await
+        .unwrap();
+    tokio::task::yield_now().await; // Let a matching pass run if one was notified.
+
+    // The worker's one unit of `prop1` is still held, so the second action
+    // must not have been dispatched.
+    assert!(
+        rx_from_worker.try_recv().is_err(),
+        "second action was dispatched while the first was still uploading"
+    );
+
+    // The final result releases the budget and the second action goes out.
+    let action_result = ActionResult {
+        output_files: Vec::default(),
+        output_folders: Vec::default(),
+        output_file_symlinks: Vec::default(),
+        output_directory_symlinks: Vec::default(),
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    };
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id1,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(action_result)),
+        )
+        .await
+        .unwrap();
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction for the second action, got : {v:?}"),
+    }
+    let (state_2, _) = client2_action_listener.changed().await.unwrap();
+    assert_eq!(state_2.stage, ActionStage::Executing);
+    Ok(())
+}
+
 /// This tests to ensure that platform property restrictions allow jobs to continue to run after
 /// a job finished on a specific worker (eg: restore platform properties).
 #[nativelink_test]
