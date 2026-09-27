@@ -205,6 +205,9 @@ pub struct SimpleScheduler {
     /// How long each action property shape has gone without any worker able
     /// to run it.
     unsatisfiable_tracker: Mutex<UnsatisfiableTracker>,
+    /// The clock for actions queued while no worker is connected anywhere
+    /// (`no_worker_action_timeout_s`); `None` when that timeout is off.
+    no_worker_tracker: Option<Mutex<UnsatisfiableTracker>>,
 
     /// The number of unsatisfiable actions still queued at the end of the last
     /// matching pass, used to size the next pass's per-pass fail cap so a large
@@ -367,9 +370,21 @@ impl SimpleScheduler {
     /// How long until the matching loop would next wake on behalf of an
     /// unsatisfiable shape, if at all.
     pub fn unsatisfiable_deadline_for_test(&self) -> Option<Duration> {
-        self.unsatisfiable_tracker
-            .lock()
-            .next_deadline((self.now_fn)())
+        self.unsatisfiable_deadline((self.now_fn)())
+    }
+
+    /// How long until a pass should run for an unsatisfiable or a no-worker
+    /// shape, whichever comes first.
+    fn unsatisfiable_deadline(&self, now: SystemTime) -> Option<Duration> {
+        let unsatisfiable = self.unsatisfiable_tracker.lock().next_deadline(now);
+        let no_worker = self
+            .no_worker_tracker
+            .as_ref()
+            .and_then(|tracker| tracker.lock().next_deadline(now));
+        match (unsatisfiable, no_worker) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
@@ -488,6 +503,7 @@ impl SimpleScheduler {
             Ok(())
         }
 
+        #[expect(clippy::too_many_arguments)]
         async fn match_action_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
@@ -496,6 +512,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             full_worker_logging: bool,
             unsatisfiable_pass: &UnsatisfiablePass<'_>,
+            no_worker_pass: Option<&UnsatisfiablePass<'_>>,
         ) -> Result<(), Error> {
             let (action_info, maybe_origin_metadata) =
                 action_state_result
@@ -530,10 +547,27 @@ impl SimpleScheduler {
                     .await
                 {
                     MatchOutcome::Matched(worker_id) => worker_id,
-                    // The action can run once a worker has room or connects,
-                    // so we have nothing to do.
-                    MatchOutcome::WaitingForCapacity | MatchOutcome::NoWorkersConnected => {
+                    // The action can run once a worker has room, so we have
+                    // nothing to do.
+                    MatchOutcome::WaitingForCapacity => {
                         return Ok(());
+                    }
+                    // Nothing to wait for; a worker connecting starts a new
+                    // pass, unless the no-worker clock is running.
+                    MatchOutcome::NoWorkersConnected => {
+                        let Some(no_worker_pass) = no_worker_pass else {
+                            return Ok(());
+                        };
+                        return handle_unsatisfiable(
+                            action_state_result,
+                            matching_engine_state_manager,
+                            workers,
+                            &action_info.platform_properties,
+                            action_info.inner.insert_timestamp,
+                            &UnsatisfiableReason::no_workers(),
+                            no_worker_pass,
+                        )
+                        .await;
                     }
                     MatchOutcome::Unsatisfiable(reason) => {
                         return handle_unsatisfiable(
@@ -632,6 +666,26 @@ impl SimpleScheduler {
             cap: unsatisfiable_fail_cap(self.last_unsatisfiable_backlog.load(Ordering::Relaxed)),
             fails_this_pass: AtomicUsize::new(0),
         };
+        // With no worker connected anywhere and the no-worker timeout set,
+        // every queued action is judged by that clock instead. A fleet the
+        // census cannot vouch for counts as having workers.
+        let no_worker_pass = match &self.no_worker_tracker {
+            Some(tracker)
+                if self
+                    .worker_scheduler
+                    .no_worker_anywhere(unsatisfiable_pass.now)
+                    .await =>
+            {
+                Some(UnsatisfiablePass {
+                    tracker,
+                    now: unsatisfiable_pass.now,
+                    fleet_generation: unsatisfiable_pass.fleet_generation,
+                    cap: unsatisfiable_pass.cap,
+                    fails_this_pass: AtomicUsize::new(0),
+                })
+            }
+            _ => None,
+        };
 
         let mut stream = self
             .get_queued_operations()
@@ -656,15 +710,21 @@ impl SimpleScheduler {
                     self.maybe_origin_event_tx.as_ref(),
                     full_worker_logging,
                     &unsatisfiable_pass,
+                    no_worker_pass.as_ref(),
                 )
                 .await,
             );
         }
 
-        let unsatisfiable_queued = self
+        let mut unsatisfiable_queued = self
             .unsatisfiable_tracker
             .lock()
             .end_pass(unsatisfiable_pass.now, unsatisfiable_pass.fleet_generation);
+        if let Some(tracker) = &self.no_worker_tracker {
+            unsatisfiable_queued += tracker
+                .lock()
+                .end_pass(unsatisfiable_pass.now, unsatisfiable_pass.fleet_generation);
+        }
         record_unsatisfiable_queued(unsatisfiable_queued);
         // Remember this pass's backlog so the next pass can size its fail cap:
         // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
@@ -802,6 +862,10 @@ impl SimpleScheduler {
         awaited_action_db.set_worker_registry(worker_registry.clone());
 
         let unsatisfiable_action_timeout = match spec.unsatisfiable_action_timeout_s {
+            0 => None,
+            secs => Some(Duration::from_secs(secs)),
+        };
+        let no_worker_action_timeout = match spec.no_worker_action_timeout_s {
             0 => None,
             secs => Some(Duration::from_secs(secs)),
         };
@@ -967,7 +1031,7 @@ impl SimpleScheduler {
                         // even when nothing else triggers a pass.
                         let unsatisfiable_deadline = weak_inner.upgrade().and_then(|scheduler| {
                             let now = (scheduler.now_fn)();
-                            scheduler.unsatisfiable_tracker.lock().next_deadline(now)
+                            scheduler.unsatisfiable_deadline(now)
                         });
                         let max_wait = match (max_wait, unsatisfiable_deadline) {
                             (Some(max_wait), Some(deadline)) => Some(max_wait.min(deadline)),
@@ -1102,6 +1166,8 @@ impl SimpleScheduler {
                 unsatisfiable_tracker: Mutex::new(UnsatisfiableTracker::new(
                     unsatisfiable_action_timeout,
                 )),
+                no_worker_tracker: no_worker_action_timeout
+                    .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
                 now_fn: scheduler_now_fn,
             }

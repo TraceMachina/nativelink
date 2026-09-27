@@ -232,6 +232,18 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub unsatisfiable_action_timeout_s: u64,
 
+    /// Seconds a queued action waits while no worker at all is connected to
+    /// this scheduler, nor, on a shared backend, to any peer, before it
+    /// fails with `FailedPrecondition`. `unsatisfiable_action_timeout_s`
+    /// only runs against workers that are there, so a pool that scales from
+    /// zero is never failed on sight; but a provisioner that will not create
+    /// a pod for a shape it cannot serve leaves such an action waiting for
+    /// a fleet that never comes, and this is the bound on that. Keep it
+    /// above the longest time a pool needs to bring up its first worker.
+    /// Default: 0 (never fail)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub no_worker_action_timeout_s: u64,
+
     /// If a job returns an internal error or times out this many times when
     /// attempting to run on a worker the scheduler will return the last error
     /// to the client. Jobs will be retried and this configuration is to help

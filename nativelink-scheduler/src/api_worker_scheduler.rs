@@ -946,6 +946,16 @@ impl ApiWorkerScheduler {
         })
     }
 
+    /// Whether no worker is connected here and, as far as a trusted census
+    /// says, to any peer either. False while the census cannot be trusted,
+    /// so a peer we cannot see is assumed to have workers.
+    pub async fn no_worker_anywhere(&self, now: SystemTime) -> bool {
+        let inner = self.inner.lock().await;
+        inner.workers.is_empty()
+            && inner.peer_census_trusted(now)
+            && inner.peer_fleet.as_ref().is_some_and(Vec::is_empty)
+    }
+
     /// Returns a reference to the worker registry.
     pub const fn worker_registry(&self) -> &SharedWorkerRegistry {
         &self.worker_registry

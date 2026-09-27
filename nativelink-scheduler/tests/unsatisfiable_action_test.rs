@@ -263,6 +263,66 @@ async fn identical_worker_churn_does_not_reset_the_unsatisfiable_clock() -> Resu
     Ok(())
 }
 
+fn make_spec_with_no_worker_timeout(no_worker_action_timeout_s: u64) -> SimpleSpec {
+    SimpleSpec {
+        no_worker_action_timeout_s,
+        ..make_spec(0)
+    }
+}
+
+/// With no worker connected anywhere and the no-worker timeout set, a queued
+/// action fails once it has waited that long, and the client is told why.
+#[nativelink_test]
+async fn action_with_no_worker_anywhere_fails_after_the_no_worker_timeout() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec_with_no_worker_timeout(TIMEOUT_S));
+    let action = add_action(&scheduler, 1, cpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+
+    MockClock::advance(Duration::from_secs(TIMEOUT_S - 1));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+
+    MockClock::advance(Duration::from_secs(1));
+    scheduler.do_try_match_for_test().await?;
+    let message = assert_failed_as_unsatisfiable(&stage_of(action.as_ref()).await?);
+    assert!(
+        message.contains("no worker is connected to the scheduler"),
+        "Unexpected message: {message}"
+    );
+    Ok(())
+}
+
+/// Without the no-worker timeout an empty fleet never fails anything, as
+/// before: a pool scaling from zero is not a failure.
+#[nativelink_test]
+async fn action_with_no_worker_anywhere_waits_without_the_no_worker_timeout() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let action = add_action(&scheduler, 1, cpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    MockClock::advance(Duration::from_secs(TIMEOUT_S * 3));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+    Ok(())
+}
+
+/// A worker arriving before the no-worker timeout takes the action.
+#[nativelink_test]
+async fn worker_arriving_before_the_no_worker_timeout_runs_the_action() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec_with_no_worker_timeout(TIMEOUT_S));
+    let action = add_action(&scheduler, 1, cpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    MockClock::advance(Duration::from_secs(TIMEOUT_S / 2));
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+
+    let mut worker_rx = add_worker(&scheduler, "cpu", cpu_worker_properties(), 0).await?;
+    worker_rx.recv().await.unwrap();
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Executing);
+    Ok(())
+}
+
 #[nativelink_test]
 async fn later_action_of_a_due_shape_waits_its_own_timeout() -> Result<(), Error> {
     let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
