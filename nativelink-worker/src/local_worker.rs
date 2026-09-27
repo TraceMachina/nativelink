@@ -212,21 +212,24 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         // Skip the first interval as it happens immediately and we don't need a keep alive until timeout/2 has passed
         interval.tick().await;
 
-        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands
-        drop(
-            spawn!("keep alives", async move {
-                loop {
-                    interval.tick().await;
-                    if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
-                        error!(?e, "Failed to send KeepAlive in LocalWorker");
-                        return;
-                    }
-                    debug!("Sent KeepAlive");
+        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands.
+        // Its failure is this worker's failure: a worker whose keepalives
+        // stop reaching the scheduler is evicted `worker_timeout_s` later
+        // with every action it holds requeued, so ending the stream now and
+        // reconnecting is the cheaper outcome. Before, the task died quietly
+        // and the worker ran on without keepalives.
+        spawn!("keep alives", async move {
+            loop {
+                interval.tick().await;
+                if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
+                    error!(?e, "Failed to send KeepAlive in LocalWorker");
+                    return Err(e.append("KeepAlive failed; reconnecting to the scheduler"));
                 }
-            })
-            .await,
-        );
-        Ok(())
+                debug!("Sent KeepAlive");
+            }
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "KeepAlive task ended: {e:?}"))?
     }
 
     async fn run(

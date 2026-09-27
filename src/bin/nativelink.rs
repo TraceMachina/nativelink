@@ -866,33 +866,33 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[cfg(target_family = "unix")]
     let mut shutdown_guard = ShutdownGuard::default();
 
-    #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
-    runtime.spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen to SIGINT");
-        eprintln!("User terminated process via SIGINT");
-        std::process::exit(130);
-    });
-
     #[allow(unused_variables)]
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
 
+    // SIGINT takes the SIGTERM path: a worker stopped from a terminal
+    // drains like one stopped by its supervisor. A second SIGINT during
+    // the drain exits at once, for the operator who meant it.
     #[cfg(target_family = "unix")]
     #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
     runtime.spawn(async move {
-        signal(SignalKind::terminate())
-            .expect("Failed to listen to SIGTERM")
-            .recv()
-            .await;
-        warn!("Process terminated via SIGTERM");
+        let mut sigterm = signal(SignalKind::terminate()).expect("Failed to listen to SIGTERM");
+        let mut sigint = signal(SignalKind::interrupt()).expect("Failed to listen to SIGINT");
+        let exit_code = tokio::select! {
+            _ = sigterm.recv() => { warn!("Process terminated via SIGTERM"); 143 }
+            _ = sigint.recv() => { warn!("Process terminated via SIGINT, draining; send it again to exit at once"); 130 }
+        };
+        tokio::spawn(async move {
+            sigint.recv().await;
+            eprintln!("User terminated process via second SIGINT");
+            std::process::exit(130);
+        });
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         scheduler_shutdown_rx
             .await
             .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
         warn!("Successfully shut down nativelink.");
-        std::process::exit(143);
+        std::process::exit(exit_code);
     });
 
     #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]

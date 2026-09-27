@@ -242,7 +242,8 @@ attempts per second at the socket for the whole outage. Worse, each worker's
 reconnect path calls `kill_all()` first, destroying every action it was
 running. Restart the scheduler when the queue is quiet, and restart it once.
 
-**Workers** drain themselves on `SIGTERM`: the process rejects new actions,
+**Workers** drain themselves on `SIGTERM` (and on a first `SIGINT`; a second
+`SIGINT` exits at once): the process rejects new actions,
 waits for the ones it is running to finish, sends the scheduler a
 `GoingAway`, and exits. `systemctl stop` is therefore safe as long as
 `TimeoutStopSec` outlasts your longest action. To take a worker out of
