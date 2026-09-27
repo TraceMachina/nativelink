@@ -94,7 +94,7 @@ async fn add_action(scheduler: &SimpleScheduler, digest_byte: u8) -> Result<(), 
     Ok(())
 }
 
-/// The operation ids of every StartAction the worker has been sent.
+/// The operation ids of every `StartAction` the worker has been sent.
 fn started(rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>) -> Vec<OperationId> {
     let mut ids = Vec::new();
     while let Ok(msg) = rx.try_recv() {
@@ -105,7 +105,7 @@ fn started(rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>) -> Vec<OperationId
     ids
 }
 
-/// An idle worker that refuses an action with ResourceExhausted is not
+/// An idle worker that refuses an action with `ResourceExhausted` is not
 /// offered it again until its next keepalive. Before, only a worker with
 /// other actions was paused, so an idle one refusing (a failing
 /// precondition script, a full disk) was re-offered the same action in a
