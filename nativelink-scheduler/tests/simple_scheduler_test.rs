@@ -1668,7 +1668,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let rogue_worker_id = WorkerId("rogue_worker_id".to_string());
 
     let task_change_notify = Arc::new(Notify::new());
-    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec::default(),
         memory_awaited_action_db_factory(
             0,
@@ -1768,6 +1768,12 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
             "Client should not have been notified of event"
         );
     }
+    // The stale result is refused, but the worker stays: evicting it would
+    // requeue everything else it holds for one late message.
+    worker_scheduler
+        .set_drain_worker(&rogue_worker_id, false)
+        .await
+        .expect("worker reporting a stale result must still be in the pool");
 
     Ok(())
 }

@@ -70,6 +70,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/action_messages_test.rs",
+        "tests/backpressure_test.rs",
         "tests/cache_lookup_scheduler_test.rs",
         "tests/execution_active_count_test.rs",
         "tests/fleet_capabilities_test.rs",
