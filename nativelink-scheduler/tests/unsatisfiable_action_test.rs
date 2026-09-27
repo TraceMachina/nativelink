@@ -232,6 +232,37 @@ async fn gpu_action_on_cpu_fleet_fails_after_timeout() -> Result<(), Error> {
     Ok(())
 }
 
+/// Workers of a shape the fleet already has joining and leaving during the
+/// wait do not restart the clock: the action is still failed at its timeout.
+/// A pool that scales identical workers up and down used to keep an action
+/// no shape could run queued forever.
+#[nativelink_test]
+async fn identical_worker_churn_does_not_reset_the_unsatisfiable_clock() -> Result<(), Error> {
+    let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
+    let mut worker_rx = add_worker(&scheduler, "cpu-a", cpu_worker_properties(), 0).await?;
+    worker_rx.recv().await.unwrap();
+
+    let action = add_action(&scheduler, 1, gpu_action_properties()).await?;
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+
+    // Half way through, a second cpu worker joins and the first leaves.
+    MockClock::advance(Duration::from_secs(TIMEOUT_S / 2));
+    scheduler.do_try_match_for_test().await?;
+    let mut worker_b_rx = add_worker(&scheduler, "cpu-b", cpu_worker_properties(), 0).await?;
+    worker_b_rx.recv().await.unwrap();
+    scheduler
+        .remove_worker(&WorkerId("cpu-a".to_string()))
+        .await?;
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+
+    MockClock::advance(Duration::from_secs(TIMEOUT_S / 2));
+    scheduler.do_try_match_for_test().await?;
+    assert_failed_as_unsatisfiable(&stage_of(action.as_ref()).await?);
+    Ok(())
+}
+
 #[nativelink_test]
 async fn later_action_of_a_due_shape_waits_its_own_timeout() -> Result<(), Error> {
     let scheduler = make_scheduler(&make_spec(TIMEOUT_S));
