@@ -1038,6 +1038,32 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_description("Queued actions failed because no worker could ever run them")
             .with_unit("{action}")
             .build(),
+
+        queue_depth: meter
+            .u64_gauge("scheduler.queue.depth")
+            .with_description("Queued actions the last matching pass read")
+            .with_unit("{action}")
+            .build(),
+
+        queue_retired: meter
+            .u64_counter("scheduler.queue.retired")
+            .with_description("Queued actions retired because no client was listening any more")
+            .with_unit("{action}")
+            .build(),
+
+        awaited_action_orphans: meter
+            .u64_counter("scheduler.awaited_action.orphans")
+            .with_description(
+                "Operations the queue listed whose record was gone on read, by site; non-zero means the scheduler's store is losing records, usually to eviction",
+            )
+            .with_unit("{operation}")
+            .build(),
+
+        sweep_failures: meter
+            .u64_counter("scheduler.sweep.failures")
+            .with_description("Abandoned-queue sweeps that ended in an error before finishing")
+            .with_unit("{sweep}")
+            .build(),
     }
 });
 
@@ -1059,6 +1085,14 @@ pub struct SchedulerOtlpMetrics {
     /// Queued actions failed because no worker could ever run them, by
     /// the properties that could not be satisfied.
     pub unsatisfiable_failed: metrics::Counter<u64>,
+    /// Queued actions the last matching pass read.
+    pub queue_depth: metrics::Gauge<u64>,
+    /// Queued actions retired for having no client.
+    pub queue_retired: metrics::Counter<u64>,
+    /// Listed operations whose record was gone on read, by site.
+    pub awaited_action_orphans: metrics::Counter<u64>,
+    /// Abandoned-queue sweeps that failed before finishing.
+    pub sweep_failures: metrics::Counter<u64>,
 }
 
 /// Records a completed matching pass.
@@ -1078,6 +1112,31 @@ pub fn record_matching_pass(duration_secs: f64, succeeded: bool) {
 /// Records how many unsatisfiable queued actions a matching pass saw.
 pub fn record_unsatisfiable_queued(count: u64) {
     SCHEDULER_METRICS.unsatisfiable_queued.record(count, &[]);
+}
+
+/// Records how many queued actions a matching pass read.
+pub fn record_queue_depth(count: u64) {
+    SCHEDULER_METRICS.queue_depth.record(count, &[]);
+}
+
+/// Records queued actions retired by the abandoned sweep.
+pub fn record_queue_retired(count: u64) {
+    if count > 0 {
+        SCHEDULER_METRICS.queue_retired.add(count, &[]);
+    }
+}
+
+/// Records an operation the queue listed whose record was gone when read;
+/// `site` is where it was met (`matching`, `sweep`).
+pub fn record_awaited_action_orphan(site: &'static str) {
+    SCHEDULER_METRICS
+        .awaited_action_orphans
+        .add(1, &[KeyValue::new("site", site)]);
+}
+
+/// Records an abandoned-queue sweep that failed before finishing.
+pub fn record_sweep_failure() {
+    SCHEDULER_METRICS.sweep_failures.add(1, &[]);
 }
 
 /// Records a queued action failed for being unsatisfiable. `properties`
