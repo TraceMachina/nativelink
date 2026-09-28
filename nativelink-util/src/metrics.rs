@@ -1091,6 +1091,14 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_unit("{action}")
             .build(),
 
+        parked_dispatched: meter
+            .u64_counter("scheduler.matching.parked_dispatched")
+            .with_description(
+                "Queued actions dispatched onto room that opened while the matching pass was past them, taken ahead of the newer actions the pass was reading",
+            )
+            .with_unit("{action}")
+            .build(),
+
         awaited_action_orphans: meter
             .u64_counter("scheduler.awaited_action.orphans")
             .with_description(
@@ -1129,6 +1137,9 @@ pub struct SchedulerOtlpMetrics {
     pub queue_depth: metrics::Gauge<u64>,
     /// Queued actions retired for having no client.
     pub queue_retired: metrics::Counter<u64>,
+    /// Actions a pass parked for want of room and dispatched when room
+    /// opened before the pass ended, ahead of the newer actions it was reading.
+    pub parked_dispatched: metrics::Counter<u64>,
     /// Listed operations whose record was gone on read, by site.
     pub awaited_action_orphans: metrics::Counter<u64>,
     /// Abandoned-queue sweeps that failed before finishing.
@@ -1163,6 +1174,15 @@ pub fn record_queue_depth(count: u64) {
 pub fn record_queue_retired(count: u64) {
     if count > 0 {
         SCHEDULER_METRICS.queue_retired.add(count, &[]);
+    }
+}
+
+/// Records parked actions a pass sent to a worker onto room that opened
+/// mid-pass: confirmed sends, not attempts. A dispatch that failed or lost
+/// the assignment race to another scheduler is not counted.
+pub fn record_parked_dispatched(count: u64) {
+    if count > 0 {
+        SCHEDULER_METRICS.parked_dispatched.add(count, &[]);
     }
 }
 

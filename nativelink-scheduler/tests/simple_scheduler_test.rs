@@ -37,7 +37,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
-    update_for_worker,
+    WorkerLoad, update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -3582,5 +3582,453 @@ async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), E
     assert!(logs_contain("did not acknowledge a kill in time"));
     assert!(logs_contain("Evicting worker from pool"));
 
+    Ok(())
+}
+
+/// Wraps a real `AwaitedActionDb` and makes the matching pass read the
+/// queue one action per permit on `gate`, so a test can do things between
+/// two actions of the same pass. Only queued-range reads are gated.
+#[derive(MetricsComponent)]
+struct GatedQueueDb<A: AwaitedActionDb> {
+    inner: A,
+    gate: Arc<tokio::sync::Semaphore>,
+    /// When set, a queued listing also waits for one permit here before it
+    /// reads the queue at all, so a test can queue several actions and be
+    /// sure one pass lists them all.
+    listing_gate: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for GatedQueueDb<A> {
+    type Subscriber = A::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        if let (Some(listing_gate), SortedAwaitedActionState::Queued) = (&self.listing_gate, state)
+        {
+            listing_gate.acquire().await.expect("gate closed").forget();
+        }
+        let items = self
+            .inner
+            .get_range_of_actions(state, start, end, desc)
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        let gate = matches!(state, SortedAwaitedActionState::Queued).then(|| self.gate.clone());
+        Ok(futures::stream::iter(items).then(move |item| {
+            let gate = gate.clone();
+            async move {
+                if let Some(gate) = gate {
+                    gate.acquire_owned().await.expect("gate closed").forget();
+                }
+                item
+            }
+        }))
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.inner.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+fn start_execute_digest(update: UpdateForWorker) -> (String, DigestInfo) {
+    match update.update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            let digest = start_execute
+                .execute_request
+                .and_then(|request| request.action_digest)
+                .and_then(|digest| DigestInfo::try_from(digest).ok())
+                .expect("StartExecute carries an action digest");
+            (start_execute.operation_id, digest)
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+}
+
+/// A worker that frees up while the pass is past the head of the queue
+/// gets the oldest waiting action, not the one the pass happens to be
+/// reading. Three actions, one worker with one slot: the first takes the
+/// slot; the pass reads the second, which waits; the worker finishes; the
+/// pass reads the third, and the second must be the one dispatched.
+#[nativelink_test]
+async fn freed_capacity_mid_pass_goes_to_the_oldest_waiting_action_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        GatedQueueDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            gate: gate.clone(),
+            listing_gate: None,
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    let (tx, mut rx_from_worker) = mpsc::unbounded_channel();
+    let worker = Worker::new(
+        worker_id.clone(),
+        PlatformProperties::default(),
+        tx,
+        NOW_TIME,
+        1,
+    );
+    scheduler.add_worker(worker).await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+
+    let digests = [
+        DigestInfo::new([1u8; 32], 512),
+        DigestInfo::new([2u8; 32], 512),
+        DigestInfo::new([3u8; 32], 512),
+    ];
+    // The listeners stay alive so the actions keep their clients.
+    let _listener_a =
+        setup_action(&scheduler, digests[0], HashMap::new(), make_system_time(1)).await?;
+    let _listener_b =
+        setup_action(&scheduler, digests[1], HashMap::new(), make_system_time(2)).await?;
+    let _listener_c =
+        setup_action(&scheduler, digests[2], HashMap::new(), make_system_time(3)).await?;
+
+    // The pass reads the first action: it takes the only slot.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    let (first_operation_id, first_digest) =
+        start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(first_digest, digests[0]);
+
+    // The pass reads the second: the worker is full, so it waits.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    assert!(
+        poll!(Box::pin(rx_from_worker.recv())).is_pending(),
+        "nothing should be dispatched while the worker is full"
+    );
+
+    // The worker finishes the first action while the pass is still running.
+    let action_result = ActionResult {
+        output_files: Vec::new(),
+        output_folders: Vec::new(),
+        output_file_symlinks: Vec::new(),
+        output_directory_symlinks: Vec::new(),
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    };
+    scheduler
+        .update_action(
+            &worker_id,
+            &OperationId::from(first_operation_id),
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(action_result)),
+        )
+        .await?;
+
+    // The pass reads the third action and finds room. The room goes to
+    // the second action, which has waited longer.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    let (_, dispatched) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(
+        dispatched, digests[1],
+        "the oldest waiting action takes the freed slot"
+    );
+
+    Ok(())
+}
+
+/// A completed result for `worker_id`, for tests that finish an action to
+/// free its slot.
+fn completed_result(worker_id: &WorkerId) -> ActionResult {
+    ActionResult {
+        output_files: Vec::new(),
+        output_folders: Vec::new(),
+        output_file_symlinks: Vec::new(),
+        output_directory_symlinks: Vec::new(),
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    }
+}
+
+/// Parked actions are offered room in the order the queue listed them, not
+/// shape by shape. Two actions fill a two-slot worker; three more of two
+/// shapes park in listing order A1, B1, A2; both slots free up mid-pass;
+/// A1 and B1 must take them, not A1 and A2.
+#[nativelink_test]
+async fn room_opening_mid_pass_keeps_the_listing_order_across_shapes() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            ..SimpleSpec::default()
+        },
+        GatedQueueDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            gate: gate.clone(),
+            listing_gate: None,
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    let (tx, mut rx_from_worker) = mpsc::unbounded_channel();
+    let worker = Worker::new(
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(8),
+        )])),
+        tx,
+        NOW_TIME,
+        2,
+    );
+    scheduler.add_worker(worker).await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+
+    let cpu = |n: &str| HashMap::from([("cpu_count".to_string(), n.to_string())]);
+    let digests: Vec<DigestInfo> = (1..=6u8).map(|i| DigestInfo::new([i; 32], 512)).collect();
+    // Listing order: two fillers, then A1 (cpu 1), B1 (cpu 2), A2 (cpu 1),
+    // then one more to read after the room opens.
+    let shapes = ["1", "1", "1", "2", "1", "1"];
+    // The listeners stay alive so the actions keep their clients.
+    let _listeners =
+        futures::future::try_join_all(digests.iter().enumerate().map(|(i, digest)| {
+            setup_action(
+                &scheduler,
+                *digest,
+                cpu(shapes[i]),
+                make_system_time(u64::try_from(i).unwrap() + 1),
+            )
+        }))
+        .await?;
+
+    // The two fillers take the two slots.
+    gate.add_permits(2);
+    tokio::task::yield_now().await;
+    let (first_id, first) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    let (second_id, second) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!((first, second), (digests[0], digests[1]));
+
+    // A1, B1 and A2 are read while the worker is full and park.
+    gate.add_permits(3);
+    tokio::task::yield_now().await;
+    assert!(poll!(Box::pin(rx_from_worker.recv())).is_pending());
+
+    // Both fillers finish while the pass is still running.
+    for id in [first_id, second_id] {
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+    }
+
+    // The pass reads the sixth action and sees the room. It goes to A1 then
+    // B1, the two oldest parked, whatever their shapes.
+    gate.add_permits(1);
+    tokio::task::yield_now().await;
+    let (_, third) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    let (_, fourth) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(
+        (third, fourth),
+        (digests[2], digests[3]),
+        "room goes to the parked actions in listing order, across shapes"
+    );
+    assert!(
+        poll!(Box::pin(rx_from_worker.recv())).is_pending(),
+        "the worker is full again"
+    );
+    Ok(())
+}
+
+/// A keepalive reporting more free memory is room opening, the same as an
+/// action finishing: with the live memory veto on, the older action parked
+/// for lack of reported memory takes it, not the newer one the pass reads
+/// next.
+#[nativelink_test]
+async fn a_higher_memory_report_mid_pass_goes_to_the_oldest_waiting_action() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "memory_kb".to_string(),
+                PropertyType::Minimum,
+            )])),
+            live_memory_veto: Some("memory_kb".to_string()),
+            ..SimpleSpec::default()
+        },
+        GatedQueueDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify.clone(),
+                MockInstantWrapped::default,
+            ),
+            gate: gate.clone(),
+            listing_gate: Some(listing_gate.clone()),
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+
+    let (tx, mut rx_from_worker) = mpsc::unbounded_channel();
+    let worker = Worker::new(
+        worker_id.clone(),
+        PlatformProperties::new(HashMap::from([(
+            "memory_kb".to_string(),
+            PlatformPropertyValue::Minimum(100_000),
+        )])),
+        tx,
+        NOW_TIME,
+        1,
+    );
+    scheduler.add_worker(worker).await?;
+    tokio::task::yield_now().await;
+    verify_initial_connection_message(worker_id.clone(), &mut rx_from_worker).await;
+    // The worker says it has almost nothing free.
+    scheduler
+        .worker_keep_alive_received(
+            &worker_id,
+            NOW_TIME + 1,
+            Some(WorkerLoad {
+                free_memory_kb: 1_000,
+            }),
+        )
+        .await?;
+
+    let memory = HashMap::from([("memory_kb".to_string(), "2000".to_string())]);
+    let digests = [
+        DigestInfo::new([1u8; 32], 512),
+        DigestInfo::new([2u8; 32], 512),
+    ];
+    let _listener_a =
+        setup_action(&scheduler, digests[0], memory.clone(), make_system_time(1)).await?;
+    let _listener_b = setup_action(&scheduler, digests[1], memory, make_system_time(2)).await?;
+
+    // Both are queued before the pass lists the queue, so one pass reads
+    // both. It reads the older action first: vetoed for memory, it parks.
+    listing_gate.add_permits(1);
+    gate.add_permits(1);
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert!(poll!(Box::pin(rx_from_worker.recv())).is_pending());
+
+    // The resident process exits and the next keepalive says so.
+    scheduler
+        .worker_keep_alive_received(
+            &worker_id,
+            NOW_TIME + 2,
+            Some(WorkerLoad {
+                free_memory_kb: 50_000,
+            }),
+        )
+        .await?;
+
+    // The pass reads the newer action and finds room; the room is the
+    // older action's.
+    gate.add_permits(1);
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    let (_, dispatched) = start_execute_digest(rx_from_worker.recv().await.unwrap());
+    assert_eq!(
+        dispatched, digests[0],
+        "the oldest waiting action takes the room a memory report opened"
+    );
     Ok(())
 }
