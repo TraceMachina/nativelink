@@ -29,6 +29,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
+    record_awaited_action_orphan, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -127,6 +128,15 @@ fn record_execution_metrics(awaited_action: &AwaitedAction, is_retry: bool) {
         );
         EXECUTION_METRICS.execution_retry_count.add(1, &retry_attrs);
     }
+}
+
+/// Whether an error reading a listed queue entry means the entry itself is
+/// lost: its record is gone from the store or cannot be decoded. Such an
+/// entry is skipped and counted. Any other error (the store unreachable, a
+/// listing page that failed to load) is about the store, not the entry, and
+/// is propagated so the caller retries instead of reporting a clean pass.
+pub(crate) const fn is_lost_record(err: &Error) -> bool {
+    matches!(err.code, Code::NotFound | Code::InvalidArgument)
 }
 
 /// Simple struct that implements the `ActionStateResult` trait and always returns an error.
@@ -454,11 +464,28 @@ where
 
         let mut retired = 0u64;
         while let Some(subscriber) = stream.next().await {
-            let subscriber = subscriber.err_tip(|| "In sweep_abandoned_queued_actions")?;
-            let awaited_action = subscriber
-                .borrow()
-                .await
-                .err_tip(|| "In sweep_abandoned_queued_actions")?;
+            // The queue listed it but the record is gone (evicted) or cannot
+            // be decoded. One such entry must not stop the sweep from
+            // retiring everything behind it, which is how a pile of
+            // abandoned actions becomes permanent. Anything else, such as
+            // the listing's next page failing to load, is a failed sweep:
+            // the entries it did not reach are still there.
+            let awaited_action = match subscriber {
+                Ok(subscriber) => subscriber.borrow().await,
+                Err(err) => Err(err),
+            };
+            let awaited_action = match awaited_action {
+                Ok(awaited_action) => awaited_action,
+                Err(err) if is_lost_record(&err) => {
+                    warn!(
+                        ?err,
+                        "Queued operation listed but its record cannot be read; skipping"
+                    );
+                    record_awaited_action_orphan("sweep");
+                    continue;
+                }
+                Err(err) => return Err(err).err_tip(|| "In sweep_abandoned_queued_actions"),
+            };
 
             // Only queued actions belong to this sweep, and only once the
             // client has been gone longer than it is allowed to be.
@@ -506,6 +533,7 @@ where
                 "Retired queued operations that had no clients listening"
             );
         }
+        record_queue_retired(retired);
         Ok(retired)
     }
 
