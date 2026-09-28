@@ -53,6 +53,11 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error>;
     /// Provide result as action info. This behavior will not be supported by all implementations.
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error>;
+    /// When a client last checked in on this operation, where the
+    /// implementation tracks it. `None` where it does not.
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        Ok(None)
+    }
 }
 
 /// The direction in which the results are ordered.

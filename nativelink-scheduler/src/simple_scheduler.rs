@@ -62,7 +62,7 @@ use crate::simple_scheduler_state_manager::{SimpleSchedulerStateManager, is_lost
 use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_registry::WorkerRegistry;
-use crate::worker_scheduler::WorkerScheduler;
+use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
 
 /// Default timeout for workers in seconds: four default keepalive intervals
 /// (2.5s each). The old value of two meant one late keepalive under load
@@ -1306,6 +1306,10 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler
             .set_drain_worker(worker_id, is_draining)
             .await
+    }
+
+    async fn worker_snapshot(&self) -> Vec<WorkerSummary> {
+        self.worker_scheduler.worker_snapshot().await
     }
 
     async fn kill_revoked_operations(&self) -> Result<(), Error> {

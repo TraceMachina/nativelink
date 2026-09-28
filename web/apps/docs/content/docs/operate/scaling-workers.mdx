@@ -247,6 +247,22 @@ exist at all. Nothing in the repository wires this up for you. It is a short
 script, and it's the difference between a clean scale-in and a burst of
 retried actions.
 
+Two read-only listings sit next to it, for the same scripts and for an
+autoscaler that wants the scheduler's own view rather than its store:
+
+```
+GET {admin_path}/scheduler/{scheduler_name}/workers
+GET {admin_path}/scheduler/{scheduler_name}/demand
+```
+
+`workers` returns every connected worker with what it registered, what it
+has left after its running actions' reservations, its running count, its
+pause and drain flags and the free memory it last reported. `demand`
+returns every queued action with its operation id, when it was queued, its
+priority and its platform properties, reservations included. A worker's id
+starts with the name it registered under, which on Kubernetes is the pod
+name, so a drain script can find the ids to drain from the pod.
+
 <SourceLink file="src/bin/nativelink.rs" symbol="set_drain_worker" />
 
 </li>
