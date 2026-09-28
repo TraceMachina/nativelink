@@ -23,7 +23,7 @@ use std::time::UNIX_EPOCH;
 use futures::StreamExt;
 use nativelink_error::{Error, ResultExt};
 use nativelink_util::operation_state_manager::{
-    ClientStateManager, OperationFilter, OperationStageFlags,
+    ClientStateManager, OperationFilter, OperationStageFlags, OrderDirection,
 };
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,9 @@ pub async fn queued_demand(scheduler: &dyn ClientStateManager) -> Result<Vec<Que
     let mut stream = scheduler
         .filter_operations(OperationFilter {
             stages: OperationStageFlags::Queued,
+            // The Redis backend serves the queue in one direction only, the
+            // matcher's: highest priority first, then oldest.
+            order_by_priority_direction: Some(OrderDirection::Desc),
             ..Default::default()
         })
         .await
