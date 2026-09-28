@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
@@ -616,7 +616,18 @@ impl SimpleScheduler {
             }))
         }
 
-        /// Hands a matched action to its worker.
+        /// What became of a dispatch that did not fail.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Dispatch {
+            /// The worker was told to run the action.
+            Sent,
+            /// Another scheduler assigned the action first; nothing was sent.
+            LostRace,
+        }
+
+        /// Hands a matched action to its worker. `Ok(Dispatch::Sent)` means
+        /// the worker was actually told; a lost assignment race is not an
+        /// error but sends nothing.
         async fn dispatch_to_worker(
             action_state_result: &dyn ActionStateResult,
             workers: &ApiWorkerScheduler,
@@ -624,7 +635,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             worker_id: WorkerId,
             action_info: ActionInfoWithProps,
-        ) -> Result<(), Error> {
+        ) -> Result<Dispatch, Error> {
             let origin_metadata = action_info.origin_metadata.clone();
             let event_origin_metadata = origin_metadata.clone();
             let attach_operation_fut = async move {
@@ -646,7 +657,7 @@ impl SimpleScheduler {
                     if err.code == Code::Aborted {
                         // If the operation was aborted, it means that the operation was
                         // cancelled due to another operation being assigned to the worker.
-                        return Ok(());
+                        return Ok(Dispatch::LostRace);
                     }
                     // Any other error is a real error.
                     return Err(err);
@@ -682,7 +693,7 @@ impl SimpleScheduler {
                     .await;
                 }
 
-                Ok(())
+                Ok(Dispatch::Sent)
             };
             tokio::pin!(attach_operation_fut);
 
@@ -697,19 +708,20 @@ impl SimpleScheduler {
                 .await
         }
 
-        /// Actions this pass read that found no room, oldest first within
-        /// each property shape. A pass takes about a millisecond per queued
-        /// action on a store-backed queue, so on a long queue a worker
-        /// finishing mid-pass would hand its room to whatever the pass was
-        /// reading, newer than everything it had passed over. The parked
-        /// actions are what that room is offered to first. Every action of
-        /// one shape asks the same of a worker, so the oldest of a shape is
-        /// tried and the rest of that shape only while they fit; a shape
-        /// whose head does not fit costs one lookup.
+        /// Actions this pass read that found no room, in the order the
+        /// queue listed them: highest priority first, then oldest. That is
+        /// the order room is offered to them in, before the action the
+        /// pass is reading, whenever the fleet's capacity changes. Parking
+        /// is a push; a replay walks the list once and asks the fleet once
+        /// per property shape it meets, since every action of one shape
+        /// asks the same of a worker: a shape whose first parked action
+        /// finds no room is skipped for the rest of that replay.
         #[derive(Default)]
         struct Parked {
-            by_shape: Vec<(PropertyShape, VecDeque<Loaded>)>,
-            len: usize,
+            /// Each with its shape, computed once at parking.
+            queue: VecDeque<(PropertyShape, Loaded)>,
+            /// Actions that were not parked because the list was full.
+            cap_dropped: u64,
         }
 
         /// Past this many parked actions a pass stops parking, so a newer
@@ -720,67 +732,85 @@ impl SimpleScheduler {
 
         impl Parked {
             fn park(&mut self, loaded: Loaded) {
-                if self.len >= PARKED_CAP {
+                if self.queue.len() >= PARKED_CAP {
+                    self.cap_dropped += 1;
                     return;
                 }
                 let shape = PropertyShape::from(&loaded.action_info.platform_properties);
-                match self.by_shape.iter_mut().find(|(known, _)| *known == shape) {
-                    Some((_, queue)) => queue.push_back(loaded),
-                    None => self.by_shape.push((shape, VecDeque::from([loaded]))),
-                }
-                self.len += 1;
+                self.queue.push_back((shape, loaded));
             }
 
-            const fn is_empty(&self) -> bool {
-                self.len == 0
+            fn is_empty(&self) -> bool {
+                self.queue.is_empty()
             }
         }
 
+        /// What one pass did with its parked actions.
+        #[derive(Default)]
+        struct Placement {
+            /// Parked actions that found a worker and were dispatched to it.
+            attempted: u64,
+            /// Of those, the ones the worker was actually told to run.
+            dispatched: u64,
+            /// Of those, the ones another scheduler assigned first.
+            lost_race: u64,
+            /// Of those, the ones whose dispatch failed.
+            failed: u64,
+        }
+
         /// Offers the room that opened since the pass last looked to the
-        /// parked actions, oldest of each shape first. Returns how many it
-        /// placed, with any dispatch error.
+        /// parked actions in listing order. Every parked action that found
+        /// a worker leaves the list, whatever its dispatch came to.
         async fn place_parked(
             parked: &mut Parked,
+            placement: &mut Placement,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             full_worker_logging: bool,
             now: SystemTime,
-        ) -> (u64, Result<(), Error>) {
-            let mut placed = 0;
+        ) -> Result<(), Error> {
             let mut result = Ok(());
-            for (_, queue) in &mut parked.by_shape {
-                while let Some(head) = queue.front() {
-                    let MatchOutcome::Matched(worker_id) = workers
-                        .find_worker_for_action(
-                            &head.action_info.platform_properties,
-                            full_worker_logging,
-                            now,
-                        )
-                        .await
-                    else {
-                        break;
-                    };
-                    let Some(loaded) = queue.pop_front() else {
-                        break;
-                    };
-                    parked.len -= 1;
-                    placed += 1;
-                    result = result.merge(
-                        dispatch_to_worker(
-                            loaded.action_state_result.as_ref(),
-                            workers,
-                            matching_engine_state_manager,
-                            maybe_origin_event_tx,
-                            worker_id,
-                            loaded.action_info,
-                        )
-                        .await,
-                    );
+            let mut blocked: HashSet<PropertyShape> = HashSet::new();
+            let mut still_parked = VecDeque::with_capacity(parked.queue.len());
+            while let Some((shape, loaded)) = parked.queue.pop_front() {
+                if blocked.contains(&shape) {
+                    still_parked.push_back((shape, loaded));
+                    continue;
+                }
+                let MatchOutcome::Matched(worker_id) = workers
+                    .find_worker_for_action(
+                        &loaded.action_info.platform_properties,
+                        full_worker_logging,
+                        now,
+                    )
+                    .await
+                else {
+                    still_parked.push_back((shape.clone(), loaded));
+                    blocked.insert(shape);
+                    continue;
+                };
+                placement.attempted += 1;
+                match dispatch_to_worker(
+                    loaded.action_state_result.as_ref(),
+                    workers,
+                    matching_engine_state_manager,
+                    maybe_origin_event_tx,
+                    worker_id,
+                    loaded.action_info,
+                )
+                .await
+                {
+                    Ok(Dispatch::Sent) => placement.dispatched += 1,
+                    Ok(Dispatch::LostRace) => placement.lost_race += 1,
+                    Err(err) => {
+                        placement.failed += 1;
+                        result = result.merge(Err(err));
+                    }
                 }
             }
-            parked.by_shape.retain(|(_, queue)| !queue.is_empty());
-            (placed, result)
+            parked.queue = still_parked;
+            result
         }
 
         let mut result = Ok(());
@@ -833,8 +863,8 @@ impl SimpleScheduler {
         let matching_engine_state_manager = self.matching_engine_state_manager.as_ref();
         let maybe_origin_event_tx = self.maybe_origin_event_tx.as_ref();
         let mut parked = Parked::default();
+        let mut placement = Placement::default();
         let mut capacity_seen = workers.capacity_generation();
-        let mut parked_placed: u64 = 0;
         let mut queued_seen: u64 = 0;
         while let Some(action_state_result) = stream.next().await {
             queued_seen += 1;
@@ -870,17 +900,18 @@ impl SimpleScheduler {
                     break outcome;
                 }
                 capacity_seen = generation;
-                let (placed, placed_result) = place_parked(
-                    &mut parked,
-                    workers,
-                    matching_engine_state_manager,
-                    maybe_origin_event_tx,
-                    full_worker_logging,
-                    unsatisfiable_pass.now,
-                )
-                .await;
-                parked_placed += placed;
-                result = result.merge(placed_result);
+                result = result.merge(
+                    place_parked(
+                        &mut parked,
+                        &mut placement,
+                        workers,
+                        matching_engine_state_manager,
+                        maybe_origin_event_tx,
+                        full_worker_logging,
+                        unsatisfiable_pass.now,
+                    )
+                    .await,
+                );
             };
 
             match outcome {
@@ -894,7 +925,8 @@ impl SimpleScheduler {
                             worker_id,
                             loaded.action_info,
                         )
-                        .await,
+                        .await
+                        .map(|_| ()),
                     );
                 }
                 // A worker could run it once one has room.
@@ -935,19 +967,32 @@ impl SimpleScheduler {
         }
         // Room that opened after the last action was read.
         if !parked.is_empty() && workers.capacity_generation() != capacity_seen {
-            let (placed, placed_result) = place_parked(
-                &mut parked,
-                workers,
-                matching_engine_state_manager,
-                maybe_origin_event_tx,
-                full_worker_logging,
-                unsatisfiable_pass.now,
-            )
-            .await;
-            parked_placed += placed;
-            result = result.merge(placed_result);
+            result = result.merge(
+                place_parked(
+                    &mut parked,
+                    &mut placement,
+                    workers,
+                    matching_engine_state_manager,
+                    maybe_origin_event_tx,
+                    full_worker_logging,
+                    unsatisfiable_pass.now,
+                )
+                .await,
+            );
         }
-        record_parked_dispatched(parked_placed);
+        record_parked_dispatched(placement.dispatched);
+        if placement.attempted > 0 || parked.cap_dropped > 0 {
+            debug!(
+                attempted = placement.attempted,
+                dispatched = placement.dispatched,
+                lost_race = placement.lost_race,
+                failed = placement.failed,
+                cap_dropped = parked.cap_dropped,
+                still_parked = parked.queue.len(),
+                elapsed_ms = start.elapsed().as_millis(),
+                "Parked actions offered the room that opened mid-pass"
+            );
+        }
 
         let mut unsatisfiable_queued = self
             .unsatisfiable_tracker

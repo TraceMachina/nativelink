@@ -173,11 +173,13 @@ store-backed queue (the listing serves the record it already loaded, and
 only the client keepalive is read), so on a long queue a worker that
 finishes mid-pass would otherwise hand its room to whatever action the pass
 happened to be reading, newer than everything it had already passed over. Instead, actions that found
-no room are parked, oldest first within each property shape, and when the
-fleet's capacity changes the pass offers the room to the parked actions before
-the one in hand. `scheduler.matching.parked_dispatched` counts how often that
-happened; a non-zero rate is normal on a busy fleet and means the head of the
-queue is being served.
+no room are parked in the order the queue listed them, highest priority first
+and then oldest, and when the fleet's capacity changes the pass offers the
+room to the parked actions in that order before the one in hand, asking the
+fleet once per property shape. `scheduler.matching.parked_dispatched` counts
+the parked actions a worker was actually told to run that way; a non-zero
+rate is normal on a busy fleet and means the head of the queue is being
+served.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 

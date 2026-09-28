@@ -336,29 +336,32 @@ impl ApiWorkerSchedulerImpl {
         record_worker_keepalive_gap(timestamp.saturating_sub(worker.last_update_timestamp));
         worker.last_update_timestamp = timestamp;
         // A keepalive is the worker saying it is ready to be asked again,
-        // so a pause from backpressure lasts one keepalive interval. The
-        // matcher has to hear about it, or the requeued action waits for
-        // the next unrelated change.
-        if worker.is_paused {
+        // so a pause from backpressure lasts one keepalive interval.
+        let resumed = worker.is_paused;
+        if resumed {
             worker.is_paused = false;
             record_worker_state("paused", false);
-            // `capacity_changed` by hand: `worker` still borrows the map.
-            self.capacity_generation.fetch_add(1, Ordering::Relaxed);
-            self.worker_change_notify.notify_one();
         }
         // A message without a load (an older worker, or a refresh from an
         // execute result) leaves the last report in place. A report with
         // more room than the last one can make a vetoed action eligible
-        // again, so the matcher hears about it; less room never does.
-        if let Some(load) = load {
-            let more_room = worker
+        // again; less room never does.
+        let more_room = load.is_some_and(|load| {
+            let more = worker
                 .last_load
                 .as_ref()
                 .is_none_or(|last| load.free_memory_kb > last.free_memory_kb);
             worker.last_load = Some(load);
-            if more_room {
-                self.worker_change_notify.notify_one();
-            }
+            more
+        });
+        // Either is room the fleet did not have a moment ago, so the
+        // capacity generation moves and the matcher is woken, together:
+        // a pass in flight offers the room to its parked actions first,
+        // and a pass not in flight starts. `capacity_changed` by hand,
+        // since `worker` still borrows the map.
+        if resumed || more_room {
+            self.capacity_generation.fetch_add(1, Ordering::Relaxed);
+            self.worker_change_notify.notify_one();
         }
 
         trace!(

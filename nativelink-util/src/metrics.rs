@@ -1177,7 +1177,9 @@ pub fn record_queue_retired(count: u64) {
     }
 }
 
-/// Records parked actions a pass dispatched onto room that opened mid-pass.
+/// Records parked actions a pass sent to a worker onto room that opened
+/// mid-pass: confirmed sends, not attempts. A dispatch that failed or lost
+/// the assignment race to another scheduler is not counted.
 pub fn record_parked_dispatched(count: u64) {
     if count > 0 {
         SCHEDULER_METRICS.parked_dispatched.add(count, &[]);
