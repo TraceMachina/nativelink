@@ -1179,6 +1179,10 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler.remove_worker(worker_id).await
     }
 
+    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.worker_scheduler.worker_disconnected(worker_id).await
+    }
+
     async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
         self.worker_scheduler.shutdown(shutdown_guard).await;
     }

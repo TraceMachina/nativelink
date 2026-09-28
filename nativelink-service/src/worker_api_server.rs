@@ -340,7 +340,12 @@ impl WorkerConnection {
             }
             tracing::debug!(worker_id=?instance.worker_id, "Update for scheduler dropped");
             if !had_going_away {
-                drop(instance.scheduler.remove_worker(&instance.worker_id).await);
+                drop(
+                    instance
+                        .scheduler
+                        .worker_disconnected(&instance.worker_id)
+                        .await,
+                );
             }
         });
     }

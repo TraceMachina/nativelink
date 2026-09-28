@@ -417,6 +417,68 @@ pub async fn server_does_not_timeout_if_execute_complete_test()
 }
 
 #[nativelink_test]
+pub async fn stream_end_requeues_running_actions_as_disconnect_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+
+    let action_digest = DigestInfo::new([8u8; 32], 123);
+    let action_info = Arc::new(ActionInfo {
+        command_digest: DigestInfo::new([0u8; 32], 0),
+        input_root_digest: DigestInfo::new([0u8; 32], 0),
+        timeout: Duration::MAX,
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: make_system_time(0),
+        insert_timestamp: make_system_time(0),
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: "instance_name".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    });
+    let operation_id = OperationId::default();
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())?;
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // The worker dies: its update stream ends with no GoingAway. The action
+    // it held must come back as a disconnect, which is what the retry cap
+    // reports as a dying worker rather than a failing job.
+    drop(test_context.worker_stream);
+    let (evicted_operation_id, evicted_worker_id, evicted_update) = test_context
+        .state_manager
+        .expect_update_operation(Ok(()))
+        .await;
+    assert_eq!(evicted_operation_id, operation_id);
+    assert_eq!(evicted_worker_id, test_context.worker_id);
+    assert_eq!(evicted_update, UpdateOperationType::UpdateWithDisconnect);
+    assert!(
+        !test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "worker should be gone once its stream ended"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn core::error::Error>>
 {
     let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
