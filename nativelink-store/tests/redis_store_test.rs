@@ -2117,6 +2117,113 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
     Ok(())
 }
 
+/// The store speaks RESP3, under which a cursor page arrives as a map in
+/// the same shape as the aggregate's own first page. Before the cursor read
+/// parsed that shape, every listing longer than one page failed on its
+/// second page with "Non map item".
+#[nativelink_test]
+async fn search_by_index_prefix_reads_a_resp3_cursor_page() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    Value::Int(2),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"first".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                    ]),
+                ]),
+                Value::Int(42),
+            ])),
+        )
+    }
+
+    fn make_ft_cursor_read_resp3() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("ft.cursor")
+                .arg("read")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .cursor_arg(42),
+            Ok(Value::Array(vec![
+                Value::Map(vec![
+                    (
+                        Value::SimpleString("attributes".to_string()),
+                        Value::Array(vec![]),
+                    ),
+                    (
+                        Value::SimpleString("format".to_string()),
+                        Value::SimpleString("STRING".to_string()),
+                    ),
+                    (
+                        Value::SimpleString("results".to_string()),
+                        Value::Array(vec![Value::Map(vec![
+                            (
+                                Value::SimpleString("extra_attributes".to_string()),
+                                Value::Map(vec![
+                                    (
+                                        Value::BulkString(b"data".to_vec()),
+                                        Value::BulkString(b"second".to_vec()),
+                                    ),
+                                    (
+                                        Value::BulkString(b"version".to_vec()),
+                                        Value::BulkString(b"2".to_vec()),
+                                    ),
+                                ]),
+                            ),
+                            (
+                                Value::SimpleString("values".to_string()),
+                                Value::Array(vec![]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let store = make_mock_store(vec![make_ft_aggregate(), make_ft_cursor_read_resp3()]).await;
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(
+        search_results.len(),
+        2,
+        "the RESP3 page is read like the first"
+    );
+    assert_eq!(search_results[0].content, "first");
+    assert_eq!(search_results[1].content, "second");
+    Ok(())
+}
+
 #[nativelink_test]
 async fn no_items_from_none_subscription_channel() -> Result<(), Error> {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
