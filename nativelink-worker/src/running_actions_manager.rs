@@ -127,6 +127,23 @@ fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler 
     ActionResourceUsageSampler { stop_tx, handle }
 }
 
+/// SIGKILL to every process in the action's group. The action is its own
+/// group leader, so this reaches the children a killed shell would
+/// otherwise leave behind: a timed-out or cancelled action used to lose
+/// only its direct child while its descendants ran on, holding memory and
+/// CPU against the next action (issue #225).
+#[cfg(target_os = "linux")]
+fn kill_process_group(pgid: u32) {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return;
+    };
+    // SAFETY: killpg only takes integers and has no memory safety
+    // considerations; a stale group id is reported as ESRCH, not acted on.
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
 #[cfg(target_os = "linux")]
 async fn finish_action_resource_usage_sampler(
     sampler: ActionResourceUsageSampler,
@@ -2049,6 +2066,10 @@ impl RunningActionImpl {
                 () = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
                     killed_action = true;
+                    #[cfg(target_os = "linux")]
+                    if let Some(pgid) = child_process_guard.id() {
+                        kill_process_group(pgid);
+                    }
                     if let Err(err) = child_process_guard.kill().await {
                         error!(
                             ?err,
@@ -2168,6 +2189,10 @@ impl RunningActionImpl {
                 },
                 _ = &mut kill_channel_rx => {
                     killed_action = true;
+                    #[cfg(target_os = "linux")]
+                    if let Some(pgid) = child_process_guard.id() {
+                        kill_process_group(pgid);
+                    }
                     if let Err(err) = child_process_guard.kill().await {
                         error!(
                             operation_id = ?self.operation_id,
