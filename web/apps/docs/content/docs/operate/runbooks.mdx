@@ -68,7 +68,7 @@ any other non-zero exit; there is no exported metric that singles out
 signal deaths, so the log line is what you alert on.
 
 **The worker process itself was killed.** The scheduler notices after
-`worker_timeout_s` (default 5 seconds, checked once a second), evicts it, and
+`worker_timeout_s` (default 10 seconds, checked once a second), evicts it, and
 re-queues its in-flight actions. In this tree a disconnect *counts as an
 attempt*, so after `max_job_retries` the client finally sees:
 

@@ -152,8 +152,10 @@ pub struct SimpleSpec {
     pub enable_active_action_count_metric: bool,
 
     /// Remove workers from pool once the worker has not responded in this
-    /// amount of time in seconds.
-    /// Default: 5 seconds
+    /// amount of time in seconds. Any message from the worker counts, not
+    /// only keepalives. Eviction requeues everything the worker held, so
+    /// keep this well above the longest pause a loaded worker can see.
+    /// Default: 10 seconds (four default keepalive intervals)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub worker_timeout_s: u64,
 
