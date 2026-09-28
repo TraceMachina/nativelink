@@ -3,20 +3,30 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use async_trait::async_trait;
+use futures::stream;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::schedulers::{PropertyType, SimpleSpec};
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::UpdateForWorker;
 use nativelink_scheduler::admin::{QueuedDemand, queued_demand, queued_demand_json, workers_json};
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::{WorkerScheduler, WorkerSummary};
-use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
+use nativelink_util::action_messages::{
+    ActionInfo, ActionStage, ActionState, OperationId, WorkerId,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::operation_state_manager::{ActionStateResult, ClientStateManager};
+use nativelink_util::operation_state_manager::{
+    ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
+};
+use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use pretty_assertions::assert_eq;
 use tokio::sync::{Notify, mpsc};
@@ -172,5 +182,126 @@ async fn listings_round_trip_through_json() -> Result<(), Error> {
     let parsed: Vec<WorkerSummary> =
         serde_json::from_str(&workers_json(&workers)?).expect("worker JSON parses");
     assert_eq!(parsed, workers);
+    Ok(())
+}
+
+/// One listed operation as the demand listing reads it back: the filter
+/// saw it queued, but each later read is fresh and may find it moved on,
+/// gone, or unreadable.
+#[derive(Clone)]
+struct Listed {
+    stage: Result<ActionStage, Code>,
+}
+
+#[async_trait]
+impl ActionStateResult for Listed {
+    async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        let stage = self
+            .stage
+            .clone()
+            .map_err(|code| make_err!(code, "record read failed"))?;
+        Ok((
+            Arc::new(ActionState {
+                stage,
+                client_operation_id: OperationId::default(),
+                action_digest: DigestInfo::zero_digest(),
+                last_transition_timestamp: UNIX_EPOCH,
+            }),
+            None,
+        ))
+    }
+
+    async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+        self.as_state().await
+    }
+
+    async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+        Ok((
+            make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest()),
+            None,
+        ))
+    }
+}
+
+/// A scheduler whose queued listing is exactly these operations.
+struct FixedListing(Vec<Listed>);
+
+impl MetricsComponent for FixedListing {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::Component)
+    }
+}
+
+#[async_trait]
+impl ClientStateManager for FixedListing {
+    async fn add_action(
+        &self,
+        _client_operation_id: OperationId,
+        _action_info: Arc<ActionInfo>,
+    ) -> Result<Box<dyn ActionStateResult>, Error> {
+        Err(make_err!(Code::Unimplemented, "not part of this fixture"))
+    }
+
+    async fn filter_operations(
+        &self,
+        _filter: OperationFilter,
+    ) -> Result<ActionStateResultStream, Error> {
+        let listed: Vec<Box<dyn ActionStateResult>> = self
+            .0
+            .iter()
+            .cloned()
+            .map(|listed| -> Box<dyn ActionStateResult> { Box::new(listed) })
+            .collect();
+        Ok(Box::pin(stream::iter(listed)))
+    }
+}
+
+/// Between the filter and the read a record can be dispatched, expire or
+/// turn out unreadable. Demand keeps only what is still queued, and one bad
+/// record does not take the listing down with it.
+#[nativelink_test]
+async fn demand_leaves_out_what_moved_on_or_went_away() -> Result<(), Error> {
+    let scheduler = FixedListing(vec![
+        Listed {
+            stage: Ok(ActionStage::Queued),
+        },
+        Listed {
+            stage: Err(Code::NotFound),
+        },
+        Listed {
+            stage: Ok(ActionStage::Executing),
+        },
+        Listed {
+            stage: Err(Code::InvalidArgument),
+        },
+        Listed {
+            stage: Ok(ActionStage::Queued),
+        },
+    ]);
+    let demand = queued_demand(&scheduler).await?;
+    assert_eq!(demand.len(), 2, "only the two still queued are demand");
+    Ok(())
+}
+
+/// A read that fails because the store is unreachable is the listing's
+/// error, not a record to leave out.
+#[nativelink_test]
+async fn demand_fails_when_the_store_does() -> Result<(), Error> {
+    let scheduler = FixedListing(vec![
+        Listed {
+            stage: Ok(ActionStage::Queued),
+        },
+        Listed {
+            stage: Err(Code::Unavailable),
+        },
+    ]);
+    let err = queued_demand(&scheduler)
+        .await
+        .expect_err("a store failure fails the listing");
+    assert_eq!(err.code, Code::Unavailable);
     Ok(())
 }

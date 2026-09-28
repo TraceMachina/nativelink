@@ -22,11 +22,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use nativelink_error::{Error, ResultExt};
+use nativelink_util::action_messages::ActionStage;
+use nativelink_util::metrics::record_awaited_action_orphan;
 use nativelink_util::operation_state_manager::{
     ClientStateManager, OperationFilter, OperationStageFlags, OrderDirection,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
+use crate::simple_scheduler_state_manager::is_lost_record;
 use crate::worker_scheduler::WorkerSummary;
 
 /// A queued action as the admin API lists it: enough to size a pod for it
@@ -61,9 +65,24 @@ pub async fn queued_demand(scheduler: &dyn ClientStateManager) -> Result<Vec<Que
         .err_tip(|| "Listing queued operations for the admin API")?;
     let mut out = Vec::new();
     while let Some(result) = stream.next().await {
-        let (state, _) = result.as_state().await?;
-        let (action_info, _) = result.as_action_info().await?;
-        let client_last_seen_ms = result.client_last_seen().await?.map(epoch_ms);
+        // The filter read the record once; each read below is a fresh one,
+        // and the record can have moved on or gone in between. One that is
+        // gone or cannot be decoded is left out and counted, one that has
+        // since been dispatched is no longer demand, and a store failure is
+        // the listing's error.
+        let Some((state, _)) = still_listed(result.as_state().await)? else {
+            continue;
+        };
+        if !matches!(state.stage, ActionStage::Queued) {
+            continue;
+        }
+        let Some((action_info, _)) = still_listed(result.as_action_info().await)? else {
+            continue;
+        };
+        let Some(client_last_seen) = still_listed(result.client_last_seen().await)? else {
+            continue;
+        };
+        let client_last_seen_ms = client_last_seen.map(epoch_ms);
         out.push(QueuedDemand {
             operation_id: state.client_operation_id.to_string(),
             queued_since_ms: epoch_ms(action_info.insert_timestamp),
@@ -73,6 +92,23 @@ pub async fn queued_demand(scheduler: &dyn ClientStateManager) -> Result<Vec<Que
         });
     }
     Ok(out)
+}
+
+/// A read of a listed record: the value, `None` for a record that is gone
+/// or cannot be decoded (skipped and counted), or the store's error.
+fn still_listed<T>(read: Result<T, Error>) -> Result<Option<T>, Error> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(err) if is_lost_record(&err) => {
+            warn!(
+                ?err,
+                "Queued operation listed but its record cannot be read; left out of the demand"
+            );
+            record_awaited_action_orphan("admin");
+            Ok(None)
+        }
+        Err(err) => Err(err).err_tip(|| "Reading a queued operation for the admin API"),
+    }
 }
 
 fn epoch_ms(at: SystemTime) -> u64 {
