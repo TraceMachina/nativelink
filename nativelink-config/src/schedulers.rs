@@ -197,7 +197,10 @@ pub struct SimpleSpec {
 
     /// Requeue a dispatched action the worker has not acknowledged within
     /// this many seconds, untried and without counting an attempt, and
-    /// pause the worker. Workers from v1.7.3 acknowledge every dispatch;
+    /// pause the worker. The clock is the worker's own messages: a dispatch
+    /// is dated by the worker's last message before it, and the check runs
+    /// on each later message, so keep this above a few keepalive intervals.
+    /// Workers from v1.7.3 acknowledge every dispatch;
     /// older workers never do, so leave this unset while any are
     /// connected or their every action would be requeued.
     /// Default: unset (off)

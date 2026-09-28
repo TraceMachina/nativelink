@@ -1114,9 +1114,9 @@ where
                 // We shouldn't get here, but we just ignore it if we do.
                 UpdateOperationType::UpdateWithDecline(decline) => {
                     // Nothing ran, so nothing is charged against the retry
-                    // cap; the action goes back where it was.
+                    // cap and the retry metric does not move; the action
+                    // goes back where it was.
                     debug!(reason = %decline.reason, "Dispatch declined, requeuing untried");
-                    is_retry = true;
                     ActionStage::Queued
                 }
                 UpdateOperationType::ExecutionComplete => {

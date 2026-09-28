@@ -958,13 +958,16 @@ impl ApiWorkerSchedulerImpl {
                     .await;
                 // The dispatch was never charged to the worker (the send
                 // comes first), so the eviction did not see this operation;
-                // send it back to the queue here.
+                // send it back to the queue here, untried: nothing ran, so
+                // no attempt is counted against it.
                 let requeued = self
                     .worker_state_manager
                     .update_operation(
                         &operation_id,
                         &worker_id,
-                        UpdateOperationType::UpdateWithDisconnect,
+                        UpdateOperationType::UpdateWithDecline(Decline {
+                            reason: "worker_disconnected".to_string(),
+                        }),
                     )
                     .await;
                 return Result::<(), _>::Err(err).merge(evicted).merge(requeued);
@@ -1004,21 +1007,32 @@ impl ApiWorkerSchedulerImpl {
     /// The worker declined a dispatch: the ledger is restored, the action
     /// requeued untried, and the worker paused; for a decline for load the
     /// pause holds until the worker reports that much free memory.
+    /// Returns whether there was a dispatch to take back. A decline for an
+    /// operation the worker no longer holds (it finished, or the sweep
+    /// already requeued it) is nothing to act on, like a late
+    /// acknowledgement, and must not pause the worker.
     async fn dispatch_declined(
         &mut self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
         reason: String,
         needs_kb: Option<u64>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        let holds_it = self
+            .workers
+            .peek(worker_id)
+            .is_some_and(|worker| worker.running_action_infos.contains_key(operation_id));
+        if !holds_it {
+            debug!(?worker_id, %operation_id, %reason, "Decline for an operation not on this worker");
+            return Ok(false);
+        }
         info!(?worker_id, %operation_id, %reason, ?needs_kb, "Worker declined dispatch");
-        let result = self
-            .update_action(
-                worker_id,
-                operation_id,
-                UpdateOperationType::UpdateWithDecline(Decline { reason }),
-            )
-            .await;
+        self.update_action(
+            worker_id,
+            operation_id,
+            UpdateOperationType::UpdateWithDecline(Decline { reason }),
+        )
+        .await?;
         if let Some(worker) = self.workers.get_mut(worker_id) {
             if !worker.is_paused {
                 worker.is_paused = true;
@@ -1026,7 +1040,7 @@ impl ApiWorkerSchedulerImpl {
             }
             worker.pause_needs_kb = needs_kb;
         }
-        result
+        Ok(true)
     }
 
     /// Dispatches this worker has not acknowledged within the timeout, as
@@ -1520,14 +1534,18 @@ impl WorkerScheduler for ApiWorkerScheduler {
         reason: String,
         needs_kb: Option<u64>,
     ) -> Result<(), Error> {
-        self.metrics
-            .dispatches_declined
-            .fetch_add(1, Ordering::Relaxed);
-        record_dispatch_requeue("declined");
         let mut inner = self.inner.lock().await;
-        inner
+        // Counted once the action is back in the queue, not per message.
+        if inner
             .dispatch_declined(worker_id, operation_id, reason, needs_kb)
-            .await
+            .await?
+        {
+            self.metrics
+                .dispatches_declined
+                .fetch_add(1, Ordering::Relaxed);
+            record_dispatch_requeue("declined");
+        }
+        Ok(())
     }
 
     async fn worker_keep_alive_received(
@@ -1554,11 +1572,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                         timeout_s = self.dispatch_ack_timeout_s,
                         "Dispatch never acknowledged, requeuing untried"
                     );
-                    self.metrics
-                        .dispatches_unacknowledged
-                        .fetch_add(1, Ordering::Relaxed);
-                    record_dispatch_requeue("unacknowledged");
-                    if let Err(err) = inner
+                    match inner
                         .dispatch_declined(
                             worker_id,
                             &operation_id,
@@ -1567,7 +1581,16 @@ impl WorkerScheduler for ApiWorkerScheduler {
                         )
                         .await
                     {
-                        warn!(?worker_id, %operation_id, ?err, "Could not requeue unacknowledged dispatch");
+                        Ok(true) => {
+                            self.metrics
+                                .dispatches_unacknowledged
+                                .fetch_add(1, Ordering::Relaxed);
+                            record_dispatch_requeue("unacknowledged");
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            warn!(?worker_id, %operation_id, ?err, "Could not requeue unacknowledged dispatch");
+                        }
                     }
                 }
             }

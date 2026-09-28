@@ -440,17 +440,19 @@ impl WorkerConnection {
         Ok(())
     }
 
+    /// The answer is recorded before the liveness refresh: the refresh runs
+    /// the unacknowledged sweep, which would otherwise requeue an
+    /// acknowledgement that arrives right at the timeout.
     async fn dispatch_accepted(&self, execute_accepted: ExecuteAccepted) -> Result<(), Error> {
-        self.touch_liveness().await?;
         let operation_id = OperationId::from(execute_accepted.operation_id);
         self.scheduler
             .worker_dispatch_accepted(&self.worker_id, &operation_id)
             .await
-            .err_tip(|| format!("Failed to record acceptance of operation {operation_id}"))
+            .err_tip(|| format!("Failed to record acceptance of operation {operation_id}"))?;
+        self.touch_liveness().await
     }
 
     async fn dispatch_declined(&self, execute_declined: ExecuteDeclined) -> Result<(), Error> {
-        self.touch_liveness().await?;
         let operation_id = OperationId::from(execute_declined.operation_id);
         let reason = execute_declined::Reason::try_from(execute_declined.reason)
             .unwrap_or(execute_declined::Reason::Unspecified);
@@ -464,7 +466,8 @@ impl WorkerConnection {
         self.scheduler
             .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb)
             .await
-            .err_tip(|| format!("Failed to record decline of operation {operation_id}"))
+            .err_tip(|| format!("Failed to record decline of operation {operation_id}"))?;
+        self.touch_liveness().await
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {

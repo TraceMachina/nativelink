@@ -31,7 +31,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler
+    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -162,6 +162,15 @@ async fn setup_api_server_with_task_limit(
     now_fn: NowFn,
     max_worker_tasks: u64,
 ) -> Result<TestContext, Error> {
+    setup_api_server_with(worker_timeout, now_fn, max_worker_tasks, 0).await
+}
+
+async fn setup_api_server_with(
+    worker_timeout: u64,
+    now_fn: NowFn,
+    max_worker_tasks: u64,
+    dispatch_ack_timeout_s: u64,
+) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
     const UUID_SIZE: usize = 36;
@@ -178,7 +187,7 @@ async fn setup_api_server_with_task_limit(
         tasks_or_worker_change_notify,
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
-        0,  // dispatch_ack_timeout_s
+        dispatch_ack_timeout_s,
         worker_registry,
         None,
         false,                   // has_peers
@@ -880,5 +889,87 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
 
     assert!(logs_contain("All workers are fully allocated"));
 
+    Ok(())
+}
+
+/// An acknowledgement is recorded before the liveness refresh it carries,
+/// because that refresh runs the unacknowledged sweep: one arriving right
+/// at the timeout must confirm the dispatch, not be requeued by it.
+#[nativelink_test]
+pub async fn acknowledgement_is_recorded_before_the_sweep_it_carries_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    const ACK_TIMEOUT_S: u64 = 5;
+    let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
+    let now_timestamp_clone = now_timestamp.clone();
+    let test_context = setup_api_server_with(
+        BASE_WORKER_TIMEOUT_S,
+        Box::new(move || Ok(Duration::from_secs(*now_timestamp_clone.lock().unwrap()))),
+        0,
+        ACK_TIMEOUT_S,
+    )
+    .await?;
+
+    let action_digest = DigestInfo::new([8u8; 32], 123);
+    let action_info = Arc::new(ActionInfo {
+        command_digest: DigestInfo::new([0u8; 32], 0),
+        input_root_digest: DigestInfo::new([0u8; 32], 0),
+        timeout: Duration::MAX,
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: make_system_time(0),
+        insert_timestamp: make_system_time(0),
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: "instance_name".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    });
+    let operation_id = OperationId::default();
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())?;
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // The acknowledgement arrives past the timeout, with no message from
+    // the worker in between.
+    *now_timestamp.lock().unwrap() += ACK_TIMEOUT_S + 1;
+    test_context
+        .worker_stream
+        .send(Update::ExecuteAccepted(ExecuteAccepted {
+            operation_id: operation_id.to_string(),
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending acceptance {e}"))?;
+
+    // A requeue would go through the state manager; nothing may.
+    tokio::select! {
+        () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        _ = test_context.state_manager.expect_update_operation(Ok(())) => {
+            panic!("the acknowledgement was requeued by the sweep it arrived with");
+        }
+    }
+    assert!(
+        test_context
+            .scheduler
+            .running_action_info(&test_context.worker_id, &operation_id)
+            .await
+            .is_some(),
+        "the acknowledged dispatch stays on the worker"
+    );
     Ok(())
 }

@@ -319,3 +319,31 @@ async fn an_unacknowledged_dispatch_is_requeued_after_the_timeout() -> Result<()
     assert!(result.error.is_none(), "{:?}", result.error);
     Ok(())
 }
+
+/// A decline for an operation the worker no longer holds, because it
+/// finished or the sweep already took it back, is nothing to act on: the
+/// worker keeps taking work.
+#[nativelink_test]
+async fn a_late_decline_does_not_pause_the_worker() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler(1, 0);
+    let mut rx = add_worker(&scheduler).await?;
+    let mut listener = add_action(&scheduler, 1).await?;
+    let first = next_dispatch(&mut rx).await;
+    complete(worker_scheduler.as_ref(), &first.operation_id).await?;
+    let result = wait_for_completion(&mut listener).await;
+    assert!(result.error.is_none(), "{:?}", result.error);
+
+    // The decline arrives after the completion.
+    worker_scheduler
+        .worker_dispatch_declined(
+            &worker_id(),
+            &OperationId::from(first.operation_id.as_str()),
+            "load".to_string(),
+            Some(5_000),
+        )
+        .await?;
+
+    let _listener = add_action(&scheduler, 2).await?;
+    next_dispatch(&mut rx).await;
+    Ok(())
+}
