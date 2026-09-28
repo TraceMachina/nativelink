@@ -178,6 +178,7 @@ async fn setup_api_server_with_task_limit(
         tasks_or_worker_change_notify,
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
+        0,  // dispatch_ack_timeout_s
         worker_registry,
         None,
         false,                   // has_peers

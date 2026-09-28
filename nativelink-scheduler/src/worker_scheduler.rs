@@ -56,6 +56,24 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     async fn add_worker(&self, worker: Worker) -> Result<(), Error>;
 
+    /// The worker took the dispatched operation.
+    async fn worker_dispatch_accepted(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error>;
+
+    /// The worker will not run the dispatched operation; `reason` is the
+    /// worker's word for why, `needs_kb` what it said the action wanted
+    /// when the reason was load.
+    async fn worker_dispatch_declined(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<(), Error>;
+
     /// Updates the status of an action to the scheduler from the worker.
     async fn update_action(
         &self,

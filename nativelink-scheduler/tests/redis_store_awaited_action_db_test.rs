@@ -51,7 +51,6 @@ use nativelink_util::store_trait::SchedulerStore;
 use parking_lot::Mutex;
 use pretty_assertions::assert_eq;
 use redis::Value;
-use tokio::sync::mpsc::unbounded_channel;
 use tokio::sync::{Notify, mpsc};
 use tonic::Code;
 use utils::scheduler_utils::update_eq;
@@ -64,13 +63,14 @@ const INSTANCE_NAME: &str = "instance_name";
 
 async fn verify_initial_connection_message(
     worker_id: WorkerId,
-    rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
+    rx: &mut mpsc::Receiver<UpdateForWorker>,
 ) {
     // Worker should have been sent an execute command.
     let expected_msg_for_worker = UpdateForWorker {
         update: Some(update_for_worker::Update::ConnectionResult(
             ConnectionResult {
                 worker_id: worker_id.into(),
+                dispatch_ack: true,
             },
         )),
     };
@@ -84,8 +84,8 @@ async fn setup_new_worker(
     scheduler: &SimpleScheduler,
     worker_id: WorkerId,
     props: PlatformProperties,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
-    let (tx, mut rx) = unbounded_channel();
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME, 0);
     scheduler
         .add_worker(worker)

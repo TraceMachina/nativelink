@@ -1181,6 +1181,7 @@ impl SimpleScheduler {
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
+            spec.dispatch_ack_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
             has_peers,
@@ -1498,6 +1499,28 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn add_worker(&self, worker: Worker) -> Result<(), Error> {
         self.worker_scheduler.add_worker(worker).await
+    }
+
+    async fn worker_dispatch_accepted(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_dispatch_accepted(worker_id, operation_id)
+            .await
+    }
+
+    async fn worker_dispatch_declined(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_dispatch_declined(worker_id, operation_id, reason, needs_kb)
+            .await
     }
 
     async fn update_action(

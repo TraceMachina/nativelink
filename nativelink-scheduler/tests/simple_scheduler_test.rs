@@ -73,13 +73,14 @@ mod utils {
 
 async fn verify_initial_connection_message(
     worker_id: WorkerId,
-    rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>,
+    rx: &mut mpsc::Receiver<UpdateForWorker>,
 ) {
     // Worker should have been sent an execute command.
     let expected_msg_for_worker = UpdateForWorker {
         update: Some(update_for_worker::Update::ConnectionResult(
             ConnectionResult {
                 worker_id: worker_id.into(),
+                dispatch_ack: true,
             },
         )),
     };
@@ -99,8 +100,8 @@ async fn setup_new_worker(
     scheduler: &SimpleScheduler,
     worker_id: WorkerId,
     props: PlatformProperties,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(worker_id.clone(), props, tx, NOW_TIME, 0);
     scheduler
         .add_worker(worker)
@@ -3377,7 +3378,7 @@ async fn failed_final_update_does_not_leak_worker_capacity() -> Result<(), Error
 async fn setup_worker_holding_a_finished_operation() -> Result<
     (
         Arc<SimpleScheduler>,
-        mpsc::UnboundedReceiver<UpdateForWorker>,
+        mpsc::Receiver<UpdateForWorker>,
         OperationId,
         Box<dyn ActionStateResult>,
     ),
@@ -3709,7 +3710,7 @@ async fn freed_capacity_mid_pass_goes_to_the_oldest_waiting_action_test() -> Res
         None,
     );
 
-    let (tx, mut rx_from_worker) = mpsc::unbounded_channel();
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
     let worker = Worker::new(
         worker_id.clone(),
         PlatformProperties::default(),
@@ -3856,7 +3857,7 @@ async fn room_opening_mid_pass_keeps_the_listing_order_across_shapes() -> Result
         None,
     );
 
-    let (tx, mut rx_from_worker) = mpsc::unbounded_channel();
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
     let worker = Worker::new(
         worker_id.clone(),
         PlatformProperties::new(HashMap::from([(
@@ -3965,7 +3966,7 @@ async fn a_higher_memory_report_mid_pass_goes_to_the_oldest_waiting_action() -> 
         None,
     );
 
-    let (tx, mut rx_from_worker) = mpsc::unbounded_channel();
+    let (tx, mut rx_from_worker) = mpsc::channel(64);
     let worker = Worker::new(
         worker_id.clone(),
         PlatformProperties::new(HashMap::from([(

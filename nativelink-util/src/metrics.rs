@@ -886,6 +886,11 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
             .with_unit("{worker}")
             .build(),
 
+        dispatch_requeues: meter
+            .u64_counter("scheduler.dispatch.requeues")
+            .with_description("Dispatches sent back to the queue untried, by reason: declined, channel_full, unacknowledged")
+            .build(),
+
         worker_keepalives: meter
             .u64_counter("worker.keepalives")
             .with_description("Total worker keepalives received")
@@ -928,6 +933,8 @@ pub struct WorkerMetrics {
     pub worker_connections: metrics::Counter<u64>,
     /// Workers that have left, cumulative, by reason.
     pub worker_disconnections: metrics::Counter<u64>,
+    /// Dispatches requeued untried, by reason.
+    pub dispatch_requeues: metrics::Counter<u64>,
     /// Keepalives received, cumulative.
     pub worker_keepalives: metrics::Counter<u64>,
     /// Seconds between consecutive messages from a worker.
@@ -970,6 +977,14 @@ pub fn record_worker_state(state: &'static str, entered: bool) {
         if entered { 1 } else { -1 },
         &[KeyValue::new(WORKER_STATE, state)],
     );
+}
+
+/// Records a dispatch going back to the queue untried: the worker declined
+/// it, its channel was full, or it never acknowledged it.
+pub fn record_dispatch_requeue(reason: &'static str) {
+    WORKER_METRICS
+        .dispatch_requeues
+        .add(1, &[KeyValue::new("reason", reason)]);
 }
 
 /// Records a keepalive from a worker.

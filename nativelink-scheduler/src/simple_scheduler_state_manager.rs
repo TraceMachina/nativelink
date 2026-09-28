@@ -927,6 +927,7 @@ where
             UpdateOperationType::UpdateWithError(_) => "Error",
             UpdateOperationType::UpdateWithDisconnect => "Disconnect",
             UpdateOperationType::ExecutionComplete => "ExecutionComplete",
+            UpdateOperationType::UpdateWithDecline(_) => "Decline",
         };
 
         debug!(
@@ -1111,6 +1112,13 @@ where
                     }
                 }
                 // We shouldn't get here, but we just ignore it if we do.
+                UpdateOperationType::UpdateWithDecline(decline) => {
+                    // Nothing ran, so nothing is charged against the retry
+                    // cap; the action goes back where it was.
+                    debug!(reason = %decline.reason, "Dispatch declined, requeuing untried");
+                    is_retry = true;
+                    ActionStage::Queued
+                }
                 UpdateOperationType::ExecutionComplete => {
                     warn!("inner_update_operation got an ExecutionComplete, that's unexpected.");
                     return Ok(());

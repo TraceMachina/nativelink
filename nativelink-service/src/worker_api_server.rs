@@ -28,7 +28,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     WorkerApi, WorkerApiServer as Server,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
+    execute_declined, execute_result, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
 };
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -185,7 +185,9 @@ impl WorkerApiServer {
             ));
         };
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(nativelink_scheduler::worker::channel_capacity(
+            connect_worker_request.max_inflight_tasks,
+        ));
 
         // First convert our proto platform properties into one our scheduler understands.
         let platform_properties = {
@@ -335,6 +337,12 @@ impl WorkerConnection {
                     Update::ExecuteComplete(execute_complete) => {
                         instance.execution_complete(execute_complete).await
                     }
+                    Update::ExecuteAccepted(execute_accepted) => {
+                        instance.dispatch_accepted(execute_accepted).await
+                    }
+                    Update::ExecuteDeclined(execute_declined) => {
+                        instance.dispatch_declined(execute_declined).await
+                    }
                 };
                 if let Err(err) = result {
                     tracing::warn!(worker_id=?instance.worker_id, ?err, "Error processing worker message");
@@ -430,6 +438,33 @@ impl WorkerConnection {
             }
         }
         Ok(())
+    }
+
+    async fn dispatch_accepted(&self, execute_accepted: ExecuteAccepted) -> Result<(), Error> {
+        self.touch_liveness().await?;
+        let operation_id = OperationId::from(execute_accepted.operation_id);
+        self.scheduler
+            .worker_dispatch_accepted(&self.worker_id, &operation_id)
+            .await
+            .err_tip(|| format!("Failed to record acceptance of operation {operation_id}"))
+    }
+
+    async fn dispatch_declined(&self, execute_declined: ExecuteDeclined) -> Result<(), Error> {
+        self.touch_liveness().await?;
+        let operation_id = OperationId::from(execute_declined.operation_id);
+        let reason = execute_declined::Reason::try_from(execute_declined.reason)
+            .unwrap_or(execute_declined::Reason::Unspecified);
+        let needs_kb = (reason == execute_declined::Reason::Load && execute_declined.needed_kb > 0)
+            .then_some(execute_declined.needed_kb);
+        let mut why = reason.as_str_name().to_ascii_lowercase();
+        if !execute_declined.detail.is_empty() {
+            why.push_str(": ");
+            why.push_str(&execute_declined.detail);
+        }
+        self.scheduler
+            .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb)
+            .await
+            .err_tip(|| format!("Failed to record decline of operation {operation_id}"))
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {

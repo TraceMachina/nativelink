@@ -41,7 +41,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
-    UpdateForWorker, execute_result,
+    UpdateForWorker, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -176,6 +176,7 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: "foobar".to_string(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -214,6 +215,7 @@ async fn reconnects_when_action_stuck_in_transit_on_disconnect() -> Result<(), E
             encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
+                    dispatch_ack: false,
                 })),
             })
             .unwrap(),
@@ -297,6 +299,7 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -413,6 +416,7 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -741,6 +745,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -830,6 +835,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -928,6 +934,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -1041,6 +1048,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -1163,6 +1171,7 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
             encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
                 })),
             })
             .unwrap(),
@@ -1241,6 +1250,7 @@ async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
                     })),
                 })
                 .unwrap(),
@@ -1320,5 +1330,92 @@ async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error
         )
     })?;
 
+    Ok(())
+}
+
+/// With a scheduler that speaks the acknowledgement, a worker at its
+/// `max_inflight_tasks` declines the next dispatch instead of running it,
+/// and says why; the first dispatch was acknowledged before it ran.
+#[nativelink_test]
+async fn a_worker_at_capacity_declines_the_next_dispatch() -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        max_inflight_tasks: 1,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: worker_id.clone(),
+                    dispatch_ack: true,
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Blake3,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+    let start = |operation_id: &str| UpdateForWorker {
+        update: Some(Update::StartAction(StartExecute {
+            request_metadata: None,
+            execute_request: Some((&action_info).into()),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: None,
+            platform: Some(Platform::default()),
+            worker_id: worker_id.clone(),
+        })),
+    };
+
+    // The first dispatch is acknowledged, then runs (and stays running:
+    // nothing answers its prepare).
+    tx_stream
+        .send(Frame::data(encode_stream_proto(&start("first")).unwrap()))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let accepted = test_context.client.expect_execute_accepted(Ok(())).await;
+    assert_eq!(accepted.operation_id, "first");
+    let running_action = Arc::new(MockRunningAction::new());
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // The second finds the worker full and is declined with the reason.
+    tx_stream
+        .send(Frame::data(encode_stream_proto(&start("second")).unwrap()))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let declined = test_context.client.expect_execute_declined(Ok(())).await;
+    assert_eq!(declined.operation_id, "second");
+    assert_eq!(declined.reason, execute_declined::Reason::AtCapacity as i32);
+    assert_eq!(declined.detail, "1 of 1 in flight");
     Ok(())
 }

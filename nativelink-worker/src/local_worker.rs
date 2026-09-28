@@ -33,8 +33,9 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForWorker, WorkerLoad, execute_result,
+    ActionResourceUsage, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
+    GoingAwayRequest, KeepAliveRequest, StartExecute, UpdateForWorker, WorkerLoad,
+    execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -131,7 +132,66 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     // on by the scheduler.
     actions_in_transit: Arc<AtomicU64>,
     accepted_action: AtomicBool,
+    /// The scheduler said it understands `ExecuteAccepted` and
+    /// `ExecuteDeclined`. Without it the worker runs whatever it is sent,
+    /// as every earlier release did.
+    dispatch_ack: bool,
     metrics: Arc<Metrics>,
+}
+
+/// Why this worker will not run an action it was just sent.
+enum Refusal {
+    AtCapacity { in_flight: u64, max: u64 },
+    Load { needed_kb: u64, free_kb: u64 },
+    ShuttingDown,
+}
+
+impl Refusal {
+    fn into_declined(self, operation_id: String) -> ExecuteDeclined {
+        let (reason, detail, needed_kb, free_kb) = match self {
+            Self::AtCapacity { in_flight, max } => (
+                execute_declined::Reason::AtCapacity,
+                format!("{in_flight} of {max} in flight"),
+                0,
+                0,
+            ),
+            Self::Load { needed_kb, free_kb } => (
+                execute_declined::Reason::Load,
+                format!("needs {needed_kb} KiB, {free_kb} KiB free"),
+                needed_kb,
+                free_kb,
+            ),
+            Self::ShuttingDown => (
+                execute_declined::Reason::ShuttingDown,
+                "worker shutting down".to_string(),
+                0,
+                0,
+            ),
+        };
+        ExecuteDeclined {
+            operation_id,
+            reason: reason as i32,
+            detail,
+            needed_kb,
+            free_kb,
+        }
+    }
+}
+
+/// The platform property carrying an action's memory reservation, in KiB.
+const MEMORY_PROPERTY: &str = "memory_kb";
+
+/// The memory reservation an action carries, if it declares one.
+fn memory_reservation_kb(start_execute: &StartExecute) -> Option<u64> {
+    let name = MEMORY_PROPERTY;
+    start_execute
+        .platform
+        .as_ref()?
+        .properties
+        .iter()
+        .find(|p| p.name == name)
+        .and_then(|p| p.value.parse::<u64>().ok())
+        .filter(|kb| *kb > 0)
 }
 
 pub async fn preconditions_met<H: BuildHasher + Sync>(
@@ -190,6 +250,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         config: &'a LocalWorkerConfig,
         grpc_client: T,
         worker_id: String,
+        dispatch_ack: bool,
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -197,6 +258,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             config,
             grpc_client,
             worker_id,
+            dispatch_ack,
             running_actions_manager,
             // Number of actions that have been received in `Update::StartAction`, but
             // not yet processed by running_actions_manager's spawn. This number should
@@ -206,6 +268,35 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             accepted_action: AtomicBool::new(false),
             metrics,
         }
+    }
+
+    /// Local admission: the worker's own word on whether it can take this
+    /// action now. The scheduler's ledger says what it believes the worker
+    /// has; this is what the worker has.
+    fn admission(&self, start_execute: &StartExecute, in_flight: u64) -> Option<Refusal> {
+        let max = self.config.max_inflight_tasks;
+        if max > 0 && in_flight >= max {
+            return Some(Refusal::AtCapacity { in_flight, max });
+        }
+        if let (Some(needed_kb), Some(free_kb)) = (
+            memory_reservation_kb(start_execute),
+            crate::capacity::free_memory_kb(),
+        ) && free_kb < needed_kb
+        {
+            return Some(Refusal::Load { needed_kb, free_kb });
+        }
+        None
+    }
+
+    /// Tells the scheduler the action is refused; only meaningful when it
+    /// understands the message.
+    async fn decline(&self, operation_id: String, refusal: Refusal) -> Result<(), Error> {
+        self.metrics.actions_declined.inc();
+        self.grpc_client
+            .clone()
+            .execute_declined(refusal.into_declined(operation_id))
+            .await
+            .err_tip(|| "Could not send ExecuteDeclined")
     }
 
     /// Starts a background spawn/thread that will send a message to the server every `timeout / 2`.
@@ -336,7 +427,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             // Don't accept any new requests if we're shutting down.
                             if shutting_down || (self.config.single_use
                                 && self.accepted_action.swap(true, Ordering::AcqRel)) {
-                                if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
+                                if self.dispatch_ack {
+                                    self.decline(start_execute.operation_id, Refusal::ShuttingDown).await?;
+                                } else if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
                                     self.grpc_client.clone().execution_response(
                                         ExecuteResult{
                                             instance_name,
@@ -347,6 +440,28 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     ).await?;
                                 }
                                 continue;
+                            }
+
+                            // Admission, then the acknowledgement: what the
+                            // scheduler charged on the send is confirmed or
+                            // handed back before anything runs. A scheduler
+                            // that does not speak the acknowledgement gets
+                            // the old behaviour, run whatever arrives.
+                            if self.dispatch_ack {
+                                if let Some(refusal) = self.admission(
+                                    &start_execute,
+                                    actions_in_flight.load(Ordering::Acquire),
+                                ) {
+                                    self.decline(start_execute.operation_id, refusal).await?;
+                                    continue;
+                                }
+                                self.grpc_client
+                                    .clone()
+                                    .execute_accepted(ExecuteAccepted {
+                                        operation_id: start_execute.operation_id.clone(),
+                                    })
+                                    .await
+                                    .err_tip(|| "Could not send ExecuteAccepted")?;
                             }
 
                             self.metrics.start_actions_received.inc();
@@ -881,7 +996,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
     async fn register_worker(
         &self,
         client: &mut T,
-    ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
+    ) -> Result<(String, bool, Streaming<UpdateForWorker>), Error> {
         let mut extra_envs: HashMap<String, String> = HashMap::new();
         if let Some(ref additional_environment) = self.config.additional_environment {
             for (name, source) in additional_environment {
@@ -926,8 +1041,10 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             .err_tip(|| "Got error when receiving UpdateForWorker")?
             .update;
 
-        let worker_id = match first_msg_update {
-            Some(Update::ConnectionResult(connection_result)) => connection_result.worker_id,
+        let (worker_id, dispatch_ack) = match first_msg_update {
+            Some(Update::ConnectionResult(connection_result)) => {
+                (connection_result.worker_id, connection_result.dispatch_ack)
+            }
             other => {
                 return Err(make_input_err!(
                     "Expected first response from scheduler to be a ConnectionResult got : {:?}",
@@ -935,7 +1052,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                 ));
             }
         };
-        Ok((worker_id, update_for_worker_stream))
+        Ok((worker_id, dispatch_ack, update_for_worker_stream))
     }
 
     #[instrument(skip(self), level = Level::INFO)]
@@ -983,11 +1100,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     (error_handler)(e).await;
                     continue; // Try to connect again.
                 }
-                Ok((worker_id, update_for_worker_stream)) => (
+                Ok((worker_id, dispatch_ack, update_for_worker_stream)) => (
                     LocalWorkerImpl::new(
                         &self.config,
                         client,
                         worker_id,
+                        dispatch_ack,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
                     ),
@@ -1058,6 +1176,10 @@ pub struct Metrics {
     start_actions_received: CounterWithTime,
     #[metric(help = "Total number of disconnects received from the scheduler.")]
     disconnects_received: CounterWithTime,
+    #[metric(
+        help = "Dispatches this worker declined: at capacity, short of memory, or shutting down."
+    )]
+    actions_declined: CounterWithTime,
     #[metric(help = "Total number of keep-alives received from the scheduler.")]
     keep_alives_received: CounterWithTime,
     #[metric(
@@ -1079,6 +1201,7 @@ impl Metrics {
         Self {
             start_actions_received: CounterWithTime::default(),
             disconnects_received: CounterWithTime::default(),
+            actions_declined: CounterWithTime::default(),
             keep_alives_received: CounterWithTime::default(),
             preconditions: AsyncCounterWrapper::default(),
             running_actions_manager_metrics,

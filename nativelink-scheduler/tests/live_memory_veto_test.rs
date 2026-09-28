@@ -47,8 +47,8 @@ async fn add_worker(
     scheduler: &SimpleScheduler,
     name: &str,
     properties: HashMap<String, PlatformPropertyValue>,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(
         WorkerId(name.to_string()),
         PlatformProperties::new(properties),
@@ -87,7 +87,7 @@ async fn add_action(
     Ok(())
 }
 
-fn dispatched(rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>) -> usize {
+fn dispatched(rx: &mut mpsc::Receiver<UpdateForWorker>) -> usize {
     let mut count = 0;
     while let Ok(msg) = rx.try_recv() {
         if matches!(msg.update, Some(update_for_worker::Update::StartAction(_))) {
