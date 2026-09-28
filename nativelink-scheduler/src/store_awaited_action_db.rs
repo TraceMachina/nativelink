@@ -39,7 +39,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OnceCell};
 use tracing::{error, warn};
 
 use crate::awaited_action_db::{
@@ -91,6 +91,15 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     >,
     last_known_keepalive_ts: AtomicU64,
     now_fn: NowFn,
+    /// The record as a listing read it, when this subscriber came from one.
+    /// A listing already loads every record it returns, so `borrow` serves
+    /// this instead of reading the record again; only the client keepalive,
+    /// kept under its own key, is read, once. The matching pass borrows each
+    /// queued action two or three times per pass, so without this a pass
+    /// cost several store round trips per queued action.
+    listed: Option<AwaitedAction>,
+    /// `listed` with the client keepalive merged in, filled on first borrow.
+    listed_with_keepalive: OnceCell<AwaitedAction>,
     // If the SchedulerSubscriptionManager is not reliable, then this is populated
     // when the state is set to subscribed.  When set it causes the state to be polled
     // as well as listening for the publishing.
@@ -141,10 +150,18 @@ where
             last_known_keepalive_ts: AtomicU64::new(0),
             state: OperationSubscriberState::Unsubscribed,
             now_fn,
+            listed: None,
+            listed_with_keepalive: OnceCell::const_new(),
             maybe_last_stage: None,
             retain_completed_for,
             client_keepalive_ttl,
         }
+    }
+
+    /// Serves `borrow` from the record a listing already read.
+    fn listed(mut self, awaited_action: AwaitedAction) -> Self {
+        self.listed = Some(awaited_action);
+        self
     }
 
     async fn inner_get_awaited_action(
@@ -166,14 +183,30 @@ where
         if let Some(client_operation_id) = maybe_client_operation_id {
             awaited_action.set_client_operation_id(client_operation_id);
         }
+        Self::merge_client_keepalive(
+            store,
+            key.0.as_ref(),
+            &mut awaited_action,
+            last_known_keepalive_ts,
+        )
+        .await;
+        Ok(awaited_action)
+    }
 
+    /// Folds the client keepalive kept under its own key into the action's
+    /// timestamp and remembers it.
+    async fn merge_client_keepalive(
+        store: &S,
+        operation_id: &OperationId,
+        awaited_action: &mut AwaitedAction,
+        last_known_keepalive_ts: &AtomicU64,
+    ) {
         // Helper to convert SystemTime to unix timestamp
         let to_unix_ts =
             |t: SystemTime| -> u64 { t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
 
         // Check the separate keepalive key for the most recent timestamp.
         let keepalive_ts = if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
-            let operation_id = key.0.as_ref();
             match store.get_and_decode(ClientKeepaliveKey(operation_id)).await {
                 Ok(Some(ts)) => {
                     let awaited_ts = to_unix_ts(awaited_action.last_client_keepalive_timestamp());
@@ -192,7 +225,6 @@ where
         };
 
         last_known_keepalive_ts.store(keepalive_ts, Ordering::Release);
-        Ok(awaited_action)
     }
 
     #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
@@ -201,6 +233,23 @@ where
             .weak_store
             .upgrade()
             .err_tip(|| "Store gone in OperationSubscriber::get_awaited_action")?;
+        if let Some(listed) = &self.listed {
+            let merged = self
+                .listed_with_keepalive
+                .get_or_init(|| async {
+                    let mut awaited_action = listed.clone();
+                    Self::merge_client_keepalive(
+                        store.as_ref(),
+                        self.subscription_key.0.as_ref(),
+                        &mut awaited_action,
+                        &self.last_known_keepalive_ts,
+                    )
+                    .await;
+                    awaited_action
+                })
+                .await;
+            return Ok(merged.clone());
+        }
         Self::inner_get_awaited_action(
             store.as_ref(),
             self.subscription_key.borrow(),
@@ -1281,6 +1330,7 @@ where
                     self.retain_completed_for,
                     self.client_keepalive_ttl,
                 )
+                .listed(awaited_action)
             }))
     }
 
@@ -1301,6 +1351,7 @@ where
                     self.retain_completed_for,
                     self.client_keepalive_ttl,
                 )
+                .listed(awaited_action)
             }))
     }
 }
