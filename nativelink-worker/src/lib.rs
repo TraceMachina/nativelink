@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod buck2_file_capture;
+pub mod capacity;
 pub mod directory_cache;
 pub mod local_worker;
 #[cfg(target_os = "linux")]
