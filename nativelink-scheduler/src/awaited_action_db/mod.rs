@@ -17,7 +17,7 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::sync::Arc;
 
-pub use awaited_action::{AwaitedAction, AwaitedActionSortKey};
+pub use awaited_action::{AwaitedAction, AwaitedActionSortKey, PersistedSortKey};
 use futures::{Future, Stream};
 use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -96,7 +96,7 @@ impl core::fmt::Display for SortedAwaitedAction {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         core::fmt::write(
             f,
-            format_args!("{}-{}", self.sort_key.as_u64(), self.operation_id),
+            format_args!("{}-{}", self.sort_key.as_u128(), self.operation_id),
         )
     }
 }
