@@ -410,6 +410,41 @@ operation whose record is gone, count it, and carry on, so an eviction no
 longer makes the pile permanent. It still makes every affected client wait
 out its timeout.
 
+## The scheduler's Redis keeps every completed action [#scheduler-redis-keeps-completed-actions]
+
+**Symptom.** With the Redis scheduler backend, `DBSIZE` on the scheduler's
+database grows by one `aa_*` hash per action ever run and never falls; the
+records all read `completed` and `TTL` says `-1`. Once the search index holds
+more than one cursor page, listings over it (the admin read the worker
+provisioner makes, the scheduler admin endpoints) can fail with
+`Failed to get operations list! Parse: Non map item`.
+
+**Cause.** Before v1.7.3 the Redis backend received `retain_completed_for_s`
+as configured, without the default applied: left unset it arrived as 0, and the versioned update treats a
+zero TTL as no expiry, so completed records were written to live forever.
+The memory backend applied the 60 second default; only Redis leaked. The
+listing failure is a second bug in the same release: a cursor page arrived
+in the RESP3 shape the first page's parser understood but the cursor reader
+did not.
+
+**Fix.** Upgrade to v1.7.3 or later; new completions expire after
+`retain_completed_for_s`. Records written before the upgrade keep their
+missing expiry, so give them one once, on the scheduler's Redis database
+(0 in the chart's layout):
+
+```bash
+redis-cli -n 0 --scan --pattern 'aa_*' \
+  | while read -r key; do
+      if [ "$(redis-cli -n 0 hget "$key" state)" = "completed" ] \
+         && [ "$(redis-cli -n 0 ttl "$key")" = "-1" ]; then
+        redis-cli -n 0 expire "$key" 60 > /dev/null
+      fi
+    done
+```
+
+A queued or executing record is left alone; only completed ones get the
+sixty seconds a fresh completion would.
+
 ## Restarting the scheduler [#restarting-the-scheduler]
 
 Not an incident so much as a procedure that behaves worse than you expect.
