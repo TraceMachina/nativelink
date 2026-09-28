@@ -274,6 +274,15 @@ impl ApiWorkerSchedulerImpl {
             timestamp
         );
         worker.last_update_timestamp = timestamp;
+        // A keepalive is the worker saying it is ready to be asked again,
+        // so a pause from backpressure lasts one keepalive interval. The
+        // matcher has to hear about it, or the requeued action waits for
+        // the next unrelated change.
+        if worker.is_paused {
+            worker.is_paused = false;
+            record_worker_state("paused", false);
+            self.worker_change_notify.notify_one();
+        }
 
         trace!(
             ?worker_id,
@@ -610,14 +619,23 @@ impl ApiWorkerSchedulerImpl {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
         })?;
 
-        // Ensure the worker is supposed to be running the operation.
+        // Ensure the worker is supposed to be running the operation. A
+        // result for something this worker no longer holds is stale, not
+        // rogue: the operation was requeued after a timeout or a kill and
+        // the worker finished it anyway. Refuse it and keep the worker;
+        // evicting it here requeued every other action it held for one
+        // late message.
         if !worker.running_action_infos.contains_key(operation_id) {
-            let err = make_err!(
+            warn!(
+                %operation_id,
+                ?worker_id,
+                running_actions = worker.running_action_infos.len(),
+                "Dropping update for an operation the worker is not running"
+            );
+            return Err(make_err!(
                 Code::Internal,
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
-            );
-            return Result::<(), _>::Err(err.clone())
-                .merge(self.immediate_evict_worker(worker_id, err, false).await);
+            ));
         }
 
         let (is_finished, due_to_backpressure) = match &update {
@@ -630,9 +648,10 @@ impl ApiWorkerSchedulerImpl {
             }
             UpdateOperationType::UpdateWithDisconnect => (true, false),
             UpdateOperationType::ExecutionComplete => {
-                // No update here, just restoring platform properties.
-                worker.execution_complete(operation_id);
-                self.worker_change_notify.notify_one();
+                // The process has exited but the action is still resident on
+                // the worker until its result arrives, so nothing is released
+                // here; `complete_action` returns the budget and the slot
+                // together.
                 return Ok(());
             }
         };
@@ -676,7 +695,11 @@ impl ApiWorkerSchedulerImpl {
             let was_paused = worker.is_paused;
             let complete_action_res = worker.complete_action(operation_id);
 
-            if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
+            // Backpressure pauses the worker even when it holds nothing
+            // else: an idle worker that refuses work and is not paused is
+            // offered the same action again at once, and the pair spin
+            // until something changes. The next keepalive clears it.
+            if due_to_backpressure || (!worker.can_accept_work() && worker.has_actions()) {
                 worker.is_paused = true;
             }
             // complete_action clears is_paused on its way through, so compare
@@ -1194,6 +1217,19 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 worker_id,
                 make_err!(Code::Internal, "Received request to remove worker"),
                 false,
+            )
+            .await
+    }
+
+    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.worker_registry.remove_worker(worker_id).await;
+
+        let mut inner = self.inner.lock().await;
+        inner
+            .immediate_evict_worker(
+                worker_id,
+                make_err!(Code::Unavailable, "Worker stream ended without going away"),
+                true,
             )
             .await
     }

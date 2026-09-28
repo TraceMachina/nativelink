@@ -152,8 +152,10 @@ pub struct SimpleSpec {
     pub enable_active_action_count_metric: bool,
 
     /// Remove workers from pool once the worker has not responded in this
-    /// amount of time in seconds.
-    /// Default: 5 seconds
+    /// amount of time in seconds. Any message from the worker counts, not
+    /// only keepalives. Eviction requeues everything the worker held, so
+    /// keep this well above the longest pause a loaded worker can see.
+    /// Default: 10 seconds (four default keepalive intervals)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub worker_timeout_s: u64,
 
@@ -232,9 +234,9 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub unsatisfiable_action_timeout_s: u64,
 
-    /// If a job returns an internal error or times out this many times when
-    /// attempting to run on a worker the scheduler will return the last error
-    /// to the client. Jobs will be retried and this configuration is to help
+    /// If a job returns an internal error, times out, or loses its worker
+    /// this many times the scheduler completes it with `FailedPrecondition`
+    /// carrying the last error, a code clients do not retry. This is to help
     /// prevent one rogue job from infinitely retrying and taking up a lot of
     /// resources when the task itself is the one causing the server to go
     /// into a bad state.

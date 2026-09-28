@@ -61,9 +61,11 @@ use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_registry::WorkerRegistry;
 use crate::worker_scheduler::WorkerScheduler;
 
-/// Default timeout for workers in seconds.
+/// Default timeout for workers in seconds: four default keepalive intervals
+/// (2.5s each). The old value of two meant one late keepalive under load
+/// evicted the worker and requeued everything it held.
 /// If this changes, remember to change the documentation in the config.
-const DEFAULT_WORKER_TIMEOUT_S: u64 = 5;
+const DEFAULT_WORKER_TIMEOUT_S: u64 = 10;
 
 /// How often this scheduler tells its peers what its workers can run and
 /// reads what theirs can.
@@ -1175,6 +1177,10 @@ impl WorkerScheduler for SimpleScheduler {
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_scheduler.remove_worker(worker_id).await
+    }
+
+    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.worker_scheduler.worker_disconnected(worker_id).await
     }
 
     async fn shutdown(&self, shutdown_guard: ShutdownGuard) {
