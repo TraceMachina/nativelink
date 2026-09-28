@@ -140,11 +140,16 @@ values per worker.
 For clusters of tens or low hundreds of workers this is not the bottleneck.
 It is worth knowing about before you plan for thousands.
 
-`allocation_strategy` is a smaller knob than its name suggests: it chooses
-**which end of the LRU the scan starts from**, and nothing else. Starting
-from the least-recently-used end spreads load; starting from the
-most-recently-used end packs work onto hot workers and leaves the rest idle
-long enough to be scaled down. Neither is a bin-packing algorithm.
+`allocation_strategy` is a smaller knob than its name suggests. The two
+original values choose **which end of the LRU the scan starts from**, and
+nothing else. Starting from the least-recently-used end spreads load;
+starting from the most-recently-used end packs work onto hot workers and
+leaves the rest idle long enough to be scaled down. `least_loaded` takes the
+eligible worker with the fewest running actions, least recently used among
+equals, so a worker that just joined takes the next action instead of
+waiting for every older worker to be used once more, and a burst that lands
+while most of the fleet is still starting does not fill the first worker to
+its concurrency cap. None of them is a bin-packing algorithm.
 
 The admission ledger only subtracts what an action declares, so an action
 that declared too little is invisible to it. **`live_memory_veto`** names a

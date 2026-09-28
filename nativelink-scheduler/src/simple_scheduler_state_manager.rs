@@ -16,6 +16,7 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
@@ -59,7 +60,7 @@ const MAX_RETRY_JITTER_MS: u64 = 20;
 /// lost a version conflict: exponential in the attempt, plus jitter.
 fn version_conflict_backoff(retry_count: usize) -> Duration {
     let base_delay = BASE_RETRY_DELAY_MS * (1 << retry_count.saturating_sub(2).min(4));
-    let jitter = std::time::SystemTime::now()
+    let jitter = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| {
             u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS
@@ -210,6 +211,10 @@ where
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         self.inner.as_action_info().await
     }
+
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        self.inner.client_last_seen().await
+    }
 }
 
 struct MatchingEngineActionStateResult<U, T, I, NowFn>
@@ -264,6 +269,15 @@ where
             awaited_action.state().clone(),
             awaited_action.maybe_origin_metadata().cloned(),
         ))
+    }
+
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        let awaited_action = self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::client_last_seen")?;
+        Ok(Some(awaited_action.last_client_keepalive_timestamp()))
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
@@ -1267,12 +1281,9 @@ where
                 .get_all_awaited_actions()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
-                .and_then(|awaited_action_subscriber| async move {
-                    let awaited_action = awaited_action_subscriber
-                        .borrow()
-                        .await
-                        .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-                    Ok((awaited_action_subscriber, awaited_action))
+                .filter_map(|listed| async move { listed_or_lost(listed) })
+                .try_filter_map(|awaited_action_subscriber| async move {
+                    borrow_listed(awaited_action_subscriber).await
                 })
                 .try_filter_map(|(subscriber, awaited_action)| {
                     let filter = filter.clone();
@@ -1314,12 +1325,9 @@ where
             )
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
-            .and_then(|awaited_action_subscriber| async move {
-                let awaited_action = awaited_action_subscriber
-                    .borrow()
-                    .await
-                    .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-                Ok((awaited_action_subscriber, awaited_action))
+            .filter_map(|listed| async move { listed_or_lost(listed) })
+            .try_filter_map(|awaited_action_subscriber| async move {
+                borrow_listed(awaited_action_subscriber).await
             })
             .try_filter_map(move |(subscriber, awaited_action)| {
                 let filter = filter.clone();
@@ -1337,6 +1345,49 @@ where
                 )
             });
         Ok(Box::pin(stream))
+    }
+}
+
+/// A listed entry the store could not even hand over: the row was gone
+/// (`NotFound`) or would not decode (`InvalidArgument`), which the Redis
+/// listing reports as an error item before any subscriber exists. Skipped
+/// and counted like a record that fails to read below. Anything else is the
+/// store failing and stays an error for the reader.
+fn listed_or_lost<S>(listed: Result<S, Error>) -> Option<Result<S, Error>> {
+    match listed {
+        Err(err) if is_lost_record(&err) => {
+            warn!(
+                ?err,
+                "Operation listed but its row cannot be read; skipping it in the listing"
+            );
+            record_awaited_action_orphan("listing");
+            None
+        }
+        listed => Some(listed),
+    }
+}
+
+/// Reads the record behind a listed subscriber. A record the index listed
+/// but the store no longer has (it expired between the search and the
+/// read, or eviction took it) is skipped and counted, not returned as an
+/// error: one such row must not end a listing that the provisioner and the
+/// admin API read every few seconds. Any other error is the store failing
+/// and is passed on. The sweep and the matcher skip the same way.
+async fn borrow_listed<S: AwaitedActionSubscriber>(
+    subscriber: S,
+) -> Result<Option<(S, AwaitedAction)>, Error> {
+    match subscriber.borrow().await {
+        Ok(awaited_action) => Ok(Some((subscriber, awaited_action))),
+        Err(err) if is_lost_record(&err) => {
+            warn!(
+                ?err,
+                "Operation listed but its record cannot be read; skipping it in the listing"
+            );
+            record_awaited_action_orphan("listing");
+            Ok(None)
+        }
+        // The store itself failed; that is the listing's error to report.
+        Err(err) => Err(err).err_tip(|| "In SimpleSchedulerStateManager::filter_operations"),
     }
 }
 

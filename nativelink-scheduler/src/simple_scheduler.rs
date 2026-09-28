@@ -62,7 +62,7 @@ use crate::simple_scheduler_state_manager::{SimpleSchedulerStateManager, is_lost
 use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_registry::WorkerRegistry;
-use crate::worker_scheduler::WorkerScheduler;
+use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
 
 /// Default timeout for workers in seconds: four default keepalive intervals
 /// (2.5s each). The old value of two meant one late keepalive under load
@@ -214,6 +214,14 @@ pub struct SimpleScheduler {
     /// (`no_worker_action_timeout_s`); `None` when that timeout is off.
     no_worker_tracker: Option<Mutex<UnsatisfiableTracker>>,
 
+    /// Typed platform properties by the hash of the raw ones. Typing is a
+    /// lookup and a parse per property per queued action per pass, and the
+    /// raw properties of a queued action rarely change (an escalation is
+    /// the exception, and it changes the hash), so the pass reuses the
+    /// typed set. Cleared when full rather than evicted, like
+    /// `static_verdicts`.
+    typed_properties: Mutex<HashMap<u64, PlatformProperties>>,
+
     /// The number of unsatisfiable actions still queued at the end of the last
     /// matching pass, used to size the next pass's per-pass fail cap so a large
     /// burst drains in a few passes. See `unsatisfiable_fail_cap`.
@@ -240,6 +248,37 @@ impl core::fmt::Debug for SimpleScheduler {
             .field("task_fleet_exchange_spawn", &self.task_fleet_exchange_spawn)
             .finish_non_exhaustive()
     }
+}
+
+/// How many typed property sets the pass keeps before starting over.
+const MAX_TYPED_PROPERTIES: usize = 10_000;
+
+/// The typed form of an action's raw properties, from the cache when the
+/// same raw set was typed before.
+fn typed_properties_for(
+    cache: &Mutex<HashMap<u64, PlatformProperties>>,
+    manager: &PlatformPropertyManager,
+    raw: &HashMap<String, String>,
+) -> Result<PlatformProperties, Error> {
+    use core::hash::{Hash, Hasher};
+    let mut pairs: Vec<(&String, &String)> = raw.iter().collect();
+    pairs.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (name, value) in &pairs {
+        name.hash(&mut hasher);
+        value.hash(&mut hasher);
+    }
+    let key = hasher.finish();
+    if let Some(typed) = cache.lock().get(&key) {
+        return Ok(typed.clone());
+    }
+    let typed = manager.make_platform_properties(raw.clone())?;
+    let mut cache = cache.lock();
+    if cache.len() >= MAX_TYPED_PROPERTIES {
+        cache.clear();
+    }
+    cache.insert(key, typed.clone());
+    Ok(typed)
 }
 
 impl SimpleScheduler {
@@ -520,6 +559,7 @@ impl SimpleScheduler {
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             platform_property_manager: &PlatformPropertyManager,
+            typed_properties: &Mutex<HashMap<u64, PlatformProperties>>,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             full_worker_logging: bool,
             unsatisfiable_pass: &UnsatisfiablePass<'_>,
@@ -559,13 +599,12 @@ impl SimpleScheduler {
                     }
                 };
 
-            // TODO(palfrey) We should not compute this every time and instead store
-            // it with the ActionInfo when we receive it.
-            let platform_properties = platform_property_manager
-                .make_platform_properties(action_info.platform_properties.clone())
-                .err_tip(
-                    || "Failed to make platform properties in SimpleScheduler::do_try_match",
-                )?;
+            let platform_properties = typed_properties_for(
+                typed_properties,
+                platform_property_manager,
+                &action_info.platform_properties,
+            )
+            .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
 
             let origin_metadata = maybe_origin_metadata.unwrap_or_default();
             let action_info = ActionInfoWithProps {
@@ -748,6 +787,7 @@ impl SimpleScheduler {
                     self.worker_scheduler.as_ref(),
                     self.matching_engine_state_manager.as_ref(),
                     self.platform_property_manager.as_ref(),
+                    &self.typed_properties,
                     self.maybe_origin_event_tx.as_ref(),
                     full_worker_logging,
                     &unsatisfiable_pass,
@@ -1207,6 +1247,7 @@ impl SimpleScheduler {
                 task_abandoned_sweep_spawn,
                 task_fleet_exchange_spawn,
                 worker_match_logging_interval,
+                typed_properties: Mutex::new(HashMap::new()),
                 unsatisfiable_tracker: Mutex::new(UnsatisfiableTracker::new(
                     unsatisfiable_action_timeout,
                 )),
@@ -1306,6 +1347,10 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler
             .set_drain_worker(worker_id, is_draining)
             .await
+    }
+
+    async fn worker_snapshot(&self) -> Vec<WorkerSummary> {
+        self.worker_scheduler.worker_snapshot().await
     }
 
     async fn kill_revoked_operations(&self) -> Result<(), Error> {

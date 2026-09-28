@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
@@ -27,6 +29,25 @@ use crate::worker::{Worker, WorkerTimestamp};
 
 /// `WorkerScheduler` interface is responsible for interactions between the scheduler
 /// and worker related operations.
+/// One connected worker, as the admin API reports it. Property values are
+/// strings on both maps, the way they were registered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkerSummary {
+    pub id: String,
+    pub running_actions: u32,
+    pub max_inflight_tasks: u64,
+    pub is_paused: bool,
+    pub is_draining: bool,
+    /// Seconds since the epoch of the worker's last message.
+    pub last_update_timestamp: u64,
+    /// What the worker registered with.
+    pub platform_properties: HashMap<String, String>,
+    /// What is left after the running actions' reservations.
+    pub available_platform_properties: HashMap<String, String>,
+    /// What the worker last reported having to spare, if it reports.
+    pub free_memory_kb: Option<u64>,
+}
+
 #[async_trait]
 pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static {
     /// Returns the platform property manager.
@@ -79,6 +100,10 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Sets if the worker is draining or not.
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
+
+    /// Every connected worker as the scheduler sees it right now, for the
+    /// admin API: what it advertised, what it has left, what it runs.
+    async fn worker_snapshot(&self) -> Vec<WorkerSummary>;
 
     /// Tells workers to kill operations they are still running but the
     /// scheduler has finished, requeued or dropped without them (client

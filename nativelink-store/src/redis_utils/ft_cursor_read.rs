@@ -15,6 +15,7 @@
 use redis::aio::ConnectionLike;
 use redis::{ErrorKind, RedisError, Value};
 
+use super::ft_aggregate::{resp2_data_parse, resp3_data_parse};
 use crate::redis_utils::aggregate_types::RedisCursorData;
 
 pub(crate) async fn ft_cursor_read<C>(
@@ -41,14 +42,21 @@ where
         )));
     }
     let mut value = value.into_iter();
-    let Value::Array(data_ary) = value.next().unwrap() else {
-        return Err(RedisError::from((ErrorKind::Parse, "Non map item")));
-    };
-    if data_ary.is_empty() {
-        return Err(RedisError::from((
-            ErrorKind::Parse,
-            "Expected at least 1 element in data array",
-        )));
+    // The connection speaks RESP3, so a page past the first arrives as a
+    // map, the same shape the aggregate itself returns; RESP2 gives the
+    // bare array. Both parse the way the first page does, or every listing
+    // longer than one page failed here on its second page.
+    let mut output = RedisCursorData::default();
+    match value.next().unwrap() {
+        Value::Array(data_ary) => resp2_data_parse(&mut output, &data_ary)?,
+        Value::Map(data_map) => resp3_data_parse(&mut output, &data_map)?,
+        other => {
+            return Err(RedisError::from((
+                ErrorKind::Parse,
+                "Expected array or map for cursor results",
+                format!("{other:?}"),
+            )));
+        }
     }
     let Value::Int(new_cursor_id) = value.next().unwrap() else {
         return Err(RedisError::from((
@@ -56,11 +64,6 @@ where
             "Expected cursor id as second element",
         )));
     };
-
-    Ok(RedisCursorData {
-        // this should generally be impossible, but -1 provides a decent "obviously bad" value just in case
-        total: i64::try_from(data_ary.len()).unwrap_or(-1),
-        cursor: new_cursor_id as u64,
-        data: data_ary.into(),
-    })
+    output.cursor = new_cursor_id as u64;
+    Ok(output)
 }
