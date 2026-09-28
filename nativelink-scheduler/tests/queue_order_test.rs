@@ -59,6 +59,7 @@ fn action(seed: u8, priority: i32, insert_secs: u64) -> Arc<ActionInfo> {
         load_timestamp: insert,
         insert_timestamp: insert,
         unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::new([seed; 32], 3),
