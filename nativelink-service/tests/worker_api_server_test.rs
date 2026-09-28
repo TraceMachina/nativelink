@@ -31,7 +31,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteComplete, ExecuteResult, KeepAliveRequest, UpdateForScheduler
+    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -475,6 +475,49 @@ pub async fn stream_end_requeues_running_actions_as_disconnect_test()
             .contains_worker_for_test(&test_context.worker_id)
             .await,
         "worker should be gone once its stream ended"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn going_away_with_drain_stops_dispatch_and_keeps_the_worker_until_the_stream_ends()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    test_context
+        .worker_stream
+        .send(Update::GoingAwayRequest(GoingAwayRequest { drain: true }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending going away {e}"))?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    assert!(
+        test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "a draining worker stays in the pool while its stream is open"
+    );
+    let outcome = test_context
+        .scheduler
+        .find_worker_for_action(
+            &PlatformProperties::new(HashMap::new()),
+            false,
+            make_system_time(BASE_NOW_S),
+        )
+        .await;
+    assert!(
+        !matches!(outcome, MatchOutcome::Matched(_)),
+        "a draining worker must not be offered work: {outcome:?}"
+    );
+
+    drop(test_context.worker_stream);
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        !test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "the drained worker leaves the pool when its stream closes"
     );
     Ok(())
 }

@@ -952,6 +952,10 @@ pub struct Buck2FileCaptureConfig {
     pub finalize_timeout_s: usize,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent on/off switches of one worker; a nested struct per flag would not read better"
+)]
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1046,6 +1050,17 @@ pub struct LocalWorkerConfig {
     /// Default: false (`NativeLink` fully handles timeouts)
     #[serde(default)]
     pub timeout_handled_externally: bool,
+
+    /// On shutdown, tell the scheduler at once that this worker is draining
+    /// so it stops dispatching here, then finish the running actions (up to
+    /// `max_action_timeout_s`) and exit. Off, the worker finishes first and
+    /// only then announces itself, while the scheduler keeps offering it
+    /// work it has to refuse. Needs a scheduler that understands the drain
+    /// flag (v1.7.3+); an older one removes the worker and requeues its
+    /// actions as soon as the message arrives.
+    /// Default: false
+    #[serde(default)]
+    pub drain_on_shutdown: bool,
 
     /// The command to execute on every execution request. This will be parsed as
     /// a command + arguments (not shell).

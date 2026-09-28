@@ -324,7 +324,9 @@ impl WorkerConnection {
                         instance.inner_keep_alive(keep_alive_request).await
                     }
                     Update::GoingAwayRequest(going_away_request) => {
-                        had_going_away = true;
+                        // A drain keeps the worker until its stream closes,
+                        // so that close still has to remove it.
+                        had_going_away = !going_away_request.drain;
                         instance.inner_going_away(going_away_request).await
                     }
                     Update::ExecuteResult(execute_result) => {
@@ -362,7 +364,14 @@ impl WorkerConnection {
         Ok(())
     }
 
-    async fn inner_going_away(&self, _going_away_request: GoingAwayRequest) -> Result<(), Error> {
+    async fn inner_going_away(&self, going_away_request: GoingAwayRequest) -> Result<(), Error> {
+        if going_away_request.drain {
+            self.scheduler
+                .set_drain_worker(&self.worker_id, true)
+                .await
+                .err_tip(|| "While draining worker in WorkerApiServer::inner_going_away")?;
+            return Ok(());
+        }
         self.scheduler
             .remove_worker(&self.worker_id)
             .await

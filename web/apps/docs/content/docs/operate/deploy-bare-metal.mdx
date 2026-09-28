@@ -243,10 +243,14 @@ reconnect path calls `kill_all()` first, destroying every action it was
 running. Restart the scheduler when the queue is quiet, and restart it once.
 
 **Workers** drain themselves on `SIGTERM` (and on a first `SIGINT`; a second
-`SIGINT` exits at once): the process rejects new actions,
-waits for the ones it is running to finish, sends the scheduler a
-`GoingAway`, and exits. `systemctl stop` is therefore safe as long as
-`TimeoutStopSec` outlasts your longest action. To take a worker out of
+`SIGINT` exits at once): with `drain_on_shutdown: true`
+the process tells the scheduler at once that it is draining (a `GoingAway`
+with the drain flag), so nothing new is dispatched to it, finishes the
+actions it is running, and exits; the scheduler removes it when the stream
+closes. Without the flag the worker finishes first and announces itself
+last, and until then the scheduler keeps offering it work it refuses. The
+wait is bounded by `max_action_timeout_s`. `systemctl stop` is therefore
+safe as long as `TimeoutStopSec` outlasts your longest action. To take a worker out of
 rotation without stopping it, and if your scheduler configuration enables the
 `admin` service on the worker API listener:
 

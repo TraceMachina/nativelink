@@ -94,7 +94,11 @@ impl Default for ShutdownGuard {
     fn default() -> Self {
         let priority = Priority::LeastImportant;
         let mut map = HashMap::new();
-        map.insert(priority, 0);
+        // The original counts too. Left at zero, its first `wait_for`
+        // promotion subtracted one from the count its clones had built up,
+        // so a single clone (the worker draining on SIGTERM) looked already
+        // dropped and the process exited before the drain began.
+        map.insert(priority, 1);
         let (tx, rx) = watch::channel(map);
         Self { priority, tx, rx }
     }
@@ -102,9 +106,11 @@ impl Default for ShutdownGuard {
 
 impl Clone for ShutdownGuard {
     fn clone(&self) -> Self {
+        // A clone always starts least important, so it is counted there,
+        // whatever the original has been promoted to.
         self.tx.send_modify(|map| {
             map.insert(
-                self.priority,
+                Priority::LeastImportant,
                 map.get(&Priority::LeastImportant)
                     .unwrap_or(&0)
                     .saturating_add(1),
