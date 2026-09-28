@@ -53,8 +53,9 @@ pub struct ActionInfoWithProps {
 /// Notifications to send worker about a requested state change.
 #[derive(Debug)]
 pub enum WorkerUpdate {
-    /// Requests that the worker begin executing this action.
-    RunAction(Box<(OperationId, ActionInfoWithProps)>),
+    /// Requests that the worker begin executing this action, dispatched at
+    /// this scheduler time.
+    RunAction(Box<(OperationId, ActionInfoWithProps, WorkerTimestamp)>),
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
@@ -248,8 +249,9 @@ impl Worker {
     pub async fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
             WorkerUpdate::RunAction(action) => {
-                let (operation_id, action_info) = *action;
-                self.run_action(operation_id, action_info).await
+                let (operation_id, action_info, dispatched_at) = *action;
+                self.run_action(operation_id, action_info, dispatched_at)
+                    .await
             }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
@@ -278,6 +280,20 @@ impl Worker {
                 )
             }
         }
+    }
+
+    /// Tells the worker to stop an operation this scheduler no longer holds
+    /// for it: a late acknowledgement of a dispatch the sweep already took
+    /// back means the worker is about to run an action that now belongs
+    /// elsewhere. Nothing to book, since the operation is not on the ledger.
+    pub(crate) fn kill_unknown_operation(&self, operation_id: &OperationId) -> Result<(), Error> {
+        self.metrics.kill_operation.inc();
+        send_msg_to_worker(
+            &self.tx,
+            update_for_worker::Update::KillOperationRequest(KillOperationRequest {
+                operation_id: operation_id.to_string(),
+            }),
+        )
     }
 
     /// Whether the worker has been told to kill this operation.
@@ -330,12 +346,12 @@ impl Worker {
         &mut self,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
+        dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
         let tx = &mut self.tx;
         let worker_platform_properties = &mut self.platform_properties;
         let running_action_infos = &mut self.running_action_infos;
         let worker_id = self.id.clone().into();
-        let dispatched_at = self.last_update_timestamp;
         self.metrics
             .run_action
             .wrap(async move {

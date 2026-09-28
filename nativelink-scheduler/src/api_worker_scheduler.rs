@@ -891,12 +891,14 @@ impl ApiWorkerSchedulerImpl {
         worker_id: WorkerId,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
+        dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
                 .notify_update(WorkerUpdate::RunAction(Box::new((
                     operation_id.clone(),
                     action_info.clone(),
+                    dispatched_at,
                 ))))
                 .await;
 
@@ -997,10 +999,24 @@ impl ApiWorkerSchedulerImpl {
     /// The worker acknowledged a dispatch. A late acknowledgement for an
     /// operation no longer on the worker is nothing to act on.
     fn dispatch_accepted(&mut self, worker_id: &WorkerId, operation_id: &OperationId) {
-        if let Some(worker) = self.workers.get_mut(worker_id)
-            && !worker.mark_accepted(operation_id)
-        {
-            debug!(?worker_id, %operation_id, "Acknowledgement for an operation not on this worker");
+        let Some(worker) = self.workers.get_mut(worker_id) else {
+            return;
+        };
+        if worker.mark_accepted(operation_id) {
+            return;
+        }
+        // Messages from a worker arrive in order and the acknowledgement
+        // comes before the run, so an acknowledgement for an operation not
+        // on this worker means the sweep took the dispatch back already: the
+        // worker is about to run an action that now belongs elsewhere. Tell
+        // it to stop now, not at the next revoked-operation sweep.
+        info!(
+            ?worker_id,
+            %operation_id,
+            "Acknowledgement for a dispatch already taken back; telling the worker to stop it"
+        );
+        if let Err(err) = worker.kill_unknown_operation(operation_id) {
+            warn!(?worker_id, %operation_id, ?err, "Could not tell the worker to stop the operation");
         }
     }
 
@@ -1261,18 +1277,21 @@ impl ApiWorkerScheduler {
         &self.worker_registry
     }
 
+    /// `dispatched_at` is the scheduler's clock at the send; the
+    /// acknowledgement timeout counts from it.
     pub async fn worker_notify_run_action(
         &self,
         worker_id: WorkerId,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
+        dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
         self.metrics
             .actions_dispatched
             .fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         inner
-            .worker_notify_run_action(worker_id, operation_id, action_info)
+            .worker_notify_run_action(worker_id, operation_id, action_info, dispatched_at)
             .await
     }
 

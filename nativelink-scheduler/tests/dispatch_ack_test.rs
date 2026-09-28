@@ -347,3 +347,65 @@ async fn a_late_decline_does_not_pause_the_worker() -> Result<(), Error> {
     next_dispatch(&mut rx).await;
     Ok(())
 }
+
+async fn next_kill(rx: &mut mpsc::Receiver<UpdateForWorker>) -> String {
+    let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("a kill within two seconds")
+        .expect("the channel is open");
+    let Some(update_for_worker::Update::KillOperationRequest(kill)) = msg.update else {
+        panic!("expected a KillOperationRequest, got {msg:?}");
+    };
+    kill.operation_id
+}
+
+/// The acknowledgement clock starts at the dispatch, not at the worker's
+/// last message before it: a worker that was quiet for a while still gets
+/// the whole timeout for a dispatch made later.
+#[nativelink_test]
+async fn the_acknowledgement_clock_starts_at_the_dispatch() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler(1, 5);
+    let mut rx = add_worker(&scheduler).await?;
+    // The worker's last message was at NOW_TIME; the dispatch is four
+    // seconds later.
+    MockClock::advance(Duration::from_secs(4));
+    let _listener = add_action(&scheduler, 4).await?;
+    let first = next_dispatch(&mut rx).await;
+
+    // Four seconds after the dispatch, eight after the worker's last
+    // message: still within the timeout, so the acknowledgement counts.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 8, None).await?;
+    worker_scheduler
+        .worker_dispatch_accepted(
+            &worker_id(),
+            &OperationId::from(first.operation_id.as_str()),
+        )
+        .await?;
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 20, None).await?;
+    no_dispatch(&mut rx).await;
+    Ok(())
+}
+
+/// An acknowledgement for a dispatch the sweep already took back means the
+/// worker is about to run an action that now belongs elsewhere: it is told
+/// to stop at once, not at the next revoked-operation sweep.
+#[nativelink_test]
+async fn a_late_acknowledgement_is_answered_with_a_kill() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler(1, 5);
+    let mut rx = add_worker(&scheduler).await?;
+    let _listener = add_action(&scheduler, 5).await?;
+    let first = next_dispatch(&mut rx).await;
+
+    // Past the timeout with no acknowledgement: taken back, worker paused.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 6, None).await?;
+    no_dispatch(&mut rx).await;
+
+    worker_scheduler
+        .worker_dispatch_accepted(
+            &worker_id(),
+            &OperationId::from(first.operation_id.as_str()),
+        )
+        .await?;
+    assert_eq!(next_kill(&mut rx).await, first.operation_id);
+    Ok(())
+}
