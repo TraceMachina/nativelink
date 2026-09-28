@@ -2934,7 +2934,8 @@ exit 0
         let (_, _, cas_store, _ac_store) = setup_stores().await?;
         let root_action_directory = make_temp_path("root_action_directory");
         fs::create_dir_all(&root_action_directory).await?;
-        let pid_file = make_temp_path("children.pids");
+        // Under the (existing) action root, so its parent directory exists.
+        let pid_file = format!("{root_action_directory}/children.pids");
 
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
