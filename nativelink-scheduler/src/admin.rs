@@ -18,7 +18,7 @@
 //! back.
 
 use std::collections::HashMap;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
 use nativelink_error::{Error, ResultExt};
@@ -40,6 +40,10 @@ pub struct QueuedDemand {
     /// The action's properties as the scheduler matches them, reservations
     /// included.
     pub platform_properties: HashMap<String, String>,
+    /// Milliseconds since the epoch when a client last checked in on the
+    /// operation. A queue entry no client has touched for longer than the
+    /// client timeout is one the scheduler will not dispatch.
+    pub client_last_seen_ms: Option<u64>,
 }
 
 /// Every queued action of the scheduler, oldest first as the store yields
@@ -59,21 +63,25 @@ pub async fn queued_demand(scheduler: &dyn ClientStateManager) -> Result<Vec<Que
     while let Some(result) = stream.next().await {
         let (state, _) = result.as_state().await?;
         let (action_info, _) = result.as_action_info().await?;
+        let client_last_seen_ms = result.client_last_seen().await?.map(epoch_ms);
         out.push(QueuedDemand {
             operation_id: state.client_operation_id.to_string(),
-            queued_since_ms: u64::try_from(
-                action_info
-                    .insert_timestamp
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
-            )
-            .unwrap_or(u64::MAX),
+            queued_since_ms: epoch_ms(action_info.insert_timestamp),
             priority: action_info.priority,
             platform_properties: action_info.platform_properties.clone(),
+            client_last_seen_ms,
         });
     }
     Ok(out)
+}
+
+fn epoch_ms(at: SystemTime) -> u64 {
+    u64::try_from(
+        at.duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 /// The demand listing as the JSON body the admin API serves.
