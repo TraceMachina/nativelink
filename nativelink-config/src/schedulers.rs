@@ -76,6 +76,12 @@ pub enum WorkerAllocationStrategy {
     LeastRecentlyUsed,
     /// Prefer workers that have been most recently used to run a job.
     MostRecentlyUsed,
+    /// Prefer the worker running the fewest actions, least recently used
+    /// among equals. A worker that just joined has nothing running, so it
+    /// takes the next action instead of waiting for every older worker to
+    /// be used once more, and a burst spreads across the fleet instead of
+    /// filling one worker to its concurrency cap.
+    LeastLoaded,
 }
 
 // defaults to every 10s

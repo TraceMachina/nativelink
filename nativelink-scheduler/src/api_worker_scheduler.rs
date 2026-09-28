@@ -608,6 +608,15 @@ impl ApiWorkerSchedulerImpl {
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
                 .find(&worker_matches)
                 .map(|(_, w)| w.id.clone()),
+
+            // Fewest running actions wins; the scan runs from the least
+            // recently used end so `min_by_key` keeps that one on a tie.
+            WorkerAllocationStrategy::LeastLoaded => workers_iter
+                .rev()
+                .filter(|(worker_id, _)| candidates.contains(worker_id))
+                .filter(&worker_matches)
+                .min_by_key(|(_, w)| w.running_action_infos.len())
+                .map(|(_, w)| w.id.clone()),
         }
     }
 
