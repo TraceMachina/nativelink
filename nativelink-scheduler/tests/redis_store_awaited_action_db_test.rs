@@ -33,6 +33,7 @@ use nativelink_redis_tester::FakeRedisBackend;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber,
 };
+use nativelink_scheduler::default_scheduler_factory::retain_completed_for_s;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_scheduler::worker::Worker;
@@ -710,5 +711,14 @@ async fn an_update_against_a_vanished_record_leaves_nothing_behind() -> Result<(
          no expiry, and the index will carry it forever"
     );
 
+    Ok(())
+}
+
+/// The Redis backend gets the same retention default as the memory backend.
+/// Passed through as 0 it wrote every completed record without an expiry.
+#[nativelink_test]
+async fn unset_retention_is_the_shared_default_not_forever() -> Result<(), Error> {
+    assert_eq!(retain_completed_for_s(0), 60);
+    assert_eq!(retain_completed_for_s(30), 30);
     Ok(())
 }

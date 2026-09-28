@@ -69,7 +69,7 @@ use uuid::Uuid;
 use crate::cas_utils::is_zero_digest;
 use crate::redis_utils::{
     FtAggregateCursor, FtAggregateOptions, FtCreateOptions, SearchSchema, ft_aggregate, ft_create,
-    ft_search_count,
+    ft_info_indexing, ft_search_count,
 };
 
 /// The default size of the read chunk when reading data from Redis.
@@ -1624,6 +1624,42 @@ return {{ 1, new_version }}
 "
 );
 
+/// How long a freshly created index is given to finish its background
+/// scan before a read goes ahead regardless, and how often it is asked.
+const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const INDEX_READY_POLL: Duration = Duration::from_millis(50);
+
+/// Polls `FT.INFO` until the index reports `indexing 0`, the timeout
+/// passes, or the call fails; none of those stops the caller, which reads
+/// the index either way.
+async fn wait_for_index_ready<C>(connection_manager: C, index: &str)
+where
+    C: ConnectionLike + Send + Clone,
+{
+    let started = Instant::now();
+    loop {
+        match ft_info_indexing(connection_manager.clone(), index).await {
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(err) => {
+                warn!(
+                    ?err,
+                    index, "Could not read FT.INFO after creating the index; reading it now"
+                );
+                return;
+            }
+        }
+        if started.elapsed() >= INDEX_READY_TIMEOUT {
+            warn!(
+                index,
+                "Index still backfilling after {INDEX_READY_TIMEOUT:?}; reading it now"
+            );
+            return;
+        }
+        sleep(INDEX_READY_POLL).await;
+    }
+}
+
 /// This is the output of the calculations below hardcoded into the executable.
 const FINGERPRINT_CREATE_INDEX_HEX: &str = "3e762c15";
 
@@ -2282,6 +2318,24 @@ where
                         })
                     }
                 });
+
+                // FT.CREATE returns before the index holds the keys that
+                // already exist; RediSearch scans them in the background.
+                // An aggregate in that window reads a partial index, and
+                // for the scheduler's queue that is a queue with actions
+                // missing, so wait for the scan to finish first. The wait
+                // is bounded; past it the aggregate runs anyway and the next
+                // pass re-reads.
+                if create_result.is_ok() {
+                    wait_for_index_ready(
+                        connection_manager.clone(),
+                        &format!(
+                            "{}",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+                        ),
+                    )
+                    .await;
+                }
 
                 let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(

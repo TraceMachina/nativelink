@@ -1281,12 +1281,9 @@ where
                 .get_all_awaited_actions()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
-                .and_then(|awaited_action_subscriber| async move {
-                    let awaited_action = awaited_action_subscriber
-                        .borrow()
-                        .await
-                        .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-                    Ok((awaited_action_subscriber, awaited_action))
+                .filter_map(|listed| async move { listed_or_lost(listed) })
+                .try_filter_map(|awaited_action_subscriber| async move {
+                    borrow_listed(awaited_action_subscriber).await
                 })
                 .try_filter_map(|(subscriber, awaited_action)| {
                     let filter = filter.clone();
@@ -1328,12 +1325,9 @@ where
             )
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
-            .and_then(|awaited_action_subscriber| async move {
-                let awaited_action = awaited_action_subscriber
-                    .borrow()
-                    .await
-                    .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-                Ok((awaited_action_subscriber, awaited_action))
+            .filter_map(|listed| async move { listed_or_lost(listed) })
+            .try_filter_map(|awaited_action_subscriber| async move {
+                borrow_listed(awaited_action_subscriber).await
             })
             .try_filter_map(move |(subscriber, awaited_action)| {
                 let filter = filter.clone();
@@ -1351,6 +1345,49 @@ where
                 )
             });
         Ok(Box::pin(stream))
+    }
+}
+
+/// A listed entry the store could not even hand over: the row was gone
+/// (`NotFound`) or would not decode (`InvalidArgument`), which the Redis
+/// listing reports as an error item before any subscriber exists. Skipped
+/// and counted like a record that fails to read below. Anything else is the
+/// store failing and stays an error for the reader.
+fn listed_or_lost<S>(listed: Result<S, Error>) -> Option<Result<S, Error>> {
+    match listed {
+        Err(err) if is_lost_record(&err) => {
+            warn!(
+                ?err,
+                "Operation listed but its row cannot be read; skipping it in the listing"
+            );
+            record_awaited_action_orphan("listing");
+            None
+        }
+        listed => Some(listed),
+    }
+}
+
+/// Reads the record behind a listed subscriber. A record the index listed
+/// but the store no longer has (it expired between the search and the
+/// read, or eviction took it) is skipped and counted, not returned as an
+/// error: one such row must not end a listing that the provisioner and the
+/// admin API read every few seconds. Any other error is the store failing
+/// and is passed on. The sweep and the matcher skip the same way.
+async fn borrow_listed<S: AwaitedActionSubscriber>(
+    subscriber: S,
+) -> Result<Option<(S, AwaitedAction)>, Error> {
+    match subscriber.borrow().await {
+        Ok(awaited_action) => Ok(Some((subscriber, awaited_action))),
+        Err(err) if is_lost_record(&err) => {
+            warn!(
+                ?err,
+                "Operation listed but its record cannot be read; skipping it in the listing"
+            );
+            record_awaited_action_orphan("listing");
+            Ok(None)
+        }
+        // The store itself failed; that is the listing's error to report.
+        Err(err) => Err(err).err_tip(|| "In SimpleSchedulerStateManager::filter_operations"),
     }
 }
 
