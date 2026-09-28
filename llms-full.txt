@@ -8367,9 +8367,10 @@ is a service address. The config shape does not change.
 `SimpleSpec` has ten optional fields. Most can stay at their defaults
 forever. These four are the ones worth setting deliberately:
 
-**`worker_timeout_s`** (default 5 s): how long a silent worker stays in the
-pool. Five seconds is aggressive for a fleet on a congested network; a worker
-evicted mid-action has its action re-queued.
+**`worker_timeout_s`** (default 10 s): how long a silent worker stays in the
+pool. Any message from the worker counts, not only the heartbeat. Keep it at
+least twice the worker's `worker_api_endpoint.timeout`; a worker evicted
+mid-action has every action it held re-queued, each with an attempt spent.
 
 **`max_action_executing_timeout_s`** (default 0, disabled): caps how long an
 action can sit in `Executing` with no update, even from a worker that is
@@ -12317,7 +12318,7 @@ Check `worker_api_endpoint.timeout` on the worker against `worker_timeout_s`
 on the scheduler, and any proxy or load balancer between the two. The worker
 sends a `KeepAlive` RPC every `timeout / 2` (default timeout 5 seconds), and
 the scheduler evicts a worker it has not heard from within `worker_timeout_s`
-(default 5 seconds), so a hop that delays or drops those RPCs looks like a
+(default 10 seconds), so a hop that delays or drops those RPCs looks like a
 flapping worker. HTTP/2 keepalive pings on this listener come from
 `advanced_http.http2_keep_alive_interval` on the scheduler's worker API
 `servers` entry. The worker API is a long-lived streaming connection, not a
@@ -14576,7 +14577,8 @@ attempts per second at the socket for the whole outage. Worse, each worker's
 reconnect path calls `kill_all()` first, destroying every action it was
 running. Restart the scheduler when the queue is quiet, and restart it once.
 
-**Workers** drain themselves on `SIGTERM`: the process rejects new actions,
+**Workers** drain themselves on `SIGTERM` (and on a first `SIGINT`; a second
+`SIGINT` exits at once): the process rejects new actions,
 waits for the ones it is running to finish, sends the scheduler a
 `GoingAway`, and exits. `systemctl stop` is therefore safe as long as
 `TimeoutStopSec` outlasts your longest action. To take a worker out of
@@ -15924,11 +15926,13 @@ a single connection the ceiling.
 
 <Accordion title="Workers keep being marked dead and their actions requeued" id="workers-keep-being-marked-dead-and-their-actions-requeued">
 
-`worker_timeout_s` defaults to **5 seconds**, checked once a second. That is a
+`worker_timeout_s` defaults to **10 seconds**, checked once a second. That is a
 short leash and it is deliberate (fast detection means fast requeue), but a
-worker whose host is briefly starved, or whose network hiccups, will be evicted.
-If you see churn without actual failures, raise it. The cost of raising it is a
-longer stall before a genuinely dead worker's actions are retried.
+worker whose host is starved for longer than that, or whose network hiccups,
+will be evicted. If you see churn without actual failures, raise it. The cost
+of raising it is a longer stall before a genuinely dead worker's actions are
+retried. Releases up to 1.7.2 defaulted to 5 seconds and only counted
+heartbeats, so a worker busy reporting results could still be evicted.
 
 </Accordion>
 
@@ -17285,13 +17289,15 @@ any other non-zero exit; there is no exported metric that singles out
 signal deaths, so the log line is what you alert on.
 
 **The worker process itself was killed.** The scheduler notices after
-`worker_timeout_s` (default 5 seconds, checked once a second), evicts it, and
+`worker_timeout_s` (default 10 seconds, checked once a second), evicts it, and
 re-queues its in-flight actions. In this tree a disconnect *counts as an
-attempt*, so after `max_job_retries` the client finally sees:
+attempt*, so after `max_job_retries` the client finally sees, as a
+`FAILED_PRECONDITION` that Bazel does not resubmit:
 
 ```text
 Worker disconnected repeatedly while executing this action (4 > 3 attempts);
-the runner likely OOMKilled or the pod was evicted. for operation_id: ...,
+the worker was likely OOM-killed or its pod evicted. Give the action a memory
+reservation or raise the pool's memory limit before retrying. for operation_id: ...,
 maybe_worker_id: ...
 ```
 
@@ -17846,7 +17852,7 @@ string is just the tombstone.
 
 The timeout defaults that matter: `max_action_timeout_s` 20 minutes,
 `max_upload_timeout_s` 10 minutes, `max_cleanup_wait_s` 30 seconds,
-`worker_timeout_s` 5 seconds, `client_action_timeout_s` 60 seconds,
+`worker_timeout_s` 10 seconds, `client_action_timeout_s` 60 seconds,
 `retain_completed_for_s` 60 seconds.
 
 `retain_completed_for_s` is not an execution timeout; it is how long a
@@ -17860,7 +17866,7 @@ Setting a field to `0` to disable it usually does the opposite.
 | Field | `0` means |
 | --- | --- |
 | `max_job_retries` | **3.** Not "no retries". |
-| `worker_timeout_s` | 5 seconds. |
+| `worker_timeout_s` | 10 seconds. |
 | `client_action_timeout_s` | 60 seconds. |
 | `retain_completed_for_s` | 60 seconds. |
 | `max_action_executing_timeout_s` | Genuinely disabled. The one exception. |
@@ -17901,7 +17907,8 @@ churning, those are the same incident.
 
 The worker sends a keepalive every half of its `worker_api_endpoint.timeout`
 (default 5 s, so every 2.5 s), and the scheduler evicts a worker it has not
-heard from for `worker_timeout_s` (default 5 s), checking once a second. The
+heard from for `worker_timeout_s` (default 10 s), checking once a second. Any
+message from the worker resets that clock, not only keepalives. The
 scheduler counts what it receives in `nativelink_worker_keepalives_total` and
 departures by reason in `nativelink_worker_disconnections_total`.
 
@@ -19138,10 +19145,11 @@ worker gets an action is decided separately, by the LRU-ordered
 <Callout type="warn" title="The heartbeat and the eviction timeout are two separate knobs">
   The worker's heartbeat period is derived as **half** its configured
   `worker_api_endpoint.timeout`, 2.5 seconds by default. Eviction is
-  governed by the *scheduler's* `worker_timeout_s`, 5 seconds by default.
-  Nothing reconciles them. Raise the scheduler's timeout without raising the
-  worker's, or vice versa, and you get workers evicted mid-heartbeat and
-  reconnecting in a loop.
+  governed by the *scheduler's* `worker_timeout_s`, 10 seconds by default
+  (four heartbeats). Any message from the worker refreshes the clock, not
+  only the heartbeat. Nothing reconciles the two knobs. Raise the worker's
+  timeout without raising the scheduler's and you get workers evicted
+  mid-heartbeat and reconnecting in a loop.
 </Callout>
 
 ## The filesystem, and the hardlink that everything depends on [#the-filesystem-and-the-hardlink-that-everything-depends-on]
