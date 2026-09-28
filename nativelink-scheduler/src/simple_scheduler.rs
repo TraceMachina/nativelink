@@ -56,7 +56,7 @@ use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+use crate::simple_scheduler_state_manager::{SimpleSchedulerStateManager, is_lost_record};
 use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_registry::WorkerRegistry;
@@ -503,20 +503,33 @@ impl SimpleScheduler {
             let (action_info, maybe_origin_metadata) =
                 match action_state_result.as_action_info().await {
                     Ok(found) => found,
-                    // Listed by the queue, gone from the store: nothing to
+                    // Listed by the queue, and its record is gone from the
+                    // store (eviction) or cannot be decoded. Nothing to
                     // match. Counted so an operator can see the store losing
-                    // records; skipped so the rest of the pass still runs.
-                    Err(err) if err.code == Code::NotFound => {
-                        debug!(
-                            ?err,
-                            "Queued operation listed but its record is gone; skipping"
-                        );
+                    // records, skipped so the rest of the pass still runs,
+                    // and not an error, since an error here made the pass
+                    // rerun at once and log ten times a second until the
+                    // entry went away.
+                    Err(err) if is_lost_record(&err) => {
+                        if err.code == Code::NotFound {
+                            debug!(
+                                ?err,
+                                "Queued operation listed but its record is gone; skipping"
+                            );
+                        } else {
+                            warn!(
+                                ?err,
+                                "Queued operation listed but its record cannot be read; skipping"
+                            );
+                        }
                         record_awaited_action_orphan("matching");
                         return Ok(());
                     }
+                    // The store itself failed, so the pass is incomplete:
+                    // an error here reruns it at once, as before.
                     Err(err) => {
                         return Err(err).err_tip(
-                            || "Failed to get action_info from as_action_info_result stream",
+                            || "Failed to get action info in SimpleScheduler::do_try_match",
                         );
                     }
                 };

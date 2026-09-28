@@ -130,6 +130,15 @@ fn record_execution_metrics(awaited_action: &AwaitedAction, is_retry: bool) {
     }
 }
 
+/// Whether an error reading a listed queue entry means the entry itself is
+/// lost: its record is gone from the store or cannot be decoded. Such an
+/// entry is skipped and counted. Any other error (the store unreachable, a
+/// listing page that failed to load) is about the store, not the entry, and
+/// is propagated so the caller retries instead of reporting a clean pass.
+pub(crate) const fn is_lost_record(err: &Error) -> bool {
+    matches!(err.code, Code::NotFound | Code::InvalidArgument)
+}
+
 /// Simple struct that implements the `ActionStateResult` trait and always returns an error.
 struct ErrorActionStateResult(Error);
 
@@ -455,17 +464,22 @@ where
 
         let mut retired = 0u64;
         while let Some(subscriber) = stream.next().await {
-            let subscriber = subscriber.err_tip(|| "In sweep_abandoned_queued_actions")?;
-            let awaited_action = match subscriber.borrow().await {
+            // The queue listed it but the record is gone (evicted) or cannot
+            // be decoded. One such entry must not stop the sweep from
+            // retiring everything behind it, which is how a pile of
+            // abandoned actions becomes permanent. Anything else, such as
+            // the listing's next page failing to load, is a failed sweep:
+            // the entries it did not reach are still there.
+            let awaited_action = match subscriber {
+                Ok(subscriber) => subscriber.borrow().await,
+                Err(err) => Err(err),
+            };
+            let awaited_action = match awaited_action {
                 Ok(awaited_action) => awaited_action,
-                // The queue listed it, the record is gone: the store lost
-                // it, usually to eviction. One such entry must not stop the
-                // sweep from retiring everything behind it, which is how a
-                // pile of abandoned actions becomes permanent.
-                Err(err) if err.code == Code::NotFound => {
+                Err(err) if is_lost_record(&err) => {
                     warn!(
                         ?err,
-                        "Queued operation listed but its record is gone; skipping"
+                        "Queued operation listed but its record cannot be read; skipping"
                     );
                     record_awaited_action_orphan("sweep");
                     continue;
