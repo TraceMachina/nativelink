@@ -41,9 +41,23 @@ service WorkerApi {
     rpc ConnectWorker(stream UpdateForScheduler) returns (stream UpdateForWorker);
 }
 
+/// What a worker has to spare, sent with every keepalive so the scheduler
+/// can veto a placement the admission ledger would allow. Absent from
+/// older workers.
+message WorkerLoad {
+    /// Memory the worker could still give an action, in KiB: the cgroup
+    /// limit less current usage, or MemAvailable without a limit.
+    uint64 free_memory_kb = 1;
+
+    reserved 2; // NextId.
+}
+
 /// Request object for keep alive requests.
 message KeepAliveRequest {
-    reserved 1; // NextId.
+    /// The worker's spare capacity as of this keepalive.
+    WorkerLoad load = 1;
+
+    reserved 2; // NextId.
 }
 
 /// Request object for going away requests.

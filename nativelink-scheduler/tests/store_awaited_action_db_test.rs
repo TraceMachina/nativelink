@@ -11,7 +11,9 @@ use futures::{Stream, stream};
 use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_scheduler::awaited_action_db::{AwaitedAction, AwaitedActionDb};
+use nativelink_scheduler::awaited_action_db::{
+    AwaitedAction, AwaitedActionDb, PersistedSortKey, SortedAwaitedAction,
+};
 use nativelink_scheduler::store_awaited_action_db::{
     StoreAwaitedActionDb, inner_update_awaited_action,
 };
@@ -623,5 +625,75 @@ async fn active_action_count_only_queries_the_store_when_enabled() -> Result<(),
         "enabling it should count every stage at least once a minute, got {}",
         on_counts.load(Ordering::SeqCst),
     );
+    Ok(())
+}
+
+fn queued_at(insert_timestamp: SystemTime, priority: i32) -> AwaitedAction {
+    let mut action_info = make_cacheable_action_info();
+    let action_info_mut = Arc::make_mut(&mut action_info);
+    action_info_mut.insert_timestamp = insert_timestamp;
+    action_info_mut.priority = priority;
+    AwaitedAction::new(OperationId::default(), action_info, insert_timestamp)
+}
+
+/// The record's `sort_key` stays a `u64` in the layout released schedulers
+/// read, so a record written here loads on an older scheduler during a
+/// rolling upgrade or after a rollback.
+#[nativelink_test]
+async fn record_sort_key_is_readable_by_an_older_scheduler() -> Result<(), Error> {
+    let insert = SystemTime::UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789);
+    let record = serde_json::to_value(queued_at(insert, 0)).expect("a record serializes");
+    let sort_key = record["sort_key"]
+        .as_u64()
+        .expect("sort_key must be a u64 for older readers");
+    // Priority 0 sits at the top of the unsigned range, then the inverted
+    // whole seconds.
+    assert_eq!(
+        sort_key,
+        (0x8000_0000u64 << 32) | u64::from(0x6553_f100_u32 ^ u32::MAX)
+    );
+    Ok(())
+}
+
+/// A record written by an older scheduler carries only the seconds key,
+/// yet once loaded here it orders at nanosecond resolution like any other,
+/// because the key is computed from the action info both versions store.
+#[nativelink_test]
+async fn a_record_from_an_older_scheduler_orders_at_nanosecond_resolution() -> Result<(), Error> {
+    let first = SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_100);
+    let second = first + Duration::from_millis(1);
+    let reload = |action: AwaitedAction| -> Result<AwaitedAction, Error> {
+        let bytes = serde_json::to_vec(&action).expect("a record serializes");
+        AwaitedAction::try_from(bytes.as_slice())
+    };
+    let first = reload(queued_at(first, 0))?;
+    let second = reload(queued_at(second, 0))?;
+    // The descending read serves the larger key first.
+    assert!(
+        SortedAwaitedAction::from(&first).sort_key > SortedAwaitedAction::from(&second).sort_key,
+        "the action queued first must be served first"
+    );
+    Ok(())
+}
+
+/// During a rolling upgrade the Redis index holds 16-digit keys from older
+/// schedulers next to 32-digit keys from this one. It sorts them as strings,
+/// and the descending read serves the older entries first.
+#[nativelink_test]
+async fn index_keys_from_both_versions_serve_older_entries_first() -> Result<(), Error> {
+    let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let later = earlier + Duration::from_mins(1);
+    for priority in [i32::MIN, -1, 0, 1, i32::MAX] {
+        let old = PersistedSortKey::from_action_info(queued_at(earlier, priority).action_info())
+            .index_field();
+        let new = SortedAwaitedAction::from(&queued_at(later, priority))
+            .sort_key
+            .index_field();
+        assert_eq!(old.len(), 16);
+        assert_eq!(new.len(), 32);
+        let mut keys = vec![new.clone(), old.clone()];
+        keys.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(keys, vec![old, new], "priority {priority}");
+    }
     Ok(())
 }

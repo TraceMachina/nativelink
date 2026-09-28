@@ -166,20 +166,50 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         );
                         let mut results = vec![Value::Int(0)];
 
+                        // `SORTBY <n> <@field> <ASC|DESC> ...`: honour the first
+                        // key so tests can assert the order the scheduler asks
+                        // for. Missing sort fields sort first, like RediSearch.
+                        let sort_spec = args
+                            .iter()
+                            .position(|a| matches!(a, OwnedFrame::BulkString(b) if b == b"SORTBY"))
+                            .and_then(|i| {
+                                let field = args.get(i + 2)?.as_bytes()?;
+                                let field = str::from_utf8(field).ok()?.trim_start_matches('@').to_string();
+                                let desc = matches!(args.get(i + 3), Some(OwnedFrame::BulkString(d)) if d == b"DESC");
+                                Some((field, desc))
+                            });
+                        let sorted = |mut rows: Vec<HashMap<String, Value>>| {
+                            if let Some((field, desc)) = &sort_spec {
+                                let key = |r: &HashMap<String, Value>| match r.get(field) {
+                                    Some(Value::BulkString(b)) => b.clone(),
+                                    _ => Vec::new(),
+                                };
+                                rows.sort_by_key(key);
+                                if *desc {
+                                    rows.reverse();
+                                }
+                            }
+                            rows
+                        };
+
                         if query == "*" {
                             // Wildcard query - return all records that have both data and version fields.
                             // Some entries (e.g., from HSET) may not have version field.
-                            for fields in self.table.lock().unwrap().values() {
-                                if let (Some(data), Some(version)) =
-                                    (fields.get("data"), fields.get("version"))
-                                {
-                                    results.push(Value::Array(vec![
-                                        Value::BulkString(b"data".to_vec()),
-                                        data.clone(),
-                                        Value::BulkString(b"version".to_vec()),
-                                        version.clone(),
-                                    ]));
-                                }
+                            let rows: Vec<_> = self
+                                .table
+                                .lock()
+                                .unwrap()
+                                .values()
+                                .filter(|f| f.contains_key("data") && f.contains_key("version"))
+                                .cloned()
+                                .collect();
+                            for fields in sorted(rows) {
+                                results.push(Value::Array(vec![
+                                    Value::BulkString(b"data".to_vec()),
+                                    fields["data"].clone(),
+                                    Value::BulkString(b"version".to_vec()),
+                                    fields["version"].clone(),
+                                ]));
                             }
                         } else {
                             // Field-specific query: @field:{ value }
@@ -191,9 +221,18 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                                 .strip_prefix("{ ")
                                 .and_then(|s| s.strip_suffix(" }"))
                                 .unwrap_or(value);
-                            for fields in self.table.lock().unwrap().values() {
-                                if let Some(key_value) = fields.get(field)
-                                    && *key_value == Value::BulkString(value.as_bytes().to_vec())
+                            let rows: Vec<_> = self
+                                .table
+                                .lock()
+                                .unwrap()
+                                .values()
+                                .filter(|f| {
+                                    f.get(field)
+                                        == Some(&Value::BulkString(value.as_bytes().to_vec()))
+                                })
+                                .cloned()
+                                .collect();
+                            for fields in sorted(rows) {
                                 {
                                     let mut record = vec![
                                         Value::BulkString(b"data".to_vec()),

@@ -350,9 +350,13 @@ impl WorkerConnection {
         });
     }
 
-    async fn inner_keep_alive(&self, _keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
+    async fn inner_keep_alive(&self, keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
         self.scheduler
-            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
+            .worker_keep_alive_received(
+                &self.worker_id,
+                (self.now_fn)()?.as_secs(),
+                keep_alive_request.load,
+            )
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
         Ok(())
@@ -367,9 +371,10 @@ impl WorkerConnection {
     }
 
     /// Any message from the worker proves it is alive, not only keepalives.
+    /// Only a keepalive carries a load report; the last one stands.
     async fn touch_liveness(&self) -> Result<(), Error> {
         self.scheduler
-            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
+            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs(), None)
             .await
             .err_tip(|| "Could not refresh worker liveness")
     }

@@ -1065,7 +1065,10 @@ impl SchedulerStore for ExperimentalMongoStore {
 
         // Add sort if specified
         let find_options = if let Some(sort_key) = K::MAYBE_SORT_KEY {
-            FindOptions::builder().sort(doc! { sort_key: 1 }).build()
+            let direction = if K::SORT_DESCENDING { -1 } else { 1 };
+            FindOptions::builder()
+                .sort(doc! { sort_key: direction })
+                .build()
         } else {
             FindOptions::default()
         };
