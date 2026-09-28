@@ -132,7 +132,7 @@ use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
-use crate::worker_scheduler::WorkerScheduler;
+use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
 
 #[derive(Debug)]
 struct Workers(LruCache<WorkerId, Worker>);
@@ -1510,6 +1510,42 @@ impl WorkerScheduler for ApiWorkerScheduler {
         }
 
         result
+    }
+
+    async fn worker_snapshot(&self) -> Vec<WorkerSummary> {
+        fn as_strings(properties: &PlatformProperties) -> HashMap<String, String> {
+            properties
+                .properties
+                .iter()
+                .map(|(name, value)| {
+                    let value = match value {
+                        PlatformPropertyValue::Minimum(v) => v.to_string(),
+                        PlatformPropertyValue::Exact(v)
+                        | PlatformPropertyValue::Priority(v)
+                        | PlatformPropertyValue::Ignore(v)
+                        | PlatformPropertyValue::Unknown(v) => v.clone(),
+                    };
+                    (name.clone(), value)
+                })
+                .collect()
+        }
+        let inner = self.inner.lock().await;
+        inner
+            .workers
+            .iter()
+            .map(|(_, worker)| WorkerSummary {
+                id: worker.id.to_string(),
+                running_actions: u32::try_from(worker.running_action_infos.len())
+                    .unwrap_or(u32::MAX),
+                max_inflight_tasks: worker.max_inflight_tasks,
+                is_paused: worker.is_paused,
+                is_draining: worker.is_draining,
+                last_update_timestamp: worker.last_update_timestamp,
+                platform_properties: as_strings(&worker.total_platform_properties),
+                available_platform_properties: as_strings(&worker.platform_properties),
+                free_memory_kb: worker.last_load.map(|load| load.free_memory_kb),
+            })
+            .collect()
     }
 
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error> {
