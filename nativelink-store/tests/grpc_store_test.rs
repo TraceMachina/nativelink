@@ -336,7 +336,7 @@ async fn write_stream_terminates_after_finish_write() -> Result<(), Error> {
     let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     // Let the outer timeout below be the sole hang guard for this test.
     spec.rpc_timeout_s = 0;
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
     let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len()).unwrap();
 
     let (mut tx, rx) = make_buf_channel_pair();
@@ -382,7 +382,7 @@ async fn write_update_splits_chunks_over_grpc_message_limit() -> Result<(), Erro
     // Sanitizers can take more than the helper's usual one-second RPC timeout
     // to transfer this payload. The outer timeout below remains the hang guard.
     spec.rpc_timeout_s = 0;
-    let store = GrpcStore::new(&spec).await?;
+    let store = GrpcStore::new(&spec)?;
     let digest = DigestInfo::try_new(VALID_HASH, BLOB_SIZE).unwrap();
 
     let blob: bytes::Bytes = (0..BLOB_SIZE)
