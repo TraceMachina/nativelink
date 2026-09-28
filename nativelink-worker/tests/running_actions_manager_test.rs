@@ -2954,7 +2954,9 @@ exit 0
                 timeout_handled_externally: false,
                 active_input_leases: false,
                 directory_cache: None,
-                use_namespaces: use_namespaces(),
+                // Host pids and a host-visible pid file: the point is what the kill
+                // reaches, not the namespaces.
+                use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces::No,
             })?);
         // Two grandchildren that would outlive a kill aimed at the shell
         // alone; their pids land in a file outside the action directory.
