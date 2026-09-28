@@ -432,10 +432,10 @@ where
     /// to visit.
     ///
     /// When it does not, they accumulate with no expiry and are handed to
-    /// the matcher again on every pass, ahead of live work because they are
-    /// the oldest. Enough of them starve dispatch entirely: workers sit
-    /// idle, nothing executes or completes, and clients eventually report a
-    /// remote execution failure.
+    /// the matcher again on every pass. Every pass reads the whole queued
+    /// set, so enough of them make each read slow and each pass cost more
+    /// than it places: workers sit idle, nothing executes or completes, and
+    /// clients eventually report a remote execution failure.
     ///
     /// Returns how many were retired.
     pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
