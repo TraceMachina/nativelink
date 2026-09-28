@@ -185,6 +185,10 @@ struct ApiWorkerSchedulerImpl {
     live_memory_veto: Option<String>,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
+    /// Bumped with every notification, under the same lock as placement, so
+    /// a matching pass can tell that room opened while it was walking the
+    /// queue and offer that room to the oldest waiting action first.
+    capacity_generation: Arc<AtomicU64>,
     /// Worker registry for tracking worker liveness.
     worker_registry: SharedWorkerRegistry,
 
@@ -338,6 +342,8 @@ impl ApiWorkerSchedulerImpl {
         if worker.is_paused {
             worker.is_paused = false;
             record_worker_state("paused", false);
+            // `capacity_changed` by hand: `worker` still borrows the map.
+            self.capacity_generation.fetch_add(1, Ordering::Relaxed);
             self.worker_change_notify.notify_one();
         }
         // A message without a load (an older worker, or a refresh from an
@@ -404,7 +410,7 @@ impl ApiWorkerSchedulerImpl {
         } else {
             record_worker_connected();
         }
-        self.worker_change_notify.notify_one();
+        self.capacity_changed();
         res
     }
 
@@ -420,7 +426,7 @@ impl ApiWorkerSchedulerImpl {
         self.fleet_changed();
         self.local_fleet_change_notify.notify_one();
 
-        self.worker_change_notify.notify_one();
+        self.capacity_changed();
         result
     }
 
@@ -439,6 +445,13 @@ impl ApiWorkerSchedulerImpl {
         self.fleet_shape_set = shapes;
         self.fleet_generation += 1;
         self.static_verdicts.clear();
+    }
+
+    /// Something about the fleet's room to run actions changed: a worker
+    /// joined, left, paused, resumed, drained or finished an action.
+    fn capacity_changed(&self) {
+        self.capacity_generation.fetch_add(1, Ordering::Relaxed);
+        self.worker_change_notify.notify_one();
     }
 
     /// The distinct properties this scheduler's workers registered with.
@@ -505,7 +518,7 @@ impl ApiWorkerSchedulerImpl {
             record_worker_state("draining", is_draining);
         }
         worker.is_draining = is_draining;
-        self.worker_change_notify.notify_one();
+        self.capacity_changed();
         Ok(())
     }
 
@@ -845,7 +858,7 @@ impl ApiWorkerSchedulerImpl {
             complete_action_res
         };
 
-        self.worker_change_notify.notify_one();
+        self.capacity_changed();
 
         update_operation_res.merge(complete_action_res)
     }
@@ -1005,7 +1018,7 @@ impl ApiWorkerSchedulerImpl {
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
         // TODO(palfrey) This should be moved to inside the Workers struct.
-        self.worker_change_notify.notify_one();
+        self.capacity_changed();
         result
     }
 }
@@ -1014,6 +1027,9 @@ impl ApiWorkerSchedulerImpl {
 pub struct ApiWorkerScheduler {
     #[metric]
     inner: Mutex<ApiWorkerSchedulerImpl>,
+    /// See `ApiWorkerSchedulerImpl::capacity_generation`; read here without
+    /// the lock.
+    capacity_generation: Arc<AtomicU64>,
     #[metric(group = "platform_property_manager")]
     platform_property_manager: Arc<PlatformPropertyManager>,
 
@@ -1059,6 +1075,7 @@ impl ApiWorkerScheduler {
             "record_ttl must be non-zero; a zero TTL degenerates the census warm-up/staleness checks"
         );
         let local_fleet_change_notify = Arc::new(Notify::new());
+        let capacity_generation = Arc::new(AtomicU64::new(0));
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
@@ -1066,6 +1083,7 @@ impl ApiWorkerScheduler {
                 allocation_strategy,
                 live_memory_veto,
                 worker_change_notify,
+                capacity_generation: capacity_generation.clone(),
                 worker_registry: worker_registry.clone(),
                 shutting_down: false,
                 capability_index: WorkerCapabilityIndex::new(),
@@ -1087,6 +1105,7 @@ impl ApiWorkerScheduler {
             metrics: Arc::new(SchedulerMetrics::default()),
             maybe_origin_event_tx,
             local_fleet_change_notify,
+            capacity_generation,
         })
     }
 
@@ -1098,6 +1117,11 @@ impl ApiWorkerScheduler {
         inner.workers.is_empty()
             && inner.peer_census_trusted(now)
             && inner.peer_fleet.as_ref().is_some_and(Vec::is_empty)
+    }
+
+    /// The capacity generation as of now; see `find_worker_for_action_observed`.
+    pub fn capacity_generation(&self) -> u64 {
+        self.capacity_generation.load(Ordering::Relaxed)
     }
 
     /// Returns a reference to the worker registry.
@@ -1175,6 +1199,22 @@ impl ApiWorkerScheduler {
         full_worker_logging: bool,
         now: SystemTime,
     ) -> MatchOutcome {
+        self.find_worker_for_action_observed(platform_properties, full_worker_logging, now)
+            .await
+            .0
+    }
+
+    /// `find_worker_for_action`, also returning the capacity generation read
+    /// under the same lock as the placement. A pass compares it with the one
+    /// it saw last: a change means a worker gained room since, and an older
+    /// action that found none earlier in the pass should be offered that room
+    /// before this one takes it.
+    pub async fn find_worker_for_action_observed(
+        &self,
+        platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
+        now: SystemTime,
+    ) -> (MatchOutcome, u64) {
         let start = Instant::now();
         self.metrics
             .find_worker_calls
@@ -1184,6 +1224,7 @@ impl ApiWorkerScheduler {
         let worker_count = inner.workers.len() as u64;
         let result =
             inner.inner_find_worker_for_action(platform_properties, full_worker_logging, now);
+        let generation = inner.capacity_generation.load(Ordering::Relaxed);
 
         // Track workers iterated (worst case is all workers)
         self.metrics
@@ -1204,7 +1245,7 @@ impl ApiWorkerScheduler {
         self.metrics
             .find_worker_time_ns
             .fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        result
+        (result, generation)
     }
 
     /// Checks to see if the worker exists in the worker pool. Should only be used in unit tests.

@@ -295,7 +295,7 @@ each one decides where you have to point the collector:
 | Cache | `nativelink_cache_*` | Any process with a store wrapped in `cache_metrics` | Hit rate, operation latency, bytes in and out, per cache type |
 | Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
 | Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
-| Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes and whether it succeeded |
+| Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes, whether it succeeded, and how many waiting actions took room that opened mid-pass ahead of newer ones |
 | gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
 | Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
 | Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |

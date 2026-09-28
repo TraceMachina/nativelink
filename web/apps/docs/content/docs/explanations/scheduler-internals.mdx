@@ -167,6 +167,17 @@ a worker, which is what `worker_timeout_s` should be judged against, and
 Within a priority the queue is ordered by insert time to the nanosecond, on
 both backends, so a burst submitted together dispatches in arrival order.
 
+The pass keeps that order when a worker frees up while it is running. A pass
+reads the queue one action at a time, about a millisecond each on a
+store-backed queue, so on a long queue a worker that finishes mid-pass would
+otherwise hand its room to whatever action the pass happened to be reading,
+newer than everything it had already passed over. Instead, actions that found
+no room are parked, oldest first within each property shape, and when the
+fleet's capacity changes the pass offers the room to the parked actions before
+the one in hand. `scheduler.matching.parked_dispatched` counts how often that
+happened; a non-zero rate is normal on a busy fleet and means the head of the
+queue is being served.
+
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
 Every property key a worker advertises has a declared type:
