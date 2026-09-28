@@ -76,6 +76,22 @@ pub enum WorkerAllocationStrategy {
     LeastRecentlyUsed,
     /// Prefer workers that have been most recently used to run a job.
     MostRecentlyUsed,
+    /// Prefer the worker running the fewest actions, least recently used
+    /// among equals. A worker that just joined has nothing running, so it
+    /// takes the next action instead of waiting for every older worker to
+    /// be used once more, and a burst spreads across the fleet instead of
+    /// filling one worker to its concurrency cap.
+    LeastLoaded,
+    /// Prefer the worker the action fits most tightly: among the workers
+    /// that can take it, the one whose remaining `minimum` properties
+    /// (memory, CPU) would be smallest afterwards, as a share of what it
+    /// advertises. Big actions are kept for the workers with big room and
+    /// small ones fill the gaps, so a fleet of mixed sizes wastes the
+    /// least. A `priority` property on the action that a worker carries
+    /// with the same value prefers that worker before the fit is judged,
+    /// which is what such a property is for (a zone, a cache locality).
+    /// Ties go to the fewest running actions, then least recently used.
+    BestFit,
 }
 
 // defaults to every 10s
