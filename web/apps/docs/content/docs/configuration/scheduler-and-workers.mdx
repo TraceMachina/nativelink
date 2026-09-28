@@ -175,6 +175,12 @@ On the worker side, **`max_inflight_tasks`** (default 0, meaning unlimited) is
 the one to set on any real machine. Unlimited means the worker accepts every
 action the scheduler offers and lets the OS sort out the contention.
 
+**`drain_on_shutdown`** (off by default) makes a worker announce that it is
+draining the moment it gets `SIGTERM`, so the scheduler stops dispatching to
+it while it finishes what it holds. It needs a scheduler that understands the
+drain flag; an older one removes the worker on the spot and requeues its
+actions.
+
 <Callout type="info" title="Scheduler state is in memory by default">
   `experimental_backend` defaults to memory, so restarting the scheduler loses
   the queue. A Redis backend exists for shared state across scheduler

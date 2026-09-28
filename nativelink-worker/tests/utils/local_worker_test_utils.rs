@@ -76,6 +76,7 @@ pub(crate) struct MockWorkerApiClient {
     tx_resp: mpsc::UnboundedSender<WorkerClientApiReturns>,
     keep_alives_count: u8,
     pub going_away_count: Arc<AtomicU64>,
+    pub going_away_drain: Arc<std::sync::atomic::AtomicBool>,
     pub execution_complete_count: Arc<AtomicU64>,
 }
 
@@ -90,6 +91,7 @@ impl MockWorkerApiClient {
             tx_resp,
             keep_alives_count: 0,
             going_away_count: Arc::new(AtomicU64::new(0)),
+            going_away_drain: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             execution_complete_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -176,8 +178,10 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         }
     }
 
-    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
+    async fn going_away(&mut self, request: GoingAwayRequest) -> Result<(), Error> {
         self.going_away_count.fetch_add(1, Ordering::Relaxed);
+        self.going_away_drain
+            .store(request.drain, Ordering::Relaxed);
         Ok(())
     }
 

@@ -15,13 +15,14 @@
 use core::hash::BuildHasher;
 use core::pin::Pin;
 use core::str;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -84,8 +85,23 @@ impl Drop for ActionsInTransitGuard {
 }
 
 /// If we lose connection to the worker api server we will wait this many seconds
-/// before trying to connect.
+/// before trying to connect, doubling on every failed attempt up to
+/// `CONNECTION_RETRY_MAX_DELAY_S`, with jitter so a fleet that lost its
+/// scheduler together does not redial together.
 const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
+const CONNECTION_RETRY_MAX_DELAY_S: f32 = 30.0;
+
+/// Delay before the `attempt`th consecutive reconnect (0 = first retry),
+/// between half and one and a half times the exponential figure.
+fn reconnect_delay(attempt: u32) -> Duration {
+    let exponent = i32::try_from(attempt.min(16)).unwrap_or(16);
+    let base = (CONNECTION_RETRY_DELAY_S * 2f32.powi(exponent)).min(CONNECTION_RETRY_MAX_DELAY_S);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let jitter = 0.5 + (nanos % 1_000) as f32 / 1_000.0;
+    Duration::from_secs_f32(base * jitter)
+}
 
 /// Default endpoint timeout. If this value gets modified the documentation in
 /// `cas_server.rs` must also be updated.
@@ -279,7 +295,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 if let Err(err) = self
                     .grpc_client
                     .clone()
-                    .going_away(GoingAwayRequest {})
+                    .going_away(GoingAwayRequest { drain: false })
                     .await
                 {
                     warn!(?err, "Could not unregister completed single-use worker");
@@ -549,16 +565,42 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         Error::from_std_err(Code::Internal, &e).append("Failed to receive shutdown message"))?;
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
+                    let drain_on_shutdown = self.config.drain_on_shutdown;
+                    let drain_deadline = if self.config.max_action_timeout_s == 0 {
+                        DEFAULT_MAX_ACTION_TIMEOUT
+                    } else {
+                        Duration::from_secs(self.config.max_action_timeout_s as u64)
+                    };
                     let shutdown_future = async move {
-                        // Wait for in-flight operations to be fully completed.
-                        while actions_in_flight.load(Ordering::Acquire) > 0 {
-                            actions_notify.notified().await;
+                        if drain_on_shutdown {
+                            // Say so first, so nothing new is dispatched here
+                            // while the running actions finish; the scheduler
+                            // removes this worker when the stream closes.
+                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: true }).await {
+                                error!("Failed to send GoingAwayRequest: {e}",);
+                                return Err(e);
+                            }
                         }
-                        // Sending this message immediately evicts all jobs from
-                        // this worker, of which there should be none.
-                        if let Err(e) = grpc_client.going_away(GoingAwayRequest {}).await {
-                            error!("Failed to send GoingAwayRequest: {e}",);
-                            return Err(e);
+                        // Wait for in-flight operations to be fully completed,
+                        // for as long as one action is allowed to run.
+                        let wait = async {
+                            while actions_in_flight.load(Ordering::Acquire) > 0 {
+                                actions_notify.notified().await;
+                            }
+                        };
+                        if time::timeout(drain_deadline, wait).await.is_err() {
+                            error!(
+                                actions_in_flight = actions_in_flight.load(Ordering::Acquire),
+                                "Drain deadline passed with actions still in flight; shutting down anyway"
+                            );
+                        }
+                        if !drain_on_shutdown {
+                            // Sending this message immediately evicts all jobs from
+                            // this worker, of which there should be none.
+                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: false }).await {
+                                error!("Failed to send GoingAwayRequest: {e}",);
+                                return Err(e);
+                            }
                         }
                         // Allow shutdown to occur now.
                         drop(shutdown_guard);
@@ -914,9 +956,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             .take()
             .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
+        let attempts = AtomicU32::new(0);
+        let attempts_ref = &attempts;
         let error_handler = Box::pin(move |err| async move {
-            error!(?err, "Error");
-            (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
+            let attempt = attempts_ref.fetch_add(1, Ordering::AcqRel);
+            let delay = reconnect_delay(attempt);
+            error!(?err, attempt, delay_ms = delay.as_millis(), "Error");
+            (sleep_fn_pin)(delay).await;
         });
 
         loop {
@@ -952,6 +998,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                 worker_id = %inner.worker_id,
                 "Worker registered with scheduler"
             );
+            attempts.store(0, Ordering::Release);
 
             // Now listen for connections and run all other services.
             if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {

@@ -32,7 +32,16 @@ pub struct KeepAliveRequest {
 }
 /// / Request object for going away requests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct GoingAwayRequest {}
+pub struct GoingAwayRequest {
+    /// / The worker is shutting down but still running actions: stop
+    /// / dispatching to it and let those finish. It leaves the pool when its
+    /// / stream closes. Without this the scheduler removes the worker at
+    /// / once and requeues everything it holds.
+    ///
+    /// NextId: 3.
+    #[prost(bool, tag = "2")]
+    pub drain: bool,
+}
 /// / Represents the initial request sent to the scheduler informing the
 /// / scheduler about this worker's capabilities and metadata.
 #[derive(Clone, PartialEq, ::prost::Message)]
