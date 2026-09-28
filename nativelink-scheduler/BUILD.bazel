@@ -10,6 +10,7 @@ load(
 rust_library(
     name = "nativelink-scheduler",
     srcs = [
+        "src/admin.rs",
         "src/api_worker_scheduler.rs",
         "src/awaited_action_db/awaited_action.rs",
         "src/awaited_action_db/mod.rs",
@@ -70,6 +71,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/action_messages_test.rs",
+        "tests/admin_test.rs",
         "tests/backpressure_test.rs",
         "tests/cache_lookup_scheduler_test.rs",
         "tests/execution_active_count_test.rs",

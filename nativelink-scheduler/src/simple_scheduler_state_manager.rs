@@ -16,6 +16,7 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
@@ -59,7 +60,7 @@ const MAX_RETRY_JITTER_MS: u64 = 20;
 /// lost a version conflict: exponential in the attempt, plus jitter.
 fn version_conflict_backoff(retry_count: usize) -> Duration {
     let base_delay = BASE_RETRY_DELAY_MS * (1 << retry_count.saturating_sub(2).min(4));
-    let jitter = std::time::SystemTime::now()
+    let jitter = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| {
             u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS
@@ -210,6 +211,10 @@ where
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         self.inner.as_action_info().await
     }
+
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        self.inner.client_last_seen().await
+    }
 }
 
 struct MatchingEngineActionStateResult<U, T, I, NowFn>
@@ -264,6 +269,15 @@ where
             awaited_action.state().clone(),
             awaited_action.maybe_origin_metadata().cloned(),
         ))
+    }
+
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        let awaited_action = self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::client_last_seen")?;
+        Ok(Some(awaited_action.last_client_keepalive_timestamp()))
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {

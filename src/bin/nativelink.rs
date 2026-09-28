@@ -191,6 +191,16 @@ macro_rules! service_setup {
     }};
 }
 
+/// A JSON body with its content type, for the admin API's listings.
+const fn json_response(
+    body: String,
+) -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+}
+
 async fn inner_main(
     cfg: CasConfig,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
@@ -424,9 +434,51 @@ async fn inner_main(
                 &admin_config.path
             };
             let worker_schedulers = Arc::new(worker_schedulers.clone());
+            let listing_worker_schedulers = worker_schedulers.clone();
+            let listing_action_schedulers = Arc::new(action_schedulers.clone());
+            // Read-only views for the provisioner and operators: what the
+            // scheduler has connected and what it has queued, with the
+            // reservations the queued actions carry.
+            let admin_router = Router::new()
+                .route(
+                    "/scheduler/{instance_name}/workers",
+                    axum::routing::get(move |params: axum::extract::Path<String>| async move {
+                        let instance_name = params.0;
+                        let Some(scheduler) = listing_worker_schedulers.get(&instance_name) else {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                format!("No scheduler named '{instance_name}'"),
+                            ));
+                        };
+                        let workers = scheduler.worker_snapshot().await;
+                        nativelink_scheduler::admin::workers_json(&workers)
+                            .map(json_response)
+                            .map_err(|e| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:?}"))
+                            })
+                    }),
+                )
+                .route(
+                    "/scheduler/{instance_name}/demand",
+                    axum::routing::get(move |params: axum::extract::Path<String>| async move {
+                        let instance_name = params.0;
+                        let Some(scheduler) = listing_action_schedulers.get(&instance_name) else {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                format!("No scheduler named '{instance_name}'"),
+                            ));
+                        };
+                        nativelink_scheduler::admin::queued_demand_json(scheduler.as_ref())
+                            .await
+                            .map(json_response)
+                            .map_err(|e| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:?}"))
+                            })
+                    }),
+                );
             svc = svc.nest_service(
                 path,
-                Router::new().route(
+                admin_router.route(
                     "/scheduler/{instance_name}/set_drain_worker/{worker_id}/{is_draining}",
                     axum::routing::post(
                         move |params: axum::extract::Path<(String, String, String)>| async move {
