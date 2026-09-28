@@ -138,7 +138,7 @@ async fn backpressure_pauses_an_idle_worker_until_its_next_keepalive() -> Result
     );
 
     scheduler
-        .worker_keep_alive_received(&worker_id, NOW_TIME + 3)
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 3, None)
         .await?;
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;

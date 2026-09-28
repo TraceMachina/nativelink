@@ -64,12 +64,22 @@ pub const WORKER_STATE: &str = "worker.state";
 pub const WORKER_DISCONNECT_REASON: &str = "worker.disconnect.reason";
 
 /// Why a worker left the pool.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerDisconnectReason {
-    /// The worker's connection ended.
+    /// The worker's connection ended without a drain.
     Disconnected,
-    /// The scheduler evicted it, usually after a timeout or an error.
-    Evicted,
+    /// The worker announced a drain and its connection ended after it.
+    Drained,
+    /// No message within `worker_timeout_s`.
+    Timeout,
+    /// A kill sent to the worker was never acknowledged.
+    KillUnacknowledged,
+    /// A command to the worker or an update from it failed.
+    Error,
+    /// Removed through the admin API.
+    Removed,
+    /// The scheduler is shutting down.
+    Shutdown,
 }
 
 impl WorkerDisconnectReason {
@@ -77,7 +87,12 @@ impl WorkerDisconnectReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Disconnected => "disconnected",
-            Self::Evicted => "evicted",
+            Self::Drained => "drained",
+            Self::Timeout => "timeout",
+            Self::KillUnacknowledged => "kill_unacknowledged",
+            Self::Error => "error",
+            Self::Removed => "removed",
+            Self::Shutdown => "shutdown",
         }
     }
 }
@@ -877,6 +892,17 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
             .with_unit("{keepalive}")
             .build(),
 
+        worker_keepalive_gap: meter
+            .f64_histogram("worker.keepalive.gap")
+            .with_description(
+                "Seconds since the previous message from the same worker, at each message",
+            )
+            .with_unit("s")
+            .with_boundaries(vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0, 30.0, 60.0,
+            ])
+            .build(),
+
         worker_state_count: meter
             .i64_up_down_counter("worker.state.count")
             .with_description("Number of connected workers in each non-default state")
@@ -904,6 +930,8 @@ pub struct WorkerMetrics {
     pub worker_disconnections: metrics::Counter<u64>,
     /// Keepalives received, cumulative.
     pub worker_keepalives: metrics::Counter<u64>,
+    /// Seconds between consecutive messages from a worker.
+    pub worker_keepalive_gap: metrics::Histogram<f64>,
     /// Connected workers currently paused or draining.
     pub worker_state_count: metrics::UpDownCounter<i64>,
 }
@@ -947,6 +975,18 @@ pub fn record_worker_state(state: &'static str, entered: bool) {
 /// Records a keepalive from a worker.
 pub fn record_worker_keepalive() {
     WORKER_METRICS.worker_keepalives.add(1, &[]);
+}
+
+/// Records the gap since the worker's previous message. The distribution
+/// is what the eviction margin is judged against.
+pub fn record_worker_keepalive_gap(seconds: u64) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "seconds; exact well past any real gap"
+    )]
+    WORKER_METRICS
+        .worker_keepalive_gap
+        .record(seconds as f64, &[]);
 }
 
 /// Global gRPC serving metrics.
