@@ -29,6 +29,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
+    record_awaited_action_orphan, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -455,10 +456,22 @@ where
         let mut retired = 0u64;
         while let Some(subscriber) = stream.next().await {
             let subscriber = subscriber.err_tip(|| "In sweep_abandoned_queued_actions")?;
-            let awaited_action = subscriber
-                .borrow()
-                .await
-                .err_tip(|| "In sweep_abandoned_queued_actions")?;
+            let awaited_action = match subscriber.borrow().await {
+                Ok(awaited_action) => awaited_action,
+                // The queue listed it, the record is gone: the store lost
+                // it, usually to eviction. One such entry must not stop the
+                // sweep from retiring everything behind it, which is how a
+                // pile of abandoned actions becomes permanent.
+                Err(err) if err.code == Code::NotFound => {
+                    warn!(
+                        ?err,
+                        "Queued operation listed but its record is gone; skipping"
+                    );
+                    record_awaited_action_orphan("sweep");
+                    continue;
+                }
+                Err(err) => return Err(err).err_tip(|| "In sweep_abandoned_queued_actions"),
+            };
 
             // Only queued actions belong to this sweep, and only once the
             // client has been gone longer than it is allowed to be.
@@ -506,6 +519,7 @@ where
                 "Retired queued operations that had no clients listening"
             );
         }
+        record_queue_retired(retired);
         Ok(retired)
     }
 
