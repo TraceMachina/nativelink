@@ -30,10 +30,11 @@ worker gets an action is decided separately, by the LRU-ordered
 <Callout type="warn" title="The heartbeat and the eviction timeout are two separate knobs">
   The worker's heartbeat period is derived as **half** its configured
   `worker_api_endpoint.timeout`, 2.5 seconds by default. Eviction is
-  governed by the *scheduler's* `worker_timeout_s`, 5 seconds by default.
-  Nothing reconciles them. Raise the scheduler's timeout without raising the
-  worker's, or vice versa, and you get workers evicted mid-heartbeat and
-  reconnecting in a loop.
+  governed by the *scheduler's* `worker_timeout_s`, 10 seconds by default
+  (four heartbeats). Any message from the worker refreshes the clock, not
+  only the heartbeat. Nothing reconciles the two knobs. Raise the worker's
+  timeout without raising the scheduler's and you get workers evicted
+  mid-heartbeat and reconnecting in a loop.
 </Callout>
 
 ## The filesystem, and the hardlink that everything depends on [#the-filesystem-and-the-hardlink-that-everything-depends-on]

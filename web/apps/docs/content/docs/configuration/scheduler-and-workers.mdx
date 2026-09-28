@@ -150,9 +150,10 @@ is a service address. The config shape does not change.
 `SimpleSpec` has ten optional fields. Most can stay at their defaults
 forever. These four are the ones worth setting deliberately:
 
-**`worker_timeout_s`** (default 5 s): how long a silent worker stays in the
-pool. Five seconds is aggressive for a fleet on a congested network; a worker
-evicted mid-action has its action re-queued.
+**`worker_timeout_s`** (default 10 s): how long a silent worker stays in the
+pool. Any message from the worker counts, not only the heartbeat. Keep it at
+least twice the worker's `worker_api_endpoint.timeout`; a worker evicted
+mid-action has every action it held re-queued, each with an attempt spent.
 
 **`max_action_executing_timeout_s`** (default 0, disabled): caps how long an
 action can sit in `Executing` with no update, even from a worker that is

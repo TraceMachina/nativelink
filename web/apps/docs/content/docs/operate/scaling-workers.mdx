@@ -360,11 +360,13 @@ a single connection the ceiling.
 
 <Accordion title="Workers keep being marked dead and their actions requeued" id="workers-keep-being-marked-dead-and-their-actions-requeued">
 
-`worker_timeout_s` defaults to **5 seconds**, checked once a second. That is a
+`worker_timeout_s` defaults to **10 seconds**, checked once a second. That is a
 short leash and it is deliberate (fast detection means fast requeue), but a
-worker whose host is briefly starved, or whose network hiccups, will be evicted.
-If you see churn without actual failures, raise it. The cost of raising it is a
-longer stall before a genuinely dead worker's actions are retried.
+worker whose host is starved for longer than that, or whose network hiccups,
+will be evicted. If you see churn without actual failures, raise it. The cost
+of raising it is a longer stall before a genuinely dead worker's actions are
+retried. Releases up to 1.7.2 defaulted to 5 seconds and only counted
+heartbeats, so a worker busy reporting results could still be evicted.
 
 </Accordion>
 

@@ -338,7 +338,7 @@ Check `worker_api_endpoint.timeout` on the worker against `worker_timeout_s`
 on the scheduler, and any proxy or load balancer between the two. The worker
 sends a `KeepAlive` RPC every `timeout / 2` (default timeout 5 seconds), and
 the scheduler evicts a worker it has not heard from within `worker_timeout_s`
-(default 5 seconds), so a hop that delays or drops those RPCs looks like a
+(default 10 seconds), so a hop that delays or drops those RPCs looks like a
 flapping worker. HTTP/2 keepalive pings on this listener come from
 `advanced_http.http2_keep_alive_interval` on the scheduler's worker API
 `servers` entry. The worker API is a long-lived streaming connection, not a
