@@ -52,6 +52,49 @@ use tracing::{debug, error, info, trace, warn};
 /// at once while checking which running operations were revoked.
 const MAX_CONCURRENT_REVOKED_CHECKS: usize = 32;
 
+/// How many of the action's `priority` properties the worker carries with
+/// the same value. A priority property never restricts placement; it says
+/// where the action would rather be.
+fn priority_matches(action: &PlatformProperties, worker: &Worker) -> usize {
+    action
+        .properties
+        .iter()
+        .filter(|(name, value)| {
+            matches!(value, PlatformPropertyValue::Priority(_))
+                && worker.platform_properties.properties.get(*name) == Some(*value)
+        })
+        .count()
+}
+
+/// How much of the worker's advertised capacity would be left after this
+/// action, summed over the action's `minimum` properties, in thousandths.
+/// Lower is a tighter fit. An action with no numbers fits every worker
+/// equally, and a dimension the worker does not advertise is ignored.
+fn fit_leftover_permille(action: &PlatformProperties, worker: &Worker) -> u64 {
+    let mut leftover = 0u64;
+    for (name, value) in &action.properties {
+        let PlatformPropertyValue::Minimum(needed) = value else {
+            continue;
+        };
+        let (
+            Some(PlatformPropertyValue::Minimum(available)),
+            Some(PlatformPropertyValue::Minimum(total)),
+        ) = (
+            worker.platform_properties.properties.get(name),
+            worker.total_platform_properties.properties.get(name),
+        )
+        else {
+            continue;
+        };
+        if *total == 0 {
+            continue;
+        }
+        let remaining = available.saturating_sub(*needed);
+        leftover += remaining.saturating_mul(1000) / total;
+    }
+    leftover
+}
+
 /// How many property shapes `static_verdicts` holds before it is emptied.
 const MAX_STATIC_VERDICTS: usize = 4096;
 
@@ -607,6 +650,29 @@ impl ApiWorkerSchedulerImpl {
             WorkerAllocationStrategy::MostRecentlyUsed => workers_iter
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
                 .find(&worker_matches)
+                .map(|(_, w)| w.id.clone()),
+
+            // Fewest running actions wins; the scan runs from the least
+            // recently used end so `min_by_key` keeps that one on a tie.
+            WorkerAllocationStrategy::LeastLoaded => workers_iter
+                .rev()
+                .filter(|(worker_id, _)| candidates.contains(worker_id))
+                .filter(&worker_matches)
+                .min_by_key(|(_, w)| w.running_action_infos.len())
+                .map(|(_, w)| w.id.clone()),
+
+            WorkerAllocationStrategy::BestFit => workers_iter
+                .rev()
+                .filter(|(worker_id, _)| candidates.contains(worker_id))
+                .filter(&worker_matches)
+                .min_by_key(|(_, w)| {
+                    (
+                        // More matching priority properties first.
+                        usize::MAX - priority_matches(platform_properties, w),
+                        fit_leftover_permille(platform_properties, w),
+                        w.running_action_infos.len(),
+                    )
+                })
                 .map(|(_, w)| w.id.clone()),
         }
     }
