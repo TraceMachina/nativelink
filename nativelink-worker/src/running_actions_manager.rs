@@ -40,7 +40,7 @@ use futures::future::{
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
-    EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
+    Buck2FileCaptureConfig, EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -82,6 +82,7 @@ use tonic::Request;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+use crate::buck2_file_capture::Buck2FileCapture;
 use crate::persistent_worker::{
     Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
 };
@@ -1482,6 +1483,17 @@ async fn do_cleanup(
         return Ok(());
     };
 
+    let capture = running_actions_manager
+        .buck2_captures
+        .lock()
+        .remove(operation_id);
+    if let Some(capture) = capture
+        && let Err(err) = capture.finish().await
+    {
+        // Capture completeness is independent of the execution result.
+        warn!(%operation_id, ?err, "Buck2 archive finalization was partial");
+    }
+
     // Debug-only hack to not cleanup workers when we need to debug something
     if !env::var("NATIVELINK_DONT_CLEANUP")
         .unwrap_or_default()
@@ -2862,6 +2874,8 @@ impl Debug for Callbacks {
 /// container.
 #[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
+    /// Buck2-only helper, configured for a dedicated execution container.
+    pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
     /// `ActionInfo` with all of the arguments in the `ActionInfo` passed as
     /// arguments to this command.
@@ -3199,6 +3213,7 @@ pub struct RunningActionsManagerImpl {
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
     persistent_worker_pool: PersistentWorkerPool,
+    buck2_captures: Mutex<HashMap<OperationId, Buck2FileCapture>>,
 }
 
 impl RunningActionsManagerImpl {
@@ -3245,6 +3260,7 @@ impl RunningActionsManagerImpl {
             directory_cache: args.directory_cache,
             active_input_leases: args.active_input_leases,
             persistent_worker_pool: PersistentWorkerPool::default(),
+            buck2_captures: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
         })
@@ -3480,6 +3496,11 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         self.metrics
             .create_and_add_action
             .wrap(async move {
+                let capture_metadata = start_execute.request_metadata.clone();
+                let capture_worker = worker_id.clone();
+                let capture_digest = start_execute.execute_request.as_ref()
+                    .and_then(|request| request.action_digest.as_ref())
+                    .map(|digest| digest.hash.clone()).unwrap_or_default();
                 let queued_timestamp = start_execute
                     .queued_timestamp
                     .and_then(|time| time.try_into().ok())
@@ -3538,10 +3559,31 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                                 operation_id
                             ));
                     }
-                    running_actions.insert(operation_id, Arc::downgrade(&running_action));
+                    running_actions.insert(operation_id.clone(), Arc::downgrade(&running_action));
                     running_action
                         .has_manager_entry
                         .store(true, Ordering::Release);
+                }
+                if let Some(config) = &self.execution_configuration.buck2_file_capture
+                    && Buck2FileCapture::eligible(capture_metadata.as_ref()) {
+                    // The directory exists already. A cancelled registration must
+                    // take the same Drop cleanup path as a prepared action.
+                    running_action.did_cleanup.store(false, Ordering::Release);
+                    match Buck2FileCapture::start(
+                        config,
+                        capture_metadata.as_ref(),
+                        &capture_worker,
+                        &operation_id.to_string(),
+                        &capture_digest,
+                    ).await {
+                        Ok(Some(capture)) => {
+                            self.buck2_captures.lock().insert(operation_id, capture);
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            warn!(%operation_id, ?err, "Buck2 container file capture could not start");
+                        }
+                    }
                 }
                 Ok(running_action)
             })

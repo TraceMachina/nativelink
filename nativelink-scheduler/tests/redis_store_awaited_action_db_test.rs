@@ -107,6 +107,7 @@ fn make_awaited_action(operation_id: &str) -> AwaitedAction {
             load_timestamp: SystemTime::UNIX_EPOCH,
             insert_timestamp: SystemTime::UNIX_EPOCH,
             unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+                execution_scope: None,
                 instance_name: INSTANCE_NAME.to_string(),
                 digest_function: DigestHasherFunc::Sha256,
                 digest: DigestInfo::zero_digest(),
@@ -114,6 +115,39 @@ fn make_awaited_action(operation_id: &str) -> AwaitedAction {
         }),
         MockSystemTime::now().into(),
     )
+}
+
+#[nativelink_test]
+async fn overlapping_invocations_use_separate_workers() -> Result<(), Error> {
+    let backend: FakeRedisBackend<RedisSubscriptionManager> = FakeRedisBackend::new();
+    let port = backend.clone().run().await;
+    let store = RedisStore::new_standard(RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{port}")],
+        experimental_pub_sub_channel: Some("invocation-isolation".to_string()),
+        ..Default::default()
+    })
+    .await?;
+    backend.set_subscription_manager(store.subscription_manager().await.unwrap());
+    let notify = Arc::new(Notify::new());
+    let db = StoreAwaitedActionDb::new(
+        store,
+        notify.clone(),
+        MockInstantWrapped::default,
+        OperationId::default,
+        60,
+        60,
+        false,
+    )
+    .await?;
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        db,
+        || async {},
+        notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    utils::scheduler_utils::verify_overlapping_invocations(&scheduler).await
 }
 
 // TODO: This test needs to be rewritten to use workers (like `test_multiple_clients_subscribe_to_same_action`).
@@ -237,6 +271,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::zero_digest(),
@@ -322,6 +357,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(DigestInfo::zero_digest().into()),
@@ -538,6 +574,7 @@ async fn add_action_attaches_ttl_to_cid_mapping() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::zero_digest(),

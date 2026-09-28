@@ -15,7 +15,9 @@
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ActionResourceUsage;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ActionResourceUsage, WorkerLoad,
+};
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::UpdateOperationType;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -51,15 +53,22 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         Ok(())
     }
 
-    /// Event for when the keep alive message was received from the worker.
+    /// Event for when the keep alive message was received from the worker,
+    /// with what the worker reported having to spare, if it did.
     async fn worker_keep_alive_received(
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
     ) -> Result<(), Error>;
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error>;
+
+    /// The worker's stream ended without a `GoingAway`: it crashed, was
+    /// OOM-killed or lost its connection. Its actions requeue as a
+    /// disconnect, so the retry cap names the worker rather than the job.
+    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error>;
 
     /// Evict all workers from the scheduler, setting their actions back to queued.
     async fn shutdown(&self, shutdown_guard: ShutdownGuard);

@@ -13,14 +13,15 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker, update_for_worker,
+    ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad,
+    update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
@@ -87,15 +88,16 @@ pub struct Worker {
     #[metric(group = "platform_properties")]
     pub platform_properties: PlatformProperties,
 
+    /// The properties the worker registered with. `platform_properties` is
+    /// reduced while actions run; this is what the worker offers when idle.
+    pub total_platform_properties: PlatformProperties,
+
     /// Channel to send commands from scheduler to worker.
     pub tx: UnboundedSender<UpdateForWorker>,
 
     /// The action info of the running actions on the worker.
     #[metric(group = "running_action_infos")]
     pub running_action_infos: HashMap<OperationId, PendingActionInfoData>,
-
-    /// If the properties were restored already then it's added to this set.
-    pub restored_platform_properties: HashSet<OperationId>,
 
     /// Timestamp of last time this worker had been communicated with.
     // Warning: Do not update this timestamp without updating the placement of the worker in
@@ -114,6 +116,10 @@ pub struct Worker {
     /// Maximum inflight tasks for this worker (or 0 for unlimited)
     #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
     pub max_inflight_tasks: u64,
+
+    /// What the worker last reported having to spare, from its keepalive;
+    /// `None` until it reports, and for workers that never do.
+    pub last_load: Option<WorkerLoad>,
 
     /// Stats about the worker.
     #[metric]
@@ -158,14 +164,15 @@ impl Worker {
     ) -> Self {
         Self {
             id,
+            total_platform_properties: platform_properties.clone(),
             platform_properties,
             tx,
             running_action_infos: HashMap::new(),
-            restored_platform_properties: HashSet::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
             is_draining: false,
             max_inflight_tasks,
+            last_load: None,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -264,6 +271,7 @@ impl Worker {
                     queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
                     platform: Some((&action_info.platform_properties).into()),
                     worker_id,
+                    request_metadata: action_info.origin_metadata.bazel_metadata.clone(),
                 };
                 reduce_platform_properties(
                     worker_platform_properties,
@@ -282,18 +290,12 @@ impl Worker {
             .await
     }
 
-    pub(crate) fn execution_complete(&mut self, operation_id: &OperationId) {
-        if let Some((operation_id, pending_action_info)) =
-            self.running_action_infos.remove_entry(operation_id)
-        {
-            self.restored_platform_properties
-                .insert(operation_id.clone());
-            self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
-            self.running_action_infos
-                .insert(operation_id, pending_action_info);
-        }
-    }
-
+    /// Releases everything the action reserved. This is the only place the
+    /// `Minimum` budget comes back: the worker's `ExecuteComplete` used to
+    /// restore it when the process exited, but the action is still resident
+    /// through output upload, which is where its memory peaks (output buffers,
+    /// the upload fan-out), so handing the budget back then admitted new work
+    /// onto a worker at its fullest.
     pub(crate) fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
         let pending_action_info = self.running_action_infos.remove(operation_id).err_tip(|| {
             format!(
@@ -301,9 +303,7 @@ impl Worker {
                 self.id, operation_id
             )
         })?;
-        if !self.restored_platform_properties.remove(operation_id) {
-            self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
-        }
+        self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
         self.is_paused = false;
         self.metrics.actions_completed.inc();
         Ok(())

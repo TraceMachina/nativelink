@@ -225,6 +225,13 @@ async fn inner_main(
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
+    let (single_use_complete_tx, single_use_complete_rx) = tokio::sync::oneshot::channel();
+    let mut single_use_complete_tx = Some(single_use_complete_tx);
+    let single_use_enabled = cfg.workers.as_ref().is_some_and(|workers| {
+        workers.iter().any(|worker| match worker {
+            WorkerConfig::Local(worker) => worker.single_use,
+        })
+    });
 
     let maybe_origin_event_tx = cfg
         .experimental_origin_events
@@ -691,6 +698,11 @@ async fn inner_main(
         for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
             let spawn_fut = match worker_cfg {
                 WorkerConfig::Local(local_worker_cfg) => {
+                    let completion_tx = if local_worker_cfg.single_use {
+                        single_use_complete_tx.take()
+                    } else {
+                        None
+                    };
                     let fast_slow_store = store_manager
                         .get_store(&local_worker_cfg.cas_fast_slow_store)
                         .err_tip(|| {
@@ -748,7 +760,17 @@ async fn inner_main(
                     let shutdown_rx = shutdown_tx.subscribe();
                     let fut = trace_span!("worker_ctx", worker_name = %name)
                         .in_scope(|| local_worker.run(shutdown_rx));
-                    spawn!("worker", fut, ?name)
+                    spawn!(
+                        "worker",
+                        async move {
+                            fut.await?;
+                            if let Some(completion_tx) = completion_tx {
+                                let _ = completion_tx.send(());
+                            }
+                            Ok::<(), Error>(())
+                        },
+                        ?name
+                    )
                 }
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
@@ -767,7 +789,13 @@ async fn inner_main(
         Ok(())
     }));
 
-    if let Err(e) = try_join_all(root_futures).await {
+    let result = select! {
+        result = try_join_all(root_futures) => result.map(|_| ()),
+        result = single_use_complete_rx, if single_use_enabled => {
+            result.map_err(|err| make_err!(Code::Internal, "Single-use worker completion channel closed: {err}"))
+        },
+    };
+    if let Err(e) = result {
         panic!("{e:?}");
     }
 
@@ -838,33 +866,33 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[cfg(target_family = "unix")]
     let mut shutdown_guard = ShutdownGuard::default();
 
-    #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
-    runtime.spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen to SIGINT");
-        eprintln!("User terminated process via SIGINT");
-        std::process::exit(130);
-    });
-
     #[allow(unused_variables)]
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
 
+    // SIGINT takes the SIGTERM path: a worker stopped from a terminal
+    // drains like one stopped by its supervisor. A second SIGINT during
+    // the drain exits at once, for the operator who meant it.
     #[cfg(target_family = "unix")]
     #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
     runtime.spawn(async move {
-        signal(SignalKind::terminate())
-            .expect("Failed to listen to SIGTERM")
-            .recv()
-            .await;
-        warn!("Process terminated via SIGTERM");
+        let mut sigterm = signal(SignalKind::terminate()).expect("Failed to listen to SIGTERM");
+        let mut sigint = signal(SignalKind::interrupt()).expect("Failed to listen to SIGINT");
+        let exit_code = tokio::select! {
+            _ = sigterm.recv() => { warn!("Process terminated via SIGTERM"); 143 }
+            _ = sigint.recv() => { warn!("Process terminated via SIGINT, draining; send it again to exit at once"); 130 }
+        };
+        tokio::spawn(async move {
+            sigint.recv().await;
+            eprintln!("User terminated process via second SIGINT");
+            std::process::exit(130);
+        });
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         scheduler_shutdown_rx
             .await
             .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
         warn!("Successfully shut down nativelink.");
-        std::process::exit(143);
+        std::process::exit(exit_code);
     });
 
     #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]

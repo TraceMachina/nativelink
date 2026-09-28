@@ -53,6 +53,7 @@ wrong.
 | [`worker.connections`](#worker-connections) | `nativelink_worker_connections` (unreferenced) | Counter | Conditionally | scheduler process only |
 | [`worker.disconnections`](#worker-disconnections) | `nativelink_worker_disconnections` (unreferenced) | Counter | Conditionally | scheduler process only |
 | [`worker.keepalives`](#worker-keepalives) | `nativelink_worker_keepalives` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`worker.keepalive.gap`](#worker-keepalive-gap) | `nativelink_worker_keepalive_gap` (unreferenced) | Histogram | Conditionally | scheduler process only |
 | [`worker.state.count`](#worker-state-count) | `nativelink_worker_state_count` (unreferenced) | UpDownCounter | Conditionally | scheduler process only |
 | [`rpc.server.duration`](#rpc-server-duration) | `nativelink_rpc_server_duration` (unreferenced) | Histogram | Yes | whenever the code path runs |
 | [`scheduler.matching.duration`](#scheduler-matching-duration) | `nativelink_scheduler_matching_duration` (unreferenced) | Histogram | Conditionally | scheduler process only |
@@ -451,6 +452,23 @@ Keepalives received, cumulative.
 | Emitted | Conditionally. scheduler process only |
 | Declared at | [`nativelink-util/src/metrics.rs:839`](https://github.com/TraceMachina/nativelink/blob/v1.6.5/nativelink-util/src/metrics.rs#L839) |
 | Emitted from | [`nativelink-scheduler/src/api_worker_scheduler.rs:187`](https://github.com/TraceMachina/nativelink/blob/v1.6.5/nativelink-scheduler/src/api_worker_scheduler.rs#L187) |
+
+### `worker.keepalive.gap`
+
+Seconds since the previous message from the same worker, recorded at each
+message. The distribution `worker_timeout_s` should be judged against: a
+timeout below the tail of this histogram evicts live workers.
+
+| Property | Value |
+| --- | --- |
+| Instrument type | `Histogram<f64>` |
+| Field | `worker_keepalive_gap` |
+| Unit | `s` |
+| Buckets | 1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 30, 60 |
+| Prometheus series | `nativelink_worker_keepalive_gap` (not referenced by any shipped rule or dashboard) |
+| Emitted | Conditionally. scheduler process only |
+| Declared at | `nativelink-util/src/metrics.rs`, `WorkerMetrics::worker_keepalive_gap` |
+| Emitted from | `nativelink-scheduler/src/api_worker_scheduler.rs`, `refresh_lifetime` |
 
 ### `worker.state.count`
 

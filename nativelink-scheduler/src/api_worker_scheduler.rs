@@ -15,8 +15,9 @@
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_lock::Mutex;
 use futures::{StreamExt, future};
@@ -30,16 +31,18 @@ use nativelink_metric::{
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, ResponseEvent, event, response_event,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ActionResourceUsage;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ActionResourceUsage, WorkerLoad,
+};
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_execution_cpu_time, record_execution_peak_memory,
     record_worker_connected, record_worker_disconnected, record_worker_keepalive,
-    record_worker_state,
+    record_worker_keepalive_gap, record_worker_state,
 };
 use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
 use nativelink_util::origin_event::get_node_id;
-use nativelink_util::platform_properties::PlatformProperties;
+use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
@@ -48,6 +51,10 @@ use tracing::{debug, error, info, trace, warn};
 /// How many state-manager lookups `kill_revoked_operations` has in flight
 /// at once while checking which running operations were revoked.
 const MAX_CONCURRENT_REVOKED_CHECKS: usize = 32;
+
+/// How many property shapes `static_verdicts` holds before it is emptied.
+const MAX_STATIC_VERDICTS: usize = 4096;
+
 use uuid::Uuid;
 
 /// Metrics for tracking scheduler performance.
@@ -75,6 +82,9 @@ pub struct SchedulerMetrics {
     pub worker_timeouts: AtomicU64,
 }
 
+use crate::match_outcome::{
+    MatchOutcome, PropertyShape, UnsatisfiableReason, explain_unsatisfiable,
+};
 use crate::platform_property_manager::PlatformPropertyManager;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_capability_index::WorkerCapabilityIndex;
@@ -127,6 +137,9 @@ struct ApiWorkerSchedulerImpl {
     worker_state_manager: Arc<dyn WorkerStateManager>,
     /// The allocation strategy for workers.
     allocation_strategy: WorkerAllocationStrategy,
+    /// The `minimum` property compared against each worker's reported free
+    /// memory before placement; unset means no veto.
+    live_memory_veto: Option<String>,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
     /// Worker registry for tracking worker liveness.
@@ -139,6 +152,96 @@ struct ApiWorkerSchedulerImpl {
     /// Used to accelerate `find_worker_for_action` by filtering candidates
     /// based on properties before doing linear scan.
     capability_index: WorkerCapabilityIndex,
+
+    /// Incremented when the set of distinct worker shapes changes, here or
+    /// on a peer. A worker joining or leaving with a shape the fleet already
+    /// has does not count: the unsatisfiable tracker keys its clock on this,
+    /// and a pool that scales up and down with identical workers used to
+    /// reset that clock every time, so an action no shape could ever run
+    /// waited forever behind a fleet that never stopped moving.
+    fleet_generation: u64,
+    /// The distinct shapes behind `fleet_generation`, local and peer.
+    fleet_shape_set: BTreeSet<PropertyShape>,
+
+    /// What the workers connected to other schedulers on the same state
+    /// registered with, one entry per distinct shape, sorted by shape so
+    /// that an unchanged fleet compares equal. `None` until the peers have
+    /// been read, and whenever reading them fails: an action is then never
+    /// judged unsatisfiable, since a peer might have a worker for it.
+    peer_fleet: Option<Vec<PlatformProperties>>,
+
+    /// Whether this scheduler shares its state with peers. A non-shared db is
+    /// the whole fleet, so peer-absence is authoritative at once; a shared one
+    /// applies the census warm-up / staleness checks below before it trusts
+    /// peer-absence to fail an action.
+    shared: bool,
+
+    /// One peer-record TTL, used for both the census warm-up and staleness
+    /// bounds below.
+    record_ttl: Duration,
+
+    /// When the peer census last became known (a `None` -> `Some` exchange).
+    /// Peer-absence is only trusted to fail an action once it has been known
+    /// for `record_ttl`, so a peer publishing on its own cadence has had time
+    /// to appear. Cleared whenever the census goes unknown.
+    peer_fleet_known_since: Option<SystemTime>,
+
+    /// When the peer census was last refreshed by a successful exchange. If the
+    /// exchange task dies or stalls this stops advancing, and after `record_ttl`
+    /// the census is treated as stale and peer-absence is no longer trusted
+    /// (fail open). Cleared whenever the census goes unknown.
+    peer_fleet_last_refresh: Option<SystemTime>,
+
+    /// Woken when a worker joins or leaves this scheduler, so peers hear
+    /// about it without waiting for the next periodic exchange.
+    local_fleet_change_notify: Arc<Notify>,
+
+    /// Whether an action with a given property shape could run on some
+    /// connected worker when that worker is idle. `None` means it could. This
+    /// depends only on what workers registered with, so it holds until the
+    /// fleet changes, at which point the map is emptied.
+    static_verdicts: HashMap<PropertyShape, Option<Arc<UnsatisfiableReason>>>,
+}
+
+/// Whether peer-absence can be trusted to fail an action, given the census
+/// state and the current time. A free function so its edge cases (warm-up,
+/// staleness, clock skew, db kind) can be unit-tested without a scheduler.
+fn peer_census_trusted(
+    shared: bool,
+    peer_fleet_known: bool,
+    peer_fleet_known_since: Option<SystemTime>,
+    peer_fleet_last_refresh: Option<SystemTime>,
+    record_ttl: Duration,
+    now: SystemTime,
+) -> bool {
+    // Unknown (a shared db before its first exchange or after a failed one): a
+    // peer we cannot see might run the action. Checked before the non-shared
+    // short-circuit so a deliberately-unknown census is never trusted.
+    if !peer_fleet_known {
+        return false;
+    }
+    // A non-shared db is the whole fleet; peer-absence is authoritative at
+    // once, with no warm-up or staleness delay.
+    if !shared {
+        return true;
+    }
+    let (Some(known_since), Some(last_refresh)) = (peer_fleet_known_since, peer_fleet_last_refresh)
+    else {
+        return false;
+    };
+    // Warm: the census must have been known for a full record TTL, so a peer
+    // publishing on its own ~interval cadence has had time to appear. A clock
+    // going backwards (Err) is treated as not-yet-warm: don't fail.
+    let warm = now
+        .duration_since(known_since)
+        .is_ok_and(|elapsed| elapsed >= record_ttl);
+    // Fresh: a successful exchange within the last record TTL. If the exchange
+    // task died or stalled this goes stale and we stop trusting peer-absence
+    // (fail open). A future-dated refresh (clock skew) counts as fresh.
+    let fresh = now
+        .duration_since(last_refresh)
+        .map_or(true, |elapsed| elapsed <= record_ttl);
+    warm && fresh
 }
 
 impl core::fmt::Debug for ApiWorkerSchedulerImpl {
@@ -169,6 +272,7 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         let worker = self.workers.0.peek_mut(worker_id).ok_or_else(|| {
             make_input_err!(
@@ -182,7 +286,31 @@ impl ApiWorkerSchedulerImpl {
             worker.last_update_timestamp,
             timestamp
         );
+        record_worker_keepalive_gap(timestamp.saturating_sub(worker.last_update_timestamp));
         worker.last_update_timestamp = timestamp;
+        // A keepalive is the worker saying it is ready to be asked again,
+        // so a pause from backpressure lasts one keepalive interval. The
+        // matcher has to hear about it, or the requeued action waits for
+        // the next unrelated change.
+        if worker.is_paused {
+            worker.is_paused = false;
+            record_worker_state("paused", false);
+            self.worker_change_notify.notify_one();
+        }
+        // A message without a load (an older worker, or a refresh from an
+        // execute result) leaves the last report in place. A report with
+        // more room than the last one can make a vetoed action eligible
+        // again, so the matcher hears about it; less room never does.
+        if let Some(load) = load {
+            let more_room = worker
+                .last_load
+                .as_ref()
+                .is_none_or(|last| load.free_memory_kb > last.free_memory_kb);
+            worker.last_load = Some(load);
+            if more_room {
+                self.worker_change_notify.notify_one();
+            }
+        }
 
         trace!(
             ?worker_id,
@@ -206,6 +334,8 @@ impl ApiWorkerSchedulerImpl {
         // Add to capability index for fast matching
         self.capability_index
             .add_worker(&worker_id, &platform_properties);
+        self.fleet_changed();
+        self.local_fleet_change_notify.notify_one();
 
         // Worker is not cloneable, and we do not want to send the initial connection results until
         // we have added it to the map, or we might get some strange race conditions due to the way
@@ -241,10 +371,85 @@ impl ApiWorkerSchedulerImpl {
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
         // Remove from capability index
         self.capability_index.remove_worker(worker_id);
-
+        // Pop before recomputing the shapes, or the departing worker still
+        // counts and a cached verdict that only it satisfied survives it.
         let result = self.workers.pop(worker_id);
+        self.fleet_changed();
+        self.local_fleet_change_notify.notify_one();
+
         self.worker_change_notify.notify_one();
         result
+    }
+
+    fn fleet_changed(&mut self) {
+        let mut shapes: BTreeSet<PropertyShape> = self
+            .workers
+            .iter()
+            .map(|(_, w)| PropertyShape::from(&w.total_platform_properties))
+            .collect();
+        if let Some(peer_fleet) = &self.peer_fleet {
+            shapes.extend(peer_fleet.iter().map(PropertyShape::from));
+        }
+        if shapes == self.fleet_shape_set {
+            return;
+        }
+        self.fleet_shape_set = shapes;
+        self.fleet_generation += 1;
+        self.static_verdicts.clear();
+    }
+
+    /// The distinct properties this scheduler's workers registered with.
+    fn fleet_shapes(&self) -> Vec<PlatformProperties> {
+        let mut seen = HashSet::new();
+        self.workers
+            .iter()
+            .map(|(_, w)| &w.total_platform_properties)
+            .filter(|totals| seen.insert(PropertyShape::from(*totals)))
+            .cloned()
+            .collect()
+    }
+
+    fn set_peer_fleet(&mut self, peer_fleet: Option<Vec<PlatformProperties>>, now: SystemTime) {
+        // Peers list their workers in no particular order and may share
+        // shapes, so sort and dedup before comparing, or an unchanged fleet
+        // would look changed on every exchange and empty `static_verdicts`.
+        let peer_fleet = peer_fleet.map(|peer_fleet| {
+            let mut keyed: Vec<_> = peer_fleet
+                .into_iter()
+                .map(|totals| (PropertyShape::from(&totals), totals))
+                .collect();
+            keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            keyed.dedup_by(|a, b| a.0 == b.0);
+            keyed.into_iter().map(|(_, totals)| totals).collect()
+        });
+        // Freshness bookkeeping: update the warm-up /
+        // staleness clocks BEFORE the unchanged-shapes early return, so a
+        // successful exchange that happens to return the same shapes still
+        // refreshes the staleness clock (otherwise a steady fleet would look
+        // like a stalled exchange task).
+        if peer_fleet.is_some() {
+            self.peer_fleet_last_refresh = Some(now);
+            // Start the warm-up only on the unknown -> known transition.
+            if self.peer_fleet.is_none() {
+                self.peer_fleet_known_since = Some(now);
+            }
+        } else {
+            self.peer_fleet_known_since = None;
+            self.peer_fleet_last_refresh = None;
+        }
+        if self.peer_fleet == peer_fleet {
+            return;
+        }
+        // Unknown peers make every verdict "maybe satisfiable elsewhere",
+        // and that verdict is cached. Peers becoming known (or unknown
+        // again) changes what a verdict means even when the union of shapes
+        // does not move, so the cache goes, though the generation stays:
+        // clocks already running were right and keep their start.
+        if self.peer_fleet.is_some() != peer_fleet.is_some() {
+            self.static_verdicts.clear();
+        }
+        self.peer_fleet = peer_fleet;
+        self.fleet_changed();
     }
 
     /// Sets if the worker is draining or not.
@@ -261,33 +466,93 @@ impl ApiWorkerSchedulerImpl {
         Ok(())
     }
 
-    fn inner_find_worker_for_action(
+    /// Whether peer-absence can be trusted to fail an action right now — a
+    /// shared census must be known, warm and fresh; a non-shared db is trusted
+    /// as soon as it is known. See the free `peer_census_trusted`.
+    fn peer_census_trusted(&self, now: SystemTime) -> bool {
+        peer_census_trusted(
+            self.shared,
+            self.peer_fleet.is_some(),
+            self.peer_fleet_known_since,
+            self.peer_fleet_last_refresh,
+            self.record_ttl,
+            now,
+        )
+    }
+
+    /// Works out whether any of the `candidates` the capability index picked
+    /// could run an action with these properties when idle, and if not, why.
+    fn static_verdict(
         &self,
         platform_properties: &PlatformProperties,
+        candidates: &HashSet<WorkerId>,
+        full_worker_logging: bool,
+    ) -> Option<Arc<UnsatisfiableReason>> {
+        // The index only checks that Minimum keys are present, so the values
+        // are checked here against what each candidate registered with.
+        let satisfiable = candidates.iter().any(|worker_id| {
+            self.workers.peek(worker_id).is_some_and(|w| {
+                platform_properties
+                    .is_satisfied_by(&w.total_platform_properties, full_worker_logging)
+            })
+        });
+        if satisfiable {
+            return None;
+        }
+        // A peer's worker counts too: the action would run there once that
+        // worker has room, and this scheduler cannot see how busy it is.
+        // While the peers are unknown, any of them might have one.
+        let peer_fleet = self.peer_fleet.as_deref()?;
+        if peer_fleet
+            .iter()
+            .any(|totals| platform_properties.is_satisfied_by(totals, false))
+        {
+            return None;
+        }
+        let fleet: Vec<_> = self
+            .workers
+            .iter()
+            .map(|(_, w)| &w.total_platform_properties)
+            .chain(peer_fleet.iter())
+            .collect();
+        Some(Arc::new(explain_unsatisfiable(platform_properties, &fleet)))
+    }
+
+    /// `static_verdict`, cached per property shape until the fleet changes.
+    fn cached_static_verdict(
+        &mut self,
+        platform_properties: &PlatformProperties,
+        candidates: Option<&HashSet<WorkerId>>,
+        full_worker_logging: bool,
+    ) -> Option<Arc<UnsatisfiableReason>> {
+        let shape = PropertyShape::from(platform_properties);
+        // A cached verdict skips the per-property logging, so recompute when
+        // that logging was asked for.
+        if !full_worker_logging && let Some(verdict) = self.static_verdicts.get(&shape) {
+            return verdict.clone();
+        }
+        let verdict = if let Some(candidates) = candidates {
+            self.static_verdict(platform_properties, candidates, full_worker_logging)
+        } else {
+            let candidates = self
+                .capability_index
+                .find_matching_workers(platform_properties, full_worker_logging);
+            self.static_verdict(platform_properties, &candidates, full_worker_logging)
+        };
+        if self.static_verdicts.len() >= MAX_STATIC_VERDICTS {
+            self.static_verdicts.clear();
+        }
+        self.static_verdicts.insert(shape, verdict.clone());
+        verdict
+    }
+
+    /// Finds an idle worker among `candidates` that can run the action now.
+    fn find_available_worker(
+        &self,
+        platform_properties: &PlatformProperties,
+        candidates: &HashSet<WorkerId>,
         full_worker_logging: bool,
     ) -> Option<WorkerId> {
-        // Do a fast check to see if any workers are available at all for work allocation
-        if !self.workers.iter().any(|(_, w)| w.can_accept_work()) {
-            if full_worker_logging {
-                info!("All workers are fully allocated");
-            }
-            return None;
-        }
-
-        // Use capability index to get candidate workers that match STATIC properties
-        // (Exact, Unknown) and have the required property keys (Priority, Minimum).
-        // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.
-        let candidates = self
-            .capability_index
-            .find_matching_workers(platform_properties, full_worker_logging);
-
-        if candidates.is_empty() {
-            if full_worker_logging {
-                info!("No workers in capability index match required properties");
-            }
-            return None;
-        }
-
         // Check function for availability AND dynamic Minimum property verification.
         // The index only does presence checks for Minimum properties since their
         // values change dynamically as jobs are assigned to workers.
@@ -305,6 +570,23 @@ impl ApiWorkerSchedulerImpl {
                 return false;
             }
 
+            // The ledger only knows what actions declared; the worker's own
+            // report of what it has left catches the ones that declared too
+            // little. A worker that reports nothing is never vetoed.
+            if let (Some(property), Some(load)) = (self.live_memory_veto.as_deref(), w.last_load)
+                && let Some(PlatformPropertyValue::Minimum(needed_kb)) =
+                    platform_properties.properties.get(property)
+                && *needed_kb > load.free_memory_kb
+            {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} vetoed for this action: it reports {} KiB free, the action asks {needed_kb} KiB ({property})",
+                        load.free_memory_kb
+                    );
+                }
+                return false;
+            }
+
             // Verify Minimum properties at runtime (their values are dynamic)
             platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging)
         };
@@ -313,7 +595,7 @@ impl ApiWorkerSchedulerImpl {
         // Iterate in LRU order based on allocation strategy.
         let workers_iter = self.workers.iter();
 
-        let worker_id = match self.allocation_strategy {
+        match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
             WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
                 .rev()
@@ -326,11 +608,72 @@ impl ApiWorkerSchedulerImpl {
                 .filter(|(worker_id, _)| candidates.contains(worker_id))
                 .find(&worker_matches)
                 .map(|(_, w)| w.id.clone()),
+        }
+    }
+
+    fn inner_find_worker_for_action(
+        &mut self,
+        platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
+        now: SystemTime,
+    ) -> MatchOutcome {
+        if self.workers.is_empty() {
+            if full_worker_logging {
+                info!("No workers available to match!");
+            }
+            return MatchOutcome::NoWorkersConnected;
+        }
+
+        // Do a fast check to see if any workers are available at all for work allocation
+        let candidates = if self.workers.iter().any(|(_, w)| w.can_accept_work()) {
+            // Use capability index to get candidate workers that match STATIC properties
+            // (Exact, Unknown) and have the required property keys (Priority, Minimum).
+            // This reduces complexity from O(W × P) to O(P × log(W)) for exact properties.
+            let candidates = self
+                .capability_index
+                .find_matching_workers(platform_properties, full_worker_logging);
+            if let Some(worker_id) =
+                self.find_available_worker(platform_properties, &candidates, full_worker_logging)
+            {
+                return MatchOutcome::Matched(worker_id);
+            }
+            Some(candidates)
+        } else {
+            if full_worker_logging {
+                info!("All workers are fully allocated");
+            }
+            None
         };
-        if full_worker_logging && worker_id.is_none() {
+
+        // Nothing can take the action now. Only then is it worth working out
+        // whether anything ever could, so a match pays nothing for this.
+        if let Some(reason) = self.cached_static_verdict(
+            platform_properties,
+            candidates.as_ref(),
+            full_worker_logging,
+        ) {
+            // The intrinsic verdict (nobody could run it) is cached by shape;
+            // the census freshness check is applied live here, OUTSIDE the
+            // cache, so a verdict computed while the census was trusted can
+            // never outlive a staleness transition (nor a warm-up one). On a
+            // shared db, trust peer-absence to fail only once the census is
+            // warm and fresh; otherwise a peer we cannot fully account for
+            // might run it, so wait rather than fail.
+            if !self.peer_census_trusted(now) {
+                if full_worker_logging {
+                    info!("No idle worker matched; peer census not yet trusted, waiting");
+                }
+                return MatchOutcome::WaitingForCapacity;
+            }
+            if full_worker_logging {
+                info!(%reason, "No connected worker can ever run this action");
+            }
+            return MatchOutcome::Unsatisfiable(reason);
+        }
+        if full_worker_logging && candidates.is_some() {
             warn!("No workers matched!");
         }
-        worker_id
+        MatchOutcome::WaitingForCapacity
     }
 
     async fn update_action(
@@ -343,14 +686,23 @@ impl ApiWorkerSchedulerImpl {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
         })?;
 
-        // Ensure the worker is supposed to be running the operation.
+        // Ensure the worker is supposed to be running the operation. A
+        // result for something this worker no longer holds is stale, not
+        // rogue: the operation was requeued after a timeout or a kill and
+        // the worker finished it anyway. Refuse it and keep the worker;
+        // evicting it here requeued every other action it held for one
+        // late message.
         if !worker.running_action_infos.contains_key(operation_id) {
-            let err = make_err!(
+            warn!(
+                %operation_id,
+                ?worker_id,
+                running_actions = worker.running_action_infos.len(),
+                "Dropping update for an operation the worker is not running"
+            );
+            return Err(make_err!(
                 Code::Internal,
                 "Operation {operation_id} should not be running on worker {worker_id} in SimpleScheduler::update_action"
-            );
-            return Result::<(), _>::Err(err.clone())
-                .merge(self.immediate_evict_worker(worker_id, err, false).await);
+            ));
         }
 
         let (is_finished, due_to_backpressure) = match &update {
@@ -363,9 +715,10 @@ impl ApiWorkerSchedulerImpl {
             }
             UpdateOperationType::UpdateWithDisconnect => (true, false),
             UpdateOperationType::ExecutionComplete => {
-                // No update here, just restoring platform properties.
-                worker.execution_complete(operation_id);
-                self.worker_change_notify.notify_one();
+                // The process has exited but the action is still resident on
+                // the worker until its result arrives, so nothing is released
+                // here; `complete_action` returns the budget and the slot
+                // together.
                 return Ok(());
             }
         };
@@ -409,7 +762,11 @@ impl ApiWorkerSchedulerImpl {
             let was_paused = worker.is_paused;
             let complete_action_res = worker.complete_action(operation_id);
 
-            if (due_to_backpressure || !worker.can_accept_work()) && worker.has_actions() {
+            // Backpressure pauses the worker even when it holds nothing
+            // else: an idle worker that refuses work and is not paused is
+            // offered the same action again at once, and the pair spin
+            // until something changes. The next keepalive clears it.
+            if due_to_backpressure || (!worker.can_accept_work() && worker.has_actions()) {
                 worker.is_paused = true;
             }
             // complete_action clears is_paused on its way through, so compare
@@ -463,8 +820,13 @@ impl ApiWorkerSchedulerImpl {
                     "Worker command failed, removing worker {worker_id} -- {notify_worker_result:?}",
                 );
 
+                let reason = if is_disconnect {
+                    WorkerDisconnectReason::Disconnected
+                } else {
+                    WorkerDisconnectReason::Error
+                };
                 return Result::<(), _>::Err(err.clone()).merge(
-                    self.immediate_evict_worker(&worker_id, err, is_disconnect)
+                    self.immediate_evict_worker(&worker_id, err, is_disconnect, reason)
                         .await,
                 );
             }
@@ -524,8 +886,15 @@ impl ApiWorkerSchedulerImpl {
                 Code::Internal,
                 "Worker command failed, removing worker {worker_id} -- {err:?}",
             );
-            return Result::<(), _>::Err(err.clone())
-                .merge(self.immediate_evict_worker(worker_id, err, true).await);
+            return Result::<(), _>::Err(err.clone()).merge(
+                self.immediate_evict_worker(
+                    worker_id,
+                    err,
+                    true,
+                    WorkerDisconnectReason::Disconnected,
+                )
+                .await,
+            );
         }
         Ok(())
     }
@@ -536,6 +905,7 @@ impl ApiWorkerSchedulerImpl {
         worker_id: &WorkerId,
         err: Error,
         is_disconnect: bool,
+        reason: WorkerDisconnectReason,
     ) -> Result<(), Error> {
         let mut result = Ok(());
         if let Some(mut worker) = self.remove_worker(worker_id) {
@@ -551,15 +921,7 @@ impl ApiWorkerSchedulerImpl {
                 reason = %err.message_string(),
                 "Evicting worker from pool"
             );
-            record_worker_disconnected(
-                if is_disconnect {
-                    WorkerDisconnectReason::Disconnected
-                } else {
-                    WorkerDisconnectReason::Evicted
-                },
-                worker.is_draining,
-                worker.is_paused,
-            );
+            record_worker_disconnected(reason, worker.is_draining, worker.is_paused);
             // We don't care if we fail to send message to worker, this is only a best attempt.
             drop(worker.notify_update(WorkerUpdate::Disconnect).await);
             let update = if is_disconnect {
@@ -606,6 +968,9 @@ pub struct ApiWorkerScheduler {
     /// Channel for publishing origin events such as worker-observed action
     /// resource usage. `None` when origin events are disabled.
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+
+    /// Woken when a worker joins or leaves this scheduler.
+    local_fleet_change_notify: Arc<Notify>,
 }
 
 impl ApiWorkerScheduler {
@@ -614,21 +979,40 @@ impl ApiWorkerScheduler {
         worker_state_manager: Arc<dyn WorkerStateManager>,
         platform_property_manager: Arc<PlatformPropertyManager>,
         allocation_strategy: WorkerAllocationStrategy,
+        live_memory_veto: Option<String>,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
         worker_registry: SharedWorkerRegistry,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        has_peers: bool,
+        record_ttl: Duration,
     ) -> Arc<Self> {
+        debug_assert!(
+            !record_ttl.is_zero(),
+            "record_ttl must be non-zero; a zero TTL degenerates the census warm-up/staleness checks"
+        );
+        let local_fleet_change_notify = Arc::new(Notify::new());
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
                 worker_state_manager,
                 allocation_strategy,
+                live_memory_veto,
                 worker_change_notify,
                 worker_registry: worker_registry.clone(),
                 shutting_down: false,
                 capability_index: WorkerCapabilityIndex::new(),
+                fleet_generation: 0,
+                fleet_shape_set: BTreeSet::new(),
+                // Without peers there is nothing to wait for.
+                peer_fleet: (!has_peers).then(Vec::new),
+                shared: has_peers,
+                record_ttl,
+                peer_fleet_known_since: None,
+                peer_fleet_last_refresh: None,
+                local_fleet_change_notify: local_fleet_change_notify.clone(),
+                static_verdicts: HashMap::new(),
             }),
             platform_property_manager,
             worker_timeout_s,
@@ -636,7 +1020,18 @@ impl ApiWorkerScheduler {
             worker_registry,
             metrics: Arc::new(SchedulerMetrics::default()),
             maybe_origin_event_tx,
+            local_fleet_change_notify,
         })
+    }
+
+    /// Whether no worker is connected here and, as far as a trusted census
+    /// says, to any peer either. False while the census cannot be trusted,
+    /// so a peer we cannot see is assumed to have workers.
+    pub async fn no_worker_anywhere(&self, now: SystemTime) -> bool {
+        let inner = self.inner.lock().await;
+        inner.workers.is_empty()
+            && inner.peer_census_trusted(now)
+            && inner.peer_fleet.as_ref().is_some_and(Vec::is_empty)
     }
 
     /// Returns a reference to the worker registry.
@@ -678,6 +1073,32 @@ impl ApiWorkerScheduler {
         &self.metrics
     }
 
+    /// A counter that changes every time a worker joins or leaves.
+    pub async fn fleet_generation(&self) -> u64 {
+        self.inner.lock().await.fleet_generation
+    }
+
+    /// The distinct properties this scheduler's workers registered with.
+    pub async fn fleet_shapes(&self) -> Vec<PlatformProperties> {
+        self.inner.lock().await.fleet_shapes()
+    }
+
+    /// Records what the workers connected to peer schedulers can run, or
+    /// `None` when that is not known.
+    pub async fn set_peer_fleet(
+        &self,
+        peer_fleet: Option<Vec<PlatformProperties>>,
+        now: SystemTime,
+    ) {
+        self.inner.lock().await.set_peer_fleet(peer_fleet, now);
+    }
+
+    /// Woken when a worker joins or leaves this scheduler.
+    #[must_use]
+    pub const fn local_fleet_change_notify(&self) -> &Arc<Notify> {
+        &self.local_fleet_change_notify
+    }
+
     /// Attempts to find a worker that is capable of running this action.
     // TODO(palfrey) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
@@ -686,22 +1107,24 @@ impl ApiWorkerScheduler {
         &self,
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
-    ) -> Option<WorkerId> {
+        now: SystemTime,
+    ) -> MatchOutcome {
         let start = Instant::now();
         self.metrics
             .find_worker_calls
             .fetch_add(1, Ordering::Relaxed);
 
-        let inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().await;
         let worker_count = inner.workers.len() as u64;
-        let result = inner.inner_find_worker_for_action(platform_properties, full_worker_logging);
+        let result =
+            inner.inner_find_worker_for_action(platform_properties, full_worker_logging, now);
 
         // Track workers iterated (worst case is all workers)
         self.metrics
             .workers_iterated
             .fetch_add(worker_count, Ordering::Relaxed);
 
-        if result.is_some() {
+        if matches!(result, MatchOutcome::Matched(_)) {
             self.metrics
                 .find_worker_hits
                 .fetch_add(1, Ordering::Relaxed);
@@ -831,8 +1254,11 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .add_worker(worker)
             .err_tip(|| "Error while adding worker, removing from pool");
         if let Err(err) = result {
-            return Result::<(), _>::Err(err.clone())
-                .merge(inner.immediate_evict_worker(&worker_id, err, false).await);
+            return Result::<(), _>::Err(err.clone()).merge(
+                inner
+                    .immediate_evict_worker(&worker_id, err, false, WorkerDisconnectReason::Error)
+                    .await,
+            );
         }
 
         let now = UNIX_EPOCH + Duration::from_secs(worker_timestamp);
@@ -856,11 +1282,12 @@ impl WorkerScheduler for ApiWorkerScheduler {
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         {
             let mut inner = self.inner.lock().await;
             inner
-                .refresh_lifetime(worker_id, timestamp)
+                .refresh_lifetime(worker_id, timestamp, load)
                 .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")?;
         }
         let now = UNIX_EPOCH + Duration::from_secs(timestamp);
@@ -879,6 +1306,21 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 worker_id,
                 make_err!(Code::Internal, "Received request to remove worker"),
                 false,
+                WorkerDisconnectReason::Removed,
+            )
+            .await
+    }
+
+    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error> {
+        self.worker_registry.remove_worker(worker_id).await;
+
+        let mut inner = self.inner.lock().await;
+        inner
+            .immediate_evict_worker(
+                worker_id,
+                make_err!(Code::Unavailable, "Worker stream ended without going away"),
+                true,
+                WorkerDisconnectReason::Disconnected,
             )
             .await
     }
@@ -896,6 +1338,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     &worker_id,
                     make_err!(Code::Internal, "Scheduler shutdown"),
                     true,
+                    WorkerDisconnectReason::Shutdown,
                 )
                 .await
             {
@@ -988,7 +1431,16 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     "Worker {worker_id} timed out, removing from pool"
                 )
             };
-            result = result.merge(inner.immediate_evict_worker(worker_id, err, false).await);
+            let reason = if *kill_overdue {
+                WorkerDisconnectReason::KillUnacknowledged
+            } else {
+                WorkerDisconnectReason::Timeout
+            };
+            result = result.merge(
+                inner
+                    .immediate_evict_worker(worker_id, err, false, reason)
+                    .await,
+            );
         }
 
         result
@@ -1095,3 +1547,109 @@ impl WorkerScheduler for ApiWorkerScheduler {
 }
 
 impl RootMetricsComponent for ApiWorkerScheduler {}
+
+#[cfg(test)]
+mod peer_census_trusted_tests {
+    use super::{Duration, SystemTime, UNIX_EPOCH, peer_census_trusted};
+
+    const TTL: Duration = Duration::from_secs(15);
+    fn at(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1000 + secs)
+    }
+
+    #[test]
+    fn unknown_census_is_never_trusted() {
+        // Even a non-shared db, if explicitly unknown, is not trusted.
+        assert!(!peer_census_trusted(false, false, None, None, TTL, at(0)));
+        assert!(!peer_census_trusted(
+            true,
+            false,
+            Some(at(0)),
+            Some(at(0)),
+            TTL,
+            at(100)
+        ));
+    }
+
+    #[test]
+    fn non_shared_known_is_trusted_immediately() {
+        // The whole fleet is local; no warm-up or staleness applies.
+        assert!(peer_census_trusted(false, true, None, None, TTL, at(0)));
+    }
+
+    #[test]
+    fn shared_known_needs_both_timestamps() {
+        assert!(!peer_census_trusted(true, true, None, None, TTL, at(100)));
+        assert!(!peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            None,
+            TTL,
+            at(100)
+        ));
+    }
+
+    #[test]
+    fn shared_trusts_only_when_warm_and_fresh() {
+        // Known at 0, refreshed at 100, evaluated at 100: warm and fresh.
+        assert!(peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(100)),
+            TTL,
+            at(100)
+        ));
+        // Exactly one TTL since known counts as warm.
+        assert!(peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(15)),
+            TTL,
+            at(15)
+        ));
+    }
+
+    #[test]
+    fn shared_not_warm_is_not_trusted() {
+        // Known only half a TTL ago: a peer may not have published yet.
+        assert!(!peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(7)),
+            TTL,
+            at(7)
+        ));
+    }
+
+    #[test]
+    fn shared_stale_refresh_is_not_trusted() {
+        // Warm, but the last successful exchange was more than a TTL ago (the
+        // exchange task died/stalled): fail open.
+        assert!(!peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(50)),
+            TTL,
+            at(100)
+        ));
+    }
+
+    #[test]
+    fn future_dated_refresh_counts_as_fresh() {
+        // Clock skew: a refresh timestamped ahead of `now` is treated as fresh
+        // (the safe direction). Still requires warm.
+        assert!(peer_census_trusted(
+            true,
+            true,
+            Some(at(0)),
+            Some(at(120)),
+            TTL,
+            at(100)
+        ));
+    }
+}

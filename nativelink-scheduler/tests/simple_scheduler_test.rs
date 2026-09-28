@@ -158,6 +158,7 @@ async fn basic_add_action_with_one_worker_test() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -493,6 +494,7 @@ async fn find_executing_action() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -572,6 +574,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     .await?;
 
     let mut expected_start_execute_for_worker1 = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest1.into()),
@@ -585,6 +588,7 @@ async fn remove_worker_reschedules_multiple_running_job_test() -> Result<(), Err
     };
 
     let mut expected_start_execute_for_worker2 = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest2.into()),
@@ -872,6 +876,7 @@ async fn worker_should_not_queue_if_properties_dont_match_test() -> Result<(), E
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -971,6 +976,7 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -1018,6 +1024,20 @@ async fn cacheable_items_join_same_action_queued_test() -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+#[nativelink_test]
+async fn overlapping_invocations_use_separate_workers() -> Result<(), Error> {
+    let notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(0, &notify, MockInstantWrapped::default),
+        || async {},
+        notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    utils::scheduler_utils::verify_overlapping_invocations(&scheduler).await
 }
 
 #[nativelink_test]
@@ -1323,6 +1343,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
     .await?;
 
     let mut start_execute = StartExecute {
+        request_metadata: None,
         execute_request: Some(ExecuteRequest {
             instance_name: INSTANCE_NAME.to_string(),
             action_digest: Some(action_digest.into()),
@@ -1372,7 +1393,7 @@ async fn worker_timesout_reschedules_running_job_test() -> Result<(), Error> {
 
     // Keep worker 2 alive.
     scheduler
-        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S)
+        .worker_keep_alive_received(&worker_id2, NOW_TIME + WORKER_TIMEOUT_S, None)
         .await?;
     // This should remove worker 1 (the one executing our job).
     scheduler
@@ -1647,7 +1668,7 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
     let rogue_worker_id = WorkerId("rogue_worker_id".to_string());
 
     let task_change_notify = Arc::new(Notify::new());
-    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec::default(),
         memory_awaited_action_db_factory(
             0,
@@ -1747,6 +1768,12 @@ async fn update_action_with_wrong_worker_id_errors_test() -> Result<(), Error> {
             "Client should not have been notified of event"
         );
     }
+    // The stale result is refused, but the worker stays: evicting it would
+    // requeue everything else it holds for one late message.
+    worker_scheduler
+        .set_drain_worker(&rogue_worker_id, false)
+        .await
+        .expect("worker reporting a stale result must still be in the pool");
 
     Ok(())
 }
@@ -1792,6 +1819,7 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         // Worker should have been sent an execute command.
         let expected_msg_for_worker = UpdateForWorker {
             update: Some(update_for_worker::Update::StartAction(StartExecute {
+                request_metadata: None,
                 execute_request: Some(ExecuteRequest {
                     instance_name: INSTANCE_NAME.to_string(),
                     action_digest: Some(action_digest.into()),
@@ -1891,6 +1919,132 @@ async fn does_not_crash_if_operation_joined_then_relaunched() -> Result<(), Erro
         assert_eq!(action_state.as_ref(), &expected_action_state);
     }
 
+    Ok(())
+}
+
+/// A worker's `ExecuteComplete` (process exited, upload still running) must
+/// not release the action's `Minimum` budget: the action is still resident and
+/// at its memory peak. Only the final result frees the capacity.
+#[nativelink_test]
+async fn execution_complete_keeps_platform_properties_reserved() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let mut supported_props = HashMap::new();
+    supported_props.insert("prop1".to_string(), PropertyType::Minimum);
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(supported_props),
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let mut properties = HashMap::new();
+    properties.insert("prop1".to_string(), PlatformPropertyValue::Minimum(1));
+    let platform_properties = PlatformProperties {
+        properties: properties.clone(),
+    };
+    let action_props: HashMap<String, String> = properties
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().into_owned()))
+        .collect();
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), platform_properties.clone())
+            .await
+            .unwrap();
+    let mut client1_action_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([11u8; 32], 512),
+        action_props.clone(),
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+    let mut client2_action_listener = setup_action(
+        &scheduler,
+        DigestInfo::new([99u8; 32], 512),
+        action_props,
+        make_system_time(1),
+    )
+    .await
+    .unwrap();
+    let operation_id1 = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(start_execute)) => {
+            OperationId::from(start_execute.operation_id)
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    {
+        let (state_1, _) = client1_action_listener.changed().await.unwrap();
+        let (state_2, _) = client2_action_listener.changed().await.unwrap();
+        assert_eq!(state_1.stage, ActionStage::Executing);
+        assert_eq!(state_2.stage, ActionStage::Queued);
+    }
+
+    // The worker reports the process finished; the upload is still ahead.
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id1,
+            UpdateOperationType::ExecutionComplete,
+        )
+        .await
+        .unwrap();
+    tokio::task::yield_now().await; // Let a matching pass run if one was notified.
+
+    // The worker's one unit of `prop1` is still held, so the second action
+    // must not have been dispatched.
+    assert!(
+        rx_from_worker.try_recv().is_err(),
+        "second action was dispatched while the first was still uploading"
+    );
+
+    // The final result releases the budget and the second action goes out.
+    let action_result = ActionResult {
+        output_files: Vec::default(),
+        output_folders: Vec::default(),
+        output_file_symlinks: Vec::default(),
+        output_directory_symlinks: Vec::default(),
+        exit_code: 0,
+        stdout_digest: DigestInfo::new([6u8; 32], 19),
+        stderr_digest: DigestInfo::new([7u8; 32], 20),
+        execution_metadata: ExecutionMetadata {
+            worker: worker_id.to_string(),
+            queued_timestamp: make_system_time(5),
+            worker_start_timestamp: make_system_time(6),
+            worker_completed_timestamp: make_system_time(7),
+            input_fetch_start_timestamp: make_system_time(8),
+            input_fetch_completed_timestamp: make_system_time(9),
+            execution_start_timestamp: make_system_time(10),
+            execution_completed_timestamp: make_system_time(11),
+            output_upload_start_timestamp: make_system_time(12),
+            output_upload_completed_timestamp: make_system_time(13),
+        },
+        server_logs: HashMap::default(),
+        error: None,
+        message: String::new(),
+    };
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id1,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(action_result)),
+        )
+        .await
+        .unwrap();
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction for the second action, got : {v:?}"),
+    }
+    let (state_2, _) = client2_action_listener.changed().await.unwrap();
+    assert_eq!(state_2.stage, ActionStage::Executing);
     Ok(())
 }
 
@@ -2269,6 +2423,11 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
                         .contains("Job cancelled because it attempted to execute too many times"),
                     "{real_err} did not contain 'Job cancelled because it attempted to execute too many times'",
                 );
+                assert_eq!(
+                    real_err.code,
+                    Code::FailedPrecondition,
+                    "the cap must use a code the client does not retry"
+                );
                 *real_err = err;
             }
         } else {
@@ -2388,6 +2547,12 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
             err.to_string()
                 .contains("Worker disconnected repeatedly while executing this action"),
             "Error message did not mention disconnect loop: {err}",
+        );
+        assert_eq!(
+            err.code,
+            Code::FailedPrecondition,
+            "the cap must use a code the client does not retry, got {:?}",
+            err.code
         );
     }
 
@@ -2786,7 +2951,7 @@ async fn logs_when_no_workers_match() -> Result<(), Error> {
     assert!(logs_contain(
         "Property mismatch on worker property prop. Minimum(0) < Minimum(1)"
     ));
-    assert!(logs_contain("No workers matched"));
+    assert!(logs_contain("No connected worker can ever run this action"));
 
     Ok(())
 }
@@ -3402,7 +3567,7 @@ async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), E
     // Inside the acknowledgement window the fresh keepalives shield it from
     // the ordinary worker timeout and nothing is evicted.
     scheduler
-        .worker_keep_alive_received(&worker_id, NOW_TIME + 30)
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 30, None)
         .await?;
     scheduler.remove_timedout_workers(NOW_TIME + 30).await?;
     assert!(!logs_contain("Evicting worker from pool"));
@@ -3411,7 +3576,7 @@ async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), E
     // keepalives are exactly what would otherwise let the dead operation
     // hold the slot forever.
     scheduler
-        .worker_keep_alive_received(&worker_id, NOW_TIME + 61)
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
         .await?;
     drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
     assert!(logs_contain("did not acknowledge a kill in time"));

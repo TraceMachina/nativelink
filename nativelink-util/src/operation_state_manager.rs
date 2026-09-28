@@ -172,4 +172,13 @@ pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
         operation_id: &OperationId,
         worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
+
+    /// Completes a queued operation with `err`, without retrying it. Does
+    /// nothing if the operation is no longer queued. Returns whether the
+    /// operation was completed by this call.
+    async fn fail_queued_operation(
+        &self,
+        operation_id: &OperationId,
+        err: Error,
+    ) -> Result<bool, Error>;
 }

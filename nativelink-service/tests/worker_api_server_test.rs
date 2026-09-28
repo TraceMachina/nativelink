@@ -31,10 +31,11 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteResult, KeepAliveRequest, UpdateForScheduler
+    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteComplete, ExecuteResult, KeepAliveRequest, UpdateForScheduler
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
+use nativelink_scheduler::match_outcome::MatchOutcome;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
 use nativelink_scheduler::worker::ActionInfoWithProps;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -173,11 +174,14 @@ async fn setup_api_server_with_task_limit(
         state_manager.clone(),
         platform_property_manager,
         WorkerAllocationStrategy::default(),
+        None,
         tasks_or_worker_change_notify,
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
         worker_registry,
         None,
+        false,                   // has_peers
+        Duration::from_secs(15), // record_ttl (unused while has_peers = false)
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
@@ -297,6 +301,184 @@ pub async fn server_times_out_workers_test() -> Result<(), Box<dyn core::error::
     Ok(())
 }
 
+/// A result from the worker is proof of life. Before this, only a keepalive
+/// refreshed the liveness timestamp, so a worker that spent the window
+/// finishing actions was evicted with all of them requeued.
+#[nativelink_test]
+pub async fn server_does_not_timeout_if_execute_complete_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
+    let now_timestamp_clone = now_timestamp.clone();
+    let add_and_return_timestamp = move |add_amount: u64| -> u64 {
+        let mut locked_now_timestamp = now_timestamp.lock().unwrap();
+        *locked_now_timestamp += add_amount;
+        *locked_now_timestamp
+    };
+
+    let test_context = setup_api_server(
+        BASE_WORKER_TIMEOUT_S,
+        Box::new(move || Ok(Duration::from_secs(*now_timestamp_clone.lock().unwrap()))),
+    )
+    .await?;
+
+    // Give the worker an action so it has something to report on.
+    let action_digest = DigestInfo::new([7u8; 32], 123);
+    let action_info = Arc::new(ActionInfo {
+        command_digest: DigestInfo::new([0u8; 32], 0),
+        input_root_digest: DigestInfo::new([0u8; 32], 0),
+        timeout: Duration::MAX,
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: make_system_time(0),
+        insert_timestamp: make_system_time(0),
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: "instance_name".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    });
+    let operation_id = OperationId::default();
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())?;
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // One second before the timeout, with no keepalive sent, the worker
+    // reports that the action's process has exited. `ExecuteResult` goes
+    // through the same `touch_liveness` first.
+    let _ = add_and_return_timestamp(BASE_WORKER_TIMEOUT_S - 1);
+    test_context
+        .worker_stream
+        .send(Update::ExecuteComplete(ExecuteComplete {
+            operation_id: operation_id.to_string(),
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending completion {e}"))?;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Past the original deadline the worker must still be in the pool,
+    // because the result refreshed its liveness.
+    // An eviction here would fail the running action through the state
+    // manager and then wait for the mock's reply, so race the sweep
+    // against that call to turn a regression into a failure instead of
+    // a hang.
+    let timestamp = add_and_return_timestamp(2);
+    tokio::select! {
+        sweep_result = test_context.scheduler.remove_timedout_workers(timestamp) => sweep_result?,
+        _ = test_context.state_manager.expect_update_operation(Ok(())) => {
+            panic!("worker was evicted although it had just reported a result");
+        }
+    }
+    assert!(
+        test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "worker was evicted although it had just reported a result"
+    );
+
+    // And it is still evicted once it goes quiet for a full window. The
+    // eviction fails the running action through the state manager, so
+    // that call has to be serviced alongside it.
+    let timestamp = add_and_return_timestamp(BASE_WORKER_TIMEOUT_S);
+    let (remove_result, (evicted_operation_id, evicted_worker_id, evicted_update)) = join!(
+        test_context.scheduler.remove_timedout_workers(timestamp),
+        test_context.state_manager.expect_update_operation(Ok(())),
+    );
+    remove_result?;
+    assert_eq!(evicted_operation_id, operation_id);
+    assert_eq!(evicted_worker_id, test_context.worker_id);
+    assert!(
+        matches!(evicted_update, UpdateOperationType::UpdateWithError(_)),
+        "expected the running action to be failed on eviction, got {evicted_update:?}"
+    );
+    assert!(
+        !test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "worker should be evicted after a silent window"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+pub async fn stream_end_requeues_running_actions_as_disconnect_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+
+    let action_digest = DigestInfo::new([8u8; 32], 123);
+    let action_info = Arc::new(ActionInfo {
+        command_digest: DigestInfo::new([0u8; 32], 0),
+        input_root_digest: DigestInfo::new([0u8; 32], 0),
+        timeout: Duration::MAX,
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: make_system_time(0),
+        insert_timestamp: make_system_time(0),
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: "instance_name".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    });
+    let operation_id = OperationId::default();
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())?;
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // The worker dies: its update stream ends with no GoingAway. The action
+    // it held must come back as a disconnect, which is what the retry cap
+    // reports as a dying worker rather than a failing job.
+    drop(test_context.worker_stream);
+    let (evicted_operation_id, evicted_worker_id, evicted_update) = test_context
+        .state_manager
+        .expect_update_operation(Ok(()))
+        .await;
+    assert_eq!(evicted_operation_id, operation_id);
+    assert_eq!(evicted_worker_id, test_context.worker_id);
+    assert_eq!(evicted_update, UpdateOperationType::UpdateWithDisconnect);
+    assert!(
+        !test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "worker should be gone once its stream ended"
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn core::error::Error>>
 {
@@ -330,7 +512,7 @@ pub async fn server_does_not_timeout_if_keep_alive_test() -> Result<(), Box<dyn 
         // Now send keep alive.
         test_context
             .worker_stream
-            .send(Update::KeepAliveRequest(KeepAliveRequest {}))
+            .send(Update::KeepAliveRequest(KeepAliveRequest::default()))
             .await
             .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keep alive {e}"))?;
         // Wait for a moment to allow it to be processed.
@@ -426,6 +608,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
     let instance_name = "instance_name".to_string();
 
     let unique_qualifier = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+        execution_scope: None,
         instance_name: instance_name.clone(),
         digest_function: DigestHasherFunc::Sha256,
         digest: action_digest,
@@ -581,11 +764,15 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
 
     let selected_worker = test_context
         .scheduler
-        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .find_worker_for_action(
+            &PlatformProperties::new(HashMap::new()),
+            true,
+            make_system_time(BASE_NOW_S),
+        )
         .await;
     assert_eq!(
         selected_worker,
-        Some(test_context.worker_id.clone()),
+        MatchOutcome::Matched(test_context.worker_id.clone()),
         "Expected worker to permit tasks to begin with"
     );
 
@@ -593,6 +780,7 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
     let instance_name = "instance_name".to_string();
 
     let unique_qualifier = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+        execution_scope: None,
         instance_name: instance_name.clone(),
         digest_function: DigestHasherFunc::Sha256,
         digest: action_digest,
@@ -634,10 +822,15 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
 
     let selected_worker = test_context
         .scheduler
-        .find_worker_for_action(&PlatformProperties::new(HashMap::new()), true)
+        .find_worker_for_action(
+            &PlatformProperties::new(HashMap::new()),
+            true,
+            make_system_time(BASE_NOW_S),
+        )
         .await;
     assert_eq!(
-        selected_worker, None,
+        selected_worker,
+        MatchOutcome::WaitingForCapacity,
         "Expected not to be able to give worker a second task"
     );
 

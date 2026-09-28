@@ -8367,9 +8367,10 @@ is a service address. The config shape does not change.
 `SimpleSpec` has ten optional fields. Most can stay at their defaults
 forever. These four are the ones worth setting deliberately:
 
-**`worker_timeout_s`** (default 5 s): how long a silent worker stays in the
-pool. Five seconds is aggressive for a fleet on a congested network; a worker
-evicted mid-action has its action re-queued.
+**`worker_timeout_s`** (default 10 s): how long a silent worker stays in the
+pool. Any message from the worker counts, not only the heartbeat. Keep it at
+least twice the worker's `worker_api_endpoint.timeout`; a worker evicted
+mid-action has every action it held re-queued, each with an attempt spent.
 
 **`max_action_executing_timeout_s`** (default 0, disabled): caps how long an
 action can sit in `Executing` with no update, even from a worker that is
@@ -12317,7 +12318,7 @@ Check `worker_api_endpoint.timeout` on the worker against `worker_timeout_s`
 on the scheduler, and any proxy or load balancer between the two. The worker
 sends a `KeepAlive` RPC every `timeout / 2` (default timeout 5 seconds), and
 the scheduler evicts a worker it has not heard from within `worker_timeout_s`
-(default 5 seconds), so a hop that delays or drops those RPCs looks like a
+(default 10 seconds), so a hop that delays or drops those RPCs looks like a
 flapping worker. HTTP/2 keepalive pings on this listener come from
 `advanced_http.http2_keep_alive_interval` on the scheduler's worker API
 `servers` entry. The worker API is a long-lived streaming connection, not a
@@ -14576,7 +14577,8 @@ attempts per second at the socket for the whole outage. Worse, each worker's
 reconnect path calls `kill_all()` first, destroying every action it was
 running. Restart the scheduler when the queue is quiet, and restart it once.
 
-**Workers** drain themselves on `SIGTERM`: the process rejects new actions,
+**Workers** drain themselves on `SIGTERM` (and on a first `SIGINT`; a second
+`SIGINT` exits at once): the process rejects new actions,
 waits for the ones it is running to finish, sends the scheduler a
 `GoingAway`, and exits. `systemctl stop` is therefore safe as long as
 `TimeoutStopSec` outlasts your longest action. To take a worker out of
@@ -15437,6 +15439,26 @@ it means any publicly-trusted certificate for that hostname is accepted.
 
 ## The sandbox is not a security boundary [#the-sandbox-is-not-a-security-boundary]
 
+For isolation from state left by an earlier action, development builds offer
+the opt-in [`single_use` lifecycle](/reference/nativelink-config/main#localworkerconfig).
+It requires a launcher that replaces the container and its writable volumes
+after every action. This prevents reuse of local files, background processes,
+and worker caches. It does not create a new kernel boundary or make untrusted
+actions safe on a privileged container host. Continue applying the network
+and process restrictions described on this page.
+
+The development-only
+[`experimental_buck2_file_capture`](/reference/nativelink-config/main#buck2filecaptureconfig)
+option additionally runs an operator-supplied collector inside that dedicated
+Linux container. Configure it to exclude platform credentials and internal
+caches, and use narrowly scoped credentials for its ingest service. The hook
+does not isolate a token from action processes with the same user privileges.
+The collector and
+its ingest service must enforce authorization and filesystem boundaries.
+Invocation metadata identifies the client request; it does not authenticate its
+owner. Separate action mount namespaces and entrypoint wrappers are rejected so
+the collector cannot accidentally archive the outer worker's filesystem.
+
 Workers can be configured with `use_namespaces: true` and
 `use_mount_namespace: true`. Both are real, and neither makes an action safe to
 run on your behalf.
@@ -15904,11 +15926,13 @@ a single connection the ceiling.
 
 <Accordion title="Workers keep being marked dead and their actions requeued" id="workers-keep-being-marked-dead-and-their-actions-requeued">
 
-`worker_timeout_s` defaults to **5 seconds**, checked once a second. That is a
+`worker_timeout_s` defaults to **10 seconds**, checked once a second. That is a
 short leash and it is deliberate (fast detection means fast requeue), but a
-worker whose host is briefly starved, or whose network hiccups, will be evicted.
-If you see churn without actual failures, raise it. The cost of raising it is a
-longer stall before a genuinely dead worker's actions are retried.
+worker whose host is starved for longer than that, or whose network hiccups,
+will be evicted. If you see churn without actual failures, raise it. The cost
+of raising it is a longer stall before a genuinely dead worker's actions are
+retried. Releases up to 1.7.2 defaulted to 5 seconds and only counted
+heartbeats, so a worker busy reporting results could still be evicted.
 
 </Accordion>
 
@@ -17265,13 +17289,15 @@ any other non-zero exit; there is no exported metric that singles out
 signal deaths, so the log line is what you alert on.
 
 **The worker process itself was killed.** The scheduler notices after
-`worker_timeout_s` (default 5 seconds, checked once a second), evicts it, and
+`worker_timeout_s` (default 10 seconds, checked once a second), evicts it, and
 re-queues its in-flight actions. In this tree a disconnect *counts as an
-attempt*, so after `max_job_retries` the client finally sees:
+attempt*, so after `max_job_retries` the client finally sees, as a
+`FAILED_PRECONDITION` that Bazel does not resubmit:
 
 ```text
 Worker disconnected repeatedly while executing this action (4 > 3 attempts);
-the runner likely OOMKilled or the pod was evicted. for operation_id: ...,
+the worker was likely OOM-killed or its pod evicted. Give the action a memory
+reservation or raise the pool's memory limit before retrying. for operation_id: ...,
 maybe_worker_id: ...
 ```
 
@@ -17826,7 +17852,7 @@ string is just the tombstone.
 
 The timeout defaults that matter: `max_action_timeout_s` 20 minutes,
 `max_upload_timeout_s` 10 minutes, `max_cleanup_wait_s` 30 seconds,
-`worker_timeout_s` 5 seconds, `client_action_timeout_s` 60 seconds,
+`worker_timeout_s` 10 seconds, `client_action_timeout_s` 60 seconds,
 `retain_completed_for_s` 60 seconds.
 
 `retain_completed_for_s` is not an execution timeout; it is how long a
@@ -17840,7 +17866,7 @@ Setting a field to `0` to disable it usually does the opposite.
 | Field | `0` means |
 | --- | --- |
 | `max_job_retries` | **3.** Not "no retries". |
-| `worker_timeout_s` | 5 seconds. |
+| `worker_timeout_s` | 10 seconds. |
 | `client_action_timeout_s` | 60 seconds. |
 | `retain_completed_for_s` | 60 seconds. |
 | `max_action_executing_timeout_s` | Genuinely disabled. The one exception. |
@@ -17881,7 +17907,8 @@ churning, those are the same incident.
 
 The worker sends a keepalive every half of its `worker_api_endpoint.timeout`
 (default 5 s, so every 2.5 s), and the scheduler evicts a worker it has not
-heard from for `worker_timeout_s` (default 5 s), checking once a second. The
+heard from for `worker_timeout_s` (default 10 s), checking once a second. Any
+message from the worker resets that clock, not only keepalives. The
 scheduler counts what it receives in `nativelink_worker_keepalives_total` and
 departures by reason in `nativelink_worker_disconnections_total`.
 
@@ -18095,11 +18122,36 @@ the merge rule, the ordering rule and the retry rule.
 A worker fetches the action's inputs from the CAS, materialises them into a
 directory, runs the command, uploads the outputs, and reports back.
 
-Workers hold no durable state; a worker that dies mid-action costs you that
+Workers hold no durable state. A worker that dies mid-action costs you that
 action, not your cache. What they do hold is a local filesystem that is
 deliberately not clean between actions;
 [worker execution](/explanations/worker-execution) explains why, and what it
 means for hermeticity.
+
+The development configuration adds an opt-in
+[`single_use` worker lifecycle](/reference/nativelink-config/main#localworkerconfig).
+A worker accepts one action, uploads its results, and exits. Run it as the only
+worker in its process and have the launcher replace the whole container with
+fresh writable volumes. This removes local files, processes, and caches left
+by previous actions. Restarting a process inside an existing container does
+not provide that isolation. The shared CAS and action cache remain available.
+
+Development builds also offer
+[`experimental_buck2_file_capture`](/reference/nativelink-config/main#buck2filecaptureconfig)
+for dedicated Linux execution containers. NativeLink starts an operator-supplied
+collector only for Buck2 assignments with invocation metadata, then waits for
+bounded final capture before deleting action files. The collector owns storage
+and access control. Capture failure does not change the action's execution result.
+This option requires the `single_use` lifecycle and does not add a file server to
+NativeLink.
+
+To keep overlapping Buck2 builds on separate workers, also enable
+[`experimental_buck2_invocation_isolation`](/reference/nativelink-config/main)
+on the Execution services for that instance. Identical in-flight actions from
+different invocations then schedule separately. Retries in the same invocation
+can still join their existing action. Completed action-cache hits remain shared
+and launch neither a worker nor a collector. Upgrade every scheduler serving the
+instance before enabling this option; it does not change other build tools.
 
 <Callout type="warn" title="The worker writes the action cache, not the scheduler">
   It is natural to assume the scheduler records the result, since the
@@ -19093,10 +19145,11 @@ worker gets an action is decided separately, by the LRU-ordered
 <Callout type="warn" title="The heartbeat and the eviction timeout are two separate knobs">
   The worker's heartbeat period is derived as **half** its configured
   `worker_api_endpoint.timeout`, 2.5 seconds by default. Eviction is
-  governed by the *scheduler's* `worker_timeout_s`, 5 seconds by default.
-  Nothing reconciles them. Raise the scheduler's timeout without raising the
-  worker's, or vice versa, and you get workers evicted mid-heartbeat and
-  reconnecting in a loop.
+  governed by the *scheduler's* `worker_timeout_s`, 10 seconds by default
+  (four heartbeats). Any message from the worker refreshes the clock, not
+  only the heartbeat. Nothing reconciles the two knobs. Raise the worker's
+  timeout without raising the scheduler's and you get workers evicted
+  mid-heartbeat and reconnecting in a loop.
 </Callout>
 
 ## The filesystem, and the hardlink that everything depends on [#the-filesystem-and-the-hardlink-that-everything-depends-on]

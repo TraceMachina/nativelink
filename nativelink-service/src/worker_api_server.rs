@@ -340,14 +340,23 @@ impl WorkerConnection {
             }
             tracing::debug!(worker_id=?instance.worker_id, "Update for scheduler dropped");
             if !had_going_away {
-                drop(instance.scheduler.remove_worker(&instance.worker_id).await);
+                drop(
+                    instance
+                        .scheduler
+                        .worker_disconnected(&instance.worker_id)
+                        .await,
+                );
             }
         });
     }
 
-    async fn inner_keep_alive(&self, _keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
+    async fn inner_keep_alive(&self, keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
         self.scheduler
-            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
+            .worker_keep_alive_received(
+                &self.worker_id,
+                (self.now_fn)()?.as_secs(),
+                keep_alive_request.load,
+            )
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
         Ok(())
@@ -361,7 +370,17 @@ impl WorkerConnection {
         Ok(())
     }
 
+    /// Any message from the worker proves it is alive, not only keepalives.
+    /// Only a keepalive carries a load report; the last one stands.
+    async fn touch_liveness(&self) -> Result<(), Error> {
+        self.scheduler
+            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs(), None)
+            .await
+            .err_tip(|| "Could not refresh worker liveness")
+    }
+
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
+        self.touch_liveness().await?;
         let operation_id = OperationId::from(execute_result.operation_id.clone());
 
         if let Some(resource_usage) = execute_result.resource_usage {
@@ -405,6 +424,7 @@ impl WorkerConnection {
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
+        self.touch_liveness().await?;
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler
             .update_action(

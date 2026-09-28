@@ -15,7 +15,7 @@
 use core::hash::BuildHasher;
 use core::pin::Pin;
 use core::str;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -33,7 +33,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForWorker, execute_result,
+    UpdateForWorker, WorkerLoad, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -114,6 +114,7 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     // always be zero if there are no actions running and no actions being waited
     // on by the scheduler.
     actions_in_transit: Arc<AtomicU64>,
+    accepted_action: AtomicBool,
     metrics: Arc<Metrics>,
 }
 
@@ -186,6 +187,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             // always be zero if there are no actions running and no actions being waited
             // on by the scheduler.
             actions_in_transit: Arc::new(AtomicU64::new(0)),
+            accepted_action: AtomicBool::new(false),
             metrics,
         }
     }
@@ -210,21 +212,29 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         // Skip the first interval as it happens immediately and we don't need a keep alive until timeout/2 has passed
         interval.tick().await;
 
-        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands
-        drop(
-            spawn!("keep alives", async move {
-                loop {
-                    interval.tick().await;
-                    if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
-                        error!(?e, "Failed to send KeepAlive in LocalWorker");
-                        return;
-                    }
-                    debug!("Sent KeepAlive");
+        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands.
+        // Its failure is this worker's failure: a worker whose keepalives
+        // stop reaching the scheduler is evicted `worker_timeout_s` later
+        // with every action it holds requeued, so ending the stream now and
+        // reconnecting is the cheaper outcome. Before, the task died quietly
+        // and the worker ran on without keepalives.
+        spawn!("keep alives", async move {
+            loop {
+                interval.tick().await;
+                // What the worker has to spare rides on the keepalive, so a
+                // scheduler with `live_memory_veto` can skip a worker whose
+                // actions declared less than they use.
+                let load = crate::capacity::free_memory_kb()
+                    .map(|free_memory_kb| WorkerLoad { free_memory_kb });
+                if let Err(e) = grpc_client.keep_alive(KeepAliveRequest { load }).await {
+                    error!(?e, "Failed to send KeepAlive in LocalWorker");
+                    return Err(e.append("KeepAlive failed; reconnecting to the scheduler"));
                 }
-            })
-            .await,
-        );
-        Ok(())
+                debug!("Sent KeepAlive");
+            }
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "KeepAlive task ended: {e:?}"))?
     }
 
     async fn run(
@@ -260,6 +270,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         let mut shutting_down = false;
 
         loop {
+            if self.config.single_use
+                && self.accepted_action.load(Ordering::Acquire)
+                && actions_in_flight.load(Ordering::Acquire) == 0
+            {
+                // The action, CAS/AC uploads, cleanup, and execution_response
+                // acknowledgment have all completed. This container is spent.
+                if let Err(err) = self
+                    .grpc_client
+                    .clone()
+                    .going_away(GoingAwayRequest {})
+                    .await
+                {
+                    warn!(?err, "Could not unregister completed single-use worker");
+                }
+                return Ok(());
+            }
             select! {
                 maybe_update = update_for_worker_stream.next() => if !shutting_down || maybe_update.is_some() {
                     match maybe_update
@@ -292,7 +318,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         }
                         Update::StartAction(start_execute) => {
                             // Don't accept any new requests if we're shutting down.
-                            if shutting_down {
+                            if shutting_down || (self.config.single_use
+                                && self.accepted_action.swap(true, Ordering::AcqRel)) {
                                 if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
                                     self.grpc_client.clone().execution_response(
                                         ExecuteResult{
@@ -345,6 +372,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 let complete = ExecuteComplete {
                                     operation_id: operation_id.clone(),
                                 };
+                                let single_use = self.config.single_use;
                                 self.metrics.clone().wrap(move |metrics| async move {
                                     metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
@@ -364,8 +392,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
                                             .and_then(|result| async move {
-                                                // Notify that execution has completed so it can schedule a new action.
-                                                drop(grpc_client.execution_complete(complete).await);
+                                                // Reusable workers release their slot during upload.
+                                                // A single-use worker must never advertise another slot.
+                                                if !single_use {
+                                                    drop(grpc_client.execution_complete(complete).await);
+                                                }
                                                 Ok(result)
                                             })
                                             .and_then(RunningAction::upload_results)
@@ -574,6 +605,12 @@ pub async fn new_local_worker(
     ac_store: Option<Store>,
     historical_store: Store,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
+    #[cfg(not(target_os = "linux"))]
+    if config.experimental_buck2_file_capture.is_some() {
+        return Err(make_input_err!(
+            "Buck2 container file capture requires a Linux execution container"
+        ));
+    }
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
@@ -717,6 +754,7 @@ pub async fn new_local_worker(
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
+                buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
             },
@@ -826,7 +864,11 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             self.config.name.clone(),
             &self.config.platform_properties,
             &extra_envs,
-            self.config.max_inflight_tasks,
+            if self.config.single_use {
+                1
+            } else {
+                self.config.max_inflight_tasks
+            },
         )
         .await?;
         let mut update_for_worker_stream = client
@@ -942,12 +984,19 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     );
                 }
 
-                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
 
+                if self.config.single_use && inner.accepted_action.load(Ordering::Acquire) {
+                    return Err(
+                        err.append("Single-use worker disconnected after accepting its action")
+                    );
+                }
+                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 (error_handler)(err).await; // Try to connect again.
+            } else if self.config.single_use {
+                return Ok(());
             }
         }
         // Unreachable.
