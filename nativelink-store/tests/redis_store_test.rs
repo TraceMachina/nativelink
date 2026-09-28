@@ -1297,7 +1297,9 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Array(vec![
                     Value::Int(1),
@@ -1384,7 +1386,9 @@ fn test_search_by_index_retries_on_failover() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             result,
         )
     }
@@ -1485,7 +1489,9 @@ fn test_search_by_index_skips_docs_that_expired_mid_query() -> Result<(), Error>
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             // A page whose middle document expired between match and load.
             Ok(Value::Array(vec![
                 Value::Map(vec![
@@ -1567,7 +1573,7 @@ fn test_search_by_index_failure() -> Result<(), Error> {
         "Client: TEST - Client: unexpected command", "Error with ft_create in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)", "---", "Client: TEST - Client: unexpected command", "Error with second ft_aggregate in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)"].iter().map(ToString::to_string).collect()));
 
     assert!(logs_contain(
-        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"] } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\"]"
+        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"] } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\", \"MAX\", \"1000000\"]"
     ));
 
     Ok(())
@@ -1599,7 +1605,9 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Err::<Value, _>(make_extension_error(
                 "BUSY".to_string(),
                 Some("Redis is busy running a script".to_string()),
@@ -1682,7 +1690,9 @@ fn test_search_by_index_preserves_other_ft_create_errors() -> Result<(), Error> 
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Err::<Value, _>(make_extension_error(
                 "BUSY".to_string(),
                 Some("Redis is busy running a script".to_string()),
@@ -1762,7 +1772,9 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Array(vec![
                     Value::Int(1),
@@ -1847,7 +1859,9 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Map(vec![
                     (
@@ -1955,7 +1969,9 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             // First page: one entry, cursor=42 so the stream issues
             // FT.CURSOR READ for a second page.
             Ok(Value::Array(vec![
