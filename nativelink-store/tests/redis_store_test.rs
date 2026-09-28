@@ -65,6 +65,20 @@ fn make_temp_key(final_name: &str) -> String {
     format!("temp-{TEMP_UUID}-{{{final_name}}}")
 }
 
+/// What `FT.INFO` says while the index created a moment ago is still
+/// scanning existing keys (`indexing 1`) and once it is done (`0`).
+fn make_ft_info(index: &str, indexing: i64) -> MockCmd {
+    MockCmd::new(
+        redis::cmd("FT.INFO").arg(index),
+        Ok(Value::Array(vec![
+            Value::BulkString(b"num_docs".to_vec()),
+            Value::Int(3),
+            Value::BulkString(b"indexing".to_vec()),
+            Value::Int(indexing),
+        ])),
+    )
+}
+
 async fn make_mock_store(
     commands: Vec<MockCmd>,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
@@ -1336,6 +1350,7 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1616,6 +1631,10 @@ fn test_search_by_index_skips_docs_that_expired_mid_query() -> Result<(), Error>
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        // The index is still backfilling on the first ask and ready on the
+        // second; the read waits for the second.
+        make_ft_info("test:_content_prefix__3e762c15", 1),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1727,6 +1746,7 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
     let commands = vec![
         make_ft_aggregate(),
         make_ft_create_already_exists(),
+        make_ft_info("test:_content_prefix_sort_key_3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1895,6 +1915,7 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -2005,6 +2026,7 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("SORTABLE"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix_sort_key_3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
