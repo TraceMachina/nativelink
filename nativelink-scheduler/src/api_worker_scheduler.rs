@@ -15,7 +15,7 @@
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -148,8 +148,15 @@ struct ApiWorkerSchedulerImpl {
     /// based on properties before doing linear scan.
     capability_index: WorkerCapabilityIndex,
 
-    /// Incremented every time a worker joins or leaves, here or on a peer.
+    /// Incremented when the set of distinct worker shapes changes, here or
+    /// on a peer. A worker joining or leaving with a shape the fleet already
+    /// has does not count: the unsatisfiable tracker keys its clock on this,
+    /// and a pool that scales up and down with identical workers used to
+    /// reset that clock every time, so an action no shape could ever run
+    /// waited forever behind a fleet that never stopped moving.
     fleet_generation: u64,
+    /// The distinct shapes behind `fleet_generation`, local and peer.
+    fleet_shape_set: BTreeSet<PropertyShape>,
 
     /// What the workers connected to other schedulers on the same state
     /// registered with, one entry per distinct shape, sorted by shape so
@@ -343,15 +350,29 @@ impl ApiWorkerSchedulerImpl {
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
         // Remove from capability index
         self.capability_index.remove_worker(worker_id);
+        // Pop before recomputing the shapes, or the departing worker still
+        // counts and a cached verdict that only it satisfied survives it.
+        let result = self.workers.pop(worker_id);
         self.fleet_changed();
         self.local_fleet_change_notify.notify_one();
 
-        let result = self.workers.pop(worker_id);
         self.worker_change_notify.notify_one();
         result
     }
 
     fn fleet_changed(&mut self) {
+        let mut shapes: BTreeSet<PropertyShape> = self
+            .workers
+            .iter()
+            .map(|(_, w)| PropertyShape::from(&w.total_platform_properties))
+            .collect();
+        if let Some(peer_fleet) = &self.peer_fleet {
+            shapes.extend(peer_fleet.iter().map(PropertyShape::from));
+        }
+        if shapes == self.fleet_shape_set {
+            return;
+        }
+        self.fleet_shape_set = shapes;
         self.fleet_generation += 1;
         self.static_verdicts.clear();
     }
@@ -397,6 +418,14 @@ impl ApiWorkerSchedulerImpl {
         }
         if self.peer_fleet == peer_fleet {
             return;
+        }
+        // Unknown peers make every verdict "maybe satisfiable elsewhere",
+        // and that verdict is cached. Peers becoming known (or unknown
+        // again) changes what a verdict means even when the union of shapes
+        // does not move, so the cache goes, though the generation stays:
+        // clocks already running were right and keep their start.
+        if self.peer_fleet.is_some() != peer_fleet.is_some() {
+            self.static_verdicts.clear();
         }
         self.peer_fleet = peer_fleet;
         self.fleet_changed();
@@ -930,6 +959,7 @@ impl ApiWorkerScheduler {
                 shutting_down: false,
                 capability_index: WorkerCapabilityIndex::new(),
                 fleet_generation: 0,
+                fleet_shape_set: BTreeSet::new(),
                 // Without peers there is nothing to wait for.
                 peer_fleet: (!has_peers).then(Vec::new),
                 shared: has_peers,

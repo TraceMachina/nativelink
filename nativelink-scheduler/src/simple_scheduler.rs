@@ -342,6 +342,12 @@ impl SimpleScheduler {
         self.do_try_match(true).await
     }
 
+    /// A pass as production runs it between logging intervals: cached
+    /// verdicts are used rather than recomputed.
+    pub async fn do_try_match_quietly_for_test(&self) -> Result<(), Error> {
+        self.do_try_match(false).await
+    }
+
     /// Stands in for the fleet exchange with peer schedulers.
     pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
         self.worker_scheduler
