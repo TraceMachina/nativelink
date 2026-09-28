@@ -62,9 +62,28 @@ pub struct UnsatisfiableReason {
 }
 
 impl UnsatisfiableReason {
+    /// No worker is connected at all, here or on any peer: nothing to judge
+    /// the action's properties against, so no property is named.
+    #[must_use]
+    pub const fn no_workers() -> Self {
+        Self {
+            properties: Vec::new(),
+            combination_only: false,
+        }
+    }
+
+    /// Whether this is `no_workers`.
+    #[must_use]
+    pub const fn is_no_workers(&self) -> bool {
+        self.properties.is_empty() && !self.combination_only
+    }
+
     /// The unsatisfied property names, comma separated, for metric labels.
     #[must_use]
     pub fn property_names(&self) -> String {
+        if self.is_no_workers() {
+            return "no_workers".to_string();
+        }
         self.properties
             .iter()
             .map(|property| property.name.as_str())
@@ -82,6 +101,9 @@ impl UnsatisfiableReason {
     }
 
     fn write(&self, f: &mut fmt::Formatter<'_>, with_offered_values: bool) -> fmt::Result {
+        if self.is_no_workers() {
+            return f.write_str("no worker is connected to the scheduler");
+        }
         if self.combination_only {
             f.write_str("no single worker satisfies the combination of: ")?;
         } else {
