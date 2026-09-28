@@ -166,7 +166,11 @@ async fn simple_scheduler_factory(
                 task_change_notify.clone(),
                 now_fn,
                 Default::default,
-                spec.retain_completed_for_s,
+                // Passed through as 0, the store wrote every completed
+                // record with no expiry (the Lua update treats 0 as
+                // forever), so the scheduler's Redis kept every action ever
+                // run and the search index grew without bound.
+                retain_completed_for_s(spec.retain_completed_for_s),
                 // Same normalisation SimpleScheduler applies, so the
                 // keepalive stops being kept exactly when the timeout that
                 // reads it comes due.
@@ -190,8 +194,19 @@ async fn simple_scheduler_factory(
     }
 }
 
+/// How long a completed record is kept, whichever backend holds it: the
+/// configured value, or the same default for both when it is unset.
+#[must_use]
+pub const fn retain_completed_for_s(configured: u32) -> u32 {
+    if configured == 0 {
+        DEFAULT_RETAIN_COMPLETED_FOR_S
+    } else {
+        configured
+    }
+}
+
 pub fn memory_awaited_action_db_factory<I, NowFn>(
-    mut retain_completed_for_s: u32,
+    configured_retain_completed_for_s: u32,
     task_change_notify: &Arc<Notify>,
     now_fn: NowFn,
 ) -> MemoryAwaitedActionDb<I, NowFn>
@@ -199,12 +214,9 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Sync + 'static,
 {
-    if retain_completed_for_s == 0 {
-        retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
-    }
     MemoryAwaitedActionDb::new(
         &EvictionPolicy {
-            max_seconds: retain_completed_for_s,
+            max_seconds: retain_completed_for_s(configured_retain_completed_for_s),
             ..Default::default()
         },
         task_change_notify.clone(),

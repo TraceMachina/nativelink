@@ -161,7 +161,7 @@ where
     ))
 }
 
-fn resp2_data_parse(
+pub(crate) fn resp2_data_parse(
     output: &mut RedisCursorData,
     results_array: &[Value],
 ) -> Result<(), RedisError> {
@@ -208,7 +208,7 @@ fn resp2_data_parse(
     Ok(())
 }
 
-fn resp3_data_parse(
+pub(crate) fn resp3_data_parse(
     output: &mut RedisCursorData,
     results_map: &Vec<(Value, Value)>,
 ) -> Result<(), RedisError> {

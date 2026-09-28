@@ -7,14 +7,15 @@ use std::time::SystemTime;
 use futures::{Stream, StreamExt, stream};
 use mock_instant::thread_local::MockClock;
 use nativelink_config::schedulers::SimpleSpec;
-use nativelink_error::{Code, Error, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::UpdateForWorker;
 use nativelink_scheduler::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, SortedAwaitedAction, SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
+    SortedAwaitedActionState,
 };
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
@@ -469,12 +470,44 @@ async fn the_sweep_retires_queued_actions_no_client_is_waiting_on() -> Result<()
 /// What a listing of the queue does after its first entry.
 #[derive(Clone, Copy)]
 enum Fault {
-    /// The second entry's record is gone, as after an eviction: the listing
-    /// names it and the read fails. The rest of the listing follows.
+    /// The listing names a second entry whose record is gone, as after an
+    /// eviction: the stream yields the read error in its place. The rest of
+    /// the listing follows.
     LostRecord,
     /// The next page fails to load, as when the store goes away mid-read:
     /// the stream yields the error and ends.
     Transport,
+    /// The second entry is listed but reading its record fails with this
+    /// code, as when it expired or was evicted between the search and the
+    /// read (`NotFound`), was damaged (`InvalidArgument`), or the store
+    /// went away (`Unavailable`).
+    BrokenRecord(Code),
+    /// The store hands back a row it could not decode, as the Redis listing
+    /// does for damaged JSON: an `InvalidArgument` item between two good
+    /// ones, before any subscriber exists.
+    UndecodableRow,
+}
+
+/// A subscriber whose record may be unreadable.
+enum MaybeBroken<S> {
+    Sound(S),
+    Broken(Code),
+}
+
+impl<S: AwaitedActionSubscriber> AwaitedActionSubscriber for MaybeBroken<S> {
+    async fn changed(&mut self) -> Result<AwaitedAction, Error> {
+        match self {
+            Self::Sound(subscriber) => subscriber.changed().await,
+            Self::Broken(code) => Err(make_err!(*code, "record unreadable")),
+        }
+    }
+
+    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+        match self {
+            Self::Sound(subscriber) => subscriber.borrow().await,
+            Self::Broken(code) => Err(make_err!(*code, "record unreadable")),
+        }
+    }
 }
 
 /// The memory database with one fault injected into every queue listing.
@@ -493,29 +526,72 @@ impl<T: AwaitedActionDb> MetricsComponent for FaultyDb<T> {
     }
 }
 
+impl<T: AwaitedActionDb> FaultyDb<T> {
+    /// The listing as the store hands it back, with the fault in place of
+    /// or beside its second entry.
+    fn inject(
+        &self,
+        listed: Vec<Result<T::Subscriber, Error>>,
+    ) -> Vec<Result<MaybeBroken<T::Subscriber>, Error>> {
+        let mut items = Vec::new();
+        for (i, item) in listed.into_iter().enumerate() {
+            if i == 1 {
+                match self.fault {
+                    Fault::LostRecord => {
+                        items.push(Err(make_err!(Code::NotFound, "record evicted")));
+                    }
+                    Fault::UndecodableRow => {
+                        items.push(Err(make_err!(
+                            Code::InvalidArgument,
+                            "In AwaitedAction::decode"
+                        )));
+                    }
+                    Fault::Transport => {
+                        items.push(Err(make_err!(Code::Unavailable, "FT.CURSOR READ failed")));
+                        break;
+                    }
+                    Fault::BrokenRecord(code) => {
+                        items.push(Ok(MaybeBroken::Broken(code)));
+                        continue;
+                    }
+                }
+            }
+            items.push(item.map(MaybeBroken::Sound));
+        }
+        items
+    }
+}
+
 impl<T: AwaitedActionDb> AwaitedActionDb for FaultyDb<T> {
-    type Subscriber = T::Subscriber;
+    type Subscriber = MaybeBroken<T::Subscriber>;
 
     async fn get_awaited_action_by_id(
         &self,
         client_operation_id: &OperationId,
     ) -> Result<Option<Self::Subscriber>, Error> {
-        self.inner
+        Ok(self
+            .inner
             .get_awaited_action_by_id(client_operation_id)
-            .await
+            .await?
+            .map(MaybeBroken::Sound))
     }
 
     async fn get_all_awaited_actions(
         &self,
     ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
-        self.inner.get_all_awaited_actions().await
+        let listed: Vec<_> = self.inner.get_all_awaited_actions().await?.collect().await;
+        Ok(stream::iter(self.inject(listed)))
     }
 
     async fn get_by_operation_id(
         &self,
         operation_id: &OperationId,
     ) -> Result<Option<Self::Subscriber>, Error> {
-        self.inner.get_by_operation_id(operation_id).await
+        Ok(self
+            .inner
+            .get_by_operation_id(operation_id)
+            .await?
+            .map(MaybeBroken::Sound))
     }
 
     async fn get_range_of_actions(
@@ -531,22 +607,7 @@ impl<T: AwaitedActionDb> AwaitedActionDb for FaultyDb<T> {
             .await?
             .collect()
             .await;
-        let mut items = Vec::new();
-        for (i, item) in listed.into_iter().enumerate() {
-            if i == 1 {
-                match self.fault {
-                    Fault::LostRecord => {
-                        items.push(Err(make_err!(Code::NotFound, "record evicted")));
-                    }
-                    Fault::Transport => {
-                        items.push(Err(make_err!(Code::Unavailable, "FT.CURSOR READ failed")));
-                        break;
-                    }
-                }
-            }
-            items.push(item);
-        }
-        Ok(stream::iter(items))
+        Ok(stream::iter(self.inject(listed)))
     }
 
     async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
@@ -559,9 +620,11 @@ impl<T: AwaitedActionDb> AwaitedActionDb for FaultyDb<T> {
         action_info: Arc<ActionInfo>,
         no_event_action_timeout: Duration,
     ) -> Result<Self::Subscriber, Error> {
-        self.inner
-            .add_action(client_operation_id, action_info, no_event_action_timeout)
-            .await
+        Ok(MaybeBroken::Sound(
+            self.inner
+                .add_action(client_operation_id, action_info, no_event_action_timeout)
+                .await?,
+        ))
     }
 }
 
@@ -640,6 +703,177 @@ async fn the_sweep_fails_when_the_listing_fails() -> Result<(), Error> {
         .await
         .expect_err("a listing that failed part way is a failed sweep");
     assert_eq!(err.code, Code::Unavailable);
+    Ok(())
+}
+
+/// Queues `n` actions and returns their client listeners.
+async fn add_queued_actions(
+    state_mgr: &impl ClientStateManager,
+    n: usize,
+) -> Result<Vec<Box<dyn nativelink_util::operation_state_manager::ActionStateResult>>, Error> {
+    let mut clients = Vec::with_capacity(n);
+    for _ in 0..n {
+        clients.push(
+            state_mgr
+                .add_action(
+                    OperationId::default(),
+                    Arc::new(action_info(make_system_time(0))),
+                )
+                .await?,
+        );
+    }
+    Ok(clients)
+}
+
+/// Three abandoned actions, the second one's record unreadable when the
+/// sweep goes to read it. The sweep retires the other two.
+#[nativelink_test]
+async fn the_sweep_skips_a_record_it_cannot_read() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::BrokenRecord(Code::NotFound));
+    for _ in 0..3 {
+        drop(
+            state_mgr
+                .add_action(
+                    OperationId::default(),
+                    Arc::new(action_info(make_system_time(0))),
+                )
+                .await?,
+        );
+    }
+    MockClock::advance(Duration::from_mins(6));
+
+    assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 2);
+    Ok(())
+}
+
+/// A listing that meets a record it cannot decode leaves it out and goes on,
+/// so the provisioner and the admin API, which read this listing every few
+/// seconds, still see every other queued action.
+#[nativelink_test]
+async fn the_listing_skips_a_record_it_cannot_read() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::BrokenRecord(Code::InvalidArgument));
+    // Kept so the clients count as waiting.
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    assert_eq!(listed.len(), 2, "the unreadable record is left out");
+    for operation in &listed {
+        operation
+            .as_state()
+            .await
+            .err_tip(|| "every listed operation is readable")?;
+    }
+    Ok(())
+}
+
+/// The Redis listing reports a row it cannot decode as an error item, before
+/// any record is read. The queued listing leaves it out and lists the rest.
+#[nativelink_test]
+async fn the_listing_skips_a_row_it_cannot_decode() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::UndecodableRow);
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    assert_eq!(
+        listed.len(),
+        3,
+        "the undecodable row is left out, the rest listed"
+    );
+    for operation in &listed {
+        operation
+            .as_state()
+            .await
+            .err_tip(|| "every listed operation is readable")?;
+    }
+    Ok(())
+}
+
+/// The listing of every operation, which collects the whole set before it
+/// filters, also survives a row it cannot decode instead of failing whole.
+#[nativelink_test]
+async fn the_listing_of_every_operation_skips_a_row_it_cannot_decode() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::UndecodableRow);
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter::default(),
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    assert_eq!(listed.len(), 3);
+    Ok(())
+}
+
+/// The listing of every operation still fails when the store does, rather
+/// than quietly listing whatever came before the failure.
+#[nativelink_test]
+async fn the_listing_of_every_operation_fails_when_the_store_does() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::Transport);
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let err = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter::default(),
+    )
+    .await
+    .err()
+    .expect("a store failure fails the listing");
+    assert_eq!(err.code, Code::Unavailable);
+    Ok(())
+}
+
+/// A read that fails because the store is unreachable is not a lost record;
+/// the listing reports it instead of quietly leaving the action out.
+#[nativelink_test]
+async fn the_listing_reports_a_store_failure_on_read() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::BrokenRecord(Code::Unavailable));
+    // Kept so the clients count as waiting.
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    let mut failures = 0;
+    for operation in &listed {
+        if let Err(err) = operation.as_state().await {
+            assert_eq!(err.code, Code::Unavailable);
+            failures += 1;
+        }
+    }
+    assert_eq!(failures, 1, "the store failure reaches the reader");
     Ok(())
 }
 
