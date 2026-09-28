@@ -76,25 +76,25 @@ async fn queued_order<Db: AwaitedActionDb>(db: &Db) -> Result<Vec<(i32, u64)>, E
     db.add_action(
         OperationId::from("client-a"),
         action(1, 0, 100_000),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     )
     .await?;
     db.add_action(
         OperationId::from("client-d"),
         action(4, 0, 50_500),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     )
     .await?;
     db.add_action(
         OperationId::from("client-b"),
         action(2, 0, 50_000),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     )
     .await?;
     db.add_action(
         OperationId::from("client-c"),
         action(3, 5, 150_000),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     )
     .await?;
 
