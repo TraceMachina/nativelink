@@ -27,6 +27,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(target_family = "unix")]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -2618,9 +2619,14 @@ impl RunningActionImpl {
                     let memory_limit_kb = memory_reservation
                         .map(|(_, limit_kb)| limit_kb)
                         .or(self.running_actions_manager.pod_memory_limit_kb);
+                    // The signal that ended the process, where the platform reports one.
+                    #[cfg(target_family = "unix")]
+                    let signal = exit_status.signal();
+                    #[cfg(not(target_family = "unix"))]
+                    let signal = None;
                     let (outcome, enforced) = classify_outcome(
                         kill_reason,
-                        exit_status.signal(),
+                        signal,
                         sampled_usage.last_memory_kb,
                         memory_limit_kb,
                     );

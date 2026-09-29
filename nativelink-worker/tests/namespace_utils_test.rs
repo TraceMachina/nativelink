@@ -194,7 +194,7 @@ async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> 
         Some(0),
         "the trap's exit code should come through: {status:?}"
     );
-    let _ = std::fs::remove_file(&marker);
+    drop(std::fs::remove_file(&marker));
     Ok(())
 }
 
