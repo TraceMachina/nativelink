@@ -200,7 +200,7 @@ async fn sample_action_resource_usage(
                 && limit.over_limit_tx.send(observed_kb).is_err()
             {
                 // The receiver is gone only when the action already ended.
-                debug!(observed_kb, "Memory ceiling breached after the action ended");
+                debug!(observed_kb, "Memory ceiling breached, action already ended");
             }
         }
 
