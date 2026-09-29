@@ -16,8 +16,9 @@ use std::io::Error;
 
 use tracing::error;
 
-/// A wrapper around a Child to send SIGTERM to kill the process instead
-/// of SIGKILL as it's wrapped by the stub.
+/// A wrapper around a Child that may be the stub of a PID namespace. A
+/// SIGTERM to the stub is passed on to the action; a SIGKILL to the stub
+/// ends the whole namespace, which is the hard kill.
 #[derive(Debug)]
 pub struct MaybeNamespacedChild {
     namespaced: bool,
@@ -56,37 +57,18 @@ impl MaybeNamespacedChild {
         self.child.id()
     }
 
-    /// Send SIGTERM if namespaced which sends SIGKILL to the child, otherwise
-    /// SIGKILL to the child's whole process group and then the child.
-    ///
-    /// Not namespaced, the child is its own group leader, so the group is
-    /// the action and every descendant it forked: a timed-out or cancelled
-    /// action used to lose only its direct child while its descendants ran
-    /// on, holding memory and CPU against the next action (issue #225).
-    /// Namespaced, the leader is the stub that runs the sandbox and cleans
-    /// up after it, so the group is left alone and the stub is told.
+    /// SIGKILL the child and wait for it. Namespaced, the child is the
+    /// stub and the init of the action's PID namespace, so its death takes
+    /// the action and everything the action spawned with it; the stub also
+    /// set `PR_SET_PDEATHSIG` on the action for the same end. Not
+    /// namespaced, the child is its own group leader, so the group gets the
+    /// SIGKILL first: a timed-out or cancelled action used to lose only its
+    /// direct child while its descendants ran on (issue #225).
     pub async fn kill(&mut self) -> Result<(), Error> {
-        if self.namespaced {
-            // It would be safer to call send_signal to use the pidfd to avoid
-            // races, however this is still an experimental API, see:
-            // https://github.com/rust-lang/rust/issues/141975
-            // self.child.std_child().send_signal(Signal::SIGTERM)?;
-            // return self.child.wait().await.map(|_| ());
-            if let Some(pid) = self.child.id() {
-                let pid_t: libc::pid_t = pid.try_into().map_err(|e| {
-                    Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("pid larger than pid_t type ({pid}): {e}"),
-                    )
-                })?;
-                // SAFETY: pid is valid as provided by the wrapper and we are
-                // sending a signal to the namespaced stub.
-                unsafe { libc::kill(pid_t, libc::SIGTERM) };
-                return self.child.wait().await.map(|_| ());
-            }
-        }
         #[cfg(target_os = "linux")]
-        if let Some(pgid) = self.child.id() {
+        if !self.namespaced
+            && let Some(pgid) = self.child.id()
+        {
             kill_process_group(pgid);
         }
         self.child.kill().await
@@ -563,8 +545,16 @@ pub fn configure_namespace(
                 let sig = unsafe { libc::sigwaitinfo(sigset.as_ptr(), siginfo.as_mut_ptr()) };
 
                 if sig == libc::SIGTERM {
+                    // Pass the SIGTERM on, so the action gets the grace the
+                    // worker's kill_grace_ms promises to write its own
+                    // cleanup. The stub used to turn it into SIGKILL, which
+                    // ended the action at once under namespaces while the
+                    // same action got its grace without them. The hard kill
+                    // is a SIGKILL to the stub itself: as this PID
+                    // namespace's init, its death takes every process in
+                    // the namespace with it.
                     // SAFETY: pid is valid and we are sending a signal.
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    unsafe { libc::kill(pid, libc::SIGTERM) };
                 }
             }
         }
