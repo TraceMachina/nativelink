@@ -148,7 +148,18 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
                                 (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
                             );
                         }
-                        if isolate_tmp && let Err(err) = bind_mount(c"/tmp", c"/tmp") {
+                        // The same sequence `perform_remount` runs for an
+                        // action, so a policy that allows a bind to self but
+                        // refuses a sized tmpfs, or a mkdir under it, fails
+                        // here and not in every action's pre_exec. All of it
+                        // is inside this child's private mount namespace.
+                        if isolate_tmp
+                            && let Err(err) = bind_mount(c"/tmp", c"/tmp")
+                                .and_then(|()| mount_tmpfs(c"/tmp", Some(ROOT_MASK_TMPFS_OPTIONS)))
+                                .and_then(|()| {
+                                    mkdir_p_signal_safe(c"/tmp/nativelink-namespace-probe/action")
+                                })
+                        {
                             let errno = err.raw_os_error().unwrap_or(libc::EIO);
                             exit(
                                 (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
@@ -332,15 +343,22 @@ impl Drop for OwnedFd {
     }
 }
 
-/// The tmpfs that masks the root action directory holds one directory
-/// entry and a mount point, so it is bounded to this. Anything that writes
-/// beside the action directory instead of inside it gets `ENOSPC` rather
-/// than the worker's memory.
+/// With a private `/tmp`, the tmpfs that masks the root action directory
+/// holds one directory entry and a mount point, so it is bounded to this:
+/// anything that writes beside the action directory instead of inside it
+/// gets `ENOSPC` rather than the worker's memory. Without `isolate_tmp`
+/// the mask is unbounded, as it was before the private `/tmp` existed.
 const ROOT_MASK_TMPFS_OPTIONS: &core::ffi::CStr = c"size=1m";
 
+/// Whether `path` is `/tmp` or lies under it.
+fn is_under_tmp(path: &core::ffi::CStr) -> bool {
+    let bytes = path.to_bytes();
+    bytes == b"/tmp" || bytes.starts_with(b"/tmp/")
+}
+
 /// Mount a fresh, empty tmpfs over the given directory in an
-/// async-signal-safe manner, with the given mount options.
-fn mount_tmpfs(target: &core::ffi::CStr, options: &core::ffi::CStr) -> Result<(), Error> {
+/// async-signal-safe manner, with the given mount options, or none.
+fn mount_tmpfs(target: &core::ffi::CStr, options: Option<&core::ffi::CStr>) -> Result<(), Error> {
     // SAFETY: mount is async-signal-safe. The filesystem type, target and options are valid C-strings.
     if unsafe {
         libc::mount(
@@ -348,7 +366,7 @@ fn mount_tmpfs(target: &core::ffi::CStr, options: &core::ffi::CStr) -> Result<()
             target.as_ptr(),
             c"tmpfs".as_ptr(),
             0,
-            options.as_ptr().cast(),
+            options.map_or(core::ptr::null(), |options| options.as_ptr().cast()),
         )
     } != 0
     {
@@ -454,7 +472,9 @@ fn perform_remount(
 
     if let Some(tmp_directory) = tmp_directory {
         // Give the action a private /tmp: its own tmp directory, on the
-        // worker's disk and removed with the action, bound over /tmp so
+        // worker's disk and removed with the action, bound over /tmp (the
+        // bind carries the work volume's mount options, noexec and the
+        // like, not the host /tmp's; the config doc says so) so
         // concurrent actions cannot collide on predictable paths there and
         // nothing leaks between actions through it. A directory on disk
         // rather than a tmpfs, because tmpfs pages are memory charged to
@@ -471,8 +491,17 @@ fn perform_remount(
         mkdir_p_signal_safe(root_action_directory)?;
     }
 
-    // Mask the root action directory with a tmpfs to ensure sibling directories aren't visible.
-    mount_tmpfs(root_action_directory, ROOT_MASK_TMPFS_OPTIONS)?;
+    // Mask the root action directory with a tmpfs to ensure sibling
+    // directories aren't visible. With the root at or under a bound /tmp
+    // the bind already hides every sibling, and a mask there would either
+    // land on top of the bind (root exactly /tmp: the action's "private
+    // /tmp" would be the 1 MiB mask) or leave a mount point sitting in the
+    // action's otherwise empty /tmp, so it is skipped.
+    let root_under_bound_tmp = tmp_directory.is_some() && is_under_tmp(root_action_directory);
+    if !root_under_bound_tmp {
+        let options = tmp_directory.is_some().then_some(ROOT_MASK_TMPFS_OPTIONS);
+        mount_tmpfs(root_action_directory, options)?;
+    }
 
     // Recreate the specific operation's directory inside the empty tmpfs.
     // SAFETY: mkdir is async-signal-safe and the path is a valid C-string.

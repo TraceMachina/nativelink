@@ -324,7 +324,9 @@ directory is masked so one action cannot see another's tree, and `/tmp` is
 replaced with the action's own temporary directory, on the worker's disk and
 removed with the action, so actions cannot collide on, or leak state
 through, predictable paths there (`isolate_tmp: false` keeps the host's
-`/tmp` visible); the rest of the host filesystem stays visible.
+`/tmp` visible; the bound `/tmp` carries the work volume's mount options,
+`noexec` included, not the host `/tmp`'s); the rest of the host filesystem
+stays visible.
 
 Note what is absent from that flag list: **`CLONE_NEWNET`**. No network
 namespace is created. An action has the worker's full network access, including to port

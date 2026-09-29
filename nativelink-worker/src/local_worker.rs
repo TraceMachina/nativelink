@@ -977,21 +977,25 @@ pub async fn new_local_worker(
     #[cfg(target_os = "linux")]
     let use_namespaces = {
         let use_mount_namespace = config.use_mount_namespace.unwrap_or_default();
+        // The mount namespace only exists when `use_namespaces` is on too;
+        // `isolate_tmp` is judged against that, not against the flag alone,
+        // or an explicit `true` would be dropped without a word.
+        let mount_namespace_on = config.use_namespaces == Some(true) && use_mount_namespace;
         // A private /tmp is part of the mount isolation unless explicitly
         // turned off. A worker without a /tmp, such as a minimal container
         // image, has nothing for actions to collide on, so the default is
         // off there instead of failing to start.
         let isolate_tmp = config.isolate_tmp.unwrap_or_else(|| {
             let has_tmp = std::path::Path::new("/tmp").is_dir();
-            if use_mount_namespace && !has_tmp {
+            if mount_namespace_on && !has_tmp {
                 warn!("/tmp does not exist on this worker, so actions will not get a private /tmp");
             }
-            use_mount_namespace && has_tmp
+            mount_namespace_on && has_tmp
         });
-        if isolate_tmp && !use_mount_namespace {
+        if isolate_tmp && !mount_namespace_on {
             return Err(make_err!(
                 Code::InvalidArgument,
-                "isolate_tmp requires use_mount_namespace to be true"
+                "isolate_tmp requires use_namespaces and use_mount_namespace to be true"
             ));
         }
         if let Some(use_namespaces) = &config.use_namespaces {

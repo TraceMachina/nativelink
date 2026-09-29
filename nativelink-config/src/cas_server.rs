@@ -1419,10 +1419,13 @@ pub struct LocalWorkerConfig {
     /// `/tmp`, nothing leaks between actions through it, and what an action
     /// writes there is removed with the action.
     ///
-    /// This is only available on Linux and requires `use_mount_namespace` to be
-    /// true. If explicitly set to true without `use_mount_namespace` the worker
-    /// will exit with an error. Set it to false to keep the host's `/tmp`
-    /// visible to actions, for example when a tool they need lives there.
+    /// This is only available on Linux and requires `use_namespaces` and
+    /// `use_mount_namespace` to be true. If explicitly set to true without
+    /// both the worker will exit with an error. Set it to false to keep the
+    /// host's `/tmp` visible to actions, for example when a tool they need
+    /// lives there. The bound `/tmp` carries the work volume's mount options
+    /// (`noexec`, `nodev`, `nosuid` if the volume has them), not the host
+    /// `/tmp`'s.
     ///
     /// The private `/tmp` lives on the worker's disk under the work
     /// directory, not in memory, so it is bounded by the volume that holds
