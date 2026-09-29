@@ -42,6 +42,8 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT_SECONDS: u64 = 5;
 pub struct HealthServer {
     health_registry: HealthRegistry,
     timeout: Duration,
+    /// Readiness: a component still initializing makes the answer 503.
+    strict: bool,
 }
 
 impl HealthServer {
@@ -54,7 +56,16 @@ impl HealthServer {
         Self {
             health_registry,
             timeout,
+            strict: false,
         }
+    }
+
+    /// The readiness form: unavailable while anything is initializing, not
+    /// only when something failed.
+    pub const fn readiness(health_registry: HealthRegistry, health_cfg: &HealthConfig) -> Self {
+        let mut server = Self::new(health_registry, health_cfg);
+        server.strict = true;
+        server
     }
 }
 
@@ -70,6 +81,7 @@ impl Service<Request<Body>> for HealthServer {
     fn call(&mut self, _req: Request<Body>) -> Self::Future {
         let health_registry = self.health_registry.clone();
         let local_timeout = self.timeout;
+        let strict = self.strict;
         Box::pin(error_span!("health_server_call").in_scope(|| async move {
             let health_status_descriptions: Vec<HealthStatusDescription> = health_registry
                 .health_status_report(&local_timeout)
@@ -82,6 +94,11 @@ impl Service<Request<Body>> for HealthServer {
                         health_status_descriptions.iter().any(|description| {
                             matches!(description.status, HealthStatus::Failed { .. })
                                 | matches!(description.status, HealthStatus::Timeout { .. })
+                                | (strict
+                                    && matches!(
+                                        description.status,
+                                        HealthStatus::Initializing { .. }
+                                    ))
                         });
                     let status_code = if contains_failed_report {
                         StatusCode::SERVICE_UNAVAILABLE

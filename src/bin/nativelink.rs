@@ -63,7 +63,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::TaskExecutor;
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, fs, spawn};
-use nativelink_worker::local_worker::new_local_worker;
+use nativelink_worker::local_worker::{WorkerRegistration, new_local_worker};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
 use tokio::net::{TcpListener, TcpSocket};
@@ -88,6 +88,7 @@ const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 // Note: This must be kept in sync with the documentation in `HealthConfig::path`.
 const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
+const DEFAULT_READINESS_CHECK_PATH: &str = "/ready";
 
 // Note: This must be kept in sync with the documentation in
 // `OriginEventsConfig::max_event_queue_size`.
@@ -215,6 +216,7 @@ async fn inner_main(
 
     let health_registry_builder =
         Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
+    let mut worker_registrations: Vec<Arc<WorkerRegistration>> = Vec::new();
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -232,6 +234,24 @@ async fn inner_main(
                 .err_tip(|| format!("Failed to add store '{name}'"))?;
         }
         store_manager.run_post_init().await?;
+
+        // Workers start after the listeners are up, but the health registry
+        // is built with the listeners, so their registration flags are
+        // made and registered here and handed to the workers later.
+        let mut workers_health = health_registry_lock.sub_builder("workers");
+        for (i, worker_cfg) in cfg.workers.iter().flatten().enumerate() {
+            let WorkerConfig::Local(local_worker_cfg) = worker_cfg;
+            let name = if local_worker_cfg.name.is_empty() {
+                format!("worker_{i}")
+            } else {
+                local_worker_cfg.name.clone()
+            };
+            let registration = WorkerRegistration::new(&name);
+            workers_health
+                .sub_builder(&name)
+                .register_indicator(registration.clone());
+            worker_registrations.push(registration);
+        }
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
@@ -424,7 +444,19 @@ async fn inner_main(
             } else {
                 &health_cfg.path
             };
-            svc = svc.route_service(path, HealthServer::new(health_registry, &health_cfg));
+            let readiness_path = if health_cfg.readiness_path.is_empty() {
+                DEFAULT_READINESS_CHECK_PATH
+            } else {
+                &health_cfg.readiness_path
+            };
+            svc = svc.route_service(
+                path,
+                HealthServer::new(health_registry.clone(), &health_cfg),
+            );
+            svc = svc.route_service(
+                readiness_path,
+                HealthServer::readiness(health_registry, &health_cfg),
+            );
         }
 
         if let Some(admin_config) = services.admin {
@@ -794,7 +826,8 @@ async fn inner_main(
                         historical_store,
                     )
                     .await
-                    .err_tip(|| "Could not make LocalWorker")?;
+                    .err_tip(|| "Could not make LocalWorker")?
+                    .with_registration(worker_registrations[i].clone());
 
                     let name = if local_worker.name().is_empty() {
                         format!("worker_{i}")

@@ -449,6 +449,16 @@ pub struct HealthConfig {
     /// Timeout on health checks. Default: 5s.
     #[serde(default)]
     pub timeout_seconds: u64,
+
+    /// Path of the readiness check, the stricter sibling of `path`: it
+    /// answers 503 while any component is still initializing, where `path`
+    /// answers 200. A worker's registration with its scheduler is such a
+    /// component, so a Kubernetes readiness probe on this path turns Ready
+    /// only once the worker can take work.
+    ///
+    /// Default: "/ready"
+    #[serde(default)]
+    pub readiness_path: String,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

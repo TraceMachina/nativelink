@@ -1560,3 +1560,57 @@ async fn precondition_script_that_hangs_times_out() -> Result<(), Error> {
     assert!(err.to_string().contains("did not finish"), "{err}");
     Ok(())
 }
+
+/// The readiness flag follows the registration: off until the scheduler's
+/// `ConnectionResult`, on after it, off again when the connection is lost.
+#[nativelink_test]
+async fn registration_flag_follows_the_scheduler_connection() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    assert!(!test_context.registration.is_registered());
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert!(!test_context.registration.is_registered());
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let mut registered = false;
+    for _ in 0..1_000 {
+        if test_context.registration.is_registered() {
+            registered = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(registered, "registration flag never turned on");
+
+    drop(tx_stream);
+    test_context.actions_manager.expect_kill_all().await;
+    let mut lost = false;
+    for _ in 0..1_000 {
+        if !test_context.registration.is_registered() {
+            lost = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        lost,
+        "registration flag never turned off after the disconnect"
+    );
+    Ok(())
+}
