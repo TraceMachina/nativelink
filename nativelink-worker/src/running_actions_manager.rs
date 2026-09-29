@@ -146,21 +146,6 @@ fn start_action_resource_usage_sampler(
     ActionResourceUsageSampler { stop_tx, handle }
 }
 
-/// SIGKILL to every process in the action's group. The action is its own
-/// group leader, so this reaches the children a killed shell would
-/// otherwise leave behind holding the memory.
-#[cfg(target_os = "linux")]
-fn kill_process_group(pgid: u32) {
-    let Ok(pgid) = i32::try_from(pgid) else {
-        return;
-    };
-    // SAFETY: killpg only takes integers and has no memory safety
-    // considerations; a stale group id is reported as ESRCH, not acted on.
-    unsafe {
-        libc::killpg(pgid, libc::SIGKILL);
-    }
-}
-
 #[cfg(target_os = "linux")]
 async fn finish_action_resource_usage_sampler(
     sampler: ActionResourceUsageSampler,
@@ -2348,10 +2333,8 @@ impl RunningActionImpl {
                 Ok(observed_kb) = &mut over_limit_fut => {
                     self.running_actions_manager.metrics.memory_reservation_kills.inc();
                     killed_action = true;
-                    #[cfg(target_os = "linux")]
-                    if let Some(pgid) = child_process_guard.id() {
-                        kill_process_group(pgid);
-                    }
+                    // The wrapper's kill takes the whole process group, so
+                    // the children holding the memory go with the leader.
                     if let Err(err) = child_process_guard.kill().await {
                         error!(
                             ?err,
