@@ -844,6 +844,7 @@ pub async fn new_local_worker(
             loop {
                 time::sleep(interval).await;
                 match manager.sweep_orphaned_directories().await {
+                    Ok(0) => debug!("Orphan sweep found nothing"),
                     Ok(removed) => info!(removed, "Orphan sweep finished"),
                     Err(err) => warn!(?err, "Orphan sweep failed"),
                 }

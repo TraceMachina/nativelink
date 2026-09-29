@@ -3090,6 +3090,61 @@ exit 0
         Ok(())
     }
 
+    /// A symlink under the action root is not an action directory, whatever
+    /// it points at: the sweep neither follows it nor removes it.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn orphan_sweep_leaves_symlinks_alone() -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::ZERO,
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        // A settled directory outside the root, reachable through a symlink
+        // inside it, next to a real orphan.
+        let elsewhere = make_temp_path("elsewhere");
+        fs::create_dir_all(&elsewhere).await?;
+        tokio::fs::write(format!("{elsewhere}/kept"), b"x").await?;
+        let link = format!("{root_action_directory}/a-link");
+        tokio::fs::symlink(&elsewhere, &link).await?;
+        let orphan = format!("{root_action_directory}/b-orphan");
+        fs::create_dir_all(&orphan).await?;
+
+        assert_eq!(
+            running_actions_manager.sweep_orphaned_directories().await?,
+            1
+        );
+        assert!(!Path::new(&orphan).exists(), "the orphan should be gone");
+        assert!(
+            Path::new(&link).symlink_metadata().is_ok(),
+            "the symlink is not the sweep's business"
+        );
+        assert!(
+            Path::new(&format!("{elsewhere}/kept")).exists(),
+            "and neither is what it points at"
+        );
+        Ok(())
+    }
+
     #[cfg_attr(feature = "nix", ignore)]
     #[nativelink_test]
     async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn core::error::Error>>
