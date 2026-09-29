@@ -23,7 +23,7 @@
 use core::hash::BuildHasher;
 use std::collections::HashMap;
 
-use nativelink_config::cas_server::{CapacityConfig, WorkerProperty};
+use nativelink_config::cas_server::{CapacityConfig, CpuUnit, WorkerProperty};
 use tracing::{info, warn};
 
 /// CPU and memory as the cgroup (or, failing a limit, the host) reports them.
@@ -68,11 +68,18 @@ pub fn parse_meminfo_total_kb(meminfo: &str) -> Option<u64> {
 }
 
 /// The observed capacity less the worker's own share, memory divided by the
-/// enforcement headroom. Returns `(cpu_millicores, memory_kb)`.
+/// enforcement headroom. Returns `(cpu, memory_kb)` with the CPU on the
+/// scale `cpu_unit` names: whole cores rounded down, so a 14-core pod
+/// keeping one core back advertises `13`, not `13000`, to a scheduler
+/// whose actions ask for `cpu_count=1`.
 pub const fn advertised(observed: ObservedCapacity, config: &CapacityConfig) -> (u64, u64) {
-    let cpu = observed
+    let cpu_millicores = observed
         .cpu_millicores
         .saturating_sub(config.overhead_cpu_millicores);
+    let cpu = match config.cpu_unit {
+        CpuUnit::Cores => cpu_millicores / 1000,
+        CpuUnit::Millicores => cpu_millicores,
+    };
     let memory = observed
         .memory_kb
         .saturating_sub(config.overhead_memory_kb)
@@ -110,10 +117,10 @@ pub fn apply<S: BuildHasher>(
         );
         return None;
     };
-    let (cpu_millicores, memory_kb) = advertised(observed, config);
+    let (cpu, memory_kb) = advertised(observed, config);
     properties.insert(
         config.cpu_property_name.clone(),
-        WorkerProperty::Values(vec![cpu_millicores.to_string()]),
+        WorkerProperty::Values(vec![cpu.to_string()]),
     );
     properties.insert(
         config.memory_property_name.clone(),
@@ -122,11 +129,12 @@ pub fn apply<S: BuildHasher>(
     info!(
         observed_cpu_millicores = observed.cpu_millicores,
         observed_memory_kb = observed.memory_kb,
-        cpu_millicores,
+        cpu,
+        cpu_unit = ?config.cpu_unit,
         memory_kb,
         "Advertising capacity from the cgroup"
     );
-    Some((cpu_millicores, memory_kb))
+    Some((cpu, memory_kb))
 }
 
 pub fn parse_memory_current_kb(memory_current: &str) -> Option<u64> {

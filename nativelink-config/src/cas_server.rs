@@ -743,6 +743,20 @@ pub struct ServerConfig {
     pub experimental_identity_header: IdentityHeaderSpec,
 }
 
+/// The scale a CPU property is advertised on.
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum CpuUnit {
+    /// Whole cores, rounded down: what `cpu_count: { query_cmd: "nproc" }`
+    /// advertises and what an action asking for `cpu_count=1` means.
+    #[default]
+    Cores,
+    /// Thousandths of a core, for a fleet whose actions and workers already
+    /// speak that scale.
+    Millicores,
+}
+
 /// Advertise CPU and memory from what the worker can actually see. The
 /// worker reads `cpu.max` and `memory.max` at its own cgroup v2 root (the
 /// pod's limits on Kubernetes), takes off what it needs for itself, divides
@@ -753,7 +767,7 @@ pub struct ServerConfig {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CapacityConfig {
-    /// Property that carries CPU, in thousandths of a core.
+    /// Property that carries CPU, on the scale `cpu_unit` names.
     /// Default: `cpu_count`
     #[serde(
         default = "default_capacity_cpu_property_name",
@@ -769,7 +783,17 @@ pub struct CapacityConfig {
     )]
     pub memory_property_name: String,
 
-    /// CPU the worker keeps for itself, in thousandths of a core.
+    /// The scale the CPU property is advertised on. Whole cores by default,
+    /// the scale every other example in this configuration uses; a fleet
+    /// that advertises and requests thousandths of a core sets `millicores`.
+    /// Getting this wrong is a thousandfold error in how many actions the
+    /// scheduler packs onto the worker.
+    /// Default: cores
+    #[serde(default)]
+    pub cpu_unit: CpuUnit,
+
+    /// CPU the worker keeps for itself, in thousandths of a core whatever
+    /// `cpu_unit` says.
     /// Default: 1000
     #[serde(
         default = "default_capacity_overhead_cpu_millicores",

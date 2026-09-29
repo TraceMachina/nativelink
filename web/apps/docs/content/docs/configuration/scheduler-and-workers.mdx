@@ -234,10 +234,15 @@ memory by
 `memory_headroom_percent` (set it to the enforcement headroom), and sets the
 two properties to the result at registration. The limit is the number the
 kernel enforces, so the number the scheduler packs against is derived from
-it rather than typed next to it.
+it rather than typed next to it. `cpu_unit` is the scale of the CPU
+property: `cores` by default, rounded down, the scale `cpu_count: {
+query_cmd: "nproc" }` and an action's `cpu_count=1` use; a fleet that
+advertises and requests thousandths of a core sets `millicores`. The
+overhead is always in thousandths of a core.
 
 ```json5
 "capacity": {
+  "cpu_unit": "cores",
   "overhead_cpu_millicores": 1000,
   "overhead_memory_kb": 4194304,
   "memory_headroom_percent": 20

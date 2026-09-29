@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::cas_server::CapacityConfig;
+use nativelink_config::cas_server::{CapacityConfig, CpuUnit};
 use nativelink_worker::capacity::{
     ObservedCapacity, advertised, free_memory_kb_from, parse_cpu_max, parse_meminfo_available_kb,
     parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
@@ -20,9 +20,14 @@ use nativelink_worker::capacity::{
 use pretty_assertions::assert_eq;
 
 fn config(headroom: u64) -> CapacityConfig {
+    config_in(CpuUnit::Cores, headroom)
+}
+
+fn config_in(cpu_unit: CpuUnit, headroom: u64) -> CapacityConfig {
     CapacityConfig {
         cpu_property_name: "cpu_count".to_string(),
         memory_property_name: "memory_kb".to_string(),
+        cpu_unit,
         overhead_cpu_millicores: 1000,
         overhead_memory_kb: 4 * 1024 * 1024,
         memory_headroom_percent: headroom,
@@ -57,11 +62,43 @@ fn advertised_takes_off_the_overhead_and_the_headroom() {
         cpu_millicores: 14_000,
         memory_kb: 52 * 1024 * 1024,
     };
+    assert_eq!(advertised(observed, &config(20)), (13, 40 * 1024 * 1024));
+    assert_eq!(advertised(observed, &config(0)), (13, 48 * 1024 * 1024));
+}
+
+/// `cpu_count` is whole cores everywhere else in the configuration (`nproc`,
+/// `cpu_count=1` per action), so that is the default scale: a 14-core pod
+/// with the default block advertises 13, not the 13000 that would let the
+/// scheduler pack thousands of actions onto it. A partial core rounds down.
+/// A fleet on thousandths of a core says so and gets the exact figure.
+#[test]
+fn cpu_is_advertised_in_whole_cores_unless_told_millicores() {
+    let fourteen_cores = ObservedCapacity {
+        cpu_millicores: 14_000,
+        memory_kb: 1,
+    };
+    let default_block = CapacityConfig {
+        cpu_property_name: "cpu_count".to_string(),
+        memory_property_name: "memory_kb".to_string(),
+        cpu_unit: CpuUnit::default(),
+        overhead_cpu_millicores: 1000,
+        overhead_memory_kb: 0,
+        memory_headroom_percent: 0,
+    };
+    assert_eq!(advertised(fourteen_cores, &default_block).0, 13);
     assert_eq!(
-        advertised(observed, &config(20)),
-        (13_000, 40 * 1024 * 1024)
+        advertised(fourteen_cores, &config_in(CpuUnit::Millicores, 0)).0,
+        13_000
     );
-    assert_eq!(advertised(observed, &config(0)), (13_000, 48 * 1024 * 1024));
+    let fourteen_and_a_half = ObservedCapacity {
+        cpu_millicores: 14_500,
+        memory_kb: 1,
+    };
+    assert_eq!(advertised(fourteen_and_a_half, &config(0)).0, 13);
+    assert_eq!(
+        advertised(fourteen_and_a_half, &config_in(CpuUnit::Millicores, 0)).0,
+        13_500
+    );
 }
 
 #[test]
