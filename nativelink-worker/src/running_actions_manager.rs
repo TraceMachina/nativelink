@@ -3512,7 +3512,10 @@ impl RunningActionsManagerImpl {
     /// owns and that have not been touched for `max_cleanup_wait`. A
     /// cleanup that failed (the store was down, the process restarted
     /// mid-removal) leaves its directory behind, and it counts against the
-    /// pod's disk until something removes it. Returns how many were removed.
+    /// pod's disk until something removes it. A directory that will not go
+    /// is logged and counted and the sweep carries on, or one stubborn
+    /// entry would stop every sweep at the same place. Returns how many
+    /// were removed; the error is for the listing itself failing.
     pub async fn sweep_orphaned_directories(&self) -> Result<usize, Error> {
         let (_permit, dir_handle) = fs::read_dir(&self.root_action_directory)
             .await
@@ -3535,7 +3538,9 @@ impl RunningActionsManagerImpl {
                 continue;
             }
             let path = entry.path();
-            let Ok(metadata) = fs::metadata(&path).await else {
+            // Not followed: a symlink under the root is not an action
+            // directory, whatever it points at.
+            let Ok(metadata) = fs::symlink_metadata(&path).await else {
                 continue;
             };
             if !metadata.is_dir() {
@@ -3552,11 +3557,16 @@ impl RunningActionsManagerImpl {
                 continue;
             }
             warn!(path = %path.display(), age_secs = age.as_secs(), "Removing orphaned action directory");
-            fs::remove_dir_all(&path)
-                .await
-                .err_tip(|| format!("Removing orphaned action directory {}", path.display()))?;
-            self.metrics.orphan_removals.inc();
-            removed += 1;
+            match fs::remove_dir_all(&path).await {
+                Ok(()) => {
+                    self.metrics.orphan_removals.inc();
+                    removed += 1;
+                }
+                Err(err) => {
+                    self.metrics.orphan_removal_failures.inc();
+                    warn!(path = %path.display(), ?err, "Could not remove orphaned action directory");
+                }
+            }
         }
         Ok(removed)
     }
@@ -3816,6 +3826,8 @@ pub struct Metrics {
     stale_removals: CounterWithTime,
     #[metric(help = "Orphaned action directories removed by the periodic sweep.")]
     orphan_removals: CounterWithTime,
+    #[metric(help = "Orphaned action directories the sweep could not remove.")]
+    orphan_removal_failures: CounterWithTime,
     #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]
     cleanup_wait_timeouts: CounterWithTime,
     #[metric(help = "Stats about the get_proto_command_from_store command.")]
