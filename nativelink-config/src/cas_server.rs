@@ -775,6 +775,89 @@ pub struct EndpointConfig {
     pub tls_config: Option<ClientTlsConfig>,
 }
 
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum MemoryEnforcement {
+    /// Measure only.
+    None,
+    /// Kill the action's process group once two consecutive samples exceed
+    /// the reservation plus headroom, or one sample exceeds twice it.
+    #[default]
+    Soft,
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ResourceEnforcementConfig {
+    /// What to do with an action that exceeds its memory reservation.
+    /// Default: soft
+    #[serde(default)]
+    pub memory: MemoryEnforcement,
+
+    /// Whether to refuse an action whose disk reservation exceeds the free
+    /// space under the work directory, less what the actions already
+    /// admitted reserved, before its inputs are fetched. The
+    /// refusal is `ResourceExhausted`, which the scheduler requeues without
+    /// counting an attempt and holds off this worker until its next
+    /// keepalive.
+    /// Default: none
+    #[serde(default)]
+    pub disk: DiskEnforcement,
+
+    /// Platform property carrying the action's disk reservation in KiB.
+    /// Default: `disk_kb`
+    #[serde(
+        default = "default_disk_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub disk_property_name: String,
+
+    /// Platform property carrying the action's memory reservation in KiB,
+    /// as the scheduler sends it. An action without the property is not
+    /// enforced.
+    /// Default: `memory_kb`
+    #[serde(
+        default = "default_memory_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub memory_property_name: String,
+
+    /// Percent above the reservation an action may reach before it is
+    /// killed.
+    /// Default: 20
+    #[serde(
+        default = "default_memory_headroom_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub memory_headroom_percent: u64,
+}
+
+fn default_memory_property_name() -> String {
+    "memory_kb".to_string()
+}
+
+fn default_disk_property_name() -> String {
+    "disk_kb".to_string()
+}
+
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum DiskEnforcement {
+    /// Fetch inputs regardless of free space.
+    #[default]
+    None,
+    /// Refuse the action when the free space under the work directory is
+    /// below its reservation.
+    Guard,
+}
+
+const fn default_memory_headroom_percent() -> u64 {
+    20
+}
+
 #[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1061,6 +1144,20 @@ pub struct LocalWorkerConfig {
     /// Default: false
     #[serde(default)]
     pub drain_on_shutdown: bool,
+
+    /// Kill an action that grows past its memory reservation before the
+    /// pod's cgroup limit does. On cgroup v2 the container cgroup carries
+    /// `memory.oom.group`, so the kernel's kill takes the worker and every
+    /// action on it; this one takes only the offender and fails it with
+    /// `FailedPrecondition`. Linux only; accepted and ignored elsewhere.
+    /// Actions run through a persistent worker are not covered, since that
+    /// process outlives the action and serves others. With either axis on,
+    /// the worker reads an action's platform properties from the
+    /// scheduler's `StartExecute` rather than the client's request, so a
+    /// reservation the scheduler placed the action by is the one enforced
+    /// and exported to the environment.
+    #[serde(default)]
+    pub resource_enforcement: Option<ResourceEnforcementConfig>,
 
     /// The command to execute on every execution request. This will be parsed as
     /// a command + arguments (not shell).

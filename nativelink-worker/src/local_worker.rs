@@ -53,8 +53,8 @@ use tonic::Streaming;
 use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
 
 use crate::running_actions_manager::{
-    ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
-    RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
+    ExecutionConfiguration, Metrics as RunningActionManagerMetrics, ResourceEnforcement,
+    RunningAction, RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
 };
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_connect_worker_request;
@@ -948,6 +948,10 @@ pub async fn new_local_worker(
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
+                resource_enforcement: config
+                    .resource_enforcement
+                    .as_ref()
+                    .and_then(ResourceEnforcement::from_config),
             },
             cas_store: fast_slow_store,
             ac_store,

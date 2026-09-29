@@ -40,7 +40,8 @@ use futures::future::{
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
-    Buck2FileCaptureConfig, EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
+    Buck2FileCaptureConfig, DiskEnforcement, EnvironmentSource, MemoryEnforcement,
+    ResourceEnforcementConfig, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -124,12 +125,24 @@ struct ActionResourceUsageSampler {
     handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
+/// A memory ceiling the sampler enforces: once two consecutive samples
+/// exceed `limit_kb`, the observed figure is sent on `over_limit_tx` and the
+/// caller kills the action.
 #[cfg(target_os = "linux")]
-fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler {
+struct MemoryCeiling {
+    limit_kb: u64,
+    over_limit_tx: oneshot::Sender<u64>,
+}
+
+#[cfg(target_os = "linux")]
+fn start_action_resource_usage_sampler(
+    pgid: u32,
+    ceiling: Option<MemoryCeiling>,
+) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx)
+        sample_action_resource_usage(pgid, stop_rx, ceiling)
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
@@ -146,8 +159,10 @@ async fn finish_action_resource_usage_sampler(
 async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
+    mut ceiling: Option<MemoryCeiling>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
+    let mut samples_over_limit = 0u32;
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
     // short-lived. Keep the last figure seen for each pid and total them at
@@ -163,12 +178,31 @@ async fn sample_action_resource_usage(
     };
 
     loop {
-        if sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).is_none()
-            && !Path::new(&format!("/proc/{pgid}")).exists()
-        {
+        let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
             break;
+        }
+        // Two consecutive samples over the ceiling, so one spike between
+        // reads is not a kill; one sample at twice the ceiling is, because
+        // an allocation that fast reaches the pod's limit before the next
+        // read (observed: twelve 20 GiB allocators filled a 52 GiB pod in
+        // under a second).
+        if let (Some(observed_kb), Some(limit)) = (observed, ceiling.as_ref()) {
+            if observed_kb > limit.limit_kb {
+                samples_over_limit += 1;
+            } else {
+                samples_over_limit = 0;
+            }
+            let gross = observed_kb >= limit.limit_kb.saturating_mul(2);
+            if (samples_over_limit >= 2 || gross)
+                && let Some(limit) = ceiling.take()
+                && limit.over_limit_tx.send(observed_kb).is_err()
+            {
+                // The receiver is gone only when the action already ended.
+                debug!(observed_kb, "Memory ceiling breached, action already ended");
+            }
         }
 
         if *stop_rx.borrow() {
@@ -240,7 +274,7 @@ fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> 
             let entry = cpu_ticks_by_pid.entry(member_pid).or_insert(0);
             *entry = (*entry).max(ticks);
         }
-        if let Some(memory_kb) = read_process_rss_kb(member_pid) {
+        if let Some(memory_kb) = read_process_memory_kb(member_pid) {
             total_kb += memory_kb;
             found_any_process = true;
         }
@@ -249,11 +283,27 @@ fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> 
     found_any_process.then_some(total_kb)
 }
 
+/// The process's share of its resident pages: `Pss` from `smaps_rollup`
+/// divides a page shared by N processes N ways, so summed over the group it
+/// counts a forked parent's pages, shared libraries and mapped inputs once.
+/// `VmRSS` counts them once per process, and a test runner that forks eight
+/// children would sample at several times what the cgroup charges. Falls
+/// back to `VmRSS` where `smaps_rollup` cannot be read (kernels before 4.14).
 #[cfg(target_os = "linux")]
-fn read_process_rss_kb(pid: u32) -> Option<u64> {
+fn read_process_memory_kb(pid: u32) -> Option<u64> {
+    if let Ok(rollup) = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+        && let Some(pss_kb) = parse_kb_field(&rollup, "Pss:")
+    {
+        return Some(pss_kb);
+    }
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status.lines().find_map(|line| {
-        let rest = line.strip_prefix("VmRSS:")?;
+    parse_kb_field(&status, "VmRSS:")
+}
+
+/// The value of a `Field:    1234 kB` line in `/proc` text, in KiB.
+pub fn parse_kb_field(text: &str, field: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix(field)?;
         rest.split_whitespace().next()?.parse().ok()
     })
 }
@@ -1754,6 +1804,44 @@ impl RunningActionImpl {
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
     async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        // Before anything lands on disk: an action that reserved more than
+        // is free is refused as backpressure, not run into ENOSPC halfway
+        // through its inputs. Free means free after what the actions
+        // already admitted reserved: four 4 GiB actions dispatched in one
+        // second all see the same 10 GiB, so the disk alone would admit
+        // them all. The reservation is held until the action's cleanup.
+        if let Some(property) = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| enforcement.disk_property_name.as_deref())
+            && let Some(reserved_kb) = self
+                .action_info
+                .platform_properties
+                .get(property)
+                .and_then(|value| value.parse::<u64>().ok())
+            && reserved_kb > 0
+            && let Some(free_kb) = free_disk_kb(&self.running_actions_manager.root_action_directory)
+        {
+            // Held across the check and the insert, so two actions
+            // preparing at once cannot both pass on the same free space.
+            let mut reservations = self.running_actions_manager.disk_reservations_kb.lock();
+            let reserved_by_others_kb: u64 = reservations
+                .iter()
+                .filter(|(operation_id, _)| **operation_id != self.operation_id)
+                .map(|(_, kb)| *kb)
+                .sum();
+            if free_kb.saturating_sub(reserved_by_others_kb) < reserved_kb {
+                self.metrics().disk_guard_refusals.inc();
+                return Err(make_err!(
+                    Code::ResourceExhausted,
+                    "Not enough free disk for this action: reserved {reserved_kb} KiB ({property}), {free_kb} KiB free under {} with {reserved_by_others_kb} KiB reserved by the actions already admitted",
+                    self.running_actions_manager.root_action_directory
+                ));
+            }
+            reservations.insert(self.operation_id.clone(), reserved_kb);
+        }
         {
             let mut state = self.state.lock();
             state.execution_metadata.input_fetch_start_timestamp =
@@ -2170,9 +2258,43 @@ impl RunningActionImpl {
             child_process,
         );
 
+        // The reservation the scheduler placed this action by, if the
+        // worker is asked to hold it to that number.
+        let memory_reservation = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| {
+                let memory = enforcement.memory.as_ref()?;
+                let reserved_kb = self
+                    .action_info
+                    .platform_properties
+                    .get(&memory.property_name)?
+                    .parse::<u64>()
+                    .ok()?;
+                (reserved_kb > 0).then(|| {
+                    let limit_kb = reserved_kb.saturating_mul(100 + memory.headroom_percent) / 100;
+                    (reserved_kb, limit_kb)
+                })
+            });
+        let (over_limit_tx, over_limit_rx) = oneshot::channel::<u64>();
+        // Holds the sender when no ceiling is enforced, so the receiver
+        // below stays pending instead of resolving closed.
+        let mut over_limit_keepalive = Some(over_limit_tx);
         #[cfg(target_os = "linux")]
-        let mut maybe_resource_usage_sampler =
-            child_process.id().map(start_action_resource_usage_sampler);
+        let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
+            let ceiling = memory_reservation.and_then(|(_, limit_kb)| {
+                over_limit_keepalive
+                    .take()
+                    .map(|over_limit_tx| MemoryCeiling {
+                        limit_kb,
+                        over_limit_tx,
+                    })
+            });
+            start_action_resource_usage_sampler(pgid, ceiling)
+        });
+        let mut over_limit_fut = over_limit_rx.fuse();
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
@@ -2240,9 +2362,46 @@ impl RunningActionImpl {
                         )));
                     }
                 },
+                Ok(observed_kb) = &mut over_limit_fut => {
+                    self.running_actions_manager.metrics.memory_reservation_kills.inc();
+                    killed_action = true;
+                    // The wrapper's kill takes the whole process group, so
+                    // the children holding the memory go with the leader.
+                    if let Err(err) = child_process_guard.kill().await {
+                        error!(
+                            ?err,
+                            "Could not kill process in RunningActionsManager for memory reservation",
+                        );
+                    }
+                    let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
+                    let (property, headroom) = self
+                        .running_actions_manager
+                        .execution_configuration
+                        .resource_enforcement
+                        .as_ref()
+                        .and_then(|e| e.memory.as_ref())
+                        .map_or(("", 0), |m| (m.property_name.as_str(), m.headroom_percent));
+                    warn!(
+                        operation_id = ?self.operation_id,
+                        reserved_kb,
+                        limit_kb,
+                        observed_kb,
+                        "Action exceeded its memory reservation, killed"
+                    );
+                    let mut state = self.state.lock();
+                    state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                        Code::FailedPrecondition,
+                        format!(
+                            "Action exceeded its memory reservation: reserved {reserved_kb} KiB ({property}), \
+                             limit {limit_kb} KiB with {headroom}% headroom, observed {observed_kb} KiB. \
+                             Raise the reservation or shrink the action."
+                        ),
+                    )));
+                },
                 maybe_exit_status = child_process_guard.wait() => {
                     // Defuse our guard so it does not try to cleanup and make senseless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
+                    drop(over_limit_keepalive.take());
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(palfrey) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
@@ -2977,11 +3136,86 @@ impl Debug for Callbacks {
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
+/// What the worker holds an action to beyond the scheduler's ledger. Each
+/// axis is on or off on its own; the value exists when at least one is on.
+#[derive(Debug, Clone)]
+pub struct ResourceEnforcement {
+    /// Soft memory enforcement: the worker kills an action whose process
+    /// group grows past its reservation plus headroom. Linux only; the
+    /// sampler that measures it does not exist elsewhere. An action run
+    /// through a persistent worker is not covered: that process outlives
+    /// the action and serves others, so its memory is no one action's
+    /// reservation, and only the pod's limit bounds it.
+    pub memory: Option<MemoryLimit>,
+    /// Refuse an action whose disk reservation, under this property, is
+    /// more than the free space under the work directory less what the
+    /// actions already admitted reserved.
+    pub disk_property_name: Option<String>,
+}
+
+/// The reservation a memory ceiling is built from.
+#[derive(Debug, Clone)]
+pub struct MemoryLimit {
+    /// Platform property carrying the reservation in KiB.
+    pub property_name: String,
+    /// Percent above the reservation the action may reach.
+    pub headroom_percent: u64,
+}
+
+impl ResourceEnforcement {
+    /// From the worker's configuration. `None` when neither axis is on;
+    /// `disk: guard` alone is honoured as much as `memory: soft` alone.
+    pub fn from_config(config: &ResourceEnforcementConfig) -> Option<Self> {
+        let memory = match config.memory {
+            MemoryEnforcement::None => None,
+            MemoryEnforcement::Soft => Some(MemoryLimit {
+                property_name: config.memory_property_name.clone(),
+                headroom_percent: config.memory_headroom_percent,
+            }),
+        };
+        let disk_property_name =
+            (config.disk == DiskEnforcement::Guard).then(|| config.disk_property_name.clone());
+        (memory.is_some() || disk_property_name.is_some()).then_some(Self {
+            memory,
+            disk_property_name,
+        })
+    }
+}
+
+/// Free space in KiB on the filesystem holding `path`, as an unprivileged
+/// process may use it.
+#[cfg(target_family = "unix")]
+pub fn free_disk_kb(path: &str) -> Option<u64> {
+    let c_path = std::ffi::CString::new(path).ok()?;
+    let mut stat: libc::statvfs = unsafe { core::mem::zeroed() };
+    // SAFETY: `c_path` is a valid C string and `stat` is a zeroed out
+    // parameter the call fills in.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), &raw mut stat) };
+    if rc != 0 {
+        return None;
+    }
+    Some(widen(stat.f_bavail).saturating_mul(widen(stat.f_frsize)) / 1024)
+}
+
+/// `statvfs` fields are u32 or u64 depending on the platform.
+#[cfg(target_family = "unix")]
+fn widen(value: impl Into<u64>) -> u64 {
+    value.into()
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn free_disk_kb(_path: &str) -> Option<u64> {
+    None
+}
+
 #[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
     /// Bytes of stdout or stderr kept in memory before the rest spills to a
     /// file under the action directory; 0 keeps everything in memory.
     pub max_captured_output_bytes: u64,
+    /// Kill an action that exceeds its memory reservation, before the
+    /// pod's cgroup limit takes the whole worker with it.
+    pub resource_enforcement: Option<ResourceEnforcement>,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -3304,6 +3538,10 @@ pub struct RunningActionsManagerImpl {
     action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
+    /// Disk each admitted action reserved, by operation, so the disk guard
+    /// checks against what is left after them. An entry lives from the
+    /// guard passing to `cleanup_action`.
+    disk_reservations_kb: Mutex<HashMap<OperationId, u64>>,
     /// Track operations being cleaned up to avoid directory collisions during action retries.
     /// When an action fails and is retried on the same worker, we need to ensure the previous
     /// attempt's directory is fully cleaned up before creating a new one.
@@ -3361,6 +3599,7 @@ impl RunningActionsManagerImpl {
                 directory_cache: args.directory_cache.as_ref().map(Arc::downgrade),
                 ..Default::default()
             }),
+            disk_reservations_kb: Mutex::new(HashMap::new()),
             cleaning_up_operations: Mutex::new(HashSet::new()),
             max_cleanup_wait: args.max_cleanup_wait,
             max_cleanup_backoff: args.max_cleanup_backoff,
@@ -3530,13 +3769,29 @@ impl RunningActionsManagerImpl {
                 get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
                     .await
                     .err_tip(|| "During start_action")?;
-            let action_info = ActionInfo::try_from_action_and_execute_request(
+            let mut action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
                 load_start_timestamp,
                 queued_timestamp,
             )
             .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?;
+            // With enforcement on, the scheduler's view of the properties
+            // replaces the client's: a hint or cold-start reservation the
+            // scheduler placed this action by only exists there, and what
+            // is enforced (and exported to the environment) has to be the
+            // number the ledger charged. Off, the worker keeps reading the
+            // client's copy as it always did, so an upgrade changes no
+            // action's environment on its own.
+            if self.execution_configuration.resource_enforcement.is_some()
+                && let Some(platform) = start_execute.platform
+            {
+                for property in platform.properties {
+                    action_info
+                        .platform_properties
+                        .insert(property.name, property.value);
+                }
+            }
             Ok(action_info)
         })
     }
@@ -3630,6 +3885,7 @@ impl RunningActionsManagerImpl {
                 )
             })
         };
+        self.disk_reservations_kb.lock().remove(operation_id);
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
         result.map(|_| ())
@@ -3894,6 +4150,10 @@ pub struct Metrics {
     upload_stderr: AsyncCounterWrapper,
     #[metric(help = "Total number of task timeouts.")]
     task_timeouts: CounterWithTime,
+    #[metric(help = "Actions killed for exceeding their memory reservation.")]
+    memory_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions refused because their disk reservation exceeded the free space.")]
+    disk_guard_refusals: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]
