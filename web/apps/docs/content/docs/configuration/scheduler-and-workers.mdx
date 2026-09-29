@@ -195,8 +195,12 @@ failed cleanup left behind; the directory is always purged at startup.
 action to the memory reservation the scheduler placed it by. With
 `memory: soft` the worker kills the action's process group once two
 consecutive samples exceed `memory_kb` plus `memory_headroom_percent`
-(default 20), and fails it with `FAILED_PRECONDITION` naming the reservation
-and the observed peak. Without it the kill comes from the pod's cgroup limit,
+(default 20), or one sample exceeds twice that, and fails it with
+`FAILED_PRECONDITION` naming the reservation and the observed peak. Samples
+are 250 ms apart, so an action that allocates faster than the pod's whole
+limit in half a second can still reach the cgroup limit first; the
+reservations admitted onto a worker must also sum to less than its limit
+with the headroom included. Without it the kill comes from the pod's cgroup limit,
 and on cgroup v2 that kill takes the worker and every action on it, not just
 the one that grew.
 

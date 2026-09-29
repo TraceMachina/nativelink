@@ -199,14 +199,18 @@ async fn sample_action_resource_usage(
             break;
         }
         // Two consecutive samples over the ceiling, so one spike between
-        // reads is not a kill.
+        // reads is not a kill; one sample at twice the ceiling is, because
+        // an allocation that fast reaches the pod's limit before the next
+        // read (observed: twelve 20 GiB allocators filled a 52 GiB pod in
+        // under a second).
         if let (Some(observed_kb), Some(limit)) = (observed, ceiling.as_ref()) {
             if observed_kb > limit.limit_kb {
                 samples_over_limit += 1;
             } else {
                 samples_over_limit = 0;
             }
-            if samples_over_limit >= 2
+            let gross = observed_kb >= limit.limit_kb.saturating_mul(2);
+            if (samples_over_limit >= 2 || gross)
                 && let Some(limit) = ceiling.take()
             {
                 drop(limit.over_limit_tx.send(observed_kb));
