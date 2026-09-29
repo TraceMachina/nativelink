@@ -18,6 +18,7 @@ use serial_test::serial;
 
 #[serial]
 mod tests {
+    use core::pin::Pin;
     use core::str::from_utf8;
     use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
     #[cfg(target_family = "unix")]
@@ -33,6 +34,7 @@ mod tests {
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use async_trait::async_trait;
     use bytes::Bytes;
     use futures::prelude::*;
     use nativelink_config::cas_server::{
@@ -43,6 +45,9 @@ mod tests {
     };
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
     use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
     #[cfg_attr(target_family = "windows", allow(unused_imports))]
     use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -67,9 +72,13 @@ mod tests {
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
     };
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
     use nativelink_util::common::{DigestInfo, fs, make_temp_path};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-    use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{
+        RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    };
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
@@ -79,7 +88,7 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
-    use tokio::sync::oneshot;
+    use tokio::sync::{oneshot, watch};
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
@@ -3040,6 +3049,280 @@ exit 0
             let alive = unsafe { libc::kill(pid, 0) } == 0;
             assert!(!alive, "child {pid} outlived the timed-out action");
         }
+        Ok(())
+    }
+
+    /// A store whose uploads wait at a gate, counting how many are waiting
+    /// at once. Every upload of an output file arrives here with that file
+    /// open, so the peak is the number of files the worker had open together.
+    #[derive(Debug)]
+    struct GatedStore {
+        inner: Store,
+        gate: watch::Sender<bool>,
+        in_flight: AtomicU64,
+        max_in_flight: AtomicU64,
+    }
+
+    impl GatedStore {
+        fn new(inner: Arc<MemoryStore>) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Store::new(inner),
+                gate: watch::Sender::new(true),
+                in_flight: AtomicU64::new(0),
+                max_in_flight: AtomicU64::new(0),
+            })
+        }
+
+        fn set_open(&self, open: bool) {
+            self.gate.send_replace(open);
+        }
+
+        fn in_flight(&self) -> u64 {
+            self.in_flight.load(Ordering::SeqCst)
+        }
+
+        fn max_in_flight(&self) -> u64 {
+            self.max_in_flight.load(Ordering::SeqCst)
+        }
+    }
+
+    impl MetricsComponent for GatedStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for GatedStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let now_in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight
+                .fetch_max(now_in_flight, Ordering::SeqCst);
+            let mut gate = self.gate.subscribe();
+            gate.wait_for(|open| *open)
+                .await
+                .map_err(|_| make_input_err!("gate dropped"))?;
+            let result = self
+                .inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(GatedStore);
+
+    /// The bound on open output files holds across the whole tree, not per
+    /// directory: eight directories of thirty-two files each are uploaded
+    /// through one gate, and never more than the bound (plus stdout and
+    /// stderr, which hold no file) are in flight at once. Per-directory
+    /// bounds would have all 256 open together.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn output_uploads_share_one_open_file_bound() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const DIRS: u64 = 8;
+        const FILES_PER_DIR: u64 = 32;
+        const BOUND: u64 = 64;
+        // The gate is the slow store: the manager insists on a filesystem
+        // fast store, and an upload is not done until both sides have it.
+        let fast_config = FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_config).await?;
+        let gated = GatedStore::new(MemoryStore::new(&MemorySpec::default()));
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(fast_store),
+            Store::new(gated.clone()),
+        );
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        // Every file's content is unique, so none is skipped as a duplicate.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "for d in $(seq {DIRS}); do mkdir -p out/d$d; for f in $(seq {FILES_PER_DIR}); do echo $d-$f > out/d$d/f$f; done; done"
+                ),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            output_paths: vec!["out".to_string()],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        // Inputs are fetched and the command runs with the gate open; the
+        // uploads then pile up against it.
+        let running_action_impl = running_action_impl
+            .clone()
+            .prepare_action()
+            .and_then(RunningAction::execute)
+            .await?;
+        gated.set_open(false);
+        let upload = tokio::spawn(running_action_impl.upload_results());
+        let filled = async {
+            while gated.in_flight() < BOUND {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(30), filled)
+            .await
+            .expect("the uploads should reach the bound");
+        // Anything more that could be in flight arrives in this window.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let peak_at_gate = gated.in_flight();
+        gated.set_open(true);
+        let running_action_impl = upload.await??;
+        let result = running_action_impl.clone().get_finished_result().await?;
+        running_action_impl.cleanup().await?;
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.output_folders.len(), 1);
+
+        // stdout and stderr are the two uploads that hold no file.
+        assert!(
+            peak_at_gate <= BOUND + 2 && gated.max_in_flight() <= BOUND + 2,
+            "{} at the gate, {} at most: more files open than the bound",
+            peak_at_gate,
+            gated.max_in_flight()
+        );
+        assert!(
+            gated.max_in_flight() >= BOUND,
+            "{} in flight at most: the bound was never reached",
+            gated.max_in_flight()
+        );
         Ok(())
     }
 

@@ -75,7 +75,7 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{Notify, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
@@ -103,9 +103,11 @@ const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
 #[cfg(target_os = "linux")]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
-/// How many output files or directories are uploaded at once. Each holds an
-/// open file, and an unbounded set has hit the descriptor limit on actions
-/// with tens of thousands of outputs.
+/// How many output files are open for upload at once, across the whole
+/// output tree: one semaphore, taken around each file from open to upload,
+/// so nested directories cannot multiply the bound. An unbounded set has hit
+/// the descriptor limit on actions with tens of thousands of outputs. The
+/// same number bounds each stream's fan-out.
 const UPLOAD_CONCURRENCY: usize = 64;
 
 /// What the sampler observed over an action's lifetime.
@@ -1060,7 +1062,14 @@ async fn upload_file(
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
     digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
+    uploads: Arc<Semaphore>,
 ) -> Result<FileInfo, Error> {
+    // Held from the open to the end of the upload: this is the bound on
+    // files open at once for the whole output tree.
+    let _permit = uploads
+        .acquire()
+        .await
+        .err_tip(|| "Upload semaphore closed")?;
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
     let file = fs::open_file(&full_path, 0, u64::MAX)
@@ -1234,6 +1243,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     full_work_directory: &'a str,
     hasher: DigestHasherFunc,
     digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
+    uploads: Arc<Semaphore>,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
         let mut file_futures = Vec::new();
@@ -1265,6 +1275,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             full_work_directory,
                             hasher,
                             digest_uploaders.clone(),
+                            uploads.clone(),
                         )
                         .and_then(|(dir, all_dirs)| async move {
                             let directory_name = full_path
@@ -1299,13 +1310,21 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     );
                 } else if file_type.is_file() {
                     let digest_uploaders = digest_uploaders.clone();
+                    let uploads = uploads.clone();
                     file_futures.push(async move {
                         let metadata = fs::metadata(&full_path)
                             .await
                             .err_tip(|| format!("Could not open file {}", full_path.display()))?;
-                        upload_file(cas_store, &full_path, hasher, metadata, digest_uploaders)
-                            .map_ok(TryInto::try_into)
-                            .await?
+                        upload_file(
+                            cas_store,
+                            &full_path,
+                            hasher,
+                            metadata,
+                            digest_uploaders,
+                            uploads,
+                        )
+                        .map_ok(TryInto::try_into)
+                        .await?
                     });
                 } else if file_type.is_symlink() {
                     symlink_futures.push(
@@ -1316,8 +1335,9 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
             }
         }
 
-        // Bounded, so a directory with tens of thousands of entries opens
-        // that many files a few dozen at a time rather than all at once.
+        // The stream bound keeps the fan-out in check at each level; the
+        // files open at once are bounded by `uploads`, which every level
+        // shares, since per-level bounds would multiply.
         let dir_entries = futures::stream::iter(dir_futures)
             .buffer_unordered(UPLOAD_CONCURRENCY)
             .try_collect::<Vec<(DirectoryNode, VecDeque<Directory>)>>()
@@ -1535,7 +1555,11 @@ async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
     what: &str,
 ) -> Result<CapturedOutput, Error> {
     let mut buf = BytesMut::new();
-    let mut spill: Option<(fs::FileSlot, u64)> = None;
+    // A raw handle, outside the open-file budget on purpose: the spill
+    // lives as long as the child's stream, an fd the budget never covered,
+    // and a permit held for a whole noisy action would starve the store
+    // paths the budget exists for.
+    let mut spill: Option<(tokio::fs::File, u64)> = None;
     loop {
         if let Some((file, len)) = spill.as_mut() {
             let mut chunk = BytesMut::with_capacity(64 * 1024);
@@ -1560,7 +1584,7 @@ async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
             break;
         }
         if cap > 0 && buf.len() as u64 > cap {
-            let mut file = fs::create_file(&spill_path)
+            let mut file = tokio::fs::File::create(&spill_path)
                 .await
                 .err_tip(|| format!("Error creating {what} spill file {}", spill_path.display()))?;
             file.write_all(&buf)
@@ -2372,6 +2396,7 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_directories);
         }
         let digest_uploaders = Arc::new(Mutex::new(HashMap::new()));
+        let uploads = Arc::new(Semaphore::new(UPLOAD_CONCURRENCY));
         for entry in output_paths {
             let full_path = OsString::from(if command_proto.working_directory.is_empty() {
                 format!("{}/{}", self.work_directory, entry)
@@ -2383,6 +2408,7 @@ impl RunningActionImpl {
             });
             let work_directory = &self.work_directory;
             let digest_uploaders = digest_uploaders.clone();
+            let uploads = uploads.clone();
             output_path_futures.push(
                 async move {
                     let metadata = {
@@ -2408,6 +2434,7 @@ impl RunningActionImpl {
                                     hasher,
                                     metadata,
                                     digest_uploaders,
+                                    uploads,
                                 )
                                 .await
                                 .map(|mut file_info| {
@@ -2427,6 +2454,7 @@ impl RunningActionImpl {
                                 work_directory,
                                 hasher,
                                 digest_uploaders,
+                                uploads,
                             )
                             .and_then(|(root_dir, children)| async move {
                                 let tree = ProtoTree {
@@ -2473,6 +2501,7 @@ impl RunningActionImpl {
                                                 work_directory,
                                                 hasher,
                                                 digest_uploaders,
+                                                uploads,
                                             )
                                             .and_then(|(root_dir, children)| async move {
                                                 let tree = ProtoTree {
@@ -2510,6 +2539,7 @@ impl RunningActionImpl {
                                                 hasher,
                                                 resolved_meta,
                                                 digest_uploaders,
+                                                uploads,
                                             )
                                             .await
                                             .map(|mut file_info| {
