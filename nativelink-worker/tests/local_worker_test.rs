@@ -52,6 +52,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, encode_stream_proto, fs, make_temp_path};
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::Store;
 use nativelink_worker::capacity::free_memory_kb;
 use nativelink_worker::local_worker::new_local_worker;
@@ -1563,6 +1564,8 @@ async fn precondition_script_that_hangs_times_out() -> Result<(), Error> {
 
 /// The readiness flag follows the registration: off until the scheduler's
 /// `ConnectionResult`, on after it, off again when the connection is lost.
+/// The lost state reads Initializing, not Failed, so only the readiness
+/// check drops and a liveness probe on the plain status stays green.
 #[nativelink_test]
 async fn registration_flag_follows_the_scheduler_connection() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
@@ -1612,5 +1615,11 @@ async fn registration_flag_follows_the_scheduler_connection() -> Result<(), Erro
         lost,
         "registration flag never turned off after the disconnect"
     );
+    match test_context.registration.check_health("".into()).await {
+        HealthStatus::Initializing { message, .. } => {
+            assert!(message.contains("reconnecting"), "{message}");
+        }
+        other => panic!("a lost registration must read Initializing, got {other:?}"),
+    }
     Ok(())
 }

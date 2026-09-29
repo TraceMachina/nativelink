@@ -454,7 +454,8 @@ pub struct HealthConfig {
     /// answers 503 while any component is still initializing, where `path`
     /// answers 200. A worker's registration with its scheduler is such a
     /// component, so a Kubernetes readiness probe on this path turns Ready
-    /// only once the worker can take work.
+    /// only once the worker can take work. Must differ from `path`; the
+    /// same path for both is refused at startup.
     ///
     /// Default: "/ready"
     #[serde(default)]

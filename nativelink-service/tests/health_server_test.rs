@@ -6,7 +6,7 @@ use axum::http::Request;
 use hyper::StatusCode;
 use nativelink_config::cas_server::HealthConfig;
 use nativelink_macro::nativelink_test;
-use nativelink_service::health_server::HealthServer;
+use nativelink_service::health_server::{HealthServer, health_paths};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthRegistryBuilder, HealthStatus, HealthStatusIndicator,
 };
@@ -207,5 +207,31 @@ async fn readiness_is_unavailable_while_initializing() -> Result<(), Box<dyn cor
         status_of(HealthServer::readiness(health_registry, &config)).await?,
         StatusCode::SERVICE_UNAVAILABLE
     );
+    Ok(())
+}
+
+/// Defaults fill the two paths; a configuration that gives both the same
+/// path is refused with a message rather than left to panic the router.
+#[nativelink_test]
+async fn health_paths_are_distinct_or_refused() -> Result<(), Box<dyn core::error::Error>> {
+    assert_eq!(
+        health_paths(&HealthConfig::default())?,
+        ("/status".to_string(), "/ready".to_string())
+    );
+    let custom = HealthConfig {
+        path: "/healthz".to_string(),
+        readiness_path: "/readyz".to_string(),
+        ..HealthConfig::default()
+    };
+    assert_eq!(
+        health_paths(&custom)?,
+        ("/healthz".to_string(), "/readyz".to_string())
+    );
+    let clash = HealthConfig {
+        path: "/ready".to_string(),
+        ..HealthConfig::default()
+    };
+    let err = health_paths(&clash).expect_err("the same path for both must be refused");
+    assert!(err.to_string().contains("both /ready"), "{err}");
     Ok(())
 }

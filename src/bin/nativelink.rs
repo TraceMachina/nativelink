@@ -44,7 +44,7 @@ use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::fetch_server::FetchServer;
-use nativelink_service::health_server::HealthServer;
+use nativelink_service::health_server::{HealthServer, health_paths};
 use nativelink_service::push_server::PushServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_service::worker_api_server::WorkerApiServer;
@@ -87,8 +87,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 // Note: This must be kept in sync with the documentation in `HealthConfig::path`.
-const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
-const DEFAULT_READINESS_CHECK_PATH: &str = "/ready";
 
 // Note: This must be kept in sync with the documentation in
 // `OriginEventsConfig::max_event_queue_size`.
@@ -439,22 +437,13 @@ async fn inner_main(
                 ));
 
         if let Some(health_cfg) = services.health {
-            let path = if health_cfg.path.is_empty() {
-                DEFAULT_HEALTH_STATUS_CHECK_PATH
-            } else {
-                &health_cfg.path
-            };
-            let readiness_path = if health_cfg.readiness_path.is_empty() {
-                DEFAULT_READINESS_CHECK_PATH
-            } else {
-                &health_cfg.readiness_path
-            };
+            let (path, readiness_path) = health_paths(&health_cfg)?;
             svc = svc.route_service(
-                path,
+                &path,
                 HealthServer::new(health_registry.clone(), &health_cfg),
             );
             svc = svc.route_service(
-                readiness_path,
+                &readiness_path,
                 HealthServer::readiness(health_registry, &health_cfg),
             );
         }

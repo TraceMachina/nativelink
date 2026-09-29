@@ -824,9 +824,12 @@ impl HealthStatusIndicator for WorkerRegistration {
             }
         } else if self.ever_registered.load(Ordering::Acquire) {
             // Lost after it was there: the worker is reconnecting, and until
-            // it does it holds no work. Failed rather than Initializing so
-            // the plain status check shows it too.
-            HealthStatus::Failed {
+            // it does it holds no work. Initializing, not Failed: Failed
+            // turns the plain status check red too, and a liveness probe on
+            // it would restart every worker during a scheduler roll longer
+            // than its threshold, and redden a co-hosted CAS on one worker's
+            // blip. This belongs to readiness alone.
+            HealthStatus::Initializing {
                 struct_name: "WorkerRegistration",
                 message: Cow::Owned(format!(
                     "worker '{}' lost its scheduler connection, reconnecting",

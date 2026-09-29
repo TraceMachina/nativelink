@@ -25,6 +25,7 @@ use http_body_util::Full;
 use hyper::header::{CONTENT_TYPE, HeaderValue};
 use hyper::{Request, Response, StatusCode};
 use nativelink_config::cas_server::HealthConfig;
+use nativelink_error::{Error, make_input_err};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthStatus, HealthStatusDescription, HealthStatusReporter,
 };
@@ -44,6 +45,34 @@ pub struct HealthServer {
     timeout: Duration,
     /// Readiness: a component still initializing makes the answer 503.
     strict: bool,
+}
+
+/// Where the plain status check answers when `path` is unset.
+pub const DEFAULT_STATUS_PATH: &str = "/status";
+/// Where the readiness check answers when `readiness_path` is unset.
+pub const DEFAULT_READINESS_PATH: &str = "/ready";
+
+/// The two paths the health service serves, defaults filled in, as
+/// `(status, readiness)`. They must differ: the router panics on a
+/// duplicate route, so a configuration that names the same path for both
+/// is refused here with a message instead.
+pub fn health_paths(health_cfg: &HealthConfig) -> Result<(String, String), Error> {
+    let status = if health_cfg.path.is_empty() {
+        DEFAULT_STATUS_PATH
+    } else {
+        &health_cfg.path
+    };
+    let readiness = if health_cfg.readiness_path.is_empty() {
+        DEFAULT_READINESS_PATH
+    } else {
+        &health_cfg.readiness_path
+    };
+    if status == readiness {
+        return Err(make_input_err!(
+            "services.health.path and readiness_path are both {status}; the readiness check needs a path of its own"
+        ));
+    }
+    Ok((status.to_string(), readiness.to_string()))
 }
 
 impl HealthServer {

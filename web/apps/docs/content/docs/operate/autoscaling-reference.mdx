@@ -178,8 +178,10 @@ the right answer for a liveness probe and the wrong one for readiness. The
 For a worker, the component that matters is its registration with the
 scheduler. Each worker registers a `workers/<name>` indicator that reads
 `Initializing` until the scheduler has answered its `connect_worker` with a
-`ConnectionResult`, `Ok` while that connection holds, and `Failed` after it
-is lost and the worker is reconnecting. A Kubernetes readiness probe on the
+`ConnectionResult`, `Ok` while that connection holds, and `Initializing`
+again after it is lost and the worker is reconnecting, so only `/ready`
+drops: a liveness probe on `/status` stays green through a scheduler roll
+instead of restarting every worker. A Kubernetes readiness probe on the
 worker's `/ready` turns the pod Ready when the worker can take work rather
 than when its container started, and turns it not Ready again if it loses
 the scheduler. Anything that reads pod readiness, an autoscaler's idle clock
