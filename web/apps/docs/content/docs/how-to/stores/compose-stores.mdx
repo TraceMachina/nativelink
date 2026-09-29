@@ -319,6 +319,18 @@ restart.
 forward selected headers from the incoming request. Use it to front an existing
 cache.
 
+Development builds also support `grpc.store_type: "event_sink"` for forwarding
+BEP and origin events to a dedicated receiver. This mode accepts string keys
+with exact payload sizes and sends uncompressed `ByteStream.Write` requests.
+The resource hash identifies the event key, while the size describes the event
+bytes. Configure it only as an event publisher's store: reads, existence checks,
+and digest-key writes are rejected. A normal CAS endpoint cannot receive these
+writes. The receiver must acknowledge only after its durable append completes;
+NativeLink's BEP response waits for that acknowledgement. Origin publishing
+retains its existing bounded retry policy.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreType" />
+
 `noop` takes nothing at all and discards everything written to it, reporting
 every read as a miss. It is how you deliberately turn a half of something off.
 

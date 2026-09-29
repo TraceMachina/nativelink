@@ -29,7 +29,7 @@ use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
 use opentelemetry::Context;
 use regex::Regex;
@@ -274,6 +274,68 @@ async fn write_update_works() -> Result<(), Error> {
 async fn write_update_works_with_legacy_resource_names() -> Result<(), Error> {
     let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
     write_update_works_core(true, upload_pattern).await
+}
+
+#[nativelink_test]
+async fn event_sink_uses_payload_size_and_rejects_cache_operations() -> Result<(), Error> {
+    let (server, port) = make_fake_bytestream_server_draining().await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.store_type = StoreType::EventSink;
+    spec.instance_name = "bep".into();
+    let store = GrpcStore::new(&spec)?;
+    let key = StoreKey::from("BepEvent:be:test:1");
+    let payload = b"event payload with a length different from its storage key";
+    store
+        .update_oneshot(key.borrow(), payload.as_slice().into())
+        .await?;
+    let writes = server.write_requests.lock().await;
+    assert!(writes[0].resource_name.starts_with("bep/uploads/"));
+    assert!(writes[0].resource_name.ends_with(&format!(
+        "/{}/{}",
+        key.borrow().into_digest().packed_hash(),
+        payload.len()
+    )));
+    assert_eq!(
+        writes
+            .iter()
+            .flat_map(|request| request.data.iter().copied())
+            .collect::<Vec<_>>(),
+        payload
+    );
+    assert!(writes.last().unwrap().finish_write);
+    drop(writes);
+    assert_eq!(
+        store.has(key.borrow()).await.unwrap_err().code,
+        tonic::Code::Unimplemented
+    );
+    let (tx, _rx) = make_buf_channel_pair();
+    assert_eq!(
+        store
+            .get_part(key.borrow(), tx, 0, None)
+            .await
+            .unwrap_err()
+            .code,
+        tonic::Code::Unimplemented
+    );
+    let digest = DigestInfo::try_new(VALID_HASH, payload.len())?;
+    assert_eq!(
+        store
+            .update_oneshot(digest, payload.as_slice().into())
+            .await
+            .unwrap_err()
+            .code,
+        tonic::Code::InvalidArgument
+    );
+    let (_tx, rx) = make_buf_channel_pair();
+    assert_eq!(
+        store
+            .update(key, rx, UploadSizeInfo::MaxSize(100))
+            .await
+            .unwrap_err()
+            .code,
+        tonic::Code::InvalidArgument
+    );
+    Ok(())
 }
 
 async fn read_works_core<F>(

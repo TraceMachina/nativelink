@@ -1414,6 +1414,12 @@ pub enum StoreType {
     Cas,
     /// The store is an action cache.
     Ac,
+    /// A write-only event sink using `ByteStream.Write`. Only string keys and
+    /// exact upload sizes are accepted. The resource hash identifies the key,
+    /// not the payload; the size describes the payload. The upstream must be an
+    /// event receiver, not a CAS. Reads and existence checks are unsupported.
+    /// Use this for BEP/origin event forwarding, never for cache data.
+    EventSink,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
