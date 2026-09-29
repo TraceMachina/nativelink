@@ -3596,6 +3596,22 @@ in response to what the worker returns.
 Several NativeLink limits queue instead of erroring, which is why "hung" is a
 more common symptom than "failed":
 
+## Every build stalls at `[Sched]` and nothing errors
+
+Clients sit on `WaitExecution` for hours, the scheduler log is quiet apart
+from `Could not find AwaitedAction for the given operation id`, idle workers
+take nothing, and the provisioner reads demand as zero. The scheduler's
+records are being evicted from Redis.
+
+## The scheduler's Redis keeps every completed action
+
+**Symptom.** With the Redis scheduler backend, `DBSIZE` on the scheduler's
+database grows by one `aa_*` hash per action ever run and never falls; the
+records all read `completed` and `TTL` says `-1`. Once the search index holds
+more than one cursor page, listings over it (the admin read the worker
+provisioner makes, the scheduler admin endpoints) can fail with
+`Failed to get operations list! Parse: Non map item`.
+
 ## Restarting the scheduler
 
 Not an incident so much as a procedure that behaves worse than you expect.
