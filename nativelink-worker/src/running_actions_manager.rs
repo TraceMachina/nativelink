@@ -289,7 +289,7 @@ const DISK_SAMPLE_EVERY: u32 = 40;
 fn start_action_resource_usage_sampler(
     pgid: u32,
     ceilings: Ceilings,
-    disk_directory: Option<PathBuf>,
+    disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(

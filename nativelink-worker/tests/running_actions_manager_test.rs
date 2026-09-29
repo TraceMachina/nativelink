@@ -3139,9 +3139,10 @@ exit 0
             dispatch_with_properties(action_digest, &[("disk_kb", reserved_kb.to_string())])
         };
 
-        // Nearly everything, admitted and held.
+        // Most of it, admitted and held; the rest is slack for whatever else
+        // the machine writes while the test runs.
         let first = running_actions_manager
-            .create_and_add_action(WORKER_ID.to_string(), dispatch(free_kb - 1024))
+            .create_and_add_action(WORKER_ID.to_string(), dispatch(free_kb / 4 * 3))
             .await?
             .prepare_action()
             .await?;
