@@ -330,6 +330,17 @@ pub fn directory_private_kb(_directory: &Path) -> u64 {
     0
 }
 
+/// A disk sample: the action's own files, walked on the blocking pool.
+#[cfg(target_os = "linux")]
+async fn sample_disk(directory: Option<&PathBuf>) -> Option<u64> {
+    let directory = directory?.clone();
+    spawn_blocking!("action_disk_sample", move || {
+        directory_private_kb(&directory)
+    })
+    .await
+    .ok()
+}
+
 /// A signal to every process in the action's group. The action is its own
 /// group leader, so this reaches the children a shell forked. The SIGKILL
 /// at the end of a kill goes through the child wrapper, which takes the
@@ -367,13 +378,6 @@ async fn sample_action_resource_usage(
     let mut peak_disk_kb = 0;
     let mut samples_over_limit = 0u32;
     let mut samples_since_disk = DISK_SAMPLE_EVERY;
-    // A disk sample: the action's own files, on the blocking pool.
-    async fn sample_disk(directory: Option<&PathBuf>) -> Option<u64> {
-        let directory = directory?.clone();
-        tokio::task::spawn_blocking(move || directory_private_kb(&directory))
-            .await
-            .ok()
-    }
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
     // short-lived. Keep the last figure seen for each pid and total them at

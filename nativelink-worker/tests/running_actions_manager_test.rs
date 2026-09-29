@@ -3785,7 +3785,7 @@ exit 0
                 "sh".to_string(),
                 "-c".to_string(),
                 // Thirty MiB of its own under the action directory, then a
-                // long sleep: the disk sample after ten seconds sees it.
+                // long sleep: a disk sample sees it past the reservation.
                 "dd if=/dev/zero of=fill.bin bs=1M count=30 status=none; sleep 60".to_string(),
             ],
             working_directory: ".".to_string(),
@@ -3858,7 +3858,7 @@ exit 0
         );
         assert!(
             started.elapsed() < Duration::from_secs(30),
-            "the worker should have killed the action at the ten second disk sample, long before its sleep ended"
+            "the worker should have killed the action at a disk sample, long before its sleep ended"
         );
         // The measurement says what happened and what it was measured against.
         let usage = running_action_impl
@@ -3870,9 +3870,12 @@ exit 0
             "{usage:?}"
         );
         assert!(usage.enforced, "the worker's own limit ended it: {usage:?}");
+        // The sample that ended it caught the write in progress, so the
+        // figure is whatever had landed by then: past the reservation, not
+        // necessarily the whole thirty MiB.
         assert!(
-            usage.peak_disk_kb >= 30 * 1024,
-            "the measurement should carry what the action wrote: {usage:?}"
+            usage.peak_disk_kb > 1024,
+            "the measurement should carry what the action had written: {usage:?}"
         );
         Ok(())
     }
