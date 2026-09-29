@@ -36,9 +36,9 @@ fn kill_process_group(pgid: u32) {
     // considerations; a stale group id is reported as ESRCH, not acted on.
     let rc = unsafe { libc::killpg(pgid, libc::SIGKILL) };
     if rc != 0 {
-        let err = std::io::Error::last_os_error();
+        let err = Error::last_os_error();
         if err.raw_os_error() != Some(libc::ESRCH) {
-            tracing::error!(
+            error!(
                 pgid,
                 ?err,
                 "Could not kill the action's process group; a descendant may have survived"
