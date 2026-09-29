@@ -54,6 +54,8 @@ pub struct LiveWorker {
     /// Spawned child process. Kept on the struct so its Drop kills the process
     /// when the worker is dropped without `shutdown` being called.
     child: Child,
+    /// Registered with the reaper for as long as the child is ours to wait on.
+    _owned: crate::reaper::OwnedChild,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     /// Wire format we negotiated at spawn (immutable for this worker's lifetime).
@@ -106,6 +108,9 @@ impl LiveWorker {
                 executable.display()
             )
         })?;
+        // Ours until shutdown waits on it, however long it idles; the
+        // reaper leaves it alone.
+        let owned = crate::reaper::OwnedChild::new(child.id());
         let stdin = child
             .stdin
             .take()
@@ -117,6 +122,7 @@ impl LiveWorker {
 
         Ok(Self {
             child,
+            _owned: owned,
             stdin,
             stdout: BufReader::new(stdout),
             wire_format,

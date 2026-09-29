@@ -147,10 +147,12 @@ fn tag_missing_input(err: Error) -> Error {
     }
 }
 
-/// How long an ended action's output pipes get to drain. They close when
-/// every process holding them is gone, which the SIGKILL to the group at
-/// exit sees to; a process that left the group could still hold them, so
-/// the wait is bounded, and what was read by then is kept.
+/// How long a killed action's output pipes, or those of one that left
+/// stragglers behind, get to drain. They close when every process holding
+/// them is gone, which the SIGKILL to the group sees to; a process that
+/// left the group could still hold them, so that wait is bounded, and what
+/// was read by then is kept. An action that exited cleanly with nothing
+/// left behind is read to the end.
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Classifies how an action ended. A kill the worker sent names itself; a
@@ -277,17 +279,16 @@ fn start_action_resource_usage_sampler(
 /// group leader, so this reaches the children a shell forked. The SIGKILL
 /// at the end of a kill goes through the child wrapper, which takes the
 /// group with it (or tells the stub, namespaced); this is for the SIGTERM
-/// that gives an action its grace.
-#[cfg(target_os = "linux")]
-fn signal_process_group(pgid: u32, signal: i32) {
+/// that gives an action its grace, and for the stragglers left once the
+/// action's own process has exited. Returns whether any process got it.
+#[cfg(target_family = "unix")]
+fn signal_process_group(pgid: u32, signal: i32) -> bool {
     let Ok(pgid) = i32::try_from(pgid) else {
-        return;
+        return false;
     };
     // SAFETY: killpg only takes integers and has no memory safety
     // considerations; a stale group id is reported as ESRCH, not acted on.
-    unsafe {
-        libc::killpg(pgid, signal);
-    }
+    unsafe { libc::killpg(pgid, signal) == 0 }
 }
 
 #[cfg(target_os = "linux")]
@@ -1769,6 +1770,8 @@ pub async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
             return Ok(None);
         }
         tokio::select! {
+            // Data already in the pipe is read before a stop is honoured.
+            biased;
             read = reader.read_buf(buf) => read
                 .map(Some)
                 .err_tip(|| format!("Error reading {what} stream")),
@@ -2412,18 +2415,21 @@ impl RunningActionImpl {
                     });
                 }
             }
-
-            // Run the action as its own process-group leader (pgid == child
-            // pid). The resource-usage sampler attributes memory by process
-            // group, so this keeps the whole action together — including
-            // processes reparented to the worker when an intermediate shell
-            // exits — and never conflates it with the worker's own group.
-            command_builder.process_group(0);
         }
+        // Run the action as its own process-group leader (pgid == child
+        // pid) on every unix. The resource-usage sampler attributes memory
+        // by process group, and the kill at exit ends the group, so this
+        // keeps the whole action together, including processes reparented
+        // to the worker when an intermediate shell exits, and never
+        // conflates it with the worker's own group.
+        #[cfg(target_family = "unix")]
+        command_builder.process_group(0);
 
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {args:?}"))?;
+        // Ours until the wait below collects it; the reaper leaves it alone.
+        let _owned_child = crate::reaper::OwnedChild::new(child_process.id());
         let stdout_reader = child_process
             .stdout
             .take()
@@ -2484,7 +2490,7 @@ impl RunningActionImpl {
 
         // The group to end when the action's own process has exited; taken
         // before the guard owns the child.
-        #[cfg(target_os = "linux")]
+        #[cfg(target_family = "unix")]
         let action_pgid = child_process.id();
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
@@ -2629,27 +2635,37 @@ impl RunningActionImpl {
                     // daemonized) holding the pipes open, and without this
                     // the action would sit here until its timeout. The
                     // sandboxes Bazel runs locally end them the same way.
-                    #[cfg(target_os = "linux")]
-                    if let Some(pgid) = action_pgid {
-                        signal_process_group(pgid, libc::SIGKILL);
-                    }
-                    // The pipes close as the group goes; a process that left
-                    // the group could still hold them, so the wait is
-                    // bounded and what was read by then is kept. A killed
-                    // action's output is usually the only clue to why it
-                    // hung or grew.
+                    #[cfg(target_family = "unix")]
+                    let had_stragglers = action_pgid
+                        .is_some_and(|pgid| signal_process_group(pgid, libc::SIGKILL));
+                    #[cfg(not(target_family = "unix"))]
+                    let had_stragglers = false;
+                    // An action that exited on its own with nothing left in
+                    // its group closes its pipes itself, and its output is
+                    // the result, so that read runs to the end: a reader
+                    // slowed by a busy spill must not lose bytes to a clock.
+                    // The wait is bounded only when there was something to
+                    // hold the pipes: a killed action, whose output is a
+                    // bonus, or stragglers, one of which may have left the
+                    // group. What was read by then is kept.
                     let mut drain = core::pin::pin!(async { tokio::join!(all_stdout_fut, all_stderr_fut) });
-                    let (maybe_all_stdout, maybe_all_stderr) = tokio::select! {
-                        outputs = &mut drain => outputs,
-                        () = tokio::time::sleep(OUTPUT_DRAIN_TIMEOUT) => {
-                            warn!(
-                                operation_id = ?self.operation_id,
-                                drain_s = OUTPUT_DRAIN_TIMEOUT.as_secs(),
-                                "A process outside the action's group held its output pipes open past the drain; keeping what was read"
-                            );
-                            drain_stop_tx.send_replace(true);
-                            drain.await
+                    let (maybe_all_stdout, maybe_all_stderr) = if killed_action || had_stragglers {
+                        tokio::select! {
+                            outputs = &mut drain => outputs,
+                            () = tokio::time::sleep(OUTPUT_DRAIN_TIMEOUT) => {
+                                warn!(
+                                    operation_id = ?self.operation_id,
+                                    drain_s = OUTPUT_DRAIN_TIMEOUT.as_secs(),
+                                    killed_action,
+                                    had_stragglers,
+                                    "A process held the action's output pipes open past the drain; keeping what was read"
+                                );
+                                drain_stop_tx.send_replace(true);
+                                drain.await
+                            }
                         }
+                    } else {
+                        drain.await
                     };
                     let (stdout, stderr) = (
                         maybe_all_stdout.err_tip(|| "Internal error reading from stdout of worker task")??,
