@@ -211,8 +211,10 @@ a how-to showing a renamed field keeps showing it, and nothing fails until a
 reader copies it and the binary answers `unknown field`.
 
 `lint:snippets` closes that gap. It harvests every field name out of the
-generated reference and checks every `json`/`json5` fence under
-`content/docs/` against it.
+generated reference, the latest release's page and main's, and checks every
+`json`/`json5` fence under `content/docs/` against it. A snippet for a field
+added since the last release passes once `gen:config-reference main` has
+been run in the same change.
 
 ```bash
 bun --filter @nativelink/docs lint:snippets

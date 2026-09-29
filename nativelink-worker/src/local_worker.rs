@@ -41,6 +41,7 @@ use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
@@ -49,7 +50,7 @@ use opentelemetry::context::Context;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{process, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tonic::Streaming;
+use tonic::{Streaming, async_trait};
 use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
 
 use crate::running_actions_manager::{
@@ -771,6 +772,80 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     connection_factory: ConnectionFactory<T>,
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
     metrics: Arc<Metrics>,
+    registration: Arc<WorkerRegistration>,
+}
+
+/// Whether the worker currently holds a registration with its scheduler.
+/// A worker that has not registered, or lost its connection and is
+/// reconnecting, cannot take work; as a health indicator this is what a
+/// readiness probe reads.
+#[derive(Debug)]
+pub struct WorkerRegistration {
+    name: String,
+    registered: AtomicBool,
+    ever_registered: AtomicBool,
+}
+
+impl WorkerRegistration {
+    pub fn new(name: &str) -> Arc<Self> {
+        Arc::new(Self {
+            name: name.to_string(),
+            registered: AtomicBool::new(false),
+            ever_registered: AtomicBool::new(false),
+        })
+    }
+
+    pub fn is_registered(&self) -> bool {
+        self.registered.load(Ordering::Acquire)
+    }
+
+    fn set_registered(&self, registered: bool) {
+        self.registered.store(registered, Ordering::Release);
+        if registered {
+            self.ever_registered.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[async_trait]
+impl HealthStatusIndicator for WorkerRegistration {
+    fn get_name(&self) -> &'static str {
+        "WorkerRegistration"
+    }
+
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        if self.is_registered() {
+            HealthStatus::Ok {
+                struct_name: "WorkerRegistration",
+                message: Cow::Owned(format!(
+                    "worker '{}' registered with the scheduler",
+                    self.name
+                )),
+            }
+        } else if self.ever_registered.load(Ordering::Acquire) {
+            // Lost after it was there: the worker is reconnecting, and until
+            // it does it holds no work. Initializing, not Failed: Failed
+            // turns the plain status check red too, and a liveness probe on
+            // it would restart every worker during a scheduler roll longer
+            // than its threshold, and redden a co-hosted CAS on one worker's
+            // blip. This belongs to readiness alone.
+            HealthStatus::Initializing {
+                struct_name: "WorkerRegistration",
+                message: Cow::Owned(format!(
+                    "worker '{}' lost its scheduler connection, reconnecting",
+                    self.name
+                )),
+            }
+        } else {
+            HealthStatus::Initializing {
+                struct_name: "WorkerRegistration",
+                message: Cow::Owned(format!(
+                    "worker '{}' not yet registered with the scheduler",
+                    self.name
+                )),
+            }
+        }
+    }
 }
 
 impl<
@@ -1031,13 +1106,28 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         let metrics = Arc::new(Metrics::new(Arc::downgrade(
             running_actions_manager.metrics(),
         )));
+        let registration = WorkerRegistration::new(&config.name);
         Self {
             config,
             running_actions_manager,
             connection_factory,
             sleep_fn: Some(sleep_fn),
             metrics,
+            registration,
         }
+    }
+
+    /// The registration flag this worker flips, for a health registry.
+    pub fn registration(&self) -> Arc<WorkerRegistration> {
+        self.registration.clone()
+    }
+
+    /// Flip a flag that was registered with a health registry before the
+    /// worker existed, as the server binary has to.
+    #[must_use]
+    pub fn with_registration(mut self, registration: Arc<WorkerRegistration>) -> Self {
+        self.registration = registration;
+        self
     }
 
     #[allow(
@@ -1189,9 +1279,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                 "Worker registered with scheduler"
             );
             attempts.store(0, Ordering::Release);
+            self.registration.set_registered(true);
 
             // Now listen for connections and run all other services.
-            if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
+            let run_result = inner.run(update_for_worker_stream, &mut shutdown_rx).await;
+            self.registration.set_registered(false);
+            if let Err(err) = run_result {
                 // Give in-transit actions a chance to settle before we kill
                 // them, so their results still reach the scheduler.
                 const ITERATIONS: usize = 1_000;

@@ -29,7 +29,7 @@ use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_worker::local_worker::LocalWorker;
+use nativelink_worker::local_worker::{LocalWorker, WorkerRegistration};
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
 use tokio::sync::{broadcast, mpsc};
 use tonic::{Code, Status};
@@ -312,6 +312,7 @@ pub(crate) async fn setup_local_worker_with_config(
     );
     let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 
+    let registration = worker.registration();
     let drop_guard = spawn!("local_worker_spawn", async move {
         worker.run(shutdown_tx_test.subscribe()).await
     });
@@ -323,6 +324,7 @@ pub(crate) async fn setup_local_worker_with_config(
 
         maybe_streaming_response: Some(streaming_response),
         maybe_tx_stream: Some(tx_stream),
+        registration,
 
         drop_guard,
     }
@@ -349,6 +351,8 @@ pub(crate) struct TestContext {
 
     pub maybe_streaming_response: Option<Response<Streaming<UpdateForWorker>>>,
     pub maybe_tx_stream: Option<mpsc::Sender<Frame<Bytes>>>,
+    /// The flag the worker's readiness reads.
+    pub registration: Arc<WorkerRegistration>,
 
     drop_guard: JoinHandleDropGuard<Result<(), Error>>,
 }
