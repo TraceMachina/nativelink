@@ -2081,8 +2081,6 @@ impl RunningActionImpl {
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(palfrey) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    // TODO(palfrey) There is a significant bug here. If we kill the action and the action creates
-                    // child processes, it can create zombies. See: https://github.com/tracemachina/nativelink/issues/225
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
                         (Bytes::new(), Bytes::new())

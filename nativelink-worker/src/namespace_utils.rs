@@ -24,6 +24,29 @@ pub struct MaybeNamespacedChild {
     child: tokio::process::Child,
 }
 
+/// SIGKILL to every process in the group `pgid` leads. ESRCH means the
+/// group is already gone, which is the outcome wanted; anything else, EPERM
+/// above all, means a survivor and is reported.
+#[cfg(target_os = "linux")]
+fn kill_process_group(pgid: u32) {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return;
+    };
+    // SAFETY: killpg only takes integers and has no memory safety
+    // considerations; a stale group id is reported as ESRCH, not acted on.
+    let rc = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    if rc != 0 {
+        let err = Error::last_os_error();
+        if err.raw_os_error() != Some(libc::ESRCH) {
+            error!(
+                pgid,
+                ?err,
+                "Could not kill the action's process group; a descendant may have survived"
+            );
+        }
+    }
+}
+
 impl MaybeNamespacedChild {
     pub const fn new(namespaced: bool, child: tokio::process::Child) -> Self {
         Self { namespaced, child }
@@ -34,7 +57,14 @@ impl MaybeNamespacedChild {
     }
 
     /// Send SIGTERM if namespaced which sends SIGKILL to the child, otherwise
-    /// send SIGKILL to the child.
+    /// SIGKILL to the child's whole process group and then the child.
+    ///
+    /// Not namespaced, the child is its own group leader, so the group is
+    /// the action and every descendant it forked: a timed-out or cancelled
+    /// action used to lose only its direct child while its descendants ran
+    /// on, holding memory and CPU against the next action (issue #225).
+    /// Namespaced, the leader is the stub that runs the sandbox and cleans
+    /// up after it, so the group is left alone and the stub is told.
     pub async fn kill(&mut self) -> Result<(), Error> {
         if self.namespaced {
             // It would be safer to call send_signal to use the pidfd to avoid
@@ -54,6 +84,10 @@ impl MaybeNamespacedChild {
                 unsafe { libc::kill(pid_t, libc::SIGTERM) };
                 return self.child.wait().await.map(|_| ());
             }
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(pgid) = self.child.id() {
+            kill_process_group(pgid);
         }
         self.child.kill().await
     }
