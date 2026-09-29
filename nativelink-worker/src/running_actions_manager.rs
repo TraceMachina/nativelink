@@ -2482,6 +2482,10 @@ impl RunningActionImpl {
         });
         let mut over_limit_fut = over_limit_rx.fuse();
 
+        // The group to end when the action's own process has exited; taken
+        // before the guard owns the child.
+        #[cfg(target_os = "linux")]
+        let action_pgid = child_process.id();
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
                 child_process.try_wait();
@@ -2531,8 +2535,6 @@ impl RunningActionImpl {
             )
             .await
         });
-        #[cfg(target_os = "linux")]
-        let action_pgid = child_process.id();
         let mut kill_reason: Option<KillReason> = None;
         let kill_grace = self
             .running_actions_manager

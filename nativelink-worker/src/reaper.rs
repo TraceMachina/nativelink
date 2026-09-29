@@ -97,7 +97,7 @@ pub fn zombie_children() -> HashSet<u32> {
 pub fn reap_orphaned_zombies<S: BuildHasher>(seen_last: &mut HashSet<u32, S>) -> usize {
     let now = zombie_children();
     let mut reaped = 0;
-    for pid in now.intersection(seen_last) {
+    for pid in now.iter().filter(|pid| seen_last.contains(*pid)) {
         let Ok(pid_t) = libc::pid_t::try_from(*pid) else {
             continue;
         };
