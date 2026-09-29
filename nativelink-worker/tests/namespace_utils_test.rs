@@ -14,10 +14,12 @@
 
 #![cfg(target_os = "linux")]
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::ffi::CString;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nativelink_error::{Error, ResultExt};
@@ -25,18 +27,232 @@ use nativelink_macro::nativelink_test;
 use nativelink_worker::namespace_utils;
 use pretty_assertions::assert_eq;
 
+/// Returns a path under `dir` that is unique for this test run.
+fn unique_path(dir: &Path, prefix: &str) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    #[allow(clippy::cast_possible_truncation)]
+    let nanos: u64 = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!("{prefix}_{}_{nanos}_{count}", std::process::id()))
+}
+
+/// Builds `sh -c script` running in a fresh mount namespace for
+/// `action_path` under `root_path`, with a private `/tmp` when
+/// `isolate_tmp` is set.
+fn namespaced_sh(script: &str, isolate_tmp: bool, root_path: &Path, action_path: &Path) -> Command {
+    let root_dir_c = CString::new(root_path.to_str().unwrap()).unwrap();
+    let action_dir_c = CString::new(action_path.to_str().unwrap()).unwrap();
+    let mut command = Command::new("sh");
+    command.args(["-c", script]);
+    // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
+    unsafe {
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(true, isolate_tmp, &root_dir_c, &action_dir_c)
+        });
+    }
+    command
+}
+
 #[nativelink_test]
 async fn test_namespaces_supported() -> Result<(), Error> {
     // This test is a smoke test to ensure that the namespace detection logic
     // runs without crashing. The result of this function is dependent on the
     // environment it is run in, so we don't assert the result.
-    let _supported = namespace_utils::namespaces_supported(false);
+    let _supported = namespace_utils::namespaces_supported(false, false);
+    // Isolating /tmp is only possible inside a mount namespace, regardless of
+    // what the host supports.
+    assert!(!namespace_utils::namespaces_supported(false, true));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_configure_namespace_isolate_tmp_hides_host_tmp() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(true, true) {
+        return Ok(());
+    }
+
+    let root_path = unique_path(&std::env::temp_dir(), "nativelink_test_root");
+    let action_path = root_path.join("action");
+    std::fs::create_dir_all(&action_path).err_tip(|| "Failed to create action dir")?;
+
+    let host_tmp_file = unique_path(Path::new("/tmp"), "nativelink_test_host");
+    std::fs::write(&host_tmp_file, "host").err_tip(|| "Failed to write host /tmp file")?;
+    let scratch_file = unique_path(Path::new("/tmp"), "nativelink_test_scratch");
+
+    // The host's /tmp contents must be invisible and the private /tmp must be
+    // writable.
+    let output = namespaced_sh(
+        &format!(
+            "test ! -e {host} && echo scratch > {scratch} && test -f {scratch}",
+            host = host_tmp_file.display(),
+            scratch = scratch_file.display(),
+        ),
+        true,
+        &root_path,
+        &action_path,
+    )
+    .output()?;
+    std::fs::remove_file(&host_tmp_file).err_tip(|| "Failed to remove host /tmp file")?;
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "Host /tmp was visible or the private /tmp was not writable: {output:?}",
+    );
+    assert!(
+        !scratch_file.exists(),
+        "Write to the private /tmp leaked to the host at {}",
+        scratch_file.display()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_configure_namespace_isolate_tmp_keeps_action_directory_under_tmp() -> Result<(), Error>
+{
+    if !namespace_utils::namespaces_supported(true, true) {
+        return Ok(());
+    }
+
+    // Mirror a worker whose work_directory lives under /tmp, which the private
+    // tmpfs would otherwise hide.
+    let root_path = unique_path(Path::new("/tmp"), "nativelink_test_root");
+    let action_path = root_path.join("action");
+    let work_path = action_path.join("work");
+    let sibling_path = root_path.join("sibling");
+    let secret_file = sibling_path.join("secret.txt");
+    std::fs::create_dir_all(&work_path).err_tip(|| "Failed to create work dir")?;
+    std::fs::create_dir_all(&sibling_path).err_tip(|| "Failed to create sibling dir")?;
+    std::fs::write(work_path.join("input.txt"), "input").err_tip(|| "Failed to write input")?;
+    std::fs::write(&secret_file, "top secret").err_tip(|| "Failed to write secret file")?;
+    let output_file = work_path.join("output.txt");
+
+    // Like the worker, start the command inside the action's work directory.
+    // Inputs must be reachable both relatively and by absolute path, siblings
+    // must stay masked, and outputs must land in the real work directory.
+    let mut command = namespaced_sh(
+        &format!(
+            "test \"$(pwd)\" = {work} && test -f input.txt && test -f {work}/input.txt && test ! -e {secret} && echo done > output.txt",
+            work = work_path.display(),
+            secret = secret_file.display(),
+        ),
+        true,
+        &root_path,
+        &action_path,
+    );
+    command.current_dir(&work_path);
+    let output = command.output()?;
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "Action directory under /tmp was not usable: {output:?}",
+    );
+    assert_eq!(
+        "done\n",
+        std::fs::read_to_string(&output_file).err_tip(|| "Failed to read output")?,
+        "Output written in the work directory did not reach the host"
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_configure_namespace_isolate_tmp_concurrent_actions_do_not_collide()
+-> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(true, true) {
+        return Ok(());
+    }
+
+    let root_path = unique_path(&std::env::temp_dir(), "nativelink_test_root");
+    let action_path_a = root_path.join("action_a");
+    let action_path_b = root_path.join("action_b");
+    std::fs::create_dir_all(&action_path_a).err_tip(|| "Failed to create action_a dir")?;
+    std::fs::create_dir_all(&action_path_b).err_tip(|| "Failed to create action_b dir")?;
+
+    // Both actions use the same predictable path, like a tool that keys its
+    // scratch file on a pid and assumes it owns /tmp.
+    let shared_file = unique_path(Path::new("/tmp"), "nativelink_test_shared");
+    let script = |owner: &str, delay: &str| {
+        format!(
+            "sleep {delay} && echo {owner} > {shared} && sleep 0.5 && cat {shared}",
+            shared = shared_file.display(),
+        )
+    };
+    let mut command_a = namespaced_sh(&script("A", "0"), true, &root_path, &action_path_a);
+    command_a.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut command_b = namespaced_sh(&script("B", "0.2"), true, &root_path, &action_path_b);
+    command_b.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let child_a = command_a.spawn()?;
+    let child_b = command_b.spawn()?;
+    let output_a = child_a.wait_with_output()?;
+    let output_b = child_b.wait_with_output()?;
+    assert_eq!(
+        Some(0),
+        output_a.status.code(),
+        "Action A failed: {output_a:?}"
+    );
+    assert_eq!(
+        Some(0),
+        output_b.status.code(),
+        "Action B failed: {output_b:?}"
+    );
+    assert_eq!(
+        "A",
+        String::from_utf8_lossy(&output_a.stdout).trim(),
+        "Action A saw action B's write to the shared /tmp path"
+    );
+    assert_eq!(
+        "B",
+        String::from_utf8_lossy(&output_b.stdout).trim(),
+        "Action B saw action A's write to the shared /tmp path"
+    );
+    assert!(
+        !shared_file.exists(),
+        "Shared /tmp path leaked to the host at {}",
+        shared_file.display()
+    );
+
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_configure_namespace_mount_without_isolate_tmp_keeps_host_tmp() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(true, false) {
+        return Ok(());
+    }
+
+    let root_path = unique_path(&std::env::temp_dir(), "nativelink_test_root");
+    let action_path = root_path.join("action");
+    std::fs::create_dir_all(&action_path).err_tip(|| "Failed to create action dir")?;
+
+    let host_tmp_file = unique_path(Path::new("/tmp"), "nativelink_test_host");
+    std::fs::write(&host_tmp_file, "host").err_tip(|| "Failed to write host /tmp file")?;
+
+    // Opting out must leave the host's /tmp visible.
+    let output = namespaced_sh(
+        &format!("test -f {}", host_tmp_file.display()),
+        false,
+        &root_path,
+        &action_path,
+    )
+    .output()?;
+    std::fs::remove_file(&host_tmp_file).err_tip(|| "Failed to remove host /tmp file")?;
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "Host /tmp should stay visible when isolate_tmp is off: {output:?}",
+    );
+
     Ok(())
 }
 
 #[nativelink_test]
 async fn test_configure_namespace() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false) {
+    if !namespace_utils::namespaces_supported(false, false) {
         return Ok(());
     }
 
@@ -50,8 +266,9 @@ async fn test_configure_namespace() -> Result<(), Error> {
     // It is async-signal-safe and will fork, configure the namespace in the
     // child, and the original child process will continue to execute the command.
     unsafe {
-        command
-            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(false, false, &root_dir, &action_dir)
+        });
     }
 
     let output = command.output()?;
@@ -73,7 +290,7 @@ async fn test_configure_namespace() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(true) {
+    if !namespace_utils::namespaces_supported(true, false) {
         return Ok(());
     }
 
@@ -109,7 +326,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
 
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(true, &root_dir_c, &action1_dir_c)
+            namespace_utils::configure_namespace(true, false, &root_dir_c, &action1_dir_c)
         });
     }
 
@@ -127,7 +344,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
     let action1_dir_c = CString::new(action1_path.to_str().unwrap()).unwrap();
     unsafe {
         command_access.pre_exec(move || {
-            namespace_utils::configure_namespace(true, &root_dir_c, &action1_dir_c)
+            namespace_utils::configure_namespace(true, false, &root_dir_c, &action1_dir_c)
         });
     }
     let output_access = command_access.output()?;
@@ -142,7 +359,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false) {
+    if !namespace_utils::namespaces_supported(false, false) {
         return Ok(());
     }
 
@@ -161,8 +378,9 @@ async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
 
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
-        command
-            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(false, false, &root_dir, &action_dir)
+        });
     }
 
     let child = command.spawn()?;
@@ -228,7 +446,7 @@ async fn test_maybe_namespaced_child_non_namespaced_kill() -> Result<(), Error> 
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false) {
+    if !namespace_utils::namespaces_supported(false, false) {
         return Ok(());
     }
 
@@ -241,8 +459,9 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
 
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
-        command
-            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(false, false, &root_dir, &action_dir)
+        });
     }
 
     let child = command.spawn()?;
@@ -259,7 +478,7 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false) {
+    if !namespace_utils::namespaces_supported(false, false) {
         return Ok(());
     }
 
@@ -269,8 +488,9 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     let root_dir = CString::new("/tmp").unwrap();
     let action_dir = CString::new("/tmp/action").unwrap();
     unsafe {
-        command_running
-            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
+        command_running.pre_exec(move || {
+            namespace_utils::configure_namespace(false, false, &root_dir, &action_dir)
+        });
     }
     let child_running = command_running.spawn()?;
     let mut namespaced_child_running =
@@ -293,8 +513,9 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     let mut command_exited = tokio::process::Command::new("sh");
     command_exited.args(["-c", &format!("exit {expected_exit_code}")]);
     unsafe {
-        command_exited
-            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
+        command_exited.pre_exec(move || {
+            namespace_utils::configure_namespace(false, false, &root_dir, &action_dir)
+        });
     }
     let child_exited = command_exited.spawn()?;
     let mut namespaced_child_exited =
