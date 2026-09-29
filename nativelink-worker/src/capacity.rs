@@ -23,7 +23,10 @@
 use core::hash::BuildHasher;
 use std::collections::HashMap;
 
-use nativelink_config::cas_server::{CapacityConfig, CpuUnit, WorkerProperty};
+use nativelink_config::cas_server::{
+    CapacityConfig, CpuUnit, MemoryEnforcement, ResourceEnforcementConfig, WorkerProperty,
+};
+use nativelink_error::{Code, Error, make_err};
 use tracing::{info, warn};
 
 /// CPU and memory as the cgroup (or, failing a limit, the host) reports them.
@@ -67,12 +70,30 @@ pub fn parse_meminfo_total_kb(meminfo: &str) -> Option<u64> {
     })
 }
 
-/// The observed capacity less the worker's own share, memory divided by the
-/// enforcement headroom. Returns `(cpu, memory_kb)` with the CPU on the
-/// scale `cpu_unit` names: whole cores rounded down, so a 14-core pod
+/// The headroom the advertisement is divided by: the block's own figure
+/// when set, else the enforcement headroom while memory enforcement is on,
+/// so the two numbers cannot drift apart, else nothing.
+pub fn memory_headroom_percent(
+    config: &CapacityConfig,
+    enforcement: Option<&ResourceEnforcementConfig>,
+) -> u64 {
+    config.memory_headroom_percent.unwrap_or_else(|| {
+        enforcement
+            .filter(|enforcement| enforcement.memory == MemoryEnforcement::Soft)
+            .map_or(0, |enforcement| enforcement.memory_headroom_percent)
+    })
+}
+
+/// The observed capacity less the worker's own share, memory divided by
+/// `memory_headroom_percent`. Returns `(cpu, memory_kb)` with the CPU on
+/// the scale `cpu_unit` names: whole cores rounded down, so a 14-core pod
 /// keeping one core back advertises `13`, not `13000`, to a scheduler
 /// whose actions ask for `cpu_count=1`.
-pub const fn advertised(observed: ObservedCapacity, config: &CapacityConfig) -> (u64, u64) {
+pub const fn advertised(
+    observed: ObservedCapacity,
+    config: &CapacityConfig,
+    memory_headroom_percent: u64,
+) -> (u64, u64) {
     let cpu_millicores = observed
         .cpu_millicores
         .saturating_sub(config.overhead_cpu_millicores);
@@ -84,8 +105,35 @@ pub const fn advertised(observed: ObservedCapacity, config: &CapacityConfig) -> 
         .memory_kb
         .saturating_sub(config.overhead_memory_kb)
         .saturating_mul(100)
-        / (100 + config.memory_headroom_percent);
+        / (100 + memory_headroom_percent);
     (cpu, memory)
+}
+
+/// What to do when the cgroup cannot be read: the configured properties
+/// stand if they carry both numbers, since an operator who kept them has a
+/// worker that still takes work; a worker with neither would register and
+/// then satisfy no action that asks for CPU or memory, idling for good on
+/// one warning line, so that is refused.
+pub fn without_cgroup<S: BuildHasher>(
+    config: &CapacityConfig,
+    properties: &HashMap<String, WorkerProperty, S>,
+) -> Result<(), Error> {
+    let missing: Vec<&str> = [&config.cpu_property_name, &config.memory_property_name]
+        .into_iter()
+        .filter(|name| !properties.contains_key(name.as_str()))
+        .map(String::as_str)
+        .collect();
+    if missing.is_empty() {
+        warn!(
+            "capacity is configured but the cgroup v2 root could not be read; advertising the configured platform_properties instead"
+        );
+        return Ok(());
+    }
+    Err(make_err!(
+        Code::FailedPrecondition,
+        "capacity is configured but the cgroup v2 root could not be read (not Linux, cgroup v1, or no permission), and platform_properties carries no {}: set them, or drop the capacity block",
+        missing.join(" or ")
+    ))
 }
 
 /// Reads the worker's own cgroup v2 root. `None` where there is no such
@@ -104,20 +152,20 @@ pub fn observe_cgroup() -> Option<ObservedCapacity> {
     })
 }
 
-/// Sets the CPU and memory properties to what the cgroup allows, or leaves
-/// them alone with a warning when nothing can be read. Returns what was
+/// Sets the CPU and memory properties to what the cgroup allows. When
+/// nothing can be read, the configured properties stand if they carry both,
+/// and the worker fails to start if they do not. Returns what was
 /// advertised.
 pub fn apply<S: BuildHasher>(
     config: &CapacityConfig,
+    memory_headroom_percent: u64,
     properties: &mut HashMap<String, WorkerProperty, S>,
-) -> Option<(u64, u64)> {
+) -> Result<Option<(u64, u64)>, Error> {
     let Some(observed) = observe_cgroup() else {
-        warn!(
-            "capacity is configured but the cgroup v2 root could not be read; advertising the configured platform_properties instead"
-        );
-        return None;
+        without_cgroup(config, properties)?;
+        return Ok(None);
     };
-    let (cpu, memory_kb) = advertised(observed, config);
+    let (cpu, memory_kb) = advertised(observed, config, memory_headroom_percent);
     properties.insert(
         config.cpu_property_name.clone(),
         WorkerProperty::Values(vec![cpu.to_string()]),
@@ -132,9 +180,10 @@ pub fn apply<S: BuildHasher>(
         cpu,
         cpu_unit = ?config.cpu_unit,
         memory_kb,
+        memory_headroom_percent,
         "Advertising capacity from the cgroup"
     );
-    Some((cpu, memory_kb))
+    Ok(Some((cpu, memory_kb)))
 }
 
 pub fn parse_memory_current_kb(memory_current: &str) -> Option<u64> {

@@ -230,11 +230,13 @@ instead of running the fetch into a full disk.
 limits instead of from `platform_properties`: it reads `cpu.max` and
 `memory.max` at its cgroup v2 root, keeps back `overhead_cpu_millicores`
 (thousandths of a core) and `overhead_memory_kb` for itself, divides the
-memory by
-`memory_headroom_percent` (set it to the enforcement headroom), and sets the
-two properties to the result at registration. The limit is the number the
-kernel enforces, so the number the scheduler packs against is derived from
-it rather than typed next to it. `cpu_unit` is the scale of the CPU
+memory by the enforcement headroom (`memory_headroom_percent`, which follows
+`resource_enforcement` unless set), and sets the two properties to the
+result at registration. The limit is the number the kernel enforces, so the
+number the scheduler packs against is derived from it rather than typed next
+to it. Where the cgroup cannot be read, hand-typed `cpu_count` and
+`memory_kb` stand with a warning; with neither typed the worker refuses to
+start, since it could take no action that asks for either. `cpu_unit` is the scale of the CPU
 property: `cores` by default, rounded down, the scale `cpu_count: {
 query_cmd: "nproc" }` and an action's `cpu_count=1` use; a fleet that
 advertises and requests thousandths of a core sets `millicores`. The
@@ -244,8 +246,7 @@ overhead is always in thousandths of a core.
 "capacity": {
   "cpu_unit": "cores",
   "overhead_cpu_millicores": 1000,
-  "overhead_memory_kb": 4194304,
-  "memory_headroom_percent": 20
+  "overhead_memory_kb": 4194304
 }
 ```
 

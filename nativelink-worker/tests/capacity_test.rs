@@ -12,24 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::cas_server::{CapacityConfig, CpuUnit};
+use std::collections::HashMap;
+
+use nativelink_config::cas_server::{
+    CapacityConfig, CpuUnit, DiskEnforcement, MemoryEnforcement, ResourceEnforcementConfig,
+    WorkerProperty,
+};
+use nativelink_error::Code;
 use nativelink_worker::capacity::{
-    ObservedCapacity, advertised, free_memory_kb_from, parse_cpu_max, parse_meminfo_available_kb,
-    parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
+    ObservedCapacity, advertised, free_memory_kb_from, memory_headroom_percent, parse_cpu_max,
+    parse_meminfo_available_kb, parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
+    without_cgroup,
 };
 use pretty_assertions::assert_eq;
 
-fn config(headroom: u64) -> CapacityConfig {
-    config_in(CpuUnit::Cores, headroom)
+fn config() -> CapacityConfig {
+    config_in(CpuUnit::Cores)
 }
 
-fn config_in(cpu_unit: CpuUnit, headroom: u64) -> CapacityConfig {
+fn config_in(cpu_unit: CpuUnit) -> CapacityConfig {
     CapacityConfig {
         cpu_property_name: "cpu_count".to_string(),
         memory_property_name: "memory_kb".to_string(),
         cpu_unit,
         overhead_cpu_millicores: 1000,
         overhead_memory_kb: 4 * 1024 * 1024,
+        memory_headroom_percent: None,
+    }
+}
+
+fn enforcement(memory: MemoryEnforcement, headroom: u64) -> ResourceEnforcementConfig {
+    ResourceEnforcementConfig {
+        memory,
+        disk: DiskEnforcement::None,
+        disk_property_name: "disk_kb".to_string(),
+        memory_property_name: "memory_kb".to_string(),
         memory_headroom_percent: headroom,
     }
 }
@@ -62,8 +79,66 @@ fn advertised_takes_off_the_overhead_and_the_headroom() {
         cpu_millicores: 14_000,
         memory_kb: 52 * 1024 * 1024,
     };
-    assert_eq!(advertised(observed, &config(20)), (13, 40 * 1024 * 1024));
-    assert_eq!(advertised(observed, &config(0)), (13, 48 * 1024 * 1024));
+    assert_eq!(advertised(observed, &config(), 20), (13, 40 * 1024 * 1024));
+    assert_eq!(advertised(observed, &config(), 0), (13, 48 * 1024 * 1024));
+}
+
+/// The headroom is typed once: unset, the block follows the enforcement
+/// headroom while memory enforcement is on, and is nothing otherwise; set,
+/// its own figure wins.
+#[test]
+fn headroom_follows_enforcement_unless_set() {
+    let unset = config();
+    assert_eq!(
+        memory_headroom_percent(&unset, Some(&enforcement(MemoryEnforcement::Soft, 20))),
+        20
+    );
+    assert_eq!(
+        memory_headroom_percent(&unset, Some(&enforcement(MemoryEnforcement::None, 20))),
+        0
+    );
+    assert_eq!(memory_headroom_percent(&unset, None), 0);
+    let set = CapacityConfig {
+        memory_headroom_percent: Some(10),
+        ..config()
+    };
+    assert_eq!(
+        memory_headroom_percent(&set, Some(&enforcement(MemoryEnforcement::Soft, 20))),
+        10
+    );
+}
+
+/// Without a readable cgroup the configured properties stand if they carry
+/// both numbers; a worker that would register with neither is refused,
+/// naming what is missing, rather than idling forever on a warning.
+#[test]
+fn without_a_cgroup_the_worker_keeps_its_properties_or_refuses_to_start() {
+    let both: HashMap<String, WorkerProperty> = HashMap::from([
+        (
+            "cpu_count".to_string(),
+            WorkerProperty::Values(vec!["16".to_string()]),
+        ),
+        (
+            "memory_kb".to_string(),
+            WorkerProperty::Values(vec!["60000000".to_string()]),
+        ),
+    ]);
+    assert!(without_cgroup(&config(), &both).is_ok());
+
+    let only_cpu: HashMap<String, WorkerProperty> = HashMap::from([(
+        "cpu_count".to_string(),
+        WorkerProperty::Values(vec!["16".to_string()]),
+    )]);
+    let err = without_cgroup(&config(), &only_cpu).expect_err("memory_kb is missing");
+    assert_eq!(err.code, Code::FailedPrecondition);
+    assert!(err.to_string().contains("no memory_kb"), "{err}");
+
+    let neither: HashMap<String, WorkerProperty> = HashMap::new();
+    let err = without_cgroup(&config(), &neither).expect_err("both are missing");
+    assert!(
+        err.to_string().contains("no cpu_count or memory_kb"),
+        "{err}"
+    );
 }
 
 /// `cpu_count` is whole cores everywhere else in the configuration (`nproc`,
@@ -83,20 +158,20 @@ fn cpu_is_advertised_in_whole_cores_unless_told_millicores() {
         cpu_unit: CpuUnit::default(),
         overhead_cpu_millicores: 1000,
         overhead_memory_kb: 0,
-        memory_headroom_percent: 0,
+        memory_headroom_percent: None,
     };
-    assert_eq!(advertised(fourteen_cores, &default_block).0, 13);
+    assert_eq!(advertised(fourteen_cores, &default_block, 0).0, 13);
     assert_eq!(
-        advertised(fourteen_cores, &config_in(CpuUnit::Millicores, 0)).0,
+        advertised(fourteen_cores, &config_in(CpuUnit::Millicores), 0).0,
         13_000
     );
     let fourteen_and_a_half = ObservedCapacity {
         cpu_millicores: 14_500,
         memory_kb: 1,
     };
-    assert_eq!(advertised(fourteen_and_a_half, &config(0)).0, 13);
+    assert_eq!(advertised(fourteen_and_a_half, &config(), 0).0, 13);
     assert_eq!(
-        advertised(fourteen_and_a_half, &config_in(CpuUnit::Millicores, 0)).0,
+        advertised(fourteen_and_a_half, &config_in(CpuUnit::Millicores), 0).0,
         13_500
     );
 }
@@ -107,7 +182,7 @@ fn overhead_larger_than_the_limit_advertises_zero_not_a_wraparound() {
         cpu_millicores: 500,
         memory_kb: 1024,
     };
-    assert_eq!(advertised(observed, &config(20)), (0, 0));
+    assert_eq!(advertised(observed, &config(), 20), (0, 0));
 }
 
 /// The keepalive reports the limit less current usage when there is a

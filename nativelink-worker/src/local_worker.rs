@@ -1074,7 +1074,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
 
         let mut platform_properties = self.config.platform_properties.clone();
         if let Some(capacity) = &self.config.capacity {
-            crate::capacity::apply(capacity, &mut platform_properties);
+            let memory_headroom_percent = crate::capacity::memory_headroom_percent(
+                capacity,
+                self.config.resource_enforcement.as_ref(),
+            );
+            crate::capacity::apply(capacity, memory_headroom_percent, &mut platform_properties)
+                .err_tip(|| "Advertising capacity from the cgroup")?;
         }
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),

@@ -812,10 +812,15 @@ pub struct CapacityConfig {
 
     /// Percent the advertised memory is reduced by, so that actions at their
     /// enforcement ceiling (reservation plus headroom) still fit the limit.
-    /// Set it to `resource_enforcement.memory_headroom_percent`.
-    /// Default: 0
-    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
-    pub memory_headroom_percent: u64,
+    /// Unset, it follows `resource_enforcement.memory_headroom_percent`
+    /// while memory enforcement is on, and is 0 otherwise, so the two
+    /// cannot drift apart by being typed twice.
+    /// Default: unset
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub memory_headroom_percent: Option<u64>,
 }
 
 fn default_capacity_cpu_property_name() -> String {
@@ -1318,8 +1323,10 @@ pub struct LocalWorkerConfig {
 
     /// Derive the CPU and memory properties from the worker's own cgroup
     /// limits instead of the values above; see `CapacityConfig`. When the
-    /// cgroup cannot be read the configured values stand and a warning says
-    /// so.
+    /// cgroup cannot be read (not Linux, cgroup v1, no permission) the
+    /// values above stand and a warning says so; if they carry neither
+    /// property the worker refuses to start rather than register unable to
+    /// take any action that asks for CPU or memory.
     #[serde(default)]
     pub capacity: Option<CapacityConfig>,
 
