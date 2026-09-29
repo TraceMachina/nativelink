@@ -2969,6 +2969,7 @@ exit 0
             disk_property_name: "disk_kb".to_string(),
             memory_property_name: "memory_kb".to_string(),
             memory_headroom_percent: 20,
+            disk_headroom_percent: 20,
         };
         assert!(
             ResourceEnforcement::from_config(&config(
@@ -3116,6 +3117,8 @@ exit 0
                 resource_enforcement: Some(ResourceEnforcement {
                     memory: None,
                     disk_property_name: Some("disk_kb".to_string()),
+                    disk_soft: false,
+                    disk_headroom_percent: 20,
                 }),
                 ..Default::default()
             },
@@ -3207,6 +3210,8 @@ exit 0
             Some(ResourceEnforcement {
                 memory: None,
                 disk_property_name: Some("disk_kb".to_string()),
+                disk_soft: false,
+                disk_headroom_percent: 20,
             }),
             None,
         ] {
@@ -3257,6 +3262,8 @@ exit 0
                     resource_enforcement: Some(ResourceEnforcement {
                         memory: None,
                         disk_property_name: Some("disk_kb".to_string()),
+                        disk_soft: false,
+                        disk_headroom_percent: 20,
                     }),
                     ..Default::default()
                 },
@@ -3734,6 +3741,166 @@ exit 0
             gated.max_in_flight()
         );
         Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn action_writing_past_its_disk_reservation_is_killed()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    resource_enforcement: Some(ResourceEnforcement {
+                        memory: None,
+                        disk_property_name: Some("disk_kb".to_string()),
+                        disk_soft: true,
+                        disk_headroom_percent: 20,
+                    }),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                // Thirty MiB of its own under the action directory, then a
+                // long sleep: the disk sample after ten seconds sees it.
+                "dd if=/dev/zero of=fill.bin bs=1M count=30 status=none; sleep 60".to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        // The client tagged nothing; the reservation arrives the way a hint or
+        // cold start does, on the scheduler's StartExecute, not on the Action.
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    // 1 MiB of disk reserved: thirty MiB written is far past
+                    // it with 20% headroom.
+                    platform: Some(Platform {
+                        properties: vec![Property {
+                            name: "disk_kb".into(),
+                            value: "1024".into(),
+                        }],
+                    }),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let started = std::time::Instant::now();
+        let result = run_action(running_action_impl.clone()).await?;
+        let err = result
+            .error
+            .expect("an action over its reservation must fail with an error");
+        assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+        assert!(
+            err.to_string().contains("disk reservation"),
+            "error should name the reservation: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the worker should have killed the action at the ten second disk sample, long before its sleep ended"
+        );
+        // The measurement says what happened and what it was measured against.
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledDisk as i32,
+            "{usage:?}"
+        );
+        assert!(usage.enforced, "the worker's own limit ended it: {usage:?}");
+        assert!(
+            usage.peak_disk_kb >= 30 * 1024,
+            "the measurement should carry what the action wrote: {usage:?}"
+        );
+        Ok(())
+    }
+
+    /// Only the action's own files count: a hard-linked input (two links)
+    /// is the CAS store's, a symlink and the directories' own blocks are
+    /// not data the action wrote.
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn directory_private_kb_counts_only_single_link_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("own.bin");
+        std::fs::write(&own, vec![0u8; 64 * 1024]).unwrap();
+        let input = dir.path().join("input.bin");
+        std::fs::write(&input, vec![0u8; 64 * 1024]).unwrap();
+        std::fs::hard_link(&input, dir.path().join("input-link.bin")).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(
+            dir.path().join("sub").join("deep.bin"),
+            vec![0u8; 32 * 1024],
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&own, dir.path().join("own-symlink")).unwrap();
+        let kb = nativelink_worker::running_actions_manager::directory_private_kb(dir.path());
+        assert!(
+            (90..=100).contains(&kb),
+            "own 64 KiB plus deep 32 KiB, not the hard-linked input: {kb} KiB"
+        );
     }
 
     /// A timed-out action gets SIGTERM first and keeps what it printed;
@@ -4284,6 +4451,8 @@ exit 0
                             headroom_percent: 20,
                         }),
                         disk_property_name: None,
+                        disk_soft: false,
+                        disk_headroom_percent: 20,
                     }),
                     ..Default::default()
                 },
@@ -4301,6 +4470,7 @@ exit 0
                 timeout_handled_externally: false,
                 active_input_leases: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
             })?);
         // A shell holding 60 MB in a variable, then a child that would keep

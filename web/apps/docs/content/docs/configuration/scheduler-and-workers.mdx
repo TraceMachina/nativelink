@@ -231,14 +231,22 @@ the one enforced and exported to the environment.
 what the actions already admitted reserved, is refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
 counting an attempt and holds off this worker until its next keepalive,
 instead of running the fetch into a full disk.
+`disk: soft` is the guard plus a kill: every ten seconds the worker adds up
+the files the action has written under its own directory (inputs are hard
+links into the CAS and are not counted), and an action past its `disk_kb`
+reservation by `disk_headroom_percent` is killed and fails with
+`FAILED_PRECONDITION`, its outcome `KILLED_DISK`. With either disk mode the
+action's usage report carries `peak_disk_kb`, what it wrote, which is how the
+sizing loop learns to size disk.
 
 ```json5
 "resource_enforcement": {
   "memory": "soft",
   "memory_property_name": "memory_kb",
   "memory_headroom_percent": 20,
-  "disk": "guard",
-  "disk_property_name": "disk_kb"
+  "disk": "soft",
+  "disk_property_name": "disk_kb",
+  "disk_headroom_percent": 20
 }
 ```
 

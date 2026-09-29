@@ -939,6 +939,15 @@ pub struct ResourceEnforcementConfig {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub memory_headroom_percent: u64,
+
+    /// Percent above its disk reservation an action's own files may reach
+    /// before it is killed, with `disk: soft`.
+    /// Default: 20
+    #[serde(
+        default = "default_memory_headroom_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub disk_headroom_percent: u64,
 }
 
 fn default_memory_property_name() -> String {
@@ -963,6 +972,12 @@ pub enum DiskEnforcement {
     /// Refuse the action when the free space under the work directory is
     /// below its reservation.
     Guard,
+    /// `guard`, and kill an action whose files under its own directory
+    /// grow past its reservation plus `disk_headroom_percent`. Sampled
+    /// every ten seconds by walking the action directory, counting only
+    /// files the action itself wrote (inputs are hard links into the CAS
+    /// and are not counted).
+    Soft,
 }
 
 const fn default_memory_headroom_percent() -> u64 {
