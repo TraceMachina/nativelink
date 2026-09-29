@@ -743,7 +743,74 @@ pub struct ServerConfig {
     pub experimental_identity_header: IdentityHeaderSpec,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+/// Advertise CPU and memory from what the worker can actually see. The
+/// worker reads `cpu.max` and `memory.max` at its own cgroup v2 root (the
+/// pod's limits on Kubernetes), takes off what it needs for itself, divides
+/// the memory by the enforcement headroom, and sets the two properties to
+/// the result at registration. What the scheduler packs against is then
+/// derived from the one number that is enforced, instead of typed in twice.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CapacityConfig {
+    /// Property that carries CPU, in thousandths of a core.
+    /// Default: `cpu_count`
+    #[serde(
+        default = "default_capacity_cpu_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub cpu_property_name: String,
+
+    /// Property that carries memory, in KiB.
+    /// Default: `memory_kb`
+    #[serde(
+        default = "default_capacity_memory_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub memory_property_name: String,
+
+    /// CPU the worker keeps for itself, in thousandths of a core.
+    /// Default: 1000
+    #[serde(
+        default = "default_capacity_overhead_cpu_millicores",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub overhead_cpu_millicores: u64,
+
+    /// Memory the worker keeps for itself (the process, its directory cache,
+    /// output buffers), in KiB.
+    /// Default: 2097152 (2 GiB)
+    #[serde(
+        default = "default_capacity_overhead_memory_kb",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub overhead_memory_kb: u64,
+
+    /// Percent the advertised memory is reduced by, so that actions at their
+    /// enforcement ceiling (reservation plus headroom) still fit the limit.
+    /// Set it to `resource_enforcement.memory_headroom_percent`.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_headroom_percent: u64,
+}
+
+fn default_capacity_cpu_property_name() -> String {
+    "cpu_count".to_string()
+}
+
+fn default_capacity_memory_property_name() -> String {
+    "memory_kb".to_string()
+}
+
+const fn default_capacity_overhead_cpu_millicores() -> u64 {
+    1000
+}
+
+const fn default_capacity_overhead_memory_kb() -> u64 {
+    2_097_152
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerProperty {
@@ -1224,6 +1291,13 @@ pub struct LocalWorkerConfig {
     /// and used to tell the scheduler to restrict what should be executed on this
     /// worker.
     pub platform_properties: HashMap<String, WorkerProperty>,
+
+    /// Derive the CPU and memory properties from the worker's own cgroup
+    /// limits instead of the values above; see `CapacityConfig`. When the
+    /// cgroup cannot be read the configured values stand and a warning says
+    /// so.
+    #[serde(default)]
+    pub capacity: Option<CapacityConfig>,
 
     /// An optional mapping of environment names to set for the execution
     /// as well as those specified in the action itself. If set, will set each

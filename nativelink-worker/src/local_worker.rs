@@ -1072,9 +1072,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             }
         }
 
+        let mut platform_properties = self.config.platform_properties.clone();
+        if let Some(capacity) = &self.config.capacity {
+            crate::capacity::apply(capacity, &mut platform_properties);
+        }
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
-            &self.config.platform_properties,
+            &platform_properties,
             &extra_envs,
             if self.config.single_use {
                 1

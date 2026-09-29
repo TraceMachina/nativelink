@@ -226,6 +226,24 @@ instead of running the fetch into a full disk.
 }
 ```
 
+**`capacity`** makes the worker advertise CPU and memory from its own cgroup
+limits instead of from `platform_properties`: it reads `cpu.max` and
+`memory.max` at its cgroup v2 root, keeps back `overhead_cpu_millicores`
+(thousandths of a core) and `overhead_memory_kb` for itself, divides the
+memory by
+`memory_headroom_percent` (set it to the enforcement headroom), and sets the
+two properties to the result at registration. The limit is the number the
+kernel enforces, so the number the scheduler packs against is derived from
+it rather than typed next to it.
+
+```json5
+"capacity": {
+  "overhead_cpu_millicores": 1000,
+  "overhead_memory_kb": 4194304,
+  "memory_headroom_percent": 20
+}
+```
+
 <Callout type="info" title="Scheduler state is in memory by default">
   `experimental_backend` defaults to memory, so restarting the scheduler loses
   the queue. A Redis backend exists for shared state across scheduler
