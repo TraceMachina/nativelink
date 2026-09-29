@@ -56,6 +56,24 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     async fn add_worker(&self, worker: Worker) -> Result<(), Error>;
 
+    /// The worker took the dispatched operation.
+    async fn worker_dispatch_accepted(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error>;
+
+    /// The worker will not run the dispatched operation; `reason` is the
+    /// worker's word for why, `needs_kb` what it said the action wanted
+    /// when the reason was load.
+    async fn worker_dispatch_declined(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<(), Error>;
+
     /// Updates the status of an action to the scheduler from the worker.
     async fn update_action(
         &self,
@@ -81,6 +99,16 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
         load: Option<WorkerLoad>,
+    ) -> Result<(), Error>;
+
+    /// Any other message from the worker (an acknowledgement, a decline, an
+    /// execute result) proves it is alive. Unlike a keepalive it lifts no
+    /// pause: a decline is not the worker saying it is ready to be asked
+    /// again.
+    async fn worker_liveness_refreshed(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
     ) -> Result<(), Error>;
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.

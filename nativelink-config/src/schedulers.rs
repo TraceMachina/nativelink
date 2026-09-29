@@ -195,6 +195,18 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub unacknowledged_kill_timeout_s: u64,
 
+    /// Requeue a dispatched action the worker has not acknowledged within
+    /// this many seconds, untried and without counting an attempt, and
+    /// pause the worker. The clock is the worker's own messages: a dispatch
+    /// is dated by the worker's last message before it, and the check runs
+    /// on each later message, so keep this above a few keepalive intervals.
+    /// Workers from v1.7.3 acknowledge every dispatch;
+    /// older workers never do, so leave this unset while any are
+    /// connected or their every action would be requeued.
+    /// Default: unset (off)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub dispatch_ack_timeout_s: u64,
+
     /// Fail a queued action once no connected worker has been able to run
     /// it for this many seconds, instead of leaving it queued forever. An
     /// action counts as impossible to run when no connected worker could

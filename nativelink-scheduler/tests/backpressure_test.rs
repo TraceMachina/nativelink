@@ -60,8 +60,8 @@ fn make_scheduler() -> Arc<SimpleScheduler> {
 async fn add_worker(
     scheduler: &SimpleScheduler,
     name: &str,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(
         WorkerId(name.to_string()),
         PlatformProperties::new(HashMap::new()),
@@ -95,7 +95,7 @@ async fn add_action(scheduler: &SimpleScheduler, digest_byte: u8) -> Result<(), 
 }
 
 /// The operation ids of every `StartAction` the worker has been sent.
-fn started(rx: &mut mpsc::UnboundedReceiver<UpdateForWorker>) -> Vec<OperationId> {
+fn started(rx: &mut mpsc::Receiver<UpdateForWorker>) -> Vec<OperationId> {
     let mut ids = Vec::new();
     while let Ok(msg) = rx.try_recv() {
         if let Some(update_for_worker::Update::StartAction(start)) = msg.update {

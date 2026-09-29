@@ -15,7 +15,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::{Future, StreamExt, future};
@@ -635,6 +635,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             worker_id: WorkerId,
             action_info: ActionInfoWithProps,
+            now_fn: &(dyn Fn() -> SystemTime + Send + Sync),
         ) -> Result<Dispatch, Error> {
             let origin_metadata = action_info.origin_metadata.clone();
             let event_origin_metadata = origin_metadata.clone();
@@ -676,8 +677,12 @@ impl SimpleScheduler {
                 });
 
                 debug!(%worker_id, %operation_id, ?action_info, "Notifying worker of operation");
+                let dispatched_at = now_fn()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 workers
-                    .worker_notify_run_action(worker_id, operation_id, action_info)
+                    .worker_notify_run_action(worker_id, operation_id, action_info, dispatched_at)
                     .await
                     .err_tip(|| {
                         "Failed to run worker_notify_run_action in SimpleScheduler::do_try_match"
@@ -761,6 +766,7 @@ impl SimpleScheduler {
         /// Offers the room that opened since the pass last looked to the
         /// parked actions in listing order. Every parked action that found
         /// a worker leaves the list, whatever its dispatch came to.
+        #[expect(clippy::too_many_arguments)]
         async fn place_parked(
             parked: &mut Parked,
             placement: &mut Placement,
@@ -769,6 +775,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
             full_worker_logging: bool,
             now: SystemTime,
+            now_fn: &(dyn Fn() -> SystemTime + Send + Sync),
         ) -> Result<(), Error> {
             let mut result = Ok(());
             let mut blocked: HashSet<PropertyShape> = HashSet::new();
@@ -798,6 +805,7 @@ impl SimpleScheduler {
                     maybe_origin_event_tx,
                     worker_id,
                     loaded.action_info,
+                    now_fn,
                 )
                 .await
                 {
@@ -909,6 +917,7 @@ impl SimpleScheduler {
                         maybe_origin_event_tx,
                         full_worker_logging,
                         unsatisfiable_pass.now,
+                        self.now_fn.as_ref(),
                     )
                     .await,
                 );
@@ -924,6 +933,7 @@ impl SimpleScheduler {
                             maybe_origin_event_tx,
                             worker_id,
                             loaded.action_info,
+                            self.now_fn.as_ref(),
                         )
                         .await
                         .map(|_| ()),
@@ -976,6 +986,7 @@ impl SimpleScheduler {
                     maybe_origin_event_tx,
                     full_worker_logging,
                     unsatisfiable_pass.now,
+                    self.now_fn.as_ref(),
                 )
                 .await,
             );
@@ -1181,6 +1192,7 @@ impl SimpleScheduler {
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
+            spec.dispatch_ack_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
             has_peers,
@@ -1500,6 +1512,28 @@ impl WorkerScheduler for SimpleScheduler {
         self.worker_scheduler.add_worker(worker).await
     }
 
+    async fn worker_dispatch_accepted(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_dispatch_accepted(worker_id, operation_id)
+            .await
+    }
+
+    async fn worker_dispatch_declined(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_dispatch_declined(worker_id, operation_id, reason, needs_kb)
+            .await
+    }
+
     async fn update_action(
         &self,
         worker_id: &WorkerId,
@@ -1519,6 +1553,16 @@ impl WorkerScheduler for SimpleScheduler {
     ) -> Result<(), Error> {
         self.worker_scheduler
             .worker_keep_alive_received(worker_id, timestamp, load)
+            .await
+    }
+
+    async fn worker_liveness_refreshed(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_liveness_refreshed(worker_id, timestamp)
             .await
     }
 

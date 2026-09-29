@@ -74,6 +74,7 @@ rust_test_suite(
         "tests/admin_test.rs",
         "tests/backpressure_test.rs",
         "tests/cache_lookup_scheduler_test.rs",
+        "tests/dispatch_ack_test.rs",
         "tests/execution_active_count_test.rs",
         "tests/fleet_capabilities_test.rs",
         "tests/historical_resource_scheduler_test.rs",

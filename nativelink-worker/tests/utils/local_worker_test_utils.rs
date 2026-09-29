@@ -22,8 +22,8 @@ use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::{Error, make_err};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForWorker,
+    ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
+    GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -56,6 +56,8 @@ const BROADCAST_CAPACITY: usize = 1;
 enum WorkerClientApiCalls {
     ConnectWorker(ConnectWorkerRequest),
     ExecutionResponse(ExecuteResult),
+    ExecuteAccepted(ExecuteAccepted),
+    ExecuteDeclined(ExecuteDeclined),
 }
 
 #[derive(Debug)]
@@ -66,6 +68,8 @@ enum WorkerClientApiCalls {
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
     ExecutionResponse(Result<(), Error>),
+    ExecuteAccepted(Result<(), Error>),
+    ExecuteDeclined(Result<(), Error>),
 }
 
 #[derive(Clone)]
@@ -115,12 +119,50 @@ impl MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiCalls::ConnectWorker(req) => req,
-            req @ WorkerClientApiCalls::ExecutionResponse(_) => {
+            req => {
                 panic!("expect_connect_worker expected ConnectWorker, got : {req:?}")
             }
         };
         self.tx_resp
             .send(WorkerClientApiReturns::ConnectWorker(result))
+            .expect("Could not send request to mpsc");
+        req
+    }
+
+    pub(crate) async fn expect_execute_accepted(
+        &self,
+        result: Result<(), Error>,
+    ) -> ExecuteAccepted {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiCalls::ExecuteAccepted(req) => req,
+            req => panic!("expect_execute_accepted expected ExecuteAccepted, got : {req:?}"),
+        };
+        self.tx_resp
+            .send(WorkerClientApiReturns::ExecuteAccepted(result))
+            .expect("Could not send request to mpsc");
+        req
+    }
+
+    pub(crate) async fn expect_execute_declined(
+        &self,
+        result: Result<(), Error>,
+    ) -> ExecuteDeclined {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiCalls::ExecuteDeclined(req) => req,
+            req => panic!("expect_execute_declined expected ExecuteDeclined, got : {req:?}"),
+        };
+        self.tx_resp
+            .send(WorkerClientApiReturns::ExecuteDeclined(result))
             .expect("Could not send request to mpsc");
         req
     }
@@ -136,7 +178,7 @@ impl MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiCalls::ExecutionResponse(req) => req,
-            req @ WorkerClientApiCalls::ConnectWorker(_) => {
+            req => {
                 panic!("expect_execution_response expected ExecutionResponse, got : {req:?}")
             }
         };
@@ -162,7 +204,7 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiReturns::ConnectWorker(result) => result,
-            resp @ WorkerClientApiReturns::ExecutionResponse(_) => {
+            resp => {
                 panic!("connect_worker expected ConnectWorker response, received {resp:?}")
             }
         }
@@ -196,7 +238,7 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiReturns::ExecutionResponse(result) => result,
-            resp @ WorkerClientApiReturns::ConnectWorker(_) => {
+            resp => {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
             }
         }
@@ -206,6 +248,36 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         self.execution_complete_count
             .fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    async fn execute_accepted(&mut self, request: ExecuteAccepted) -> Result<(), Error> {
+        self.tx_call
+            .send(WorkerClientApiCalls::ExecuteAccepted(request))
+            .expect("Could not send request to mpsc");
+        let mut rx_resp_lock = self.rx_resp.lock().await;
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiReturns::ExecuteAccepted(result) => result,
+            resp => panic!("execute_accepted expected ExecuteAccepted response, received {resp:?}"),
+        }
+    }
+
+    async fn execute_declined(&mut self, request: ExecuteDeclined) -> Result<(), Error> {
+        self.tx_call
+            .send(WorkerClientApiCalls::ExecuteDeclined(request))
+            .expect("Could not send request to mpsc");
+        let mut rx_resp_lock = self.rx_resp.lock().await;
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiReturns::ExecuteDeclined(result) => result,
+            resp => panic!("execute_declined expected ExecuteDeclined response, received {resp:?}"),
+        }
     }
 }
 

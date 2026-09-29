@@ -166,7 +166,7 @@ async fn scheduler_defers_to_a_peers_worker_it_cannot_see() -> Result<(), Error>
 
     let cpu_worker = shape(0);
     let gpu_worker = shape(1);
-    let (cpu_tx, _cpu_rx) = mpsc::unbounded_channel();
+    let (cpu_tx, _cpu_rx) = mpsc::channel(64);
     scheduler_a
         .add_worker(Worker::new(
             WorkerId("cpu".to_string()),
@@ -176,7 +176,7 @@ async fn scheduler_defers_to_a_peers_worker_it_cannot_see() -> Result<(), Error>
             1,
         ))
         .await?;
-    let (gpu_tx, _gpu_rx) = mpsc::unbounded_channel();
+    let (gpu_tx, _gpu_rx) = mpsc::channel(64);
     scheduler_b
         .add_worker(Worker::new(
             WorkerId("gpu".to_string()),
