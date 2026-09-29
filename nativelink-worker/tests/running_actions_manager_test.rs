@@ -3750,7 +3750,7 @@ exit 0
             Some(2048),
             "the reservation travels with the measurement: {usage:?}"
         );
-        assert!(usage.wall_time_ms > 0, "{usage:?}");
+        // No wall time assertion: the gross-overrun kill lands within a millisecond.
         Ok(())
     }
 
