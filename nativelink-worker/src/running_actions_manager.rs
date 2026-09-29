@@ -40,7 +40,8 @@ use futures::future::{
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
-    Buck2FileCaptureConfig, EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
+    Buck2FileCaptureConfig, DiskEnforcement, EnvironmentSource, MemoryEnforcement,
+    ResourceEnforcementConfig, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -273,7 +274,7 @@ fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> 
             let entry = cpu_ticks_by_pid.entry(member_pid).or_insert(0);
             *entry = (*entry).max(ticks);
         }
-        if let Some(memory_kb) = read_process_rss_kb(member_pid) {
+        if let Some(memory_kb) = read_process_memory_kb(member_pid) {
             total_kb += memory_kb;
             found_any_process = true;
         }
@@ -282,11 +283,27 @@ fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> 
     found_any_process.then_some(total_kb)
 }
 
+/// The process's share of its resident pages: `Pss` from `smaps_rollup`
+/// divides a page shared by N processes N ways, so summed over the group it
+/// counts a forked parent's pages, shared libraries and mapped inputs once.
+/// `VmRSS` counts them once per process, and a test runner that forks eight
+/// children would sample at several times what the cgroup charges. Falls
+/// back to `VmRSS` where `smaps_rollup` cannot be read (kernels before 4.14).
 #[cfg(target_os = "linux")]
-fn read_process_rss_kb(pid: u32) -> Option<u64> {
+fn read_process_memory_kb(pid: u32) -> Option<u64> {
+    if let Ok(rollup) = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+        && let Some(pss_kb) = parse_kb_field(&rollup, "Pss:")
+    {
+        return Some(pss_kb);
+    }
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status.lines().find_map(|line| {
-        let rest = line.strip_prefix("VmRSS:")?;
+    parse_kb_field(&status, "VmRSS:")
+}
+
+/// The value of a `Field:    1234 kB` line in `/proc` text, in KiB.
+pub fn parse_kb_field(text: &str, field: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix(field)?;
         rest.split_whitespace().next()?.parse().ok()
     })
 }
@@ -1789,7 +1806,10 @@ impl RunningActionImpl {
     async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         // Before anything lands on disk: an action that reserved more than
         // is free is refused as backpressure, not run into ENOSPC halfway
-        // through its inputs.
+        // through its inputs. Free means free after what the actions
+        // already admitted reserved: four 4 GiB actions dispatched in one
+        // second all see the same 10 GiB, so the disk alone would admit
+        // them all. The reservation is held until the action's cleanup.
         if let Some(property) = self
             .running_actions_manager
             .execution_configuration
@@ -1803,14 +1823,24 @@ impl RunningActionImpl {
                 .and_then(|value| value.parse::<u64>().ok())
             && reserved_kb > 0
             && let Some(free_kb) = free_disk_kb(&self.running_actions_manager.root_action_directory)
-            && free_kb < reserved_kb
         {
-            self.metrics().disk_guard_refusals.inc();
-            return Err(make_err!(
-                Code::ResourceExhausted,
-                "Not enough free disk for this action: reserved {reserved_kb} KiB ({property}), {free_kb} KiB free under {}",
-                self.running_actions_manager.root_action_directory
-            ));
+            // Held across the check and the insert, so two actions
+            // preparing at once cannot both pass on the same free space.
+            let mut reservations = self.running_actions_manager.disk_reservations_kb.lock();
+            let reserved_by_others_kb: u64 = reservations
+                .iter()
+                .filter(|(operation_id, _)| **operation_id != self.operation_id)
+                .map(|(_, kb)| *kb)
+                .sum();
+            if free_kb.saturating_sub(reserved_by_others_kb) < reserved_kb {
+                self.metrics().disk_guard_refusals.inc();
+                return Err(make_err!(
+                    Code::ResourceExhausted,
+                    "Not enough free disk for this action: reserved {reserved_kb} KiB ({property}), {free_kb} KiB free under {} with {reserved_by_others_kb} KiB reserved by the actions already admitted",
+                    self.running_actions_manager.root_action_directory
+                ));
+            }
+            reservations.insert(self.operation_id.clone(), reserved_kb);
         }
         {
             let mut state = self.state.lock();
@@ -2236,15 +2266,15 @@ impl RunningActionImpl {
             .resource_enforcement
             .as_ref()
             .and_then(|enforcement| {
+                let memory = enforcement.memory.as_ref()?;
                 let reserved_kb = self
                     .action_info
                     .platform_properties
-                    .get(&enforcement.memory_property_name)?
+                    .get(&memory.property_name)?
                     .parse::<u64>()
                     .ok()?;
                 (reserved_kb > 0).then(|| {
-                    let limit_kb =
-                        reserved_kb.saturating_mul(100 + enforcement.memory_headroom_percent) / 100;
+                    let limit_kb = reserved_kb.saturating_mul(100 + memory.headroom_percent) / 100;
                     (reserved_kb, limit_kb)
                 })
             });
@@ -2349,7 +2379,8 @@ impl RunningActionImpl {
                         .execution_configuration
                         .resource_enforcement
                         .as_ref()
-                        .map_or(("", 0), |e| (e.memory_property_name.as_str(), e.memory_headroom_percent));
+                        .and_then(|e| e.memory.as_ref())
+                        .map_or(("", 0), |m| (m.property_name.as_str(), m.headroom_percent));
                     warn!(
                         operation_id = ?self.operation_id,
                         reserved_kb,
@@ -3105,22 +3136,56 @@ impl Debug for Callbacks {
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
-/// Soft memory enforcement: the worker kills an action whose process group
-/// grows past its reservation plus headroom. Linux only; the sampler that
-/// measures it does not exist elsewhere.
+/// What the worker holds an action to beyond the scheduler's ledger. Each
+/// axis is on or off on its own; the value exists when at least one is on.
 #[derive(Debug, Clone)]
 pub struct ResourceEnforcement {
-    pub memory_property_name: String,
-    pub memory_headroom_percent: u64,
+    /// Soft memory enforcement: the worker kills an action whose process
+    /// group grows past its reservation plus headroom. Linux only; the
+    /// sampler that measures it does not exist elsewhere. An action run
+    /// through a persistent worker is not covered: that process outlives
+    /// the action and serves others, so its memory is no one action's
+    /// reservation, and only the pod's limit bounds it.
+    pub memory: Option<MemoryLimit>,
     /// Refuse an action whose disk reservation, under this property, is
-    /// more than the free space under the work directory.
+    /// more than the free space under the work directory less what the
+    /// actions already admitted reserved.
     pub disk_property_name: Option<String>,
+}
+
+/// The reservation a memory ceiling is built from.
+#[derive(Debug, Clone)]
+pub struct MemoryLimit {
+    /// Platform property carrying the reservation in KiB.
+    pub property_name: String,
+    /// Percent above the reservation the action may reach.
+    pub headroom_percent: u64,
+}
+
+impl ResourceEnforcement {
+    /// From the worker's configuration. `None` when neither axis is on;
+    /// `disk: guard` alone is honoured as much as `memory: soft` alone.
+    pub fn from_config(config: &ResourceEnforcementConfig) -> Option<Self> {
+        let memory = match config.memory {
+            MemoryEnforcement::None => None,
+            MemoryEnforcement::Soft => Some(MemoryLimit {
+                property_name: config.memory_property_name.clone(),
+                headroom_percent: config.memory_headroom_percent,
+            }),
+        };
+        let disk_property_name =
+            (config.disk == DiskEnforcement::Guard).then(|| config.disk_property_name.clone());
+        (memory.is_some() || disk_property_name.is_some()).then_some(Self {
+            memory,
+            disk_property_name,
+        })
+    }
 }
 
 /// Free space in KiB on the filesystem holding `path`, as an unprivileged
 /// process may use it.
 #[cfg(target_family = "unix")]
-fn free_disk_kb(path: &str) -> Option<u64> {
+pub fn free_disk_kb(path: &str) -> Option<u64> {
     let c_path = std::ffi::CString::new(path).ok()?;
     let mut stat: libc::statvfs = unsafe { core::mem::zeroed() };
     // SAFETY: `c_path` is a valid C string and `stat` is a zeroed out
@@ -3139,7 +3204,7 @@ fn widen(value: impl Into<u64>) -> u64 {
 }
 
 #[cfg(not(target_family = "unix"))]
-fn free_disk_kb(_path: &str) -> Option<u64> {
+pub fn free_disk_kb(_path: &str) -> Option<u64> {
     None
 }
 
@@ -3473,6 +3538,10 @@ pub struct RunningActionsManagerImpl {
     action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
+    /// Disk each admitted action reserved, by operation, so the disk guard
+    /// checks against what is left after them. An entry lives from the
+    /// guard passing to `cleanup_action`.
+    disk_reservations_kb: Mutex<HashMap<OperationId, u64>>,
     /// Track operations being cleaned up to avoid directory collisions during action retries.
     /// When an action fails and is retried on the same worker, we need to ensure the previous
     /// attempt's directory is fully cleaned up before creating a new one.
@@ -3530,6 +3599,7 @@ impl RunningActionsManagerImpl {
                 directory_cache: args.directory_cache.as_ref().map(Arc::downgrade),
                 ..Default::default()
             }),
+            disk_reservations_kb: Mutex::new(HashMap::new()),
             cleaning_up_operations: Mutex::new(HashSet::new()),
             max_cleanup_wait: args.max_cleanup_wait,
             max_cleanup_backoff: args.max_cleanup_backoff,
@@ -3706,12 +3776,16 @@ impl RunningActionsManagerImpl {
                 queued_timestamp,
             )
             .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?;
-            // The scheduler's view of the properties, not the client's: a
-            // hint or cold-start reservation the scheduler placed this action
-            // by only exists there. Everything downstream (environment from
-            // properties, enforcement) has to see the same numbers the
-            // ledger charged.
-            if let Some(platform) = start_execute.platform {
+            // With enforcement on, the scheduler's view of the properties
+            // replaces the client's: a hint or cold-start reservation the
+            // scheduler placed this action by only exists there, and what
+            // is enforced (and exported to the environment) has to be the
+            // number the ledger charged. Off, the worker keeps reading the
+            // client's copy as it always did, so an upgrade changes no
+            // action's environment on its own.
+            if self.execution_configuration.resource_enforcement.is_some()
+                && let Some(platform) = start_execute.platform
+            {
                 for property in platform.properties {
                     action_info
                         .platform_properties
@@ -3811,6 +3885,7 @@ impl RunningActionsManagerImpl {
                 )
             })
         };
+        self.disk_reservations_kb.lock().remove(operation_id);
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
         result.map(|_| ())

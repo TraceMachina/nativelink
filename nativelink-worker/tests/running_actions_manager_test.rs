@@ -40,7 +40,8 @@ mod tests {
     use bytes::Bytes;
     use futures::prelude::*;
     use nativelink_config::cas_server::{
-        EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
+        DiskEnforcement, EnvironmentSource, MemoryEnforcement, ResourceEnforcementConfig,
+        UploadActionResultConfig, UploadCacheResultsStrategy,
     };
     use nativelink_config::stores::{
         EvictionPolicy, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
@@ -87,9 +88,12 @@ mod tests {
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
+    #[cfg(target_os = "linux")]
+    use nativelink_worker::running_actions_manager::MemoryLimit;
     use nativelink_worker::running_actions_manager::{
-        Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
-        RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory, log_excerpt,
+        Callbacks, ExecutionConfiguration, ResourceEnforcement, RunningAction, RunningActionImpl,
+        RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
+        download_to_directory, free_disk_kb, log_excerpt, parse_kb_field,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -2946,6 +2950,286 @@ exit 0
         Ok(())
     }
 
+    /// Each axis of `resource_enforcement` is honoured on its own: the disk
+    /// guard with memory off, memory with the guard off, and nothing when
+    /// both are off.
+    #[nativelink_test]
+    async fn resource_enforcement_config_honours_each_axis_alone()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let config = |memory, disk| ResourceEnforcementConfig {
+            memory,
+            disk,
+            disk_property_name: "disk_kb".to_string(),
+            memory_property_name: "memory_kb".to_string(),
+            memory_headroom_percent: 20,
+        };
+        assert!(
+            ResourceEnforcement::from_config(&config(
+                MemoryEnforcement::None,
+                DiskEnforcement::None
+            ))
+            .is_none()
+        );
+        let guard_only = ResourceEnforcement::from_config(&config(
+            MemoryEnforcement::None,
+            DiskEnforcement::Guard,
+        ))
+        .expect("the guard alone is enforcement");
+        assert!(guard_only.memory.is_none());
+        assert_eq!(guard_only.disk_property_name.as_deref(), Some("disk_kb"));
+        let memory_only = ResourceEnforcement::from_config(&config(
+            MemoryEnforcement::Soft,
+            DiskEnforcement::None,
+        ))
+        .expect("memory alone is enforcement");
+        let memory = memory_only.memory.expect("the memory axis is on");
+        assert_eq!(memory.property_name, "memory_kb");
+        assert_eq!(memory.headroom_percent, 20);
+        assert!(memory_only.disk_property_name.is_none());
+        Ok(())
+    }
+
+    /// The sampler reads `Pss` out of `smaps_rollup`, not a field that
+    /// happens to share the prefix, and `VmRSS` out of `status`.
+    #[nativelink_test]
+    async fn parse_kb_field_reads_the_named_field() -> Result<(), Box<dyn core::error::Error>> {
+        let rollup = "00400000-7fff Rollup\nRss:                1234 kB\nPss_Anon:            100 kB\nPss:                 567 kB\n";
+        assert_eq!(parse_kb_field(rollup, "Pss:"), Some(567));
+        assert_eq!(parse_kb_field(rollup, "Rss:"), Some(1234));
+        assert_eq!(parse_kb_field("VmRSS:\t  42 kB\n", "VmRSS:"), Some(42));
+        assert_eq!(parse_kb_field("VmRSS:\t  42 kB\n", "Pss:"), None);
+        Ok(())
+    }
+
+    /// A manager with only the enforcement given, for the guard tests.
+    async fn enforcing_manager(
+        root_action_directory: &str,
+        cas_store: &Arc<FastSlowStore>,
+        execution_configuration: ExecutionConfiguration,
+    ) -> Result<Arc<RunningActionsManagerImpl>, Error> {
+        Ok(Arc::new(RunningActionsManagerImpl::new(
+            RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.to_string(),
+                execution_configuration,
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+        )?))
+    }
+
+    /// Uploads a command with an empty input root and returns the action digest.
+    async fn upload_action(
+        cas_store: &Arc<FastSlowStore>,
+        command: &Command,
+    ) -> Result<DigestInfo, Error> {
+        let command_digest = serialize_and_upload_message(
+            command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await
+    }
+
+    /// A dispatch of the action carrying the scheduler's properties.
+    fn dispatch_with_properties(
+        action_digest: DigestInfo,
+        properties: &[(&str, String)],
+    ) -> StartExecute {
+        StartExecute {
+            request_metadata: None,
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: OperationId::default().to_string(),
+            queued_timestamp: None,
+            platform: Some(Platform {
+                properties: properties
+                    .iter()
+                    .map(|(name, value)| Property {
+                        name: (*name).to_string(),
+                        value: value.clone(),
+                    })
+                    .collect(),
+            }),
+            worker_id: "foo_worker_id".to_string(),
+        }
+    }
+
+    /// The guard counts what the admitted actions reserved: with almost all
+    /// the free space reserved by one action still running, a second is
+    /// refused although the disk itself would admit it, and admitted again
+    /// once the first has cleaned up.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn disk_guard_counts_what_admitted_actions_reserved()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager = enforcing_manager(
+            &root_action_directory,
+            &cas_store,
+            ExecutionConfiguration {
+                resource_enforcement: Some(ResourceEnforcement {
+                    memory: None,
+                    disk_property_name: Some("disk_kb".to_string()),
+                }),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let action_digest = upload_action(
+            &cas_store,
+            &Command {
+                arguments: vec!["true".to_string()],
+                working_directory: ".".to_string(),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let free_kb = free_disk_kb(&root_action_directory).expect("statvfs on unix");
+        assert!(free_kb > 4096, "the test needs a few MiB free");
+        let dispatch = |reserved_kb: u64| {
+            dispatch_with_properties(action_digest, &[("disk_kb", reserved_kb.to_string())])
+        };
+
+        // Nearly everything, admitted and held.
+        let first = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), dispatch(free_kb - 1024))
+            .await?
+            .prepare_action()
+            .await?;
+
+        // Half of what the disk shows: refused, because the first holds it.
+        let second = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), dispatch(free_kb / 2))
+            .await?;
+        let err = second
+            .clone()
+            .prepare_action()
+            .await
+            .expect_err("the free space is spoken for");
+        assert_eq!(err.code, Code::ResourceExhausted, "{err}");
+        assert!(
+            err.to_string()
+                .contains("reserved by the actions already admitted"),
+            "{err}"
+        );
+        second.cleanup().await?;
+
+        // The first is done; the same reservation now fits.
+        first.cleanup().await?;
+        let third = running_actions_manager
+            .create_and_add_action(WORKER_ID.to_string(), dispatch(free_kb / 2))
+            .await?
+            .prepare_action()
+            .await?;
+        third.cleanup().await?;
+        Ok(())
+    }
+
+    /// The scheduler's properties replace the client's only with enforcement
+    /// on. An environment variable read from a property the client never
+    /// sent sees the scheduler's value then, and nothing otherwise, so an
+    /// upgrade alone changes no action's environment.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn scheduler_properties_reach_the_action_only_with_enforcement_on()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let action_digest = upload_action(
+            &cas_store,
+            &Command {
+                arguments: vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "printf '%s' \"$MEM\"".to_string(),
+                ],
+                working_directory: ".".to_string(),
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await?;
+        let environment = Some(HashMap::from([(
+            "MEM".to_string(),
+            EnvironmentSource::Property("memory_kb".to_string()),
+        )]));
+        let mut seen = Vec::new();
+        for enforcement in [
+            Some(ResourceEnforcement {
+                memory: None,
+                disk_property_name: Some("disk_kb".to_string()),
+            }),
+            None,
+        ] {
+            let root_action_directory = make_temp_path("root_action_directory");
+            fs::create_dir_all(&root_action_directory).await?;
+            let running_actions_manager = enforcing_manager(
+                &root_action_directory,
+                &cas_store,
+                ExecutionConfiguration {
+                    resource_enforcement: enforcement,
+                    additional_environment: environment.clone(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            let running_action = running_actions_manager
+                .create_and_add_action(
+                    WORKER_ID.to_string(),
+                    dispatch_with_properties(action_digest, &[("memory_kb", "4096".to_string())]),
+                )
+                .await?;
+            let result = run_action(running_action).await?;
+            assert_eq!(result.exit_code, 0);
+            let stdout = slow_store
+                .as_ref()
+                .get_part_unchunked(result.stdout_digest, 0, None)
+                .await?;
+            seen.push(String::from_utf8(stdout.to_vec())?);
+        }
+        assert_eq!(seen, ["4096", ""]);
+        Ok(())
+    }
+
     #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn action_reserving_more_disk_than_is_free_is_refused_as_backpressure()
@@ -2959,13 +3243,11 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
-                    resource_enforcement: Some(
-                        nativelink_worker::running_actions_manager::ResourceEnforcement {
-                            memory_property_name: "memory_kb".to_string(),
-                            memory_headroom_percent: 20,
-                            disk_property_name: Some("disk_kb".to_string()),
-                        },
-                    ),
+                    // The guard alone: the memory axis is off.
+                    resource_enforcement: Some(ResourceEnforcement {
+                        memory: None,
+                        disk_property_name: Some("disk_kb".to_string()),
+                    }),
                     ..Default::default()
                 },
                 cas_store: cas_store.clone(),
@@ -3688,13 +3970,13 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
-                    resource_enforcement: Some(
-                        nativelink_worker::running_actions_manager::ResourceEnforcement {
-                            memory_property_name: "memory_kb".to_string(),
-                            memory_headroom_percent: 20,
-                            disk_property_name: None,
-                        },
-                    ),
+                    resource_enforcement: Some(ResourceEnforcement {
+                        memory: Some(MemoryLimit {
+                            property_name: "memory_kb".to_string(),
+                            headroom_percent: 20,
+                        }),
+                        disk_property_name: None,
+                    }),
                     ..Default::default()
                 },
                 cas_store: cas_store.clone(),

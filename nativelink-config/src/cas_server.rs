@@ -797,7 +797,8 @@ pub struct ResourceEnforcementConfig {
     pub memory: MemoryEnforcement,
 
     /// Whether to refuse an action whose disk reservation exceeds the free
-    /// space under the work directory before its inputs are fetched. The
+    /// space under the work directory, less what the actions already
+    /// admitted reserved, before its inputs are fetched. The
     /// refusal is `ResourceExhausted`, which the scheduler requeues without
     /// counting an attempt and holds off this worker until its next
     /// keepalive.
@@ -1149,6 +1150,12 @@ pub struct LocalWorkerConfig {
     /// `memory.oom.group`, so the kernel's kill takes the worker and every
     /// action on it; this one takes only the offender and fails it with
     /// `FailedPrecondition`. Linux only; accepted and ignored elsewhere.
+    /// Actions run through a persistent worker are not covered, since that
+    /// process outlives the action and serves others. With either axis on,
+    /// the worker reads an action's platform properties from the
+    /// scheduler's `StartExecute` rather than the client's request, so a
+    /// reservation the scheduler placed the action by is the one enforced
+    /// and exported to the environment.
     #[serde(default)]
     pub resource_enforcement: Option<ResourceEnforcementConfig>,
 
