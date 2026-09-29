@@ -18,6 +18,7 @@ use serial_test::serial;
 
 #[serial]
 mod tests {
+    #[cfg(target_family = "unix")]
     use core::pin::Pin;
     use core::str::from_utf8;
     use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -34,6 +35,7 @@ mod tests {
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(target_family = "unix")]
     use async_trait::async_trait;
     use bytes::Bytes;
     use futures::prelude::*;
@@ -45,6 +47,7 @@ mod tests {
     };
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
+    #[cfg(target_family = "unix")]
     use nativelink_metric::{
         MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
     };
@@ -72,13 +75,15 @@ mod tests {
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
     };
+    #[cfg(target_family = "unix")]
     use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
     use nativelink_util::common::{DigestInfo, fs, make_temp_path};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+    #[cfg(target_family = "unix")]
     use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
-    use nativelink_util::store_trait::{
-        RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
-    };
+    #[cfg(target_family = "unix")]
+    use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, UploadSizeInfo};
+    use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
@@ -88,7 +93,9 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
-    use tokio::sync::{oneshot, watch};
+    use tokio::sync::oneshot;
+    #[cfg(target_family = "unix")]
+    use tokio::sync::watch;
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
@@ -3055,6 +3062,8 @@ exit 0
     /// A store whose uploads wait at a gate, counting how many are waiting
     /// at once. Every upload of an output file arrives here with that file
     /// open, so the peak is the number of files the worker had open together.
+    /// Unix only, with the one test that drives it.
+    #[cfg(target_family = "unix")]
     #[derive(Debug)]
     struct GatedStore {
         inner: Store,
@@ -3063,6 +3072,7 @@ exit 0
         max_in_flight: AtomicU64,
     }
 
+    #[cfg(target_family = "unix")]
     impl GatedStore {
         fn new(inner: Arc<MemoryStore>) -> Arc<Self> {
             Arc::new(Self {
@@ -3086,6 +3096,7 @@ exit 0
         }
     }
 
+    #[cfg(target_family = "unix")]
     impl MetricsComponent for GatedStore {
         fn publish(
             &self,
@@ -3096,6 +3107,7 @@ exit 0
         }
     }
 
+    #[cfg(target_family = "unix")]
     #[async_trait]
     impl StoreDriver for GatedStore {
         async fn post_init(self: Arc<Self>) -> Result<(), Error> {
@@ -3168,6 +3180,7 @@ exit 0
         }
     }
 
+    #[cfg(target_family = "unix")]
     default_health_status_indicator!(GatedStore);
 
     /// The bound on open output files holds across the whole tree, not per
