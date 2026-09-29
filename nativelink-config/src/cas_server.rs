@@ -743,7 +743,103 @@ pub struct ServerConfig {
     pub experimental_identity_header: IdentityHeaderSpec,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+/// The scale a CPU property is advertised on.
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum CpuUnit {
+    /// Whole cores, rounded down: what `cpu_count: { query_cmd: "nproc" }`
+    /// advertises and what an action asking for `cpu_count=1` means.
+    #[default]
+    Cores,
+    /// Thousandths of a core, for a fleet whose actions and workers already
+    /// speak that scale.
+    Millicores,
+}
+
+/// Advertise CPU and memory from what the worker can actually see. The
+/// worker reads `cpu.max` and `memory.max` at its own cgroup v2 root (the
+/// pod's limits on Kubernetes), takes off what it needs for itself, divides
+/// the memory by the enforcement headroom, and sets the two properties to
+/// the result at registration. What the scheduler packs against is then
+/// derived from the one number that is enforced, instead of typed in twice.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct CapacityConfig {
+    /// Property that carries CPU, on the scale `cpu_unit` names.
+    /// Default: `cpu_count`
+    #[serde(
+        default = "default_capacity_cpu_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub cpu_property_name: String,
+
+    /// Property that carries memory, in KiB.
+    /// Default: `memory_kb`
+    #[serde(
+        default = "default_capacity_memory_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub memory_property_name: String,
+
+    /// The scale the CPU property is advertised on. Whole cores by default,
+    /// the scale every other example in this configuration uses; a fleet
+    /// that advertises and requests thousandths of a core sets `millicores`.
+    /// Getting this wrong is a thousandfold error in how many actions the
+    /// scheduler packs onto the worker.
+    /// Default: cores
+    #[serde(default)]
+    pub cpu_unit: CpuUnit,
+
+    /// CPU the worker keeps for itself, in thousandths of a core whatever
+    /// `cpu_unit` says.
+    /// Default: 1000
+    #[serde(
+        default = "default_capacity_overhead_cpu_millicores",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub overhead_cpu_millicores: u64,
+
+    /// Memory the worker keeps for itself (the process, its directory cache,
+    /// output buffers), in KiB.
+    /// Default: 2097152 (2 GiB)
+    #[serde(
+        default = "default_capacity_overhead_memory_kb",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub overhead_memory_kb: u64,
+
+    /// Percent the advertised memory is reduced by, so that actions at their
+    /// enforcement ceiling (reservation plus headroom) still fit the limit.
+    /// Unset, it follows `resource_enforcement.memory_headroom_percent`
+    /// while memory enforcement is on, and is 0 otherwise, so the two
+    /// cannot drift apart by being typed twice.
+    /// Default: unset
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub memory_headroom_percent: Option<u64>,
+}
+
+fn default_capacity_cpu_property_name() -> String {
+    "cpu_count".to_string()
+}
+
+fn default_capacity_memory_property_name() -> String {
+    "memory_kb".to_string()
+}
+
+const fn default_capacity_overhead_cpu_millicores() -> u64 {
+    1000
+}
+
+const fn default_capacity_overhead_memory_kb() -> u64 {
+    2_097_152
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub enum WorkerProperty {
@@ -1224,6 +1320,15 @@ pub struct LocalWorkerConfig {
     /// and used to tell the scheduler to restrict what should be executed on this
     /// worker.
     pub platform_properties: HashMap<String, WorkerProperty>,
+
+    /// Derive the CPU and memory properties from the worker's own cgroup
+    /// limits instead of the values above; see `CapacityConfig`. When the
+    /// cgroup cannot be read (not Linux, cgroup v1, no permission) the
+    /// values above stand and a warning says so; if they carry neither
+    /// property the worker refuses to start rather than register unable to
+    /// take any action that asks for CPU or memory.
+    #[serde(default)]
+    pub capacity: Option<CapacityConfig>,
 
     /// An optional mapping of environment names to set for the execution
     /// as well as those specified in the action itself. If set, will set each
