@@ -3660,13 +3660,25 @@ impl RunningActionsManagerImpl {
                 get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
                     .await
                     .err_tip(|| "During start_action")?;
-            let action_info = ActionInfo::try_from_action_and_execute_request(
+            let mut action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
                 load_start_timestamp,
                 queued_timestamp,
             )
             .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?;
+            // The scheduler's view of the properties, not the client's: a
+            // hint or cold-start reservation the scheduler placed this action
+            // by only exists there. Everything downstream (environment from
+            // properties, enforcement) has to see the same numbers the
+            // ledger charged.
+            if let Some(platform) = start_execute.platform {
+                for property in platform.properties {
+                    action_info
+                        .platform_properties
+                        .insert(property.name, property.value);
+                }
+            }
             Ok(action_info)
         })
     }

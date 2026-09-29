@@ -3637,16 +3637,11 @@ exit 0
             &mut DigestHasherFunc::Sha256.hasher(),
         )
         .await?;
+        // The client tagged nothing; the reservation arrives the way a hint or
+        // cold start does, on the scheduler's StartExecute, not on the Action.
         let action = Action {
             command_digest: Some(command_digest.into()),
             input_root_digest: Some(input_root_digest.into()),
-            // 2 MiB reserved: the shell is far over it within two samples.
-            platform: Some(Platform {
-                properties: vec![Property {
-                    name: "memory_kb".into(),
-                    value: "2048".into(),
-                }],
-            }),
             ..Default::default()
         };
         let action_digest = serialize_and_upload_message(
@@ -3668,7 +3663,13 @@ exit 0
                     }),
                     operation_id: OperationId::default().to_string(),
                     queued_timestamp: None,
-                    platform: action.platform.clone(),
+                    // 2 MiB reserved: the shell is far over it within two samples.
+                    platform: Some(Platform {
+                        properties: vec![Property {
+                            name: "memory_kb".into(),
+                            value: "2048".into(),
+                        }],
+                    }),
                     worker_id: WORKER_ID.to_string(),
                 },
             )
