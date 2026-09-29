@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2026 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,9 +12,180 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! What the worker has to spare, reported on each keepalive.
+//! What this worker can see of its own CPU and memory, and what it should
+//! advertise from that.
+//!
+//! Every deployment so far typed the advertisement by hand next to the pod's
+//! limits, and the two drifted: chinchilla advertised 16 cores and 60 GiB
+//! inside 15-core, 56 GiB limits. The limit is the number the kernel
+//! enforces, so the advertisement is derived from it here.
 
-/// `memory.current` and `memory.max` are bytes.
+use core::hash::BuildHasher;
+use std::collections::HashMap;
+
+use nativelink_config::cas_server::{
+    CapacityConfig, CpuUnit, MemoryEnforcement, ResourceEnforcementConfig, WorkerProperty,
+};
+use nativelink_error::{Code, Error, make_err};
+use tracing::{info, warn};
+
+/// CPU and memory as the cgroup (or, failing a limit, the host) reports them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedCapacity {
+    pub cpu_millicores: u64,
+    pub memory_kb: u64,
+}
+
+/// `cpu.max` is `"<quota> <period>"` in microseconds, or `"max <period>"` when
+/// unlimited; unlimited means the host's cores.
+pub fn parse_cpu_max(cpu_max: &str, host_cpus: u64) -> Option<u64> {
+    let mut fields = cpu_max.split_whitespace();
+    let quota = fields.next()?;
+    if quota == "max" {
+        return Some(host_cpus.saturating_mul(1000));
+    }
+    let quota: u64 = quota.parse().ok()?;
+    let period: u64 = fields.next()?.parse().ok()?;
+    if period == 0 {
+        return None;
+    }
+    Some(quota.saturating_mul(1000) / period)
+}
+
+/// `memory.max` is bytes, or `"max"` when unlimited; unlimited means the
+/// host's memory.
+pub fn parse_memory_max(memory_max: &str, host_memory_kb: u64) -> Option<u64> {
+    let value = memory_max.trim();
+    if value == "max" {
+        return Some(host_memory_kb);
+    }
+    value.parse::<u64>().ok().map(|bytes| bytes / 1024)
+}
+
+/// `MemTotal` from `/proc/meminfo`, in KiB.
+pub fn parse_meminfo_total_kb(meminfo: &str) -> Option<u64> {
+    meminfo.lines().find_map(|line| {
+        let rest = line.strip_prefix("MemTotal:")?;
+        rest.split_whitespace().next()?.parse().ok()
+    })
+}
+
+/// The headroom the advertisement is divided by: the block's own figure
+/// when set, else the enforcement headroom while memory enforcement is on,
+/// so the two numbers cannot drift apart, else nothing.
+pub fn memory_headroom_percent(
+    config: &CapacityConfig,
+    enforcement: Option<&ResourceEnforcementConfig>,
+) -> u64 {
+    config.memory_headroom_percent.unwrap_or_else(|| {
+        enforcement
+            .filter(|enforcement| enforcement.memory == MemoryEnforcement::Soft)
+            .map_or(0, |enforcement| enforcement.memory_headroom_percent)
+    })
+}
+
+/// The observed capacity less the worker's own share, memory divided by
+/// `memory_headroom_percent`. Returns `(cpu, memory_kb)` with the CPU on
+/// the scale `cpu_unit` names: whole cores rounded down, so a 14-core pod
+/// keeping one core back advertises `13`, not `13000`, to a scheduler
+/// whose actions ask for `cpu_count=1`.
+pub const fn advertised(
+    observed: ObservedCapacity,
+    config: &CapacityConfig,
+    memory_headroom_percent: u64,
+) -> (u64, u64) {
+    let cpu_millicores = observed
+        .cpu_millicores
+        .saturating_sub(config.overhead_cpu_millicores);
+    let cpu = match config.cpu_unit {
+        CpuUnit::Cores => cpu_millicores / 1000,
+        CpuUnit::Millicores => cpu_millicores,
+    };
+    let memory = observed
+        .memory_kb
+        .saturating_sub(config.overhead_memory_kb)
+        .saturating_mul(100)
+        / (100 + memory_headroom_percent);
+    (cpu, memory)
+}
+
+/// What to do when the cgroup cannot be read: the configured properties
+/// stand if they carry both numbers, since an operator who kept them has a
+/// worker that still takes work; a worker with neither would register and
+/// then satisfy no action that asks for CPU or memory, idling for good on
+/// one warning line, so that is refused.
+pub fn without_cgroup<S: BuildHasher>(
+    config: &CapacityConfig,
+    properties: &HashMap<String, WorkerProperty, S>,
+) -> Result<(), Error> {
+    let missing: Vec<&str> = [&config.cpu_property_name, &config.memory_property_name]
+        .into_iter()
+        .filter(|name| !properties.contains_key(name.as_str()))
+        .map(String::as_str)
+        .collect();
+    if missing.is_empty() {
+        warn!(
+            "capacity is configured but the cgroup v2 root could not be read; advertising the configured platform_properties instead"
+        );
+        return Ok(());
+    }
+    Err(make_err!(
+        Code::FailedPrecondition,
+        "capacity is configured but the cgroup v2 root could not be read (not Linux, cgroup v1, or no permission), and platform_properties carries no {}: set them, or drop the capacity block",
+        missing.join(" or ")
+    ))
+}
+
+/// Reads the worker's own cgroup v2 root. `None` where there is no such
+/// cgroup to read (not Linux, cgroup v1, or no permission).
+pub fn observe_cgroup() -> Option<ObservedCapacity> {
+    let host_cpus = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
+    let host_memory_kb = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|meminfo| parse_meminfo_total_kb(&meminfo))
+        .unwrap_or(0);
+    let cpu_max = std::fs::read_to_string("/sys/fs/cgroup/cpu.max").ok()?;
+    let memory_max = std::fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
+    Some(ObservedCapacity {
+        cpu_millicores: parse_cpu_max(&cpu_max, host_cpus)?,
+        memory_kb: parse_memory_max(&memory_max, host_memory_kb)?,
+    })
+}
+
+/// Sets the CPU and memory properties to what the cgroup allows. When
+/// nothing can be read, the configured properties stand if they carry both,
+/// and the worker fails to start if they do not. Returns what was
+/// advertised.
+pub fn apply<S: BuildHasher>(
+    config: &CapacityConfig,
+    memory_headroom_percent: u64,
+    properties: &mut HashMap<String, WorkerProperty, S>,
+) -> Result<Option<(u64, u64)>, Error> {
+    let Some(observed) = observe_cgroup() else {
+        without_cgroup(config, properties)?;
+        return Ok(None);
+    };
+    let (cpu, memory_kb) = advertised(observed, config, memory_headroom_percent);
+    properties.insert(
+        config.cpu_property_name.clone(),
+        WorkerProperty::Values(vec![cpu.to_string()]),
+    );
+    properties.insert(
+        config.memory_property_name.clone(),
+        WorkerProperty::Values(vec![memory_kb.to_string()]),
+    );
+    info!(
+        observed_cpu_millicores = observed.cpu_millicores,
+        observed_memory_kb = observed.memory_kb,
+        cpu,
+        cpu_unit = ?config.cpu_unit,
+        memory_kb,
+        memory_headroom_percent,
+        "Advertising capacity from the cgroup"
+    );
+    Ok(Some((cpu, memory_kb)))
+}
+
 pub fn parse_memory_current_kb(memory_current: &str) -> Option<u64> {
     memory_current
         .trim()
