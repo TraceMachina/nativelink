@@ -44,7 +44,7 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
-use nativelink_util::{spawn, tls_utils};
+use nativelink_util::{background_spawn, spawn, tls_utils};
 use opentelemetry::context::Context;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{process, time};
@@ -966,12 +966,14 @@ pub async fn new_local_worker(
     if config.orphan_sweep_interval_s > 0 {
         let interval = Duration::from_secs(config.orphan_sweep_interval_s);
         let manager = running_actions_manager.clone();
-        drop(spawn!("orphan_sweep", async move {
+        // Detached on purpose: the guarded spawn aborts its task when the
+        // handle drops, and this one runs for the worker's whole life.
+        drop(background_spawn!("orphan_sweep", async move {
+            info!(interval_s = interval.as_secs(), "Orphan sweep scheduled");
             loop {
                 time::sleep(interval).await;
                 match manager.sweep_orphaned_directories().await {
-                    Ok(0) => {}
-                    Ok(removed) => info!(removed, "Orphaned action directories removed"),
+                    Ok(removed) => info!(removed, "Orphan sweep finished"),
                     Err(err) => warn!(?err, "Orphan sweep failed"),
                 }
             }
