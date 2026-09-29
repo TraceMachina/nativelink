@@ -32,7 +32,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, ResponseEvent, event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, WorkerLoad,
+    ActionResourceUsage, ResourceOutcome, WorkerLoad,
 };
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::metrics::{
@@ -1524,6 +1524,25 @@ impl WorkerScheduler for ApiWorkerScheduler {
             .map_or_else(String::new, |bazel_metadata| {
                 bazel_metadata.action_mnemonic.clone()
             });
+
+        let outcome =
+            ResourceOutcome::try_from(resource_usage.outcome).unwrap_or(ResourceOutcome::Unknown);
+        if !matches!(
+            outcome,
+            ResourceOutcome::Unknown | ResourceOutcome::Completed
+        ) {
+            warn!(
+                ?worker_id,
+                ?operation_id,
+                outcome = outcome.as_str_name(),
+                enforced = resource_usage.enforced,
+                action_mnemonic,
+                peak_memory_kb = resource_usage.peak_memory_kb,
+                wall_time_ms = resource_usage.wall_time_ms,
+                reserved = ?resource_usage.reserved,
+                "Action ended by a kill"
+            );
+        }
 
         if resource_usage.sampled {
             if resource_usage.peak_memory_kb > 0 {

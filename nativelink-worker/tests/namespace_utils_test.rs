@@ -140,6 +140,64 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
     Ok(())
 }
 
+/// A SIGTERM to the action's process group reaches the action inside its
+/// namespaces as a SIGTERM, so a trap runs and the action can write its
+/// cleanup before the SIGKILL that follows the grace.
+#[nativelink_test]
+async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(false) {
+        return Ok(());
+    }
+    let marker = std::env::temp_dir().join(format!(
+        "nativelink_test_term.{}.{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    let mut command = tokio::process::Command::new("sh");
+    command.args([
+        "-c",
+        &format!(
+            "trap 'echo bye > {marker}; exit 0' TERM; sleep 30 & wait",
+            marker = marker.display()
+        ),
+    ]);
+    // As the worker does: the action leads its own process group, and the
+    // grace is a SIGTERM to that group.
+    command.process_group(0);
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
+    unsafe {
+        command
+            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
+    }
+    let child = command.spawn()?;
+    let pgid = i32::try_from(child.id().unwrap()).unwrap();
+    let mut namespaced_child = namespace_utils::MaybeNamespacedChild::new(true, child);
+    // Let the shell install its trap and fork the sleep.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // SAFETY: pgid is the group we just created.
+    assert_eq!(unsafe { libc::killpg(pgid, libc::SIGTERM) }, 0);
+    let status = tokio::time::timeout(Duration::from_secs(5), namespaced_child.wait())
+        .await
+        .expect("the action should exit on SIGTERM within the grace")?;
+    assert_eq!(
+        "bye\n",
+        std::fs::read_to_string(&marker).err_tip(|| "The trap did not run")?,
+        "the action did not get to run its TERM trap"
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the trap's exit code should come through: {status:?}"
+    );
+    drop(std::fs::remove_file(&marker));
+    Ok(())
+}
+
 #[nativelink_test]
 async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
     if !namespace_utils::namespaces_supported(false) {
@@ -171,7 +229,8 @@ async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
     // Give the shell time to fork the background sleep processes.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Kill the stub. This sends SIGTERM to the stub, which sends SIGKILL to 'sh'.
+    // Kill the stub: SIGKILL to the namespace's init takes 'sh' and its
+    // children with it.
     namespaced_child.kill().await?;
 
     // Ensure the stub process has exited.

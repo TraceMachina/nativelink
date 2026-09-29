@@ -27,6 +27,8 @@ use std::ffi::{OsStr, OsString};
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(target_family = "unix")]
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -36,7 +38,7 @@ use bytes::{Bytes, BytesMut};
 use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
 use futures::future::{
-    BoxFuture, Future, FutureExt, TryFutureExt, join_all, try_join, try_join_all,
+    BoxFuture, Fuse, Future, FutureExt, TryFutureExt, join_all, try_join, try_join_all,
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
@@ -51,7 +53,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Tree as ProtoTree, UpdateActionResultRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, HistoricalExecuteResponse, StartExecute,
+    ActionResourceUsage, HistoricalExecuteResponse, Reservation, ResourceOutcome, StartExecute,
 };
 use nativelink_store::ac_utils::{
     ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
@@ -112,11 +114,134 @@ const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 const UPLOAD_CONCURRENCY: usize = 64;
 
 /// What the sampler observed over an action's lifetime.
-#[cfg(target_os = "linux")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct SampledResourceUsage {
     peak_memory_kb: u64,
     cpu_time_ms: u64,
+    /// The last reading before the group was gone, which is what a kernel
+    /// kill is judged against.
+    last_memory_kb: u64,
+}
+
+/// Why the worker ended an action before the action ended itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillReason {
+    Timeout,
+    Memory,
+    External,
+}
+
+const SIGKILL_NUMBER: i32 = 9;
+
+/// Appended to a `NotFound` raised while fetching something the client
+/// referenced by digest (the action, its command, its inputs), so the
+/// worker loop can tell a missing input from any other missing thing
+/// without reading a store's wording.
+pub const MISSING_INPUT_ERROR_TIP: &str = "action input missing from CAS";
+
+fn tag_missing_input(err: Error) -> Error {
+    if err.code == Code::NotFound {
+        err.append(MISSING_INPUT_ERROR_TIP)
+    } else {
+        err
+    }
+}
+
+/// How long a killed action's output pipes get to drain. They close when
+/// the process group is gone; a process that left the group could hold
+/// them open, so the wait is bounded.
+const KILLED_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Classifies how an action ended. A kill the worker sent names itself; a
+/// SIGKILL nobody here sent, with the last memory sample within 10% of the
+/// limit, is the kernel's OOM killer; any other signal is external.
+pub fn classify_outcome(
+    kill_reason: Option<KillReason>,
+    signal: Option<i32>,
+    last_memory_kb: u64,
+    memory_limit_kb: Option<u64>,
+) -> (ResourceOutcome, bool) {
+    match (kill_reason, signal) {
+        (Some(KillReason::Memory), _) => (ResourceOutcome::KilledMemory, true),
+        (Some(KillReason::Timeout), _) => (ResourceOutcome::KilledTimeout, false),
+        (None, None) => (ResourceOutcome::Completed, false),
+        (None, Some(SIGKILL_NUMBER)) => {
+            let near_limit = memory_limit_kb.is_some_and(|limit_kb| {
+                limit_kb > 0 && last_memory_kb.saturating_mul(10) >= limit_kb.saturating_mul(9)
+            });
+            if near_limit {
+                (ResourceOutcome::KilledMemory, false)
+            } else {
+                (ResourceOutcome::KilledExternal, false)
+            }
+        }
+        (Some(KillReason::External), _) | (None, Some(_)) => {
+            (ResourceOutcome::KilledExternal, false)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+type SpawnedChild = crate::namespace_utils::MaybeNamespacedChild;
+#[cfg(not(target_os = "linux"))]
+type SpawnedChild = process::Child;
+
+/// SIGKILL through the child wrapper, which takes the whole process group
+/// with it, logged if it fails.
+async fn hard_kill(child: &mut SpawnedChild, why: &str) {
+    if let Err(err) = child.kill().await {
+        error!(?err, why, "Could not kill process in RunningActionsManager");
+    }
+}
+
+/// Starts stopping an action. With a grace period the process group gets
+/// SIGTERM and the returned future fires when SIGKILL is due; without one
+/// SIGKILL goes out now and the future never fires.
+async fn stop_action(
+    child: &mut SpawnedChild,
+    grace: Duration,
+    why: &str,
+) -> Fuse<BoxFuture<'static, ()>> {
+    debug!(grace_ms = grace.as_millis(), why, "Stopping action");
+    #[cfg(target_os = "linux")]
+    if !grace.is_zero()
+        && let Some(pgid) = child.id()
+    {
+        signal_process_group(pgid, libc::SIGTERM);
+        return tokio::time::sleep(grace).boxed().fuse();
+    }
+    hard_kill(child, why).await;
+    Fuse::terminated()
+}
+
+/// The reservation the action was admitted with, read back from its
+/// platform properties so the measurement travels with its yardstick.
+fn reservation_of(
+    properties: &HashMap<String, String>,
+    memory_property: Option<&str>,
+    disk_property: Option<&str>,
+) -> Option<Reservation> {
+    let read = |name: &str| {
+        properties
+            .get(name)
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    };
+    let reservation = Reservation {
+        cpu_count: read("cpu_count").unwrap_or(0),
+        memory_kb: read(memory_property.unwrap_or("memory_kb")).unwrap_or(0),
+        disk_kb: read(disk_property.unwrap_or("disk_kb")).unwrap_or(0),
+    };
+    (reservation.cpu_count > 0 || reservation.memory_kb > 0 || reservation.disk_kb > 0)
+        .then_some(reservation)
+}
+
+#[cfg(target_os = "linux")]
+fn pod_memory_limit_kb() -> Option<u64> {
+    crate::capacity::observe_cgroup().map(|observed| observed.memory_kb)
+}
+#[cfg(not(target_os = "linux"))]
+const fn pod_memory_limit_kb() -> Option<u64> {
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -147,6 +272,23 @@ fn start_action_resource_usage_sampler(
     ActionResourceUsageSampler { stop_tx, handle }
 }
 
+/// A signal to every process in the action's group. The action is its own
+/// group leader, so this reaches the children a shell forked. The SIGKILL
+/// at the end of a kill goes through the child wrapper, which takes the
+/// group with it (or tells the stub, namespaced); this is for the SIGTERM
+/// that gives an action its grace.
+#[cfg(target_os = "linux")]
+fn signal_process_group(pgid: u32, signal: i32) {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return;
+    };
+    // SAFETY: killpg only takes integers and has no memory safety
+    // considerations; a stale group id is reported as ESRCH, not acted on.
+    unsafe {
+        libc::killpg(pgid, signal);
+    }
+}
+
 #[cfg(target_os = "linux")]
 async fn finish_action_resource_usage_sampler(
     sampler: ActionResourceUsageSampler,
@@ -162,6 +304,7 @@ async fn sample_action_resource_usage(
     mut ceiling: Option<MemoryCeiling>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
+    let mut last_memory_kb = 0;
     let mut samples_over_limit = 0u32;
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
@@ -179,6 +322,9 @@ async fn sample_action_resource_usage(
 
     loop {
         let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        if let Some(memory_kb) = observed {
+            last_memory_kb = memory_kb;
+        }
         if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
@@ -212,7 +358,9 @@ async fn sample_action_resource_usage(
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+                    if let Some(memory_kb) = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid) {
+                        last_memory_kb = memory_kb;
+                    }
                     break;
                 }
             }
@@ -223,6 +371,7 @@ async fn sample_action_resource_usage(
     SampledResourceUsage {
         peak_memory_kb,
         cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
+        last_memory_kb,
     }
 }
 
@@ -1856,6 +2005,7 @@ impl RunningActionImpl {
                 )
                 .await
                 .err_tip(|| "Converting command_digest to Command")
+                .map_err(tag_missing_input)
             });
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
@@ -1878,6 +2028,7 @@ impl RunningActionImpl {
                         self.input_lease.clone(),
                     ))
                     .await
+                    .map_err(tag_missing_input)
             })
             .await?;
             command
@@ -2131,6 +2282,21 @@ impl RunningActionImpl {
             .current_dir(command_directory.clone())
             .env_clear();
 
+        if self
+            .running_actions_manager
+            .execution_configuration
+            .set_tmpdir
+        {
+            // One tmp per action, removed with the action directory, so two
+            // actions writing the same name under $TMPDIR no longer collide.
+            // Code that hardcodes /tmp still does.
+            let tmp_directory = format!("{}/tmp", self.action_directory);
+            fs::create_dir_all(&tmp_directory)
+                .await
+                .err_tip(|| format!("Creating {tmp_directory} for TMPDIR"))?;
+            command_builder.env("TMPDIR", &tmp_directory);
+        }
+
         let requested_timeout = if self.action_info.timeout.is_zero() {
             self.running_actions_manager.max_action_timeout
         } else {
@@ -2327,7 +2493,15 @@ impl RunningActionImpl {
         let all_stderr_fut = spawn!("stderr_reader", async move {
             capture_output(stderr_reader, output_cap, stderr_spill, "stderr").await
         });
-        let mut killed_action = false;
+        let mut kill_reason: Option<KillReason> = None;
+        let kill_grace = self
+            .running_actions_manager
+            .execution_configuration
+            .kill_grace;
+        // Armed by a soft kill; fires SIGKILL if the action is still there
+        // when the grace period ends.
+        let mut grace_fut: Fuse<BoxFuture<'static, ()>> = Fuse::terminated();
+        let execution_started = std::time::Instant::now();
 
         let timer = self.metrics().child_process.begin_timer();
         let mut sleep_fut = (self.running_actions_manager.callbacks.sleep_fn)(self.timeout).fuse();
@@ -2335,13 +2509,8 @@ impl RunningActionImpl {
             tokio::select! {
                 () = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
-                    killed_action = true;
-                    if let Err(err) = child_process_guard.kill().await {
-                        error!(
-                            ?err,
-                            "Could not kill process in RunningActionsManager for action timeout",
-                        );
-                    }
+                    kill_reason = Some(KillReason::Timeout);
+                    grace_fut = stop_action(&mut child_process_guard, kill_grace, "action timeout").await;
                     {
                         let joined_command = args.join(OsStr::new(" "));
                         let command = joined_command.to_string_lossy();
@@ -2362,17 +2531,19 @@ impl RunningActionImpl {
                         )));
                     }
                 },
+                () = &mut grace_fut => {
+                    warn!(
+                        operation_id = ?self.operation_id,
+                        grace_ms = kill_grace.as_millis(),
+                        "Action did not leave on SIGTERM within its grace period, sending SIGKILL"
+                    );
+                    hard_kill(&mut child_process_guard, "grace period expired").await;
+                },
                 Ok(observed_kb) = &mut over_limit_fut => {
                     self.running_actions_manager.metrics.memory_reservation_kills.inc();
-                    killed_action = true;
-                    // The wrapper's kill takes the whole process group, so
-                    // the children holding the memory go with the leader.
-                    if let Err(err) = child_process_guard.kill().await {
-                        error!(
-                            ?err,
-                            "Could not kill process in RunningActionsManager for memory reservation",
-                        );
-                    }
+                    kill_reason = Some(KillReason::Memory);
+                    // Memory is still growing; no grace here.
+                    hard_kill(&mut child_process_guard, "memory reservation").await;
                     let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
                     let (property, headroom) = self
                         .running_actions_manager
@@ -2405,32 +2576,75 @@ impl RunningActionImpl {
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(palfrey) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    let (stdout, stderr) = if killed_action {
+                    let killed_action = kill_reason.is_some();
+                    if killed_action {
                         drop(timer);
-                        (Bytes::new().into(), Bytes::new().into())
                     } else {
                         timer.measure();
-                        let (maybe_all_stdout, maybe_all_stderr) = tokio::join!(all_stdout_fut, all_stderr_fut);
+                    }
+                    // A killed action keeps what it printed: that is usually
+                    // the only clue to why it hung or grew. Its pipes close
+                    // when the group is gone, so the wait is bounded only
+                    // for the killed case.
+                    let outputs = if killed_action {
+                        tokio::time::timeout(KILLED_OUTPUT_DRAIN_TIMEOUT, async {
+                            tokio::join!(all_stdout_fut, all_stderr_fut)
+                        }).await.ok()
+                    } else {
+                        Some(tokio::join!(all_stdout_fut, all_stderr_fut))
+                    };
+                    let (stdout, stderr) = if let Some((maybe_all_stdout, maybe_all_stderr)) = outputs {
                         (
                             maybe_all_stdout.err_tip(|| "Internal error reading from stdout of worker task")??,
-                            maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??
+                            maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??,
                         )
+                    } else {
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            "Killed action's output pipes stayed open, dropping its output"
+                        );
+                        (Bytes::new().into(), Bytes::new().into())
                     };
 
+                    #[cfg(target_os = "linux")]
+                    let sampled_usage = match maybe_resource_usage_sampler.take() {
+                        Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                            .await
+                            .unwrap_or_default(),
+                        None => SampledResourceUsage::default(),
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let sampled_usage = SampledResourceUsage::default();
+
+                    let memory_limit_kb = memory_reservation
+                        .map(|(_, limit_kb)| limit_kb)
+                        .or(self.running_actions_manager.pod_memory_limit_kb);
+                    // The signal that ended the process, where the platform reports one.
+                    #[cfg(target_family = "unix")]
+                    let signal = exit_status.signal();
+                    #[cfg(not(target_family = "unix"))]
+                    let signal = None;
+                    let (outcome, enforced) = classify_outcome(
+                        kill_reason,
+                        signal,
+                        sampled_usage.last_memory_kb,
+                        memory_limit_kb,
+                    );
+
                     let exit_code = exit_status.code().map_or_else(|| {
-                        // No exit code means the runner was terminated by a
-                        // signal. SIGKILL on Linux is the kernel OOM killer's
-                        // weapon of choice, so flag this for operators trying
-                        // to correlate action failures with kubectl-top
-                        // memory pressure.
-                        warn!(
-                            ?args,
-                            "Runner subprocess terminated by signal (no exit code); likely OOMKilled \
-                             or externally killed. If this repeats for the same action, raise \
-                             `workers.specs[*].resources.limits.memory` or shrink the action's \
-                             concurrency."
-                        );
                         self.metrics().child_process_failure_error_code.inc();
+                        if kill_reason.is_none() {
+                            // No exit code and no kill of ours: a signal from
+                            // outside. SIGKILL near the memory limit is the
+                            // kernel's OOM killer.
+                            warn!(
+                                ?args,
+                                outcome = outcome.as_str_name(),
+                                last_memory_kb = sampled_usage.last_memory_kb,
+                                ?memory_limit_kb,
+                                "Runner subprocess terminated by a signal nobody here sent"
+                            );
+                        }
                         EXIT_CODE_FOR_SIGNAL
                     }, |exit_code| {
                         if exit_code == 0 {
@@ -2440,32 +2654,51 @@ impl RunningActionImpl {
                         }
                         exit_code
                     });
+                    if kill_reason.is_none() && outcome == ResourceOutcome::KilledMemory {
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action was killed by the kernel at {} KiB, within 10% of the {} KiB memory limit: \
+                                 out of memory. Raise the reservation or shrink the action.",
+                                sampled_usage.last_memory_kb,
+                                memory_limit_kb.unwrap_or(0),
+                            ),
+                        )));
+                    }
 
-                    #[cfg(target_os = "linux")]
-                    let resource_usage = match maybe_resource_usage_sampler.take() {
-                        Some(sampler) => finish_action_resource_usage_sampler(sampler)
-                            .await
-                            .and_then(|usage| {
-                                // An action too short to catch a sample leaves
-                                // both at zero; report nothing rather than a
-                                // misleading zero.
-                                (usage.peak_memory_kb > 0 || usage.cpu_time_ms > 0).then_some(
-                                    ActionResourceUsage {
-                                        peak_memory_kb: usage.peak_memory_kb,
-                                        cpu_time_ms: usage.cpu_time_ms,
-                                        sampled: true,
-                                        operation_id: String::new(),
-                                        worker_id: String::new(),
-                                    },
-                                )
-                            }),
-                        None => None,
-                    };
-                    #[cfg(not(target_os = "linux"))]
-                    let resource_usage = None;
+                    let (memory_property, disk_property) = self
+                        .running_actions_manager
+                        .execution_configuration
+                        .resource_enforcement
+                        .as_ref()
+                        .map_or((None, None), |e| {
+                            (
+                                e.memory.as_ref().map(|m| m.property_name.as_str()),
+                                e.disk_property_name.as_deref(),
+                            )
+                        });
+                    let resource_usage = Some(ActionResourceUsage {
+                        peak_memory_kb: sampled_usage.peak_memory_kb,
+                        cpu_time_ms: sampled_usage.cpu_time_ms,
+                        // An action too short to catch a sample leaves both at
+                        // zero; say so rather than report a misleading zero.
+                        sampled: sampled_usage.peak_memory_kb > 0 || sampled_usage.cpu_time_ms > 0,
+                        operation_id: String::new(),
+                        worker_id: String::new(),
+                        wall_time_ms: u64::try_from(execution_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        peak_disk_kb: 0,
+                        outcome: outcome.into(),
+                        enforced,
+                        reserved: reservation_of(
+                            &self.action_info.platform_properties,
+                            memory_property,
+                            disk_property,
+                        ),
+                    });
 
                     // log something useful instead of repeating same ?arg
-                    info!(?exit_code, "Command complete");
+                    info!(?exit_code, outcome = outcome.as_str_name(), "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
@@ -2489,14 +2722,8 @@ impl RunningActionImpl {
                     return Ok(self);
                 },
                 _ = &mut kill_channel_rx => {
-                    killed_action = true;
-                    if let Err(err) = child_process_guard.kill().await {
-                        error!(
-                            operation_id = ?self.operation_id,
-                            ?err,
-                            "Could not kill process",
-                        );
-                    }
+                    kill_reason = Some(KillReason::External);
+                    grace_fut = stop_action(&mut child_process_guard, kill_grace, "scheduler kill").await;
                     {
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), Some(Error::new(
@@ -3216,6 +3443,11 @@ pub struct ExecutionConfiguration {
     /// Kill an action that exceeds its memory reservation, before the
     /// pod's cgroup limit takes the whole worker with it.
     pub resource_enforcement: Option<ResourceEnforcement>,
+    /// Time a timed-out or cancelled action gets between SIGTERM and
+    /// SIGKILL to write its own cleanup; zero sends SIGKILL at once.
+    pub kill_grace: Duration,
+    /// Point `TMPDIR` at a directory of the action's own, removed with it.
+    pub set_tmpdir: bool,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -3530,6 +3762,9 @@ pub struct RunningActionsManagerImpl {
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
     timeout_handled_externally: bool,
+    /// The container's memory limit, the yardstick for calling a SIGKILL
+    /// nobody here sent an OOM kill.
+    pod_memory_limit_kb: Option<u64>,
     #[cfg(target_os = "linux")]
     use_namespaces: UseNamespaces,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
@@ -3590,6 +3825,7 @@ impl RunningActionsManagerImpl {
             )
             .err_tip(|| "During RunningActionsManagerImpl construction")?,
             max_action_timeout: args.max_action_timeout,
+            pod_memory_limit_kb: pod_memory_limit_kb(),
             max_upload_timeout: args.max_upload_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
@@ -3768,7 +4004,8 @@ impl RunningActionsManagerImpl {
             let action =
                 get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
                     .await
-                    .err_tip(|| "During start_action")?;
+                    .err_tip(|| "During start_action")
+                    .map_err(tag_missing_input)?;
             let mut action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
@@ -3970,14 +4207,19 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 } else {
                     action_info.timeout
                 };
-                if timeout > self.max_action_timeout {
-                    return Err(make_err!(
-                        Code::InvalidArgument,
-                        "Action timeout of {} seconds is greater than the maximum allowed timeout of {} seconds",
-                        timeout.as_secs_f32(),
-                        self.max_action_timeout.as_secs_f32()
-                    ));
-                }
+                // REAPI lets a server clamp a timeout over its maximum; the
+                // client asked for more time, not for a rejection.
+                let timeout = if timeout > self.max_action_timeout {
+                    info!(
+                        ?operation_id,
+                        requested_s = timeout.as_secs_f32(),
+                        max_s = self.max_action_timeout.as_secs_f32(),
+                        "Action timeout clamped to the worker maximum"
+                    );
+                    self.max_action_timeout
+                } else {
+                    timeout
+                };
                 let running_action = Arc::new(RunningActionImpl::new(
                     execution_metadata,
                     operation_id.clone(),

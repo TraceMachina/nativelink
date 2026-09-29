@@ -945,6 +945,10 @@ fn default_memory_property_name() -> String {
     "memory_kb".to_string()
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 fn default_disk_property_name() -> String {
     "disk_kb".to_string()
 }
@@ -1305,6 +1309,23 @@ pub struct LocalWorkerConfig {
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub orphan_sweep_interval_s: u64,
+
+    /// Milliseconds between the SIGTERM a timed-out or cancelled action
+    /// receives and the SIGKILL that follows if it is still running, so a
+    /// tool that handles SIGTERM can write its own cleanup. The memory
+    /// reservation kill skips the grace and sends SIGKILL at once. Linux
+    /// only; elsewhere the kill is immediate. 0 takes the default.
+    /// Default: 5000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub kill_grace_ms: u64,
+
+    /// Give every action its own `TMPDIR` under its action directory,
+    /// removed with it, so concurrent actions writing the same file name
+    /// under `$TMPDIR` no longer collide. A `TMPDIR` in the action's own
+    /// environment still wins. Code that hard-codes `/tmp` is unaffected.
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub set_tmpdir: bool,
 
     /// Underlying CAS store that the worker will use to download CAS artifacts.
     /// This store must be a `FastSlowStore`. The `fast` store must be a

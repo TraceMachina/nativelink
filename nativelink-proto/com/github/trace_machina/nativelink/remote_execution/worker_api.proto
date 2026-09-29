@@ -130,6 +130,32 @@ message ExecuteComplete {
     string operation_id = 1;
 }
 
+/// How an action ended, as the worker saw it. Separate from the exit code:
+/// a kill by the worker or the kernel is a sizing fact, not a tool failure.
+enum ResourceOutcome {
+    RESOURCE_OUTCOME_UNKNOWN = 0;
+    /// The process exited on its own, whatever its exit code.
+    COMPLETED = 1;
+    /// Killed for memory: by the worker's reservation enforcement, or by
+    /// the kernel with the last sample within 10% of the memory limit.
+    KILLED_MEMORY = 2;
+    /// Killed for disk. Reserved for disk enforcement.
+    KILLED_DISK = 3;
+    /// Killed by the action timeout.
+    KILLED_TIMEOUT = 4;
+    /// Killed from outside: a scheduler cancel, or a signal nobody here sent.
+    KILLED_EXTERNAL = 5;
+}
+
+/// The reservation an action was admitted under, echoed by the worker so
+/// the measurement and the number it was measured against travel together.
+message Reservation {
+    uint64 cpu_count = 1;
+    uint64 memory_kb = 2;
+    uint64 disk_kb = 3;
+    reserved 4; // NextId.
+}
+
 /// Resource usage observed by the worker while running one action.
 message ActionResourceUsage {
     /// Peak resident memory observed for the action process tree.
@@ -149,7 +175,25 @@ message ActionResourceUsage {
     /// action's process group.
     uint64 cpu_time_ms = 5;
 
-    reserved 6; // NextId.
+    /// Wall time from spawn to exit, in milliseconds; cores used is
+    /// cpu_time_ms / wall_time_ms.
+    uint64 wall_time_ms = 6;
+
+    /// Peak bytes under the action's work directory, in KiB. Not yet
+    /// measured; zero.
+    uint64 peak_disk_kb = 7;
+
+    /// How the action ended.
+    ResourceOutcome outcome = 8;
+
+    /// True when a worker-side limit, not the kernel or a timeout, ended
+    /// the action.
+    bool enforced = 9;
+
+    /// What the action was admitted with, from its platform properties.
+    Reservation reserved = 10;
+
+    reserved 11; // NextId.
 }
 
 /// Result sent back from the server when a node connects.
