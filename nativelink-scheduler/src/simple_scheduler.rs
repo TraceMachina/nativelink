@@ -1556,6 +1556,16 @@ impl WorkerScheduler for SimpleScheduler {
             .await
     }
 
+    async fn worker_liveness_refreshed(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_liveness_refreshed(worker_id, timestamp)
+            .await
+    }
+
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {
         self.worker_scheduler.remove_worker(worker_id).await
     }

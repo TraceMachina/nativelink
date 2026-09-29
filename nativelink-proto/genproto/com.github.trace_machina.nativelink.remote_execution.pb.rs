@@ -145,6 +145,14 @@ pub struct ConnectionResult {
     /// / a worker that never runs it.
     #[prost(bool, tag = "2")]
     pub dispatch_ack: bool,
+    /// / The platform property the scheduler reads an action's memory
+    /// / reservation from, when it vetoes placement on the worker's reported
+    /// / free memory (`live_memory_veto`). The worker declines a dispatch for
+    /// / load against the same property, so the two sides cannot disagree.
+    /// / Empty when the scheduler does not veto; the worker then never
+    /// / declines for load.
+    #[prost(string, tag = "3")]
+    pub memory_property: ::prost::alloc::string::String,
 }
 /// / The worker took the action it was sent and is about to run it. Until
 /// / this arrives the scheduler has only charged its ledger on the send.

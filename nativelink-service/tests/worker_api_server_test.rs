@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,14 +31,14 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler
+    execute_declined, execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, WorkerLoad
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
 use nativelink_scheduler::match_outcome::MatchOutcome;
 use nativelink_scheduler::platform_property_manager::PlatformPropertyManager;
-use nativelink_scheduler::worker::ActionInfoWithProps;
-use nativelink_scheduler::worker_scheduler::WorkerScheduler;
+use nativelink_scheduler::worker::{ActionInfoWithProps, channel_capacity};
+use nativelink_scheduler::worker_scheduler::{WorkerScheduler, WorkerSummary};
 use nativelink_service::worker_api_server::{ConnectWorkerStream, NowFn, WorkerApiServer};
 use nativelink_util::action_messages::{
     ActionInfo, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
@@ -73,6 +73,8 @@ struct MockWorkerStateManager {
     tx_call: mpsc::UnboundedSender<WorkerStateManagerCalls>,
     rx_resp: Arc<AsyncMutex<mpsc::UnboundedReceiver<WorkerStateManagerReturns>>>,
     tx_resp: mpsc::UnboundedSender<WorkerStateManagerReturns>,
+    /// Operations the state manager no longer has executing on any worker.
+    revoked: Mutex<HashSet<OperationId>>,
 }
 
 impl MockWorkerStateManager {
@@ -84,7 +86,13 @@ impl MockWorkerStateManager {
             tx_call,
             rx_resp: Arc::new(AsyncMutex::new(rx_resp)),
             tx_resp,
+            revoked: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// From now on the operation is not executing on any worker.
+    pub(crate) fn revoke(&self, operation_id: &OperationId) {
+        self.revoked.lock().unwrap().insert(operation_id.clone());
     }
 
     pub(crate) async fn expect_update_operation(
@@ -129,10 +137,10 @@ impl WorkerStateManager for MockWorkerStateManager {
 
     async fn is_executing_on_worker(
         &self,
-        _operation_id: &OperationId,
+        operation_id: &OperationId,
         _worker_id: &WorkerId,
     ) -> Result<bool, Error> {
-        Ok(true)
+        Ok(!self.revoked.lock().unwrap().contains(operation_id))
     }
 }
 
@@ -975,6 +983,194 @@ pub async fn acknowledgement_is_recorded_before_the_sweep_it_carries_test()
             .await
             .is_some(),
         "the acknowledged dispatch stays on the worker"
+    );
+    Ok(())
+}
+
+fn uncacheable_action(seed: u8) -> Arc<ActionInfo> {
+    Arc::new(ActionInfo {
+        command_digest: DigestInfo::new([0u8; 32], 0),
+        input_root_digest: DigestInfo::new([0u8; 32], 0),
+        timeout: Duration::MAX,
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: make_system_time(0),
+        insert_timestamp: make_system_time(0),
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: "instance_name".to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: DigestInfo::new([seed; 32], 123),
+        }),
+    })
+}
+
+/// Sends the action to the test worker as the matcher would, dated now.
+async fn dispatch(test_context: &TestContext, seed: u8) -> Result<OperationId, Error> {
+    let action_info = uncacheable_action(seed);
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())?;
+    let operation_id = OperationId::default();
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+            BASE_NOW_S,
+        )
+        .await?;
+    Ok(operation_id)
+}
+
+/// The test worker's summary once the scheduler has taken in a keepalive
+/// reporting `free_kb`: the worker's messages are handled on another task,
+/// so the report is the sign that everything sent before it has been too.
+async fn summary_after_report(test_context: &TestContext, free_kb: u64) -> WorkerSummary {
+    let worker_id = test_context.worker_id.to_string();
+    for _ in 0..500 {
+        if let Some(summary) = test_context
+            .scheduler
+            .worker_snapshot()
+            .await
+            .into_iter()
+            .find(|summary| summary.id == worker_id && summary.free_memory_kb == Some(free_kb))
+        {
+            return summary;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    panic!("the keepalive reporting {free_kb} KiB was never taken in");
+}
+
+/// A decline pauses the worker. The liveness refresh the decline carries
+/// must not lift that pause, or the next matching pass hands the worker
+/// the same action straight back; only a keepalive reporting enough room
+/// resumes it.
+#[nativelink_test]
+pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let operation_id = dispatch(&test_context, 9).await?;
+
+    // The decline sends the action back through the state manager.
+    let decline = test_context
+        .worker_stream
+        .send(Update::ExecuteDeclined(ExecuteDeclined {
+            operation_id: operation_id.to_string(),
+            reason: execute_declined::Reason::Load as i32,
+            detail: String::new(),
+            needed_kb: 4_000,
+            free_kb: 1_000,
+        }));
+    let (sent, (requeued_id, _, update)) = join!(
+        decline,
+        test_context.state_manager.expect_update_operation(Ok(()))
+    );
+    sent.map_err(|e| make_err!(tonic::Code::Internal, "Error sending decline {e}"))?;
+    assert_eq!(requeued_id, operation_id);
+    assert!(
+        matches!(update, UpdateOperationType::UpdateWithDecline(_)),
+        "{update:?}"
+    );
+
+    // A keepalive without the room asked for leaves the pause in place.
+    test_context
+        .worker_stream
+        .send(Update::KeepAliveRequest(KeepAliveRequest {
+            load: Some(WorkerLoad {
+                free_memory_kb: 1_000,
+            }),
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
+    let summary = summary_after_report(&test_context, 1_000).await;
+    assert!(
+        summary.is_paused,
+        "the decline's own refresh lifted the pause"
+    );
+
+    // One with the room lifts it.
+    test_context
+        .worker_stream
+        .send(Update::KeepAliveRequest(KeepAliveRequest {
+            load: Some(WorkerLoad {
+                free_memory_kb: 5_000,
+            }),
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
+    let summary = summary_after_report(&test_context, 5_000).await;
+    assert!(
+        !summary.is_paused,
+        "a keepalive with the room resumes the worker"
+    );
+    Ok(())
+}
+
+/// A kill that does not fit the worker's channel is a worker that is
+/// behind, not one that is gone: it keeps its place and its actions, and
+/// the next sweep sends the kill once the worker has read its backlog.
+#[nativelink_test]
+pub async fn a_full_channel_defers_the_kill_instead_of_evicting_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let mut test_context =
+        setup_api_server_with_task_limit(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn), 1).await?;
+    // Dispatches the worker never reads fill its channel to the brim.
+    let capacity = channel_capacity(1);
+    let mut operation_ids = Vec::new();
+    for seed in 0..capacity {
+        operation_ids.push(dispatch(&test_context, u8::try_from(seed).unwrap()).await?);
+    }
+    let revoked = operation_ids[0].clone();
+    test_context.state_manager.revoke(&revoked);
+
+    // The kill has nowhere to go; the worker is neither evicted nor
+    // stripped of the operation.
+    test_context.scheduler.kill_revoked_operations().await?;
+    assert!(
+        test_context
+            .scheduler
+            .running_action_info(&test_context.worker_id, &revoked)
+            .await
+            .is_some(),
+        "a full channel evicted the worker"
+    );
+
+    // The worker reads one message; the next sweep gets the kill through.
+    let first = test_context
+        .connection_worker_stream
+        .next()
+        .await
+        .unwrap()?;
+    assert!(matches!(
+        first.update,
+        Some(update_for_worker::Update::StartAction(_))
+    ));
+    test_context.scheduler.kill_revoked_operations().await?;
+    let mut deferred_kill = None;
+    for _ in 0..capacity {
+        let msg = test_context
+            .connection_worker_stream
+            .next()
+            .await
+            .unwrap()?;
+        if let Some(update_for_worker::Update::KillOperationRequest(kill)) = msg.update {
+            deferred_kill = Some(kill.operation_id);
+            break;
+        }
+    }
+    assert_eq!(
+        deferred_kill,
+        Some(revoked.to_string()),
+        "the deferred kill was never sent"
     );
     Ok(())
 }

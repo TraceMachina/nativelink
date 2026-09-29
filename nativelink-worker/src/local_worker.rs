@@ -136,6 +136,11 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     /// `ExecuteDeclined`. Without it the worker runs whatever it is sent,
     /// as every earlier release did.
     dispatch_ack: bool,
+    /// The platform property the scheduler reads an action's memory
+    /// reservation from, as it told us on connection; empty when it does
+    /// not veto on memory. Read from the same property, a refusal for load
+    /// here agrees with what the scheduler would have vetoed.
+    memory_property: String,
     metrics: Arc<Metrics>,
 }
 
@@ -178,18 +183,19 @@ impl Refusal {
     }
 }
 
-/// The platform property carrying an action's memory reservation, in KiB.
-const MEMORY_PROPERTY: &str = "memory_kb";
-
-/// The memory reservation an action carries, if it declares one.
-fn memory_reservation_kb(start_execute: &StartExecute) -> Option<u64> {
-    let name = MEMORY_PROPERTY;
+/// The memory reservation an action carries under `property`, in KiB, if
+/// it declares one. An empty property name is a scheduler that does not
+/// veto on memory, so nothing is ever read.
+fn memory_reservation_kb(start_execute: &StartExecute, property: &str) -> Option<u64> {
+    if property.is_empty() {
+        return None;
+    }
     start_execute
         .platform
         .as_ref()?
         .properties
         .iter()
-        .find(|p| p.name == name)
+        .find(|p| p.name == property)
         .and_then(|p| p.value.parse::<u64>().ok())
         .filter(|kb| *kb > 0)
 }
@@ -251,6 +257,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         grpc_client: T,
         worker_id: String,
         dispatch_ack: bool,
+        memory_property: String,
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -259,6 +266,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             grpc_client,
             worker_id,
             dispatch_ack,
+            memory_property,
             running_actions_manager,
             // Number of actions that have been received in `Update::StartAction`, but
             // not yet processed by running_actions_manager's spawn. This number should
@@ -279,7 +287,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             return Some(Refusal::AtCapacity { in_flight, max });
         }
         if let (Some(needed_kb), Some(free_kb)) = (
-            memory_reservation_kb(start_execute),
+            memory_reservation_kb(start_execute, &self.memory_property),
             crate::capacity::free_memory_kb(),
         ) && free_kb < needed_kb
         {
@@ -426,7 +434,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         Update::StartAction(start_execute) => {
                             // Don't accept any new requests if we're shutting down.
                             if shutting_down || (self.config.single_use
-                                && self.accepted_action.swap(true, Ordering::AcqRel)) {
+                                && self.accepted_action.load(Ordering::Acquire)) {
                                 if self.dispatch_ack {
                                     self.decline(start_execute.operation_id, Refusal::ShuttingDown).await?;
                                 } else if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
@@ -462,6 +470,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     })
                                     .await
                                     .err_tip(|| "Could not send ExecuteAccepted")?;
+                            }
+                            // Admitted: a single-use worker is spent from
+                            // here. A decline above must not spend it, or
+                            // every dispatch it turns away costs a pod.
+                            if self.config.single_use {
+                                self.accepted_action.store(true, Ordering::Release);
                             }
 
                             self.metrics.start_actions_received.inc();
@@ -996,7 +1010,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
     async fn register_worker(
         &self,
         client: &mut T,
-    ) -> Result<(String, bool, Streaming<UpdateForWorker>), Error> {
+    ) -> Result<(String, bool, String, Streaming<UpdateForWorker>), Error> {
         let mut extra_envs: HashMap<String, String> = HashMap::new();
         if let Some(ref additional_environment) = self.config.additional_environment {
             for (name, source) in additional_environment {
@@ -1041,10 +1055,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             .err_tip(|| "Got error when receiving UpdateForWorker")?
             .update;
 
-        let (worker_id, dispatch_ack) = match first_msg_update {
-            Some(Update::ConnectionResult(connection_result)) => {
-                (connection_result.worker_id, connection_result.dispatch_ack)
-            }
+        let (worker_id, dispatch_ack, memory_property) = match first_msg_update {
+            Some(Update::ConnectionResult(connection_result)) => (
+                connection_result.worker_id,
+                connection_result.dispatch_ack,
+                connection_result.memory_property,
+            ),
             other => {
                 return Err(make_input_err!(
                     "Expected first response from scheduler to be a ConnectionResult got : {:?}",
@@ -1052,7 +1068,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                 ));
             }
         };
-        Ok((worker_id, dispatch_ack, update_for_worker_stream))
+        Ok((
+            worker_id,
+            dispatch_ack,
+            memory_property,
+            update_for_worker_stream,
+        ))
     }
 
     #[instrument(skip(self), level = Level::INFO)]
@@ -1100,12 +1121,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     (error_handler)(e).await;
                     continue; // Try to connect again.
                 }
-                Ok((worker_id, dispatch_ack, update_for_worker_stream)) => (
+                Ok((worker_id, dispatch_ack, memory_property, update_for_worker_stream)) => (
                     LocalWorkerImpl::new(
                         &self.config,
                         client,
                         worker_id,
                         dispatch_ack,
+                        memory_property,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
                     ),

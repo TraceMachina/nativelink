@@ -388,10 +388,12 @@ impl WorkerConnection {
     }
 
     /// Any message from the worker proves it is alive, not only keepalives.
-    /// Only a keepalive carries a load report; the last one stands.
+    /// Only a keepalive carries a load report and lifts a pause; this
+    /// refreshes the timestamp alone, so a decline cannot undo the pause
+    /// it just took.
     async fn touch_liveness(&self) -> Result<(), Error> {
         self.scheduler
-            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs(), None)
+            .worker_liveness_refreshed(&self.worker_id, (self.now_fn)()?.as_secs())
             .await
             .err_tip(|| "Could not refresh worker liveness")
     }

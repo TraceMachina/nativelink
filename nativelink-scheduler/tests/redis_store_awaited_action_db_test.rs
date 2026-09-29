@@ -71,6 +71,7 @@ async fn verify_initial_connection_message(
             ConnectionResult {
                 worker_id: worker_id.into(),
                 dispatch_ack: true,
+                memory_property: String::new(),
             },
         )),
     };

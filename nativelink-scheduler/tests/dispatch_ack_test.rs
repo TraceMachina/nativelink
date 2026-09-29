@@ -112,6 +112,10 @@ async fn add_worker(scheduler: &SimpleScheduler) -> Result<mpsc::Receiver<Update
         result.dispatch_ack,
         "the scheduler announces the acknowledgement"
     );
+    assert!(
+        result.memory_property.is_empty(),
+        "no live memory veto, so the worker is told nothing to decline for load on"
+    );
     Ok(rx)
 }
 

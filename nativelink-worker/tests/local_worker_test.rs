@@ -53,6 +53,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::{DigestInfo, encode_stream_proto, fs, make_temp_path};
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::store_trait::Store;
+use nativelink_worker::capacity::free_memory_kb;
 use nativelink_worker::local_worker::new_local_worker;
 #[cfg(target_family = "unix")]
 use nativelink_worker::local_worker::preconditions_met;
@@ -177,6 +178,7 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: "foobar".to_string(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -216,6 +218,7 @@ async fn reconnects_when_action_stuck_in_transit_on_disconnect() -> Result<(), E
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: expected_worker_id.clone(),
                     dispatch_ack: false,
+                    memory_property: String::new(),
                 })),
             })
             .unwrap(),
@@ -300,6 +303,7 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -417,6 +421,7 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -746,6 +751,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -836,6 +842,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -935,6 +942,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -1049,6 +1057,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -1172,6 +1181,7 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: "foobar".to_string(),
                     dispatch_ack: false,
+                    memory_property: String::new(),
                 })),
             })
             .unwrap(),
@@ -1251,6 +1261,7 @@ async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
                         dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -1361,6 +1372,7 @@ async fn a_worker_at_capacity_declines_the_next_dispatch() -> Result<(), Error> 
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: worker_id.clone(),
                     dispatch_ack: true,
+                    memory_property: String::new(),
                 })),
             })
             .unwrap(),
@@ -1417,5 +1429,109 @@ async fn a_worker_at_capacity_declines_the_next_dispatch() -> Result<(), Error> 
     assert_eq!(declined.operation_id, "second");
     assert_eq!(declined.reason, execute_declined::Reason::AtCapacity as i32);
     assert_eq!(declined.detail, "1 of 1 in flight");
+    Ok(())
+}
+
+/// A single-use worker is spent by the action it admits, not by one it
+/// turns away: declined for load, it is still free to take the next
+/// dispatch. The reservation is read from the property the scheduler named
+/// in the connection result.
+#[nativelink_test]
+async fn a_single_use_worker_is_not_spent_by_a_decline() -> Result<(), Error> {
+    // A refusal for load needs a free-memory reading, which only Linux has.
+    if free_memory_kb().is_none() {
+        return Ok(());
+    }
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        single_use: true,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: worker_id.clone(),
+                    dispatch_ack: true,
+                    memory_property: "memory_kb".to_string(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Blake3,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+    let start = |operation_id: &str, memory_kb: Option<u64>| UpdateForWorker {
+        update: Some(Update::StartAction(StartExecute {
+            request_metadata: None,
+            execute_request: Some((&action_info).into()),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: None,
+            platform: Some(Platform {
+                properties: memory_kb
+                    .map(|kb| Property {
+                        name: "memory_kb".to_string(),
+                        value: kb.to_string(),
+                    })
+                    .into_iter()
+                    .collect(),
+            }),
+            worker_id: worker_id.clone(),
+        })),
+    };
+
+    // More memory than any machine has: declined for load.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&start("greedy", Some(u64::MAX))).unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let declined = test_context.client.expect_execute_declined(Ok(())).await;
+    assert_eq!(declined.operation_id, "greedy");
+    assert_eq!(declined.reason, execute_declined::Reason::Load as i32);
+    assert_eq!(declined.needed_kb, u64::MAX);
+
+    // The worker was not spent by the decline: the next dispatch is admitted.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&start("modest", None)).unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let accepted = test_context.client.expect_execute_accepted(Ok(())).await;
+    assert_eq!(accepted.operation_id, "modest");
+    let running_action = Arc::new(MockRunningAction::new());
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action))
+        .await;
     Ok(())
 }

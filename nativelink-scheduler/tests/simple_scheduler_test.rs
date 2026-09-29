@@ -75,17 +75,19 @@ async fn verify_initial_connection_message(
     worker_id: WorkerId,
     rx: &mut mpsc::Receiver<UpdateForWorker>,
 ) {
-    // Worker should have been sent an execute command.
-    let expected_msg_for_worker = UpdateForWorker {
-        update: Some(update_for_worker::Update::ConnectionResult(
-            ConnectionResult {
-                worker_id: worker_id.into(),
-                dispatch_ack: true,
-            },
-        )),
-    };
+    // The first message names the worker and announces the acknowledgement;
+    // the memory property follows each test's own veto setting.
     let msg_for_worker = rx.recv().await.unwrap();
-    assert_eq!(msg_for_worker, expected_msg_for_worker);
+    let Some(update_for_worker::Update::ConnectionResult(ConnectionResult {
+        worker_id: sent_worker_id,
+        dispatch_ack,
+        ..
+    })) = msg_for_worker.update
+    else {
+        panic!("expected a ConnectionResult, got {msg_for_worker:?}");
+    };
+    assert_eq!(sent_worker_id, String::from(worker_id));
+    assert!(dispatch_ack);
 }
 
 const NOW_TIME: u64 = 10000;

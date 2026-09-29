@@ -101,6 +101,16 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         load: Option<WorkerLoad>,
     ) -> Result<(), Error>;
 
+    /// Any other message from the worker (an acknowledgement, a decline, an
+    /// execute result) proves it is alive. Unlike a keepalive it lifts no
+    /// pause: a decline is not the worker saying it is ready to be asked
+    /// again.
+    async fn worker_liveness_refreshed(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error>;
+
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error>;
 

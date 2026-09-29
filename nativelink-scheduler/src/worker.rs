@@ -234,12 +234,20 @@ impl Worker {
 
     /// Sends the initial connection information to the worker. This generally is just meta info.
     /// This should only be sent once and should always be the first item in the stream.
-    pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
+    /// `memory_property` is the platform property the scheduler vetoes
+    /// placement on; the worker declines for load against the same one, so
+    /// the two sides cannot disagree. None means the worker never declines
+    /// for load.
+    pub fn send_initial_connection_result(
+        &mut self,
+        memory_property: Option<&str>,
+    ) -> Result<(), Error> {
         send_msg_to_worker(
             &self.tx,
             update_for_worker::Update::ConnectionResult(ConnectionResult {
                 worker_id: self.id.clone().into(),
                 dispatch_ack: true,
+                memory_property: memory_property.unwrap_or_default().to_string(),
             }),
         )
         .err_tip(|| format!("Failed to send ConnectionResult to worker : {}", self.id))
@@ -294,6 +302,14 @@ impl Worker {
                 operation_id: operation_id.to_string(),
             }),
         )
+    }
+
+    /// Forgets a kill request whose message never reached the worker, so
+    /// the next revoked-operation sweep sends it again.
+    pub(crate) fn clear_kill_request(&mut self, operation_id: &OperationId) {
+        if let Some(pending_action_info) = self.running_action_infos.get_mut(operation_id) {
+            pending_action_info.kill_requested_at = None;
+        }
     }
 
     /// Whether the worker has been told to kill this operation.
