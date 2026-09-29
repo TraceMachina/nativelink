@@ -2643,6 +2643,7 @@ exit 0
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
+                    resource_enforcement: None,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: None,
@@ -2810,6 +2811,7 @@ exit 0
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
+                    resource_enforcement: None,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([
@@ -3570,6 +3572,125 @@ exit 0
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn action_over_its_memory_reservation_is_killed_by_the_worker()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    resource_enforcement: Some(
+                        nativelink_worker::running_actions_manager::ResourceEnforcement {
+                            memory_property_name: "memory_kb".to_string(),
+                            memory_headroom_percent: 20,
+                        },
+                    ),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                use_namespaces: use_namespaces(),
+            })?);
+        // A shell holding 60 MB in a variable, then a child that would keep
+        // the memory if only the shell were killed.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "s=$(head -c 60000000 /dev/zero | tr '\\0' a); sleep 30; echo $s | head -c 1"
+                    .to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            // 2 MiB reserved: the shell is far over it within two samples.
+            platform: Some(Platform {
+                properties: vec![Property {
+                    name: "memory_kb".into(),
+                    value: "2048".into(),
+                }],
+            }),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let started = std::time::Instant::now();
+        let result = run_action(running_action_impl).await?;
+        let err = result
+            .error
+            .expect("an action over its reservation must fail with an error");
+        assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+        assert!(
+            err.to_string().contains("memory reservation"),
+            "error should name the reservation: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the worker should have killed the action long before its 30s sleep ended"
+        );
+        Ok(())
+    }
+
     #[cfg_attr(feature = "nix", ignore)]
     #[nativelink_test]
     async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn core::error::Error>>
@@ -3628,6 +3749,7 @@ exit 1
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
+                    resource_enforcement: None,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([(
@@ -5353,6 +5475,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
             let manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: actions.to_string_lossy().into_owned(),
                 execution_configuration: ExecutionConfiguration {
+                    resource_enforcement: None,
                     buck2_file_capture: Some(Buck2FileCaptureConfig {
                         executable: helper.to_string_lossy().into_owned(),
                         gateway: "http://unused-test-gateway".to_string(),
@@ -6020,6 +6143,7 @@ done
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
+                    resource_enforcement: None,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,
@@ -6169,6 +6293,7 @@ done
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
+                    resource_enforcement: None,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,

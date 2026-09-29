@@ -191,6 +191,23 @@ backpressure. **`orphan_sweep_interval_s`** (default 0, off) removes action
 directories under `work_directory` that no running action owns and that a
 failed cleanup left behind; the directory is always purged at startup.
 
+**`resource_enforcement`** (off by default, Linux only) makes the worker hold an
+action to the memory reservation the scheduler placed it by. With
+`memory: soft` the worker kills the action's process group once two
+consecutive samples exceed `memory_kb` plus `memory_headroom_percent`
+(default 20), and fails it with `FAILED_PRECONDITION` naming the reservation
+and the observed peak. Without it the kill comes from the pod's cgroup limit,
+and on cgroup v2 that kill takes the worker and every action on it, not just
+the one that grew.
+
+```json5
+"resource_enforcement": {
+  "memory": "soft",
+  "memory_property_name": "memory_kb",
+  "memory_headroom_percent": 20
+}
+```
+
 <Callout type="info" title="Scheduler state is in memory by default">
   `experimental_backend` defaults to memory, so restarting the scheduler loses
   the queue. A Redis backend exists for shared state across scheduler

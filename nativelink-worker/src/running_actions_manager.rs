@@ -124,14 +124,41 @@ struct ActionResourceUsageSampler {
     handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
+/// A memory ceiling the sampler enforces: once two consecutive samples
+/// exceed `limit_kb`, the observed figure is sent on `over_limit_tx` and the
+/// caller kills the action.
 #[cfg(target_os = "linux")]
-fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler {
+struct MemoryCeiling {
+    limit_kb: u64,
+    over_limit_tx: oneshot::Sender<u64>,
+}
+
+#[cfg(target_os = "linux")]
+fn start_action_resource_usage_sampler(
+    pgid: u32,
+    ceiling: Option<MemoryCeiling>,
+) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx)
+        sample_action_resource_usage(pgid, stop_rx, ceiling)
     );
     ActionResourceUsageSampler { stop_tx, handle }
+}
+
+/// SIGKILL to every process in the action's group. The action is its own
+/// group leader, so this reaches the children a killed shell would
+/// otherwise leave behind holding the memory.
+#[cfg(target_os = "linux")]
+fn kill_process_group(pgid: u32) {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return;
+    };
+    // SAFETY: killpg only takes integers and has no memory safety
+    // considerations; a stale group id is reported as ESRCH, not acted on.
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -146,8 +173,10 @@ async fn finish_action_resource_usage_sampler(
 async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
+    mut ceiling: Option<MemoryCeiling>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
+    let mut samples_over_limit = 0u32;
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
     // short-lived. Keep the last figure seen for each pid and total them at
@@ -163,12 +192,25 @@ async fn sample_action_resource_usage(
     };
 
     loop {
-        if sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).is_none()
-            && !Path::new(&format!("/proc/{pgid}")).exists()
-        {
+        let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
             break;
+        }
+        // Two consecutive samples over the ceiling, so one spike between
+        // reads is not a kill.
+        if let (Some(observed_kb), Some(limit)) = (observed, ceiling.as_ref()) {
+            if observed_kb > limit.limit_kb {
+                samples_over_limit += 1;
+            } else {
+                samples_over_limit = 0;
+            }
+            if samples_over_limit >= 2
+                && let Some(limit) = ceiling.take()
+            {
+                drop(limit.over_limit_tx.send(observed_kb));
+            }
         }
 
         if *stop_rx.borrow() {
@@ -2170,9 +2212,43 @@ impl RunningActionImpl {
             child_process,
         );
 
+        // The reservation the scheduler placed this action by, if the
+        // worker is asked to hold it to that number.
+        let memory_reservation = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| {
+                let reserved_kb = self
+                    .action_info
+                    .platform_properties
+                    .get(&enforcement.memory_property_name)?
+                    .parse::<u64>()
+                    .ok()?;
+                (reserved_kb > 0).then(|| {
+                    let limit_kb =
+                        reserved_kb.saturating_mul(100 + enforcement.memory_headroom_percent) / 100;
+                    (reserved_kb, limit_kb)
+                })
+            });
+        let (over_limit_tx, over_limit_rx) = oneshot::channel::<u64>();
+        // Holds the sender when no ceiling is enforced, so the receiver
+        // below stays pending instead of resolving closed.
+        let mut over_limit_keepalive = Some(over_limit_tx);
         #[cfg(target_os = "linux")]
-        let mut maybe_resource_usage_sampler =
-            child_process.id().map(start_action_resource_usage_sampler);
+        let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
+            let ceiling = memory_reservation.and_then(|(_, limit_kb)| {
+                over_limit_keepalive
+                    .take()
+                    .map(|over_limit_tx| MemoryCeiling {
+                        limit_kb,
+                        over_limit_tx,
+                    })
+            });
+            start_action_resource_usage_sampler(pgid, ceiling)
+        });
+        let mut over_limit_fut = over_limit_rx.fuse();
 
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
@@ -2240,9 +2316,47 @@ impl RunningActionImpl {
                         )));
                     }
                 },
+                Ok(observed_kb) = &mut over_limit_fut => {
+                    self.running_actions_manager.metrics.memory_reservation_kills.inc();
+                    killed_action = true;
+                    #[cfg(target_os = "linux")]
+                    if let Some(pgid) = child_process_guard.id() {
+                        kill_process_group(pgid);
+                    }
+                    if let Err(err) = child_process_guard.kill().await {
+                        error!(
+                            ?err,
+                            "Could not kill process in RunningActionsManager for memory reservation",
+                        );
+                    }
+                    let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
+                    let (property, headroom) = self
+                        .running_actions_manager
+                        .execution_configuration
+                        .resource_enforcement
+                        .as_ref()
+                        .map_or(("", 0), |e| (e.memory_property_name.as_str(), e.memory_headroom_percent));
+                    warn!(
+                        operation_id = ?self.operation_id,
+                        reserved_kb,
+                        limit_kb,
+                        observed_kb,
+                        "Action exceeded its memory reservation, killed"
+                    );
+                    let mut state = self.state.lock();
+                    state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                        Code::FailedPrecondition,
+                        format!(
+                            "Action exceeded its memory reservation: reserved {reserved_kb} KiB ({property}), \
+                             limit {limit_kb} KiB with {headroom}% headroom, observed {observed_kb} KiB. \
+                             Raise the reservation or shrink the action."
+                        ),
+                    )));
+                },
                 maybe_exit_status = child_process_guard.wait() => {
                     // Defuse our guard so it does not try to cleanup and make senseless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
+                    drop(over_limit_keepalive.take());
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(palfrey) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
@@ -2977,11 +3091,23 @@ impl Debug for Callbacks {
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
+/// Soft memory enforcement: the worker kills an action whose process group
+/// grows past its reservation plus headroom. Linux only; the sampler that
+/// measures it does not exist elsewhere.
+#[derive(Debug, Clone)]
+pub struct ResourceEnforcement {
+    pub memory_property_name: String,
+    pub memory_headroom_percent: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
     /// Bytes of stdout or stderr kept in memory before the rest spills to a
     /// file under the action directory; 0 keeps everything in memory.
     pub max_captured_output_bytes: u64,
+    /// Kill an action that exceeds its memory reservation, before the
+    /// pod's cgroup limit takes the whole worker with it.
+    pub resource_enforcement: Option<ResourceEnforcement>,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -3894,6 +4020,8 @@ pub struct Metrics {
     upload_stderr: AsyncCounterWrapper,
     #[metric(help = "Total number of task timeouts.")]
     task_timeouts: CounterWithTime,
+    #[metric(help = "Actions killed for exceeding their memory reservation.")]
+    memory_reservation_kills: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]

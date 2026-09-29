@@ -775,6 +775,55 @@ pub struct EndpointConfig {
     pub tls_config: Option<ClientTlsConfig>,
 }
 
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum MemoryEnforcement {
+    /// Measure only.
+    None,
+    /// Kill the action's process group once two consecutive samples exceed
+    /// the reservation plus headroom.
+    #[default]
+    Soft,
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ResourceEnforcementConfig {
+    /// What to do with an action that exceeds its memory reservation.
+    /// Default: soft
+    #[serde(default)]
+    pub memory: MemoryEnforcement,
+
+    /// Platform property carrying the action's memory reservation in KiB,
+    /// as the scheduler sends it. An action without the property is not
+    /// enforced.
+    /// Default: `memory_kb`
+    #[serde(
+        default = "default_memory_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub memory_property_name: String,
+
+    /// Percent above the reservation an action may reach before it is
+    /// killed.
+    /// Default: 20
+    #[serde(
+        default = "default_memory_headroom_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub memory_headroom_percent: u64,
+}
+
+fn default_memory_property_name() -> String {
+    "memory_kb".to_string()
+}
+
+const fn default_memory_headroom_percent() -> u64 {
+    20
+}
+
 #[derive(Copy, Clone, Deserialize, Serialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1061,6 +1110,14 @@ pub struct LocalWorkerConfig {
     /// Default: false
     #[serde(default)]
     pub drain_on_shutdown: bool,
+
+    /// Kill an action that grows past its memory reservation before the
+    /// pod's cgroup limit does. On cgroup v2 the container cgroup carries
+    /// `memory.oom.group`, so the kernel's kill takes the worker and every
+    /// action on it; this one takes only the offender and fails it with
+    /// `FailedPrecondition`. Linux only; accepted and ignored elsewhere.
+    #[serde(default)]
+    pub resource_enforcement: Option<ResourceEnforcementConfig>,
 
     /// The command to execute on every execution request. This will be parsed as
     /// a command + arguments (not shell).
