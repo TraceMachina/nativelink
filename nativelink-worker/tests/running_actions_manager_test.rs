@@ -18,6 +18,8 @@ use serial_test::serial;
 
 #[serial]
 mod tests {
+    #[cfg(target_family = "unix")]
+    use core::pin::Pin;
     use core::str::from_utf8;
     use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
     #[cfg(target_family = "unix")]
@@ -29,10 +31,12 @@ mod tests {
     use std::io::{Cursor, Write};
     #[cfg(target_family = "unix")]
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(target_family = "unix")]
+    use async_trait::async_trait;
     use bytes::Bytes;
     use futures::prelude::*;
     use nativelink_config::cas_server::{
@@ -43,6 +47,10 @@ mod tests {
     };
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
+    #[cfg(target_family = "unix")]
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
     use nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable;
     #[cfg_attr(target_family = "windows", allow(unused_imports))]
     use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -67,19 +75,27 @@ mod tests {
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
     };
+    #[cfg(target_family = "unix")]
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
     use nativelink_util::common::{DigestInfo, fs, make_temp_path};
     use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+    #[cfg(target_family = "unix")]
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    #[cfg(target_family = "unix")]
+    use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, UploadSizeInfo};
     use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
-        RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory,
+        RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory, log_excerpt,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
     use tokio::sync::oneshot;
+    #[cfg(target_family = "unix")]
+    use tokio::sync::watch;
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
@@ -2626,6 +2642,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: None,
@@ -2792,6 +2809,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([
@@ -3041,6 +3059,517 @@ exit 0
         Ok(())
     }
 
+    /// A store whose uploads wait at a gate, counting how many are waiting
+    /// at once. Every upload of an output file arrives here with that file
+    /// open, so the peak is the number of files the worker had open together.
+    /// Unix only, with the one test that drives it.
+    #[cfg(target_family = "unix")]
+    #[derive(Debug)]
+    struct GatedStore {
+        inner: Store,
+        gate: watch::Sender<bool>,
+        in_flight: AtomicU64,
+        max_in_flight: AtomicU64,
+    }
+
+    #[cfg(target_family = "unix")]
+    impl GatedStore {
+        fn new(inner: Arc<MemoryStore>) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Store::new(inner),
+                gate: watch::Sender::new(true),
+                in_flight: AtomicU64::new(0),
+                max_in_flight: AtomicU64::new(0),
+            })
+        }
+
+        fn set_open(&self, open: bool) {
+            self.gate.send_replace(open);
+        }
+
+        fn in_flight(&self) -> u64 {
+            self.in_flight.load(Ordering::SeqCst)
+        }
+
+        fn max_in_flight(&self) -> u64 {
+            self.max_in_flight.load(Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MetricsComponent for GatedStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    #[async_trait]
+    impl StoreDriver for GatedStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let now_in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight
+                .fetch_max(now_in_flight, Ordering::SeqCst);
+            let mut gate = self.gate.subscribe();
+            gate.wait_for(|open| *open)
+                .await
+                .map_err(|_| make_input_err!("gate dropped"))?;
+            let result = self
+                .inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    default_health_status_indicator!(GatedStore);
+
+    /// The bound on open output files holds across the whole tree, not per
+    /// directory: eight directories of thirty-two files each are uploaded
+    /// through one gate, and never more than the bound (plus stdout and
+    /// stderr, which hold no file) are in flight at once. Per-directory
+    /// bounds would have all 256 open together.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn output_uploads_share_one_open_file_bound() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const DIRS: u64 = 8;
+        const FILES_PER_DIR: u64 = 32;
+        const BOUND: u64 = 64;
+        // The gate is the slow store: the manager insists on a filesystem
+        // fast store, and an upload is not done until both sides have it.
+        let fast_config = FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_config).await?;
+        let gated = GatedStore::new(MemoryStore::new(&MemorySpec::default()));
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(fast_store),
+            Store::new(gated.clone()),
+        );
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        // Every file's content is unique, so none is skipped as a duplicate.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "for d in $(seq {DIRS}); do mkdir -p out/d$d; for f in $(seq {FILES_PER_DIR}); do echo $d-$f > out/d$d/f$f; done; done"
+                ),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            output_paths: vec!["out".to_string()],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        // Inputs are fetched and the command runs with the gate open; the
+        // uploads then pile up against it.
+        let running_action_impl = running_action_impl
+            .clone()
+            .prepare_action()
+            .and_then(RunningAction::execute)
+            .await?;
+        gated.set_open(false);
+        let upload = tokio::spawn(running_action_impl.upload_results());
+        let filled = async {
+            while gated.in_flight() < BOUND {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(30), filled)
+            .await
+            .expect("the uploads should reach the bound");
+        // Anything more that could be in flight arrives in this window.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let peak_at_gate = gated.in_flight();
+        gated.set_open(true);
+        let running_action_impl = upload.await??;
+        let result = running_action_impl.clone().get_finished_result().await?;
+        running_action_impl.cleanup().await?;
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.output_folders.len(), 1);
+
+        // stdout and stderr are the two uploads that hold no file.
+        assert!(
+            peak_at_gate <= BOUND + 2 && gated.max_in_flight() <= BOUND + 2,
+            "{} at the gate, {} at most: more files open than the bound",
+            peak_at_gate,
+            gated.max_in_flight()
+        );
+        assert!(
+            gated.max_in_flight() >= BOUND,
+            "{} in flight at most: the bound was never reached",
+            gated.max_in_flight()
+        );
+        Ok(())
+    }
+
+    /// Output past the cap spills to disk and is uploaded whole; the worker
+    /// keeps only the cap in memory.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn output_past_the_cap_spills_to_disk_and_uploads_whole()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const OUTPUT_BYTES: usize = 3_000_000;
+        let (_, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 1_000_000,
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "head -c {OUTPUT_BYTES} /dev/zero | tr '\\0' a; head -c 100 /dev/zero | tr '\\0' b >&2"
+                ),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        let result = run_action(running_action_impl).await?;
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout_digest.size_bytes(), OUTPUT_BYTES as u64);
+        let stdout = slow_store
+            .as_ref()
+            .get_part_unchunked(result.stdout_digest, 0, None)
+            .await?;
+        assert_eq!(stdout.len(), OUTPUT_BYTES);
+        assert!(
+            stdout.iter().all(|b| *b == b'a'),
+            "spilled output should be intact"
+        );
+        assert_eq!(
+            result.stderr_digest.size_bytes(),
+            100,
+            "small stderr stays in memory"
+        );
+        Ok(())
+    }
+
+    /// The log excerpt of a failed command is cut by bytes: through a
+    /// multibyte character it ends in U+FFFD instead of panicking, and
+    /// bytes that were never text are shown the same way.
+    #[nativelink_test]
+    async fn log_excerpt_cuts_multibyte_output_safely() -> Result<(), Box<dyn core::error::Error>> {
+        let text = "héllo wörld";
+        assert_eq!(log_excerpt(text.as_bytes(), 2), "h\u{FFFD}");
+        assert_eq!(log_excerpt(text.as_bytes(), 3), "hé");
+        assert_eq!(log_excerpt(text.as_bytes(), 1000), text);
+        assert_eq!(log_excerpt(&[0xff, b'a'], 1000), "\u{FFFD}a");
+        assert_eq!(log_excerpt(b"", 1000), "");
+        Ok(())
+    }
+
+    /// A directory under the action root that no running action owns and
+    /// that has settled is removed by the sweep; a running action's is kept.
+    #[nativelink_test]
+    async fn orphan_sweep_removes_settled_unowned_directories()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                // Zero: anything unowned counts as settled at once.
+                max_cleanup_wait: Duration::ZERO,
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let stray = format!("{root_action_directory}/left-behind-by-a-failed-cleanup");
+        fs::create_dir_all(&stray).await?;
+        let stray_file = format!("{root_action_directory}/not-a-directory");
+        tokio::fs::write(&stray_file, b"x").await?;
+
+        assert_eq!(
+            running_actions_manager.sweep_orphaned_directories().await?,
+            1
+        );
+        assert!(!Path::new(&stray).exists(), "the orphan should be gone");
+        assert!(
+            Path::new(&stray_file).exists(),
+            "files are not the sweep's business"
+        );
+        assert_eq!(
+            running_actions_manager.sweep_orphaned_directories().await?,
+            0
+        );
+        Ok(())
+    }
+
+    /// A symlink under the action root is not an action directory, whatever
+    /// it points at: the sweep neither follows it nor removes it.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn orphan_sweep_leaves_symlinks_alone() -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::ZERO,
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        // A settled directory outside the root, reachable through a symlink
+        // inside it, next to a real orphan.
+        let elsewhere = make_temp_path("elsewhere");
+        fs::create_dir_all(&elsewhere).await?;
+        tokio::fs::write(format!("{elsewhere}/kept"), b"x").await?;
+        let link = format!("{root_action_directory}/a-link");
+        tokio::fs::symlink(&elsewhere, &link).await?;
+        let orphan = format!("{root_action_directory}/b-orphan");
+        fs::create_dir_all(&orphan).await?;
+
+        assert_eq!(
+            running_actions_manager.sweep_orphaned_directories().await?,
+            1
+        );
+        assert!(!Path::new(&orphan).exists(), "the orphan should be gone");
+        assert!(
+            Path::new(&link).symlink_metadata().is_ok(),
+            "the symlink is not the sweep's business"
+        );
+        assert!(
+            Path::new(&format!("{elsewhere}/kept")).exists(),
+            "and neither is what it points at"
+        );
+        Ok(())
+    }
+
     #[cfg_attr(feature = "nix", ignore)]
     #[nativelink_test]
     async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn core::error::Error>>
@@ -3098,6 +3627,7 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([(
@@ -4771,7 +5301,7 @@ exit 1
         use nativelink_config::cas_server::Buck2FileCaptureConfig;
         use nativelink_proto::build::bazel::remote::execution::v2::{RequestMetadata, ToolDetails};
 
-        async fn wait_for_file(path: &std::path::Path) -> Result<(), tokio::time::error::Elapsed> {
+        async fn wait_for_file(path: &Path) -> Result<(), tokio::time::error::Elapsed> {
             tokio::time::timeout(Duration::from_secs(10), async {
                 while !path.exists() {
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -5489,6 +6019,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,
@@ -5637,6 +6168,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,

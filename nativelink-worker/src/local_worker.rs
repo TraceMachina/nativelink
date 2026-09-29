@@ -44,7 +44,7 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
-use nativelink_util::{spawn, tls_utils};
+use nativelink_util::{background_spawn, spawn, tls_utils};
 use opentelemetry::context::Context;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{process, time};
@@ -114,6 +114,8 @@ const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
 const DEFAULT_MAX_CLEANUP_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_CLEANUP_BACKOFF: Duration = Duration::from_millis(500);
+/// If this value gets modified the documentation in `cas_server.rs` must also be updated.
+const DEFAULT_PRECONDITION_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct FinishedActionResult {
     action_result: ActionResult,
@@ -203,6 +205,7 @@ fn memory_reservation_kb(start_execute: &StartExecute, property: &str) -> Option
 pub async fn preconditions_met<H: BuildHasher + Sync>(
     precondition_script: Option<String>,
     extra_envs: &HashMap<String, String, H>,
+    timeout: Duration,
 ) -> Result<(), Error> {
     let Some(precondition_script) = &precondition_script else {
         // No script means we are always ok to proceed.
@@ -236,7 +239,18 @@ pub async fn preconditions_met<H: BuildHasher + Sync>(
         .envs(extra_envs)
         .spawn()
         .err_tip(|| format!("Could not execute precondition command {precondition_script:?}"))?;
-    let output = precondition_process.wait_with_output().await?;
+    // Bounded: a script that hangs held the action forever, and
+    // `kill_on_drop` ends the script when the timeout drops it.
+    let output = match time::timeout(timeout, precondition_process.wait_with_output()).await {
+        Ok(output) => output?,
+        Err(_) => {
+            return Err(make_err!(
+                Code::ResourceExhausted,
+                "Preconditions script {precondition_script:?} did not finish within {} ms",
+                timeout.as_millis()
+            ));
+        }
+    };
     let stdout = str::from_utf8(&output.stdout).unwrap_or("");
     trace!(status = %output.status, %stdout, "Preconditions script returned");
     if output.status.code() == Some(0) {
@@ -492,6 +506,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let start_action_fut = {
                                 let precondition_script_cfg = self.config.experimental_precondition_script.clone();
+                                let precondition_timeout = if self.config.precondition_timeout_ms == 0 {
+                                    DEFAULT_PRECONDITION_TIMEOUT
+                                } else {
+                                    Duration::from_millis(self.config.precondition_timeout_ms)
+                                };
                                 let mut extra_envs: HashMap<String, String> = HashMap::new();
                                 if let Some(ref additional_environment) = self.config.additional_environment {
                                     for (name, source) in additional_environment {
@@ -519,7 +538,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 };
                                 let single_use = self.config.single_use;
                                 self.metrics.clone().wrap(move |metrics| async move {
-                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs))
+                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs, precondition_timeout))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
                                     .map(move |r| {
                                         // Now that we either failed or registered our action, we can
@@ -925,6 +944,7 @@ pub async fn new_local_worker(
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
+                max_captured_output_bytes: config.max_captured_output_bytes,
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
@@ -943,6 +963,23 @@ pub async fn new_local_worker(
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
+    if config.orphan_sweep_interval_s > 0 {
+        let interval = Duration::from_secs(config.orphan_sweep_interval_s);
+        let manager = running_actions_manager.clone();
+        // Detached on purpose: the guarded spawn aborts its task when the
+        // handle drops, and this one runs for the worker's whole life.
+        drop(background_spawn!("orphan_sweep", async move {
+            info!(interval_s = interval.as_secs(), "Orphan sweep scheduled");
+            loop {
+                time::sleep(interval).await;
+                match manager.sweep_orphaned_directories().await {
+                    Ok(0) => debug!("Orphan sweep found nothing"),
+                    Ok(removed) => info!(removed, "Orphan sweep finished"),
+                    Err(err) => warn!(?err, "Orphan sweep failed"),
+                }
+            }
+        }));
+    }
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
         running_actions_manager,
