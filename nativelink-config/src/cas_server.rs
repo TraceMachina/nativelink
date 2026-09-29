@@ -796,6 +796,23 @@ pub struct ResourceEnforcementConfig {
     #[serde(default)]
     pub memory: MemoryEnforcement,
 
+    /// Whether to refuse an action whose disk reservation exceeds the free
+    /// space under the work directory before its inputs are fetched. The
+    /// refusal is `ResourceExhausted`, which the scheduler requeues without
+    /// counting an attempt and holds off this worker until its next
+    /// keepalive.
+    /// Default: none
+    #[serde(default)]
+    pub disk: DiskEnforcement,
+
+    /// Platform property carrying the action's disk reservation in KiB.
+    /// Default: `disk_kb`
+    #[serde(
+        default = "default_disk_property_name",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub disk_property_name: String,
+
     /// Platform property carrying the action's memory reservation in KiB,
     /// as the scheduler sends it. An action without the property is not
     /// enforced.
@@ -818,6 +835,22 @@ pub struct ResourceEnforcementConfig {
 
 fn default_memory_property_name() -> String {
     "memory_kb".to_string()
+}
+
+fn default_disk_property_name() -> String {
+    "disk_kb".to_string()
+}
+
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum DiskEnforcement {
+    /// Fetch inputs regardless of free space.
+    #[default]
+    None,
+    /// Refuse the action when the free space under the work directory is
+    /// below its reservation.
+    Guard,
 }
 
 const fn default_memory_headroom_percent() -> u64 {

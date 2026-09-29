@@ -1800,6 +1800,31 @@ impl RunningActionImpl {
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
     async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        // Before anything lands on disk: an action that reserved more than
+        // is free is refused as backpressure, not run into ENOSPC halfway
+        // through its inputs.
+        if let Some(property) = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| enforcement.disk_property_name.as_deref())
+            && let Some(reserved_kb) = self
+                .action_info
+                .platform_properties
+                .get(property)
+                .and_then(|value| value.parse::<u64>().ok())
+            && reserved_kb > 0
+            && let Some(free_kb) = free_disk_kb(&self.running_actions_manager.root_action_directory)
+            && free_kb < reserved_kb
+        {
+            self.metrics().disk_guard_refusals.inc();
+            return Err(make_err!(
+                Code::ResourceExhausted,
+                "Not enough free disk for this action: reserved {reserved_kb} KiB ({property}), {free_kb} KiB free under {}",
+                self.running_actions_manager.root_action_directory
+            ));
+        }
         {
             let mut state = self.state.lock();
             state.execution_metadata.input_fetch_start_timestamp =
@@ -3102,6 +3127,35 @@ impl Debug for Callbacks {
 pub struct ResourceEnforcement {
     pub memory_property_name: String,
     pub memory_headroom_percent: u64,
+    /// Refuse an action whose disk reservation, under this property, is
+    /// more than the free space under the work directory.
+    pub disk_property_name: Option<String>,
+}
+
+/// Free space in KiB on the filesystem holding `path`, as an unprivileged
+/// process may use it.
+#[cfg(target_family = "unix")]
+fn free_disk_kb(path: &str) -> Option<u64> {
+    let c_path = std::ffi::CString::new(path).ok()?;
+    let mut stat: libc::statvfs = unsafe { core::mem::zeroed() };
+    // SAFETY: `c_path` is a valid C string and `stat` is a zeroed out
+    // parameter the call fills in.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), &raw mut stat) };
+    if rc != 0 {
+        return None;
+    }
+    Some(widen(stat.f_bavail).saturating_mul(widen(stat.f_frsize)) / 1024)
+}
+
+/// `statvfs` fields are u32 or u64 depending on the platform.
+#[cfg(target_family = "unix")]
+fn widen(value: impl Into<u64>) -> u64 {
+    value.into()
+}
+
+#[cfg(not(target_family = "unix"))]
+fn free_disk_kb(_path: &str) -> Option<u64> {
+    None
 }
 
 #[derive(Debug, Default)]
@@ -4038,6 +4092,8 @@ pub struct Metrics {
     task_timeouts: CounterWithTime,
     #[metric(help = "Actions killed for exceeding their memory reservation.")]
     memory_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions refused because their disk reservation exceeded the free space.")]
+    disk_guard_refusals: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]

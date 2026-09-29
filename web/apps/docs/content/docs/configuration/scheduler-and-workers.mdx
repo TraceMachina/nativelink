@@ -204,11 +204,19 @@ with the headroom included. Without it the kill comes from the pod's cgroup limi
 and on cgroup v2 that kill takes the worker and every action on it, not just
 the one that grew.
 
+`disk: guard` adds a check before any input is fetched: an action whose
+`disk_kb` reservation exceeds the free space under the work directory is
+refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
+counting an attempt and holds off this worker until its next keepalive,
+instead of running the fetch into a full disk.
+
 ```json5
 "resource_enforcement": {
   "memory": "soft",
   "memory_property_name": "memory_kb",
-  "memory_headroom_percent": 20
+  "memory_headroom_percent": 20,
+  "disk": "guard",
+  "disk_property_name": "disk_kb"
 }
 ```
 

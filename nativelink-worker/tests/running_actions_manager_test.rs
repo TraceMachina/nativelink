@@ -2946,6 +2946,109 @@ exit 0
         Ok(())
     }
 
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn action_reserving_more_disk_than_is_free_is_refused_as_backpressure()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    resource_enforcement: Some(
+                        nativelink_worker::running_actions_manager::ResourceEnforcement {
+                            memory_property_name: "memory_kb".to_string(),
+                            memory_headroom_percent: 20,
+                            disk_property_name: Some("disk_kb".to_string()),
+                        },
+                    ),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec!["true".to_string()],
+            working_directory: ".".to_string(),
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    // More than any test machine has free.
+                    platform: Some(Platform {
+                        properties: vec![Property {
+                            name: "disk_kb".into(),
+                            value: (u64::MAX / 2).to_string(),
+                        }],
+                    }),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let err = run_action(running_action_impl)
+            .await
+            .expect_err("an action reserving more disk than is free must be refused");
+        assert_eq!(err.code, Code::ResourceExhausted, "{err}");
+        assert!(
+            err.to_string().contains("Not enough free disk"),
+            "the refusal should name the disk: {err}"
+        );
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     #[nativelink_test]
     async fn timed_out_action_takes_its_children_with_it() -> Result<(), Box<dyn core::error::Error>>
@@ -3589,6 +3692,7 @@ exit 0
                         nativelink_worker::running_actions_manager::ResourceEnforcement {
                             memory_property_name: "memory_kb".to_string(),
                             memory_headroom_percent: 20,
+                            disk_property_name: None,
                         },
                     ),
                     ..Default::default()

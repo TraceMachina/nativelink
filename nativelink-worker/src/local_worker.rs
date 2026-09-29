@@ -27,7 +27,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt, select};
-use nativelink_config::cas_server::{EnvironmentSource, LocalWorkerConfig, MemoryEnforcement};
+use nativelink_config::cas_server::{
+    DiskEnforcement, EnvironmentSource, LocalWorkerConfig, MemoryEnforcement,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
@@ -954,6 +956,8 @@ pub async fn new_local_worker(
                         MemoryEnforcement::Soft => Some(ResourceEnforcement {
                             memory_property_name: enforcement.memory_property_name.clone(),
                             memory_headroom_percent: enforcement.memory_headroom_percent,
+                            disk_property_name: (enforcement.disk == DiskEnforcement::Guard)
+                                .then(|| enforcement.disk_property_name.clone()),
                         }),
                     },
                 ),
