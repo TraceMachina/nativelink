@@ -197,8 +197,10 @@ async fn sample_action_resource_usage(
             let gross = observed_kb >= limit.limit_kb.saturating_mul(2);
             if (samples_over_limit >= 2 || gross)
                 && let Some(limit) = ceiling.take()
+                && limit.over_limit_tx.send(observed_kb).is_err()
             {
-                drop(limit.over_limit_tx.send(observed_kb));
+                // The receiver is gone only when the action already ended.
+                debug!(observed_kb, "Memory ceiling breached after the action ended");
             }
         }
 
