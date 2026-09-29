@@ -31,6 +31,8 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct Buck2FileCapture {
     child: Child,
+    /// Registered with the reaper for as long as the helper is ours to wait on.
+    _owned: crate::reaper::OwnedChild,
     finish_timeout: Duration,
 }
 
@@ -122,8 +124,10 @@ impl Buck2FileCapture {
                     "Invalid Buck2 capture readiness acknowledgement"
                 ));
             }
+            let owned = crate::reaper::OwnedChild::new(child.id());
             Ok(Some(Self {
                 child,
+                _owned: owned,
                 // The helper reserves five seconds to acknowledge a partial
                 // final scan, plus five seconds for shutdown/reaping here.
                 finish_timeout: Duration::from_secs(finalize_seconds as u64 + 10),
@@ -235,8 +239,10 @@ mod tests {
             .kill_on_drop(true)
             .spawn()
             .err_tip(|| "Starting unresponsive test helper")?;
+        let owned = crate::reaper::OwnedChild::new(child.id());
         let capture = Buck2FileCapture {
             child,
+            _owned: owned,
             finish_timeout: Duration::from_millis(20),
         };
         let result = tokio::time::timeout(Duration::from_secs(2), capture.finish())

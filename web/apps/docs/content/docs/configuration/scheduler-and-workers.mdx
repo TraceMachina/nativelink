@@ -201,6 +201,16 @@ no longer collide; a `TMPDIR` in the action's own environment still wins, and
 code that hard-codes `/tmp` is unaffected. A timeout above `max_action_timeout_s`
 is clamped to it rather than rejected.
 
+When the action's own process has exited, anything it left running in its
+process group (a background job, a helper that daemonized) is killed, since
+it would otherwise hold the action's output pipes open and the action would
+sit there until its timeout; the pipes then get five seconds to drain, and
+what was read by then is kept. The worker also makes itself the parent of
+every process an action leaves behind and reaps them on a timer, so a build
+whose actions fork and do not wait no longer leaves hundreds of zombies on
+the worker for the life of the pod. Under `use_namespaces` the stub does
+the reaping inside the action's PID namespace.
+
 Every executed action reports its resource usage to the scheduler with an
 `outcome`: `COMPLETED`, `KILLED_MEMORY` (the worker's reservation kill, or a
 SIGKILL from the kernel with the last memory sample within 10% of the limit),

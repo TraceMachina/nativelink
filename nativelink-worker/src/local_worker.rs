@@ -45,7 +45,7 @@ use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
-use nativelink_util::{background_spawn, spawn, tls_utils};
+use nativelink_util::{background_spawn, spawn, spawn_blocking, tls_utils};
 use opentelemetry::context::Context;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{process, time};
@@ -243,6 +243,7 @@ pub async fn preconditions_met<H: BuildHasher + Sync>(
         .envs(extra_envs)
         .spawn()
         .err_tip(|| format!("Could not execute precondition command {precondition_script:?}"))?;
+    let _owned = crate::reaper::OwnedChild::new(precondition_process.id());
     // Bounded: a script that hangs held the action forever, and
     // `kill_on_drop` ends the script when the timeout drops it.
     let output = match time::timeout(timeout, precondition_process.wait_with_output()).await {
@@ -1079,6 +1080,29 @@ pub async fn new_local_worker(
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
+    // What actions leave behind is reaped here; see `crate::reaper`.
+    if let Err(err) = crate::reaper::become_subreaper() {
+        warn!(
+            ?err,
+            "Could not become the subreaper; orphans of actions will not be reaped here"
+        );
+    }
+    drop(background_spawn!("orphan_reaper", async move {
+        let mut seen_last = std::collections::BTreeSet::new();
+        loop {
+            time::sleep(crate::reaper::REAP_INTERVAL).await;
+            // The sweep reads /proc for every process; off the runtime.
+            let (reaped, seen) = spawn_blocking!("orphan_reaper_sweep", move || {
+                crate::reaper::reap_orphaned_zombies(&seen_last)
+            })
+            .await
+            .unwrap_or_default();
+            seen_last = seen;
+            if reaped > 0 {
+                info!(reaped, "Reaped zombies that actions left behind");
+            }
+        }
+    }));
     if config.orphan_sweep_interval_s > 0 {
         let interval = Duration::from_secs(config.orphan_sweep_interval_s);
         let manager = running_actions_manager.clone();
