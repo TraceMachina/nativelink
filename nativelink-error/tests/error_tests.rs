@@ -1,5 +1,91 @@
-use nativelink_error::Error;
+use nativelink_error::{Code, Error};
 use walkdir::WalkDir;
+
+// A transport-layer failure (mid-stream connection reset) is reported by tonic
+// as `Code::Unknown` "transport error", but it is transient and must reach the
+// client as the retryable `Unavailable` — otherwise big cacheable uploads are
+// silently dropped when a shard resets the connection mid-write.
+#[test]
+fn transport_unknown_status_maps_to_unavailable() {
+    let status = tonic::Status::unknown("transport error");
+    let err: Error = status.into();
+    assert_eq!(err.code, Code::Unavailable);
+}
+
+// A genuinely-unmapped `Unknown` (no transport origin) is preserved as-is.
+#[test]
+fn genuine_unknown_status_is_preserved() {
+    let status = tonic::Status::unknown("some application-level failure");
+    let err: Error = status.into();
+    assert_eq!(err.code, Code::Unknown);
+}
+
+// A transport-error status that passed through this crate's own
+// `From<Error> for Status` re-encoding (message segments joined with " : ")
+// must still be recognized after the source chain is gone — the multi-hop
+// proxy case the fallback exists for.
+#[test]
+fn proxied_transport_error_with_appended_context_maps_to_unavailable() {
+    let status = tonic::Status::unknown("transport error : while writing to upstream shard");
+    let err: Error = status.into();
+    assert_eq!(err.code, Code::Unavailable);
+}
+
+// The message match is anchored: an app-level `Unknown` that merely mentions
+// "transport error" mid-message must NOT be reclassified as retryable.
+#[test]
+fn unknown_mentioning_transport_error_mid_message_is_preserved() {
+    let status = tonic::Status::unknown("upstream proxy saw a transport error and gave up");
+    let err: Error = status.into();
+    assert_eq!(err.code, Code::Unknown);
+}
+
+// The downcast walk, tested in isolation from the message fallback: a
+// `Status` whose SOURCE CHAIN carries a real `tonic::transport::Error` maps
+// to `Unavailable` even when its message matches neither anchor. The
+// transport error is produced the honest way (a connect to a port with no
+// listener, bound-then-dropped so nothing can race onto it) and attached
+// via `Status::set_source` — the shape a middleware produces when it wraps
+// a transport failure with its own message. Going through tonic's own
+// `Status::from_error` instead would not reach our walk: tonic already
+// maps the shapes it recognizes to `Unavailable` before we ever see them.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "obtaining a real transport error requires driving a connect on a runtime"
+)]
+#[test]
+fn transport_error_in_source_chain_maps_to_unavailable() {
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    let transport_err = runtime.block_on(async {
+        let dead_port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{dead_port}"))
+            .unwrap()
+            .connect_timeout(core::time::Duration::from_secs(5))
+            .connect()
+            .await
+            .expect_err("connect to a dropped listener must fail")
+    });
+    let mut status = tonic::Status::unknown("middleware wrapped the failure with its own text");
+    status.set_source(std::sync::Arc::new(transport_err));
+    let err: Error = status.into();
+    assert_eq!(err.code, Code::Unavailable);
+}
+
+// Pin the round-trip that produces the proxied shape above: converting an
+// `Unavailable` transport Error back to a Status and re-ingesting it must
+// stay `Unavailable` with the anchored prefix intact.
+#[test]
+fn transport_error_round_trip_stays_unavailable() {
+    let err: Error = tonic::Status::unknown("transport error").into();
+    assert_eq!(err.code, Code::Unavailable);
+    let with_context = err.append("while writing to upstream shard");
+    let status: tonic::Status = with_context.into();
+    let round_tripped: Error = status.into();
+    assert_eq!(round_tripped.code, Code::Unavailable);
+}
 
 #[test]
 fn walkdir_source_error() {
