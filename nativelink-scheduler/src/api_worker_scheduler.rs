@@ -36,11 +36,11 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 };
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::metrics::{
-    WorkerDisconnectReason, record_execution_cpu_time, record_execution_peak_memory,
-    record_worker_connected, record_worker_disconnected, record_worker_keepalive,
-    record_worker_keepalive_gap, record_worker_state,
+    WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
+    record_execution_peak_memory, record_worker_connected, record_worker_disconnected,
+    record_worker_keepalive, record_worker_keepalive_gap, record_worker_state,
 };
-use nativelink_util::operation_state_manager::{UpdateOperationType, WorkerStateManager};
+use nativelink_util::operation_state_manager::{Decline, UpdateOperationType, WorkerStateManager};
 use nativelink_util::origin_event::get_node_id;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -123,6 +123,12 @@ pub struct SchedulerMetrics {
     pub keep_alive_updates: AtomicU64,
     /// Total number of worker timeouts.
     pub worker_timeouts: AtomicU64,
+    /// Dispatches the worker declined, requeued untried.
+    pub dispatches_declined: AtomicU64,
+    /// Dispatches that found the worker's channel full, requeued untried.
+    pub dispatch_channel_full: AtomicU64,
+    /// Dispatches requeued because the worker never acknowledged them.
+    pub dispatches_unacknowledged: AtomicU64,
 }
 
 use crate::match_outcome::{
@@ -320,6 +326,7 @@ impl ApiWorkerSchedulerImpl {
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
         load: Option<WorkerLoad>,
+        keepalive: bool,
     ) -> Result<(), Error> {
         let worker = self.workers.0.peek_mut(worker_id).ok_or_else(|| {
             make_input_err!(
@@ -335,15 +342,15 @@ impl ApiWorkerSchedulerImpl {
         );
         record_worker_keepalive_gap(timestamp.saturating_sub(worker.last_update_timestamp));
         worker.last_update_timestamp = timestamp;
-        // A keepalive is the worker saying it is ready to be asked again,
-        // so a pause from backpressure lasts one keepalive interval.
-        let resumed = worker.is_paused;
-        if resumed {
-            worker.is_paused = false;
-            record_worker_state("paused", false);
+        // Any other message (an acknowledgement, a decline, an execute
+        // result) proves the worker is alive and nothing more. A decline in
+        // particular is not the worker saying it is ready to be asked
+        // again, so the pause it took stands until a real keepalive.
+        if !keepalive {
+            return Ok(());
         }
-        // A message without a load (an older worker, or a refresh from an
-        // execute result) leaves the last report in place. A report with
+        // A keepalive without a load (an older worker) leaves the last
+        // report in place. A report with
         // more room than the last one can make a vetoed action eligible
         // again; less room never does.
         let more_room = load.is_some_and(|load| {
@@ -354,6 +361,22 @@ impl ApiWorkerSchedulerImpl {
             worker.last_load = Some(load);
             more
         });
+        // A keepalive is the worker saying it is ready to be asked again,
+        // so a pause from backpressure lasts one keepalive interval. A
+        // pause taken for a decline for load is the exception: it waits
+        // for a keepalive whose free memory, read above, covers what the
+        // declined action wanted. A worker that reports no load is taken
+        // at its word.
+        let load_fits = match (worker.pause_needs_kb, worker.last_load) {
+            (Some(needs_kb), Some(load)) => load.free_memory_kb >= needs_kb,
+            _ => true,
+        };
+        let resumed = worker.is_paused && load_fits;
+        if resumed {
+            worker.is_paused = false;
+            worker.pause_needs_kb = None;
+            record_worker_state("paused", false);
+        }
         // Either is room the fleet did not have a moment ago, so the
         // capacity generation moves and the matcher is woken, together:
         // a pass in flight offers the room to its parked actions first,
@@ -394,7 +417,7 @@ impl ApiWorkerSchedulerImpl {
         // the multi-threaded runtime works.
         let worker = self.workers.peek_mut(&worker_id).unwrap();
         let res = worker
-            .send_initial_connection_result()
+            .send_initial_connection_result(self.live_memory_veto.as_deref())
             .err_tip(|| "Failed to send initial connection result to worker");
         if let Err(err) = &res {
             error!(
@@ -795,6 +818,9 @@ impl ApiWorkerSchedulerImpl {
             UpdateOperationType::UpdateWithError(err) => {
                 (true, err.code == Code::ResourceExhausted)
             }
+            // A decline pauses like backpressure: the worker said it has no
+            // room, so it gets nothing more until it says otherwise.
+            UpdateOperationType::UpdateWithDecline(_) => (true, true),
             UpdateOperationType::UpdateWithDisconnect => (true, false),
             UpdateOperationType::ExecutionComplete => {
                 // The process has exited but the action is still resident on
@@ -873,16 +899,46 @@ impl ApiWorkerSchedulerImpl {
         worker_id: WorkerId,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
+        dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
                 .notify_update(WorkerUpdate::RunAction(Box::new((
-                    operation_id,
+                    operation_id.clone(),
                     action_info.clone(),
+                    dispatched_at,
                 ))))
                 .await;
 
             if let Err(notify_worker_result) = notify_worker_result {
+                if notify_worker_result.code == Code::ResourceExhausted {
+                    // The worker's queue is full: it has stopped reading, or
+                    // it is far behind. Nothing was charged; the action goes
+                    // back untried and the worker waits for its next
+                    // keepalive before it is offered anything else.
+                    warn!(
+                        ?worker_id,
+                        %operation_id,
+                        "Worker channel full, requeuing dispatch and pausing the worker"
+                    );
+                    record_dispatch_requeue("channel_full");
+                    if !worker.is_paused {
+                        worker.is_paused = true;
+                        record_worker_state("paused", true);
+                    }
+                    self.worker_change_notify.notify_one();
+                    return self
+                        .worker_state_manager
+                        .update_operation(
+                            &operation_id,
+                            &worker_id,
+                            UpdateOperationType::UpdateWithDecline(Decline {
+                                reason: "channel_full".to_string(),
+                            }),
+                        )
+                        .await
+                        .err_tip(|| "requeuing a dispatch the worker's channel refused");
+                }
                 warn!(
                     ?worker_id,
                     ?action_info,
@@ -907,10 +963,24 @@ impl ApiWorkerSchedulerImpl {
                 } else {
                     WorkerDisconnectReason::Error
                 };
-                return Result::<(), _>::Err(err.clone()).merge(
-                    self.immediate_evict_worker(&worker_id, err, is_disconnect, reason)
-                        .await,
-                );
+                let evicted = self
+                    .immediate_evict_worker(&worker_id, err.clone(), is_disconnect, reason)
+                    .await;
+                // The dispatch was never charged to the worker (the send
+                // comes first), so the eviction did not see this operation;
+                // send it back to the queue here, untried: nothing ran, so
+                // no attempt is counted against it.
+                let requeued = self
+                    .worker_state_manager
+                    .update_operation(
+                        &operation_id,
+                        &worker_id,
+                        UpdateOperationType::UpdateWithDecline(Decline {
+                            reason: "worker_disconnected".to_string(),
+                        }),
+                    )
+                    .await;
+                return Result::<(), _>::Err(err).merge(evicted).merge(requeued);
             }
             Ok(())
         } else {
@@ -934,6 +1004,83 @@ impl ApiWorkerSchedulerImpl {
     /// Tells the worker to kill an operation it is still running but the
     /// state manager no longer has executing on it. A worker that cannot be
     /// reached is evicted, the same as for a failed run request.
+    /// The worker acknowledged a dispatch. A late acknowledgement for an
+    /// operation no longer on the worker is nothing to act on.
+    fn dispatch_accepted(&mut self, worker_id: &WorkerId, operation_id: &OperationId) {
+        let Some(worker) = self.workers.get_mut(worker_id) else {
+            return;
+        };
+        if worker.mark_accepted(operation_id) {
+            return;
+        }
+        // Messages from a worker arrive in order and the acknowledgement
+        // comes before the run, so an acknowledgement for an operation not
+        // on this worker means the sweep took the dispatch back already: the
+        // worker is about to run an action that now belongs elsewhere. Tell
+        // it to stop now, not at the next revoked-operation sweep.
+        info!(
+            ?worker_id,
+            %operation_id,
+            "Acknowledgement for a dispatch already taken back; telling the worker to stop it"
+        );
+        if let Err(err) = worker.kill_unknown_operation(operation_id) {
+            warn!(?worker_id, %operation_id, ?err, "Could not tell the worker to stop the operation");
+        }
+    }
+
+    /// The worker declined a dispatch: the ledger is restored, the action
+    /// requeued untried, and the worker paused; for a decline for load the
+    /// pause holds until the worker reports that much free memory.
+    /// Returns whether there was a dispatch to take back. A decline for an
+    /// operation the worker no longer holds (it finished, or the sweep
+    /// already requeued it) is nothing to act on, like a late
+    /// acknowledgement, and must not pause the worker.
+    async fn dispatch_declined(
+        &mut self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<bool, Error> {
+        let holds_it = self
+            .workers
+            .peek(worker_id)
+            .is_some_and(|worker| worker.running_action_infos.contains_key(operation_id));
+        if !holds_it {
+            debug!(?worker_id, %operation_id, %reason, "Decline for an operation not on this worker");
+            return Ok(false);
+        }
+        info!(?worker_id, %operation_id, %reason, ?needs_kb, "Worker declined dispatch");
+        self.update_action(
+            worker_id,
+            operation_id,
+            UpdateOperationType::UpdateWithDecline(Decline { reason }),
+        )
+        .await?;
+        if let Some(worker) = self.workers.get_mut(worker_id) {
+            if !worker.is_paused {
+                worker.is_paused = true;
+                record_worker_state("paused", true);
+            }
+            worker.pause_needs_kb = needs_kb;
+        }
+        Ok(true)
+    }
+
+    /// Dispatches this worker has not acknowledged within the timeout, as
+    /// of its latest keepalive.
+    fn unacknowledged_dispatches(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+        timeout_s: u64,
+    ) -> Vec<OperationId> {
+        self.workers
+            .peek(worker_id)
+            .map(|worker| worker.unacknowledged(timestamp.saturating_sub(timeout_s)))
+            .unwrap_or_default()
+    }
+
     async fn worker_notify_kill_operation(
         &mut self,
         worker_id: &WorkerId,
@@ -958,6 +1105,18 @@ impl ApiWorkerSchedulerImpl {
             .notify_update(WorkerUpdate::KillOperation(operation_id.clone()))
             .await
         {
+            // A full channel is a worker that is behind, not one that is
+            // gone. It keeps its place; the request is forgotten so the
+            // next sweep sends the kill again.
+            if err.code == Code::ResourceExhausted {
+                worker.clear_kill_request(&operation_id);
+                warn!(
+                    ?worker_id,
+                    %operation_id,
+                    "Worker channel full, kill deferred to the next sweep"
+                );
+                return Ok(());
+            }
             warn!(
                 ?worker_id,
                 %operation_id,
@@ -1044,6 +1203,10 @@ pub struct ApiWorkerScheduler {
         help = "How long a sent kill may go unacknowledged before the worker is evicted, in seconds."
     )]
     unacknowledged_kill_timeout_s: u64,
+    #[metric(
+        help = "How long a dispatch may go unacknowledged before it is requeued untried, in seconds; 0 is off."
+    )]
+    dispatch_ack_timeout_s: u64,
     /// Shared worker registry for checking worker liveness.
     worker_registry: SharedWorkerRegistry,
 
@@ -1068,6 +1231,7 @@ impl ApiWorkerScheduler {
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
+        dispatch_ack_timeout_s: u64,
         worker_registry: SharedWorkerRegistry,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
         has_peers: bool,
@@ -1104,6 +1268,7 @@ impl ApiWorkerScheduler {
             platform_property_manager,
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
+            dispatch_ack_timeout_s,
             worker_registry,
             metrics: Arc::new(SchedulerMetrics::default()),
             maybe_origin_event_tx,
@@ -1132,19 +1297,80 @@ impl ApiWorkerScheduler {
         &self.worker_registry
     }
 
+    /// `dispatched_at` is the scheduler's clock at the send; the
+    /// acknowledgement timeout counts from it.
     pub async fn worker_notify_run_action(
         &self,
         worker_id: WorkerId,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
+        dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
         self.metrics
             .actions_dispatched
             .fetch_add(1, Ordering::Relaxed);
         let mut inner = self.inner.lock().await;
         inner
-            .worker_notify_run_action(worker_id, operation_id, action_info)
+            .worker_notify_run_action(worker_id, operation_id, action_info, dispatched_at)
             .await
+    }
+
+    /// A keepalive, or another message standing in for one. Only a
+    /// keepalive carries a load and lifts a pause; anything else refreshes
+    /// the timestamp and runs the acknowledgement sweep.
+    async fn refresh_worker(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
+        keepalive: bool,
+    ) -> Result<(), Error> {
+        {
+            let mut inner = self.inner.lock().await;
+            inner
+                .refresh_lifetime(worker_id, timestamp, load, keepalive)
+                .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")?;
+            if self.dispatch_ack_timeout_s > 0 {
+                let stale = inner.unacknowledged_dispatches(
+                    worker_id,
+                    timestamp,
+                    self.dispatch_ack_timeout_s,
+                );
+                for operation_id in stale {
+                    warn!(
+                        ?worker_id,
+                        %operation_id,
+                        timeout_s = self.dispatch_ack_timeout_s,
+                        "Dispatch never acknowledged, requeuing untried"
+                    );
+                    match inner
+                        .dispatch_declined(
+                            worker_id,
+                            &operation_id,
+                            "unacknowledged".to_string(),
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(true) => {
+                            self.metrics
+                                .dispatches_unacknowledged
+                                .fetch_add(1, Ordering::Relaxed);
+                            record_dispatch_requeue("unacknowledged");
+                        }
+                        Ok(false) => {}
+                        Err(err) => {
+                            warn!(?worker_id, %operation_id, ?err, "Could not requeue unacknowledged dispatch");
+                        }
+                    }
+                }
+            }
+        }
+        let now = UNIX_EPOCH + Duration::from_secs(timestamp);
+        self.worker_registry
+            .update_worker_heartbeat(worker_id, now)
+            .await;
+        Ok(())
     }
 
     pub async fn running_action_info(
@@ -1388,23 +1614,52 @@ impl WorkerScheduler for ApiWorkerScheduler {
         inner.update_action(worker_id, operation_id, update).await
     }
 
+    async fn worker_dispatch_accepted(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        inner.dispatch_accepted(worker_id, operation_id);
+        Ok(())
+    }
+
+    async fn worker_dispatch_declined(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<(), Error> {
+        let mut inner = self.inner.lock().await;
+        // Counted once the action is back in the queue, not per message.
+        if inner
+            .dispatch_declined(worker_id, operation_id, reason, needs_kb)
+            .await?
+        {
+            self.metrics
+                .dispatches_declined
+                .fetch_add(1, Ordering::Relaxed);
+            record_dispatch_requeue("declined");
+        }
+        Ok(())
+    }
+
     async fn worker_keep_alive_received(
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
         load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
-        {
-            let mut inner = self.inner.lock().await;
-            inner
-                .refresh_lifetime(worker_id, timestamp, load)
-                .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")?;
-        }
-        let now = UNIX_EPOCH + Duration::from_secs(timestamp);
-        self.worker_registry
-            .update_worker_heartbeat(worker_id, now)
-            .await;
-        Ok(())
+        self.refresh_worker(worker_id, timestamp, load, true).await
+    }
+
+    async fn worker_liveness_refreshed(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+    ) -> Result<(), Error> {
+        self.refresh_worker(worker_id, timestamp, None, false).await
     }
 
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error> {

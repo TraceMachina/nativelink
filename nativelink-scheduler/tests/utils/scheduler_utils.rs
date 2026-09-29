@@ -78,7 +78,7 @@ pub(crate) async fn verify_overlapping_invocations(
         ("unscoped", None),
     ] {
         let worker_id = WorkerId(format!("fresh-worker-{invocation}"));
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(64);
         // One in-flight action per worker, matching the single-use deployment.
         scheduler
             .add_worker(Worker::new(

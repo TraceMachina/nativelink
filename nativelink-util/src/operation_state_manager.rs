@@ -139,6 +139,17 @@ pub enum UpdateOperationType {
 
     /// Notification that the execution stage has completed and it's just IO happening now.
     ExecutionComplete,
+
+    /// The worker never ran the action: it declined the dispatch, the
+    /// dispatch never reached it, or it never acknowledged it. Requeue
+    /// without counting an attempt; nothing was tried.
+    UpdateWithDecline(Decline),
+}
+
+/// Why a dispatched action is going back to the queue untried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decline {
+    pub reason: String,
 }
 
 #[async_trait]

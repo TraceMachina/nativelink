@@ -63,8 +63,8 @@ async fn add_worker(
     scheduler: &SimpleScheduler,
     name: &str,
     cpu_count: u64,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(
         WorkerId(name.to_string()),
         PlatformProperties::new(HashMap::from([(

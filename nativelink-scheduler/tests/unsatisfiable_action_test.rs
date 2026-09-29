@@ -134,8 +134,8 @@ async fn add_worker(
     name: &str,
     properties: PlatformProperties,
     max_inflight_tasks: u64,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
-    let (tx, rx) = mpsc::unbounded_channel();
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    let (tx, rx) = mpsc::channel(64);
     let worker = Worker::new(
         WorkerId(name.to_string()),
         properties,

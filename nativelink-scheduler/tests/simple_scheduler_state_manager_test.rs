@@ -904,7 +904,7 @@ fn faulty_scheduler(fault: Fault) -> Arc<SimpleScheduler> {
 
 async fn three_queued_actions_and_a_worker(
     scheduler: &SimpleScheduler,
-) -> Result<mpsc::UnboundedReceiver<UpdateForWorker>, Error> {
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
     for _ in 0..3 {
         scheduler
             .add_action(
@@ -913,7 +913,7 @@ async fn three_queued_actions_and_a_worker(
             )
             .await?;
     }
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(64);
     scheduler
         .add_worker(Worker::new(
             WorkerId("worker".to_string()),
