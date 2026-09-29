@@ -143,7 +143,7 @@ pub fn zombie_children() -> BTreeSet<u32> {
 /// starts over, since a reaped pid is not carried forward. Blocking; run it
 /// on the blocking pool.
 #[cfg(target_os = "linux")]
-pub fn reap_orphaned_zombies(seen_last: BTreeSet<u32>) -> (usize, BTreeSet<u32>) {
+pub fn reap_orphaned_zombies(seen_last: &BTreeSet<u32>) -> (usize, BTreeSet<u32>) {
     let mut now = zombie_children();
     let mut reaped = 0;
     let candidates: Vec<u32> = now
@@ -167,6 +167,6 @@ pub fn reap_orphaned_zombies(seen_last: BTreeSet<u32>) -> (usize, BTreeSet<u32>)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn reap_orphaned_zombies(_seen_last: BTreeSet<u32>) -> (usize, BTreeSet<u32>) {
+pub const fn reap_orphaned_zombies(_seen_last: &BTreeSet<u32>) -> (usize, BTreeSet<u32>) {
     (0, BTreeSet::new())
 }

@@ -1067,7 +1067,7 @@ pub async fn new_local_worker(
             time::sleep(crate::reaper::REAP_INTERVAL).await;
             // The sweep reads /proc for every process; off the runtime.
             let (reaped, seen) = spawn_blocking!("orphan_reaper_sweep", move || {
-                crate::reaper::reap_orphaned_zombies(seen_last)
+                crate::reaper::reap_orphaned_zombies(&seen_last)
             })
             .await
             .unwrap_or_default();

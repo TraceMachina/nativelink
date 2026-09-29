@@ -71,10 +71,10 @@ async fn an_orphaned_zombie_is_reaped_on_the_second_sweep_and_an_owned_one_never
         "our own child should be a zombie too"
     );
 
-    let (reaped, seen) = reap_orphaned_zombies(BTreeSet::new());
+    let (reaped, seen) = reap_orphaned_zombies(&BTreeSet::new());
     assert_eq!(reaped, 0, "the first sweep only notes them");
     assert!(seen.contains(&orphan) && seen.contains(&ours_pid));
-    let (reaped, seen) = reap_orphaned_zombies(seen);
+    let (reaped, seen) = reap_orphaned_zombies(&seen);
     assert_eq!(reaped, 1, "the second sweep reaps the orphan alone");
     assert!(
         !std::path::Path::new(&format!("/proc/{orphan}")).exists(),
