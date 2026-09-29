@@ -262,6 +262,47 @@ async fn does_not_time_out_a_live_worker_mid_action() -> Result<(), Error> {
     Ok(())
 }
 
+/// A heartbeating worker enforces `Action.timeout` itself, from when the
+/// command starts, and reports a completed DEADLINE_EXCEEDED result. The
+/// scheduler's clock starts at assignment, earlier, so timing the action out
+/// here as well would requeue every action that runs to its timeout onto the
+/// worker still running it, and the worker's own result would then evict it.
+#[nativelink_test]
+async fn leaves_action_timeout_to_a_live_worker() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("enforces-its-own-timeout"));
+    let mut info = action_info(make_system_time(0));
+    info.timeout = Duration::from_mins(1);
+    let operation_id = OperationId::default();
+    let mut action =
+        AwaitedAction::new(operation_id.clone(), Arc::new(info), make_system_time(0));
+    action.worker_set_state(
+        Arc::new(ActionState {
+            stage: ActionStage::Executing,
+            client_operation_id: operation_id,
+            action_digest: DigestInfo::zero_digest(),
+            last_transition_timestamp: make_system_time(0),
+        }),
+        make_system_time(0),
+    );
+    action.set_worker_id(Some(worker_id.clone()), make_system_time(0));
+
+    let elapsed = Duration::from_mins(1) + Duration::from_secs(1);
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(&worker_id, make_system_time(elapsed.as_secs()))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(elapsed);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a live worker's action past Action.timeout is the worker's to end"
+    );
+
+    Ok(())
+}
+
 /// A heartbeating worker stuck on one action past the executing ceiling must
 /// still be timed out, which is what `max_action_executing_timeout_s` is for.
 #[nativelink_test]

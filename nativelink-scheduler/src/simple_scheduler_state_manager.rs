@@ -639,19 +639,22 @@ where
 
         let now = (self.now_fn)().now();
 
-        // Honor the per-action `Action.timeout` from the RBE protocol as a
-        // backend wall-clock deadline. Without this, the only enforcement is
-        // the Bazel client's --test_timeout, which surfaces as TIMEOUT/NO
-        // STATUS instead of a backend signal pointing at the worker.
+        // The per-action `Action.timeout` from the RBE protocol, as a backend
+        // backstop. A live worker enforces it itself and reports a completed
+        // DEADLINE_EXCEEDED result; its clock starts when the command starts,
+        // after the inputs are fetched, so it always ends later than this one,
+        // which starts at assignment. Enforcing it here against a live worker
+        // therefore pre-empts every action that runs to its timeout: the
+        // action is requeued (onto the worker still running it, which refuses
+        // with AlreadyExists) and the worker's own result then evicts it and
+        // every other action it holds. So the backstop applies only to a
+        // worker of ours that has gone quiet; a peer instance's worker
+        // enforces the timeout itself, as a live one of ours does.
         let action_timeout = awaited_action.action_info().timeout;
-        if action_timeout > Duration::ZERO {
-            let executing_started_at = awaited_action.state().last_transition_timestamp;
-            if let Ok(elapsed) = now.duration_since(executing_started_at)
-                && elapsed > action_timeout
-            {
-                return true;
-            }
-        }
+        let past_action_deadline = action_timeout > Duration::ZERO
+            && now
+                .duration_since(awaited_action.state().last_transition_timestamp)
+                .is_ok_and(|elapsed| elapsed > action_timeout);
 
         let liveness = match (&self.worker_registry, awaited_action.worker_id()) {
             (Some(worker_registry), Some(worker_id)) => {
@@ -701,7 +704,7 @@ where
                     .checked_add(self.no_event_action_timeout)
                     .unwrap_or(now);
 
-                worker_should_update_before < now
+                past_action_deadline || worker_should_update_before < now
             }
         }
     }
