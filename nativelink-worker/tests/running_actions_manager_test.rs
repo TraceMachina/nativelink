@@ -90,10 +90,12 @@ mod tests {
     use nativelink_worker::namespace_utils;
     #[cfg(target_os = "linux")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
+    #[cfg(target_family = "unix")]
+    use nativelink_worker::running_actions_manager::free_disk_kb;
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, ResourceEnforcement, RunningAction, RunningActionImpl,
         RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
-        download_to_directory, free_disk_kb, log_excerpt, parse_kb_field,
+        download_to_directory, log_excerpt, parse_kb_field,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -3001,7 +3003,8 @@ exit 0
         Ok(())
     }
 
-    /// A manager with only the enforcement given, for the guard tests.
+    /// A manager with only the enforcement given, for the guard tests. Used by the unix-only tests below.
+    #[cfg(target_family = "unix")]
     async fn enforcing_manager(
         root_action_directory: &str,
         cas_store: &Arc<FastSlowStore>,
@@ -3031,7 +3034,8 @@ exit 0
         )?))
     }
 
-    /// Uploads a command with an empty input root and returns the action digest.
+    /// Uploads a command with an empty input root and returns the action digest. Used by the unix-only tests below.
+    #[cfg(target_family = "unix")]
     async fn upload_action(
         cas_store: &Arc<FastSlowStore>,
         command: &Command,
@@ -3060,7 +3064,8 @@ exit 0
         .await
     }
 
-    /// A dispatch of the action carrying the scheduler's properties.
+    /// A dispatch of the action carrying the scheduler's properties. Used by the unix-only tests below.
+    #[cfg(target_family = "unix")]
     fn dispatch_with_properties(
         action_digest: DigestInfo,
         properties: &[(&str, String)],
