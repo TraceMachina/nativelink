@@ -103,6 +103,11 @@ const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
 #[cfg(target_os = "linux")]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How many output files or directories are uploaded at once. Each holds an
+/// open file, and an unbounded set has hit the descriptor limit on actions
+/// with tens of thousands of outputs.
+const UPLOAD_CONCURRENCY: usize = 64;
+
 /// What the sampler observed over an action's lifetime.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1231,9 +1236,9 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
-        let file_futures = FuturesUnordered::new();
-        let dir_futures = FuturesUnordered::new();
-        let symlink_futures = FuturesUnordered::new();
+        let mut file_futures = Vec::new();
+        let mut dir_futures = Vec::new();
+        let mut symlink_futures = Vec::new();
         {
             let (_permit, dir_handle) = fs::read_dir(&full_dir_path)
                 .await
@@ -1311,12 +1316,19 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
             }
         }
 
-        let dir_entries = dir_futures
+        // Bounded, so a directory with tens of thousands of entries opens
+        // that many files a few dozen at a time rather than all at once.
+        let dir_entries = futures::stream::iter(dir_futures)
+            .buffer_unordered(UPLOAD_CONCURRENCY)
             .try_collect::<Vec<(DirectoryNode, VecDeque<Directory>)>>()
             .await?;
         let (mut file_nodes, mut symlinks) = try_join(
-            file_futures.try_collect::<Vec<FileNode>>(),
-            symlink_futures.try_collect::<Vec<SymlinkNode>>(),
+            futures::stream::iter(file_futures)
+                .buffer_unordered(UPLOAD_CONCURRENCY)
+                .try_collect::<Vec<FileNode>>(),
+            futures::stream::iter(symlink_futures)
+                .buffer_unordered(UPLOAD_CONCURRENCY)
+                .try_collect::<Vec<SymlinkNode>>(),
         )
         .await?;
 
@@ -1471,10 +1483,146 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     fn get_work_directory(&self) -> &String;
 }
 
+/// What an action wrote to stdout or stderr: in memory when small, on disk
+/// past `max_captured_output_bytes`, with the head kept for the log.
+#[derive(Debug)]
+pub enum CapturedOutput {
+    Memory(Bytes),
+    Spilled {
+        path: PathBuf,
+        len: u64,
+        head: Bytes,
+    },
+}
+
+impl CapturedOutput {
+    const fn len(&self) -> u64 {
+        match self {
+            Self::Memory(bytes) => bytes.len() as u64,
+            Self::Spilled { len, .. } => *len,
+        }
+    }
+
+    /// The first bytes, for a log line; all of them when in memory.
+    fn head(&self) -> &[u8] {
+        match self {
+            Self::Memory(bytes) => bytes,
+            Self::Spilled { head, .. } => head,
+        }
+    }
+}
+
+impl From<Bytes> for CapturedOutput {
+    fn from(bytes: Bytes) -> Self {
+        Self::Memory(bytes)
+    }
+}
+
+/// Reads a child's stream to the end. Up to `cap` bytes stay in memory; the
+/// moment the buffer passes the cap, everything so far and everything after
+/// goes to `spill_path`, and the buffer is cut back to the cap as the head.
+async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    cap: u64,
+    spill_path: PathBuf,
+    what: &str,
+) -> Result<CapturedOutput, Error> {
+    let mut buf = BytesMut::new();
+    let mut spill: Option<(fs::FileSlot, u64)> = None;
+    loop {
+        if let Some((file, len)) = spill.as_mut() {
+            let mut chunk = BytesMut::with_capacity(64 * 1024);
+            let sz = reader
+                .read_buf(&mut chunk)
+                .await
+                .err_tip(|| format!("Error reading {what} stream"))?;
+            if sz == 0 {
+                break;
+            }
+            file.write_all(&chunk)
+                .await
+                .err_tip(|| format!("Error spilling {what} to {}", spill_path.display()))?;
+            *len += sz as u64;
+            continue;
+        }
+        let sz = reader
+            .read_buf(&mut buf)
+            .await
+            .err_tip(|| format!("Error reading {what} stream"))?;
+        if sz == 0 {
+            break;
+        }
+        if cap > 0 && buf.len() as u64 > cap {
+            let mut file = fs::create_file(&spill_path)
+                .await
+                .err_tip(|| format!("Error creating {what} spill file {}", spill_path.display()))?;
+            file.write_all(&buf)
+                .await
+                .err_tip(|| format!("Error spilling {what} to {}", spill_path.display()))?;
+            let len = buf.len() as u64;
+            buf.truncate(usize::try_from(cap).unwrap_or(usize::MAX));
+            spill = Some((file, len));
+        }
+    }
+    match spill {
+        None => Ok(CapturedOutput::Memory(buf.freeze())),
+        Some((mut file, len)) => {
+            file.flush()
+                .await
+                .err_tip(|| format!("Error flushing {what} spill file"))?;
+            drop(file);
+            Ok(CapturedOutput::Spilled {
+                path: spill_path,
+                len,
+                head: buf.freeze(),
+            })
+        }
+    }
+}
+
+/// Uploads captured output to the CAS, from memory or from its spill file.
+async fn upload_captured_output(
+    cas_store: Pin<&FastSlowStore>,
+    output: CapturedOutput,
+    hasher: DigestHasherFunc,
+    what: &str,
+) -> Result<DigestInfo, Error> {
+    match output {
+        CapturedOutput::Memory(data) => {
+            let digest = compute_buf_digest(&data, &mut hasher.hasher());
+            cas_store
+                .update_oneshot(digest, data)
+                .await
+                .err_tip(|| format!("Uploading {what}"))?;
+            Ok(digest)
+        }
+        CapturedOutput::Spilled { path, len, .. } => {
+            let file = fs::open_file(&path, 0, u64::MAX)
+                .await
+                .err_tip(|| format!("Could not open {what} spill file {}", path.display()))?;
+            let (digest, file) = hasher
+                .hasher()
+                .digest_for_file(&path, file.into_inner(), Some(len))
+                .await
+                .err_tip(|| format!("Failed to hash {what} spill file {}", path.display()))?;
+            cas_store
+                .update_with_whole_file(
+                    digest,
+                    path.clone().into_os_string(),
+                    file,
+                    UploadSizeInfo::ExactSize(len),
+                )
+                .await
+                .err_tip(|| format!("Uploading {what} from {}", path.display()))?;
+            Ok(digest)
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RunningActionImplExecutionResult {
-    stdout: Bytes,
-    stderr: Bytes,
+    stdout: CapturedOutput,
+    stderr: CapturedOutput,
     exit_code: i32,
     resource_usage: Option<ActionResourceUsage>,
 }
@@ -1801,8 +1949,8 @@ impl RunningActionImpl {
                                         state.command_proto = Some(command_proto);
                                         state.execution_result =
                                             Some(RunningActionImplExecutionResult {
-                                                stdout: Bytes::new(),
-                                                stderr: Bytes::new(),
+                                                stdout: Bytes::new().into(),
+                                                stderr: Bytes::new().into(),
                                                 exit_code: EXIT_CODE_FOR_SIGNAL,
                                                 resource_usage: None,
                                             });
@@ -1824,8 +1972,8 @@ impl RunningActionImpl {
                                 let mut state = self.state.lock();
                                 state.command_proto = Some(command_proto);
                                 state.execution_result = Some(RunningActionImplExecutionResult {
-                                    stdout: Bytes::new(),
-                                    stderr: Bytes::from(response.output),
+                                    stdout: Bytes::new().into(),
+                                    stderr: Bytes::from(response.output).into(),
                                     exit_code: response.exit_code,
                                     resource_usage: None,
                                 });
@@ -1971,11 +2119,11 @@ impl RunningActionImpl {
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {args:?}"))?;
-        let mut stdout_reader = child_process
+        let stdout_reader = child_process
             .stdout
             .take()
             .err_tip(|| "Expected stdout to exist on command this should never happen")?;
-        let mut stderr_reader = child_process
+        let stderr_reader = child_process
             .stderr
             .take()
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
@@ -2014,31 +2162,17 @@ impl RunningActionImpl {
             }
         });
 
+        let output_cap = self
+            .running_actions_manager
+            .execution_configuration
+            .max_captured_output_bytes;
+        let stdout_spill = PathBuf::from(&self.action_directory).join("nativelink.stdout");
+        let stderr_spill = PathBuf::from(&self.action_directory).join("nativelink.stderr");
         let all_stdout_fut = spawn!("stdout_reader", async move {
-            let mut all_stdout = BytesMut::new();
-            loop {
-                let sz = stdout_reader
-                    .read_buf(&mut all_stdout)
-                    .await
-                    .err_tip(|| "Error reading stdout stream")?;
-                if sz == 0 {
-                    break; // EOF.
-                }
-            }
-            Result::<Bytes, Error>::Ok(all_stdout.freeze())
+            capture_output(stdout_reader, output_cap, stdout_spill, "stdout").await
         });
         let all_stderr_fut = spawn!("stderr_reader", async move {
-            let mut all_stderr = BytesMut::new();
-            loop {
-                let sz = stderr_reader
-                    .read_buf(&mut all_stderr)
-                    .await
-                    .err_tip(|| "Error reading stderr stream")?;
-                if sz == 0 {
-                    break; // EOF.
-                }
-            }
-            Result::<Bytes, Error>::Ok(all_stderr.freeze())
+            capture_output(stderr_reader, output_cap, stderr_spill, "stderr").await
         });
         let mut killed_action = false;
 
@@ -2083,7 +2217,7 @@ impl RunningActionImpl {
                     // If we get killed before the stream is started, then these will lock up.
                     let (stdout, stderr) = if killed_action {
                         drop(timer);
-                        (Bytes::new(), Bytes::new())
+                        (Bytes::new().into(), Bytes::new().into())
                     } else {
                         timer.measure();
                         let (maybe_all_stdout, maybe_all_stderr) = tokio::join!(all_stdout_fut, all_stderr_fut);
@@ -2222,7 +2356,7 @@ impl RunningActionImpl {
         let cas_store = self.running_actions_manager.cas_store.as_ref();
         let hasher = self.action_info.unique_qualifier.digest_function();
 
-        let mut output_path_futures = FuturesUnordered::new();
+        let mut output_path_futures: Vec<BoxFuture<'_, Result<OutputType, Error>>> = Vec::new();
         let mut output_paths = command_proto.output_paths;
         if output_paths.is_empty() {
             output_paths
@@ -2242,198 +2376,205 @@ impl RunningActionImpl {
             });
             let work_directory = &self.work_directory;
             let digest_uploaders = digest_uploaders.clone();
-            output_path_futures.push(async move {
-                let metadata = {
-                    let metadata = match fs::symlink_metadata(&full_path).await {
-                        Ok(file) => file,
-                        Err(e) => {
-                            if e.code == Code::NotFound {
-                                // In the event our output does not exist, according to the bazel remote
-                                // execution spec, we simply ignore it continue.
-                                return Result::<OutputType, Error>::Ok(OutputType::None);
+            output_path_futures.push(
+                async move {
+                    let metadata = {
+                        let metadata = match fs::symlink_metadata(&full_path).await {
+                            Ok(file) => file,
+                            Err(e) => {
+                                if e.code == Code::NotFound {
+                                    // In the event our output does not exist, according to the bazel remote
+                                    // execution spec, we simply ignore it continue.
+                                    return Result::<OutputType, Error>::Ok(OutputType::None);
+                                }
+                                return Err(e).err_tip(|| {
+                                    format!("Could not open file {}", full_path.display())
+                                });
                             }
-                            return Err(e).err_tip(|| {
-                                format!("Could not open file {}", full_path.display())
-                            });
-                        }
-                    };
+                        };
 
-                    if metadata.is_file() {
-                        return Ok(OutputType::File(
-                            upload_file(
+                        if metadata.is_file() {
+                            return Ok(OutputType::File(
+                                upload_file(
+                                    cas_store.as_pin(),
+                                    &full_path,
+                                    hasher,
+                                    metadata,
+                                    digest_uploaders,
+                                )
+                                .await
+                                .map(|mut file_info| {
+                                    file_info.name_or_path = NameOrPath::Path(entry);
+                                    file_info
+                                })
+                                .err_tip(|| format!("Uploading file {}", full_path.display()))?,
+                            ));
+                        }
+                        metadata
+                    };
+                    if metadata.is_dir() {
+                        Ok(OutputType::Directory(
+                            upload_directory(
                                 cas_store.as_pin(),
                                 &full_path,
+                                work_directory,
                                 hasher,
-                                metadata,
                                 digest_uploaders,
                             )
-                            .await
-                            .map(|mut file_info| {
-                                file_info.name_or_path = NameOrPath::Path(entry);
-                                file_info
+                            .and_then(|(root_dir, children)| async move {
+                                let tree = ProtoTree {
+                                    root: Some(root_dir),
+                                    children: children.into(),
+                                };
+                                let tree_digest = serialize_and_upload_message(
+                                    &tree,
+                                    cas_store.as_pin(),
+                                    &mut hasher.hasher(),
+                                )
+                                .await
+                                .err_tip(|| format!("While processing {entry}"))?;
+                                Ok(DirectoryInfo {
+                                    path: entry,
+                                    tree_digest,
+                                })
                             })
-                            .err_tip(|| format!("Uploading file {}", full_path.display()))?,
-                        ));
-                    }
-                    metadata
-                };
-                if metadata.is_dir() {
-                    Ok(OutputType::Directory(
-                        upload_directory(
-                            cas_store.as_pin(),
-                            &full_path,
-                            work_directory,
-                            hasher,
-                            digest_uploaders,
-                        )
-                        .and_then(|(root_dir, children)| async move {
-                            let tree = ProtoTree {
-                                root: Some(root_dir),
-                                children: children.into(),
-                            };
-                            let tree_digest = serialize_and_upload_message(
-                                &tree,
-                                cas_store.as_pin(),
-                                &mut hasher.hasher(),
-                            )
                             .await
-                            .err_tip(|| format!("While processing {entry}"))?;
-                            Ok(DirectoryInfo {
-                                path: entry,
-                                tree_digest,
-                            })
-                        })
-                        .await
-                        .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
-                    ))
-                } else if metadata.is_symlink() {
-                    // Resolve the symlink to determine what it points to.
-                    // Symlinks created by DirectoryCache (absolute paths into
-                    // the cache directory) must NOT be uploaded as symlinks —
-                    // the target path is worker-local and meaningless to the
-                    // client. Instead, follow the symlink and upload the
-                    // resolved content (file or directory).
-                    let target = fs::read_link(&full_path).await.err_tip(|| {
-                        format!("Reading symlink target for {}", full_path.display())
-                    })?;
-                    let is_absolute_symlink = Path::new(&target).is_absolute();
+                            .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
+                        ))
+                    } else if metadata.is_symlink() {
+                        // Resolve the symlink to determine what it points to.
+                        // Symlinks created by DirectoryCache (absolute paths into
+                        // the cache directory) must NOT be uploaded as symlinks —
+                        // the target path is worker-local and meaningless to the
+                        // client. Instead, follow the symlink and upload the
+                        // resolved content (file or directory).
+                        let target = fs::read_link(&full_path).await.err_tip(|| {
+                            format!("Reading symlink target for {}", full_path.display())
+                        })?;
+                        let is_absolute_symlink = Path::new(&target).is_absolute();
 
-                    if is_absolute_symlink {
-                        // Absolute symlink — resolve and upload contents.
-                        match fs::metadata(&full_path).await {
-                            Ok(resolved_meta) => {
-                                if resolved_meta.is_dir() {
-                                    // Upload as directory (Tree proto).
-                                    Ok(OutputType::Directory(
-                                        upload_directory(
-                                            cas_store.as_pin(),
-                                            &full_path,
-                                            work_directory,
-                                            hasher,
-                                            digest_uploaders,
-                                        )
-                                        .and_then(|(root_dir, children)| async move {
-                                            let tree = ProtoTree {
-                                                root: Some(root_dir),
-                                                children: children.into(),
-                                            };
-                                            let tree_digest = serialize_and_upload_message(
-                                                &tree,
+                        if is_absolute_symlink {
+                            // Absolute symlink — resolve and upload contents.
+                            match fs::metadata(&full_path).await {
+                                Ok(resolved_meta) => {
+                                    if resolved_meta.is_dir() {
+                                        // Upload as directory (Tree proto).
+                                        Ok(OutputType::Directory(
+                                            upload_directory(
                                                 cas_store.as_pin(),
-                                                &mut hasher.hasher(),
+                                                &full_path,
+                                                work_directory,
+                                                hasher,
+                                                digest_uploaders,
+                                            )
+                                            .and_then(|(root_dir, children)| async move {
+                                                let tree = ProtoTree {
+                                                    root: Some(root_dir),
+                                                    children: children.into(),
+                                                };
+                                                let tree_digest = serialize_and_upload_message(
+                                                    &tree,
+                                                    cas_store.as_pin(),
+                                                    &mut hasher.hasher(),
+                                                )
+                                                .await
+                                                .err_tip(|| format!("While processing {entry}"))?;
+                                                Ok(DirectoryInfo {
+                                                    path: entry,
+                                                    tree_digest,
+                                                })
+                                            })
+                                            .await
+                                            .err_tip(
+                                                || {
+                                                    format!(
+                                                        "Uploading symlinked directory {}",
+                                                        full_path.display()
+                                                    )
+                                                },
+                                            )?,
+                                        ))
+                                    } else {
+                                        // Upload as file (follow symlink).
+                                        Ok(OutputType::File(
+                                            upload_file(
+                                                cas_store.as_pin(),
+                                                &full_path,
+                                                hasher,
+                                                resolved_meta,
+                                                digest_uploaders,
                                             )
                                             .await
-                                            .err_tip(|| format!("While processing {entry}"))?;
-                                            Ok(DirectoryInfo {
-                                                path: entry,
-                                                tree_digest,
+                                            .map(|mut file_info| {
+                                                file_info.name_or_path = NameOrPath::Path(entry);
+                                                file_info
                                             })
-                                        })
-                                        .await
-                                        .err_tip(|| {
+                                            .err_tip(
+                                                || {
+                                                    format!(
+                                                        "Uploading symlinked file {}",
+                                                        full_path.display()
+                                                    )
+                                                },
+                                            )?,
+                                        ))
+                                    }
+                                }
+                                Err(e) => {
+                                    if e.code != Code::NotFound {
+                                        return Err(e).err_tip(|| {
                                             format!(
-                                                "Uploading symlinked directory {}",
+                                                "While resolving absolute symlink {}",
                                                 full_path.display()
                                             )
-                                        })?,
-                                    ))
-                                } else {
-                                    // Upload as file (follow symlink).
-                                    Ok(OutputType::File(
-                                        upload_file(
-                                            cas_store.as_pin(),
-                                            &full_path,
-                                            hasher,
-                                            resolved_meta,
-                                            digest_uploaders,
-                                        )
-                                        .await
-                                        .map(|mut file_info| {
-                                            file_info.name_or_path = NameOrPath::Path(entry);
-                                            file_info
-                                        })
-                                        .err_tip(|| {
+                                        });
+                                    }
+                                    Ok(OutputType::None)
+                                }
+                            }
+                        } else {
+                            // Relative symlink — action intentionally created it.
+                            // Upload as a proper symlink.
+                            let output_symlink = upload_symlink(&full_path, work_directory)
+                                .await
+                                .map(|mut symlink_info| {
+                                    symlink_info.name_or_path = NameOrPath::Path(entry);
+                                    symlink_info
+                                })
+                                .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
+                            match fs::metadata(&full_path).await {
+                                Ok(metadata) => {
+                                    if metadata.is_dir() {
+                                        Ok(OutputType::DirectorySymlink(output_symlink))
+                                    } else {
+                                        // Note: If it's anything but directory we put it as a file symlink.
+                                        Ok(OutputType::FileSymlink(output_symlink))
+                                    }
+                                }
+                                Err(e) => {
+                                    if e.code != Code::NotFound {
+                                        return Err(e).err_tip(|| {
                                             format!(
-                                                "Uploading symlinked file {}",
+                                                "While querying target symlink metadata for {}",
                                                 full_path.display()
                                             )
-                                        })?,
-                                    ))
-                                }
-                            }
-                            Err(e) => {
-                                if e.code != Code::NotFound {
-                                    return Err(e).err_tip(|| {
-                                        format!(
-                                            "While resolving absolute symlink {}",
-                                            full_path.display()
-                                        )
-                                    });
-                                }
-                                Ok(OutputType::None)
-                            }
-                        }
-                    } else {
-                        // Relative symlink — action intentionally created it.
-                        // Upload as a proper symlink.
-                        let output_symlink = upload_symlink(&full_path, work_directory)
-                            .await
-                            .map(|mut symlink_info| {
-                                symlink_info.name_or_path = NameOrPath::Path(entry);
-                                symlink_info
-                            })
-                            .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
-                        match fs::metadata(&full_path).await {
-                            Ok(metadata) => {
-                                if metadata.is_dir() {
-                                    Ok(OutputType::DirectorySymlink(output_symlink))
-                                } else {
-                                    // Note: If it's anything but directory we put it as a file symlink.
+                                        });
+                                    }
+                                    // If the file doesn't exist, we consider it a file. Even though the
+                                    // file doesn't exist we still need to populate an entry.
                                     Ok(OutputType::FileSymlink(output_symlink))
                                 }
                             }
-                            Err(e) => {
-                                if e.code != Code::NotFound {
-                                    return Err(e).err_tip(|| {
-                                        format!(
-                                            "While querying target symlink metadata for {}",
-                                            full_path.display()
-                                        )
-                                    });
-                                }
-                                // If the file doesn't exist, we consider it a file. Even though the
-                                // file doesn't exist we still need to populate an entry.
-                                Ok(OutputType::FileSymlink(output_symlink))
-                            }
                         }
+                    } else {
+                        Err(make_err!(
+                            Code::Internal,
+                            "{full_path:?} was not a file, folder or symlink. Must be one.",
+                        ))
                     }
-                } else {
-                    Err(make_err!(
-                        Code::Internal,
-                        "{full_path:?} was not a file, folder or symlink. Must be one.",
-                    ))
                 }
-            });
+                .boxed(),
+            );
         }
         let mut output_files = vec![];
         let mut output_folders = vec![];
@@ -2441,8 +2582,10 @@ impl RunningActionImpl {
         let mut output_file_symlinks = vec![];
 
         if execution_result.exit_code != 0 {
-            let stdout = core::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
-            let stderr = core::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
+            let stdout =
+                core::str::from_utf8(execution_result.stdout.head()).unwrap_or("<no-utf8>");
+            let stderr =
+                core::str::from_utf8(execution_result.stderr.head()).unwrap_or("<no-utf8>");
             error!(
                 exit_code = ?execution_result.exit_code,
                 stdout = ?stdout[..min(stdout.len(), 1000)],
@@ -2456,11 +2599,15 @@ impl RunningActionImpl {
             let start = std::time::Instant::now();
             let data = execution_result.stdout;
             let data_len = data.len();
-            let digest = compute_buf_digest(&data, &mut hasher.hasher());
-            cas_store
-                .update_oneshot(digest, data)
-                .await
-                .err_tip(|| "Uploading stdout")?;
+            // Boxed: the upload future is large, and two of them inline
+            // pushed the debug test binary past its thread stack.
+            let digest = Box::pin(upload_captured_output(
+                cas_store.as_pin(),
+                data,
+                hasher,
+                "stdout",
+            ))
+            .await?;
             debug!(
                 ?digest,
                 data_len,
@@ -2473,11 +2620,15 @@ impl RunningActionImpl {
             let start = std::time::Instant::now();
             let data = execution_result.stderr;
             let data_len = data.len();
-            let digest = compute_buf_digest(&data, &mut hasher.hasher());
-            cas_store
-                .update_oneshot(digest, data)
-                .await
-                .err_tip(|| "Uploading  stderr")?;
+            // Boxed: the upload future is large, and two of them inline
+            // pushed the debug test binary past its thread stack.
+            let digest = Box::pin(upload_captured_output(
+                cas_store.as_pin(),
+                data,
+                hasher,
+                "stderr",
+            ))
+            .await?;
             debug!(
                 ?digest,
                 data_len,
@@ -2492,6 +2643,8 @@ impl RunningActionImpl {
             num_output_paths = output_path_futures.len(),
             "upload_results: starting stdout/stderr/output_paths uploads",
         );
+        let mut output_path_futures =
+            futures::stream::iter(output_path_futures).buffer_unordered(UPLOAD_CONCURRENCY);
         let join_start = std::time::Instant::now();
         let upload_result = futures::try_join!(stdout_digest_fut, stderr_digest_fut, async {
             while let Some(output_type) = output_path_futures.try_next().await? {
@@ -2793,6 +2946,9 @@ impl Debug for Callbacks {
 /// container.
 #[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
+    /// Bytes of stdout or stderr kept in memory before the rest spills to a
+    /// file under the action directory; 0 keeps everything in memory.
+    pub max_captured_output_bytes: u64,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -3352,6 +3508,59 @@ impl RunningActionsManagerImpl {
         })
     }
 
+    /// Removes action directories under the root that no running action
+    /// owns and that have not been touched for `max_cleanup_wait`. A
+    /// cleanup that failed (the store was down, the process restarted
+    /// mid-removal) leaves its directory behind, and it counts against the
+    /// pod's disk until something removes it. Returns how many were removed.
+    pub async fn sweep_orphaned_directories(&self) -> Result<usize, Error> {
+        let (_permit, dir_handle) = fs::read_dir(&self.root_action_directory)
+            .await
+            .err_tip(|| format!("Reading {} for orphans", self.root_action_directory))?
+            .into_inner();
+        let mut dir_stream = ReadDirStream::new(dir_handle);
+        let now = SystemTime::now();
+        let mut removed = 0;
+        while let Some(entry) = dir_stream.next().await {
+            let entry = entry.err_tip(|| "Iterating action root for orphans")?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let owned = self
+                .running_actions
+                .lock()
+                .keys()
+                .any(|operation_id| operation_id.to_string() == name);
+            if owned {
+                continue;
+            }
+            let path = entry.path();
+            let Ok(metadata) = fs::metadata(&path).await else {
+                continue;
+            };
+            if !metadata.is_dir() {
+                continue;
+            }
+            // Young directories may belong to an action between creation and
+            // registration; only settled ones are orphans.
+            let age = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .unwrap_or(Duration::MAX);
+            if age < self.max_cleanup_wait {
+                continue;
+            }
+            warn!(path = %path.display(), age_secs = age.as_secs(), "Removing orphaned action directory");
+            fs::remove_dir_all(&path)
+                .await
+                .err_tip(|| format!("Removing orphaned action directory {}", path.display()))?;
+            self.metrics.orphan_removals.inc();
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
         // The guard must be dropped before notifying: `send_modify` takes
         // the watch channel's internal lock, and a `wait_for` closure that
@@ -3605,6 +3814,8 @@ pub struct Metrics {
     cleanup_waits: CounterWithTime,
     #[metric(help = "Number of stale directories removed during action retries.")]
     stale_removals: CounterWithTime,
+    #[metric(help = "Orphaned action directories removed by the periodic sweep.")]
+    orphan_removals: CounterWithTime,
     #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]
     cleanup_wait_timeouts: CounterWithTime,
     #[metric(help = "Stats about the get_proto_command_from_store command.")]
