@@ -145,10 +145,16 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
 /// cleanup before the SIGKILL that follows the grace.
 #[nativelink_test]
 async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false, false) {
+    if !namespace_utils::namespaces_supported(false) {
         return Ok(());
     }
-    let marker = unique_path(&std::env::temp_dir(), "nativelink_test_term");
+    let marker = std::env::temp_dir().join(format!(
+        "nativelink_test_term.{}.{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
     let mut command = tokio::process::Command::new("sh");
     command.args([
         "-c",
@@ -164,9 +170,8 @@ async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> 
     let action_dir = CString::new("/tmp/action").unwrap();
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
-        command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
-        });
+        command
+            .pre_exec(move || namespace_utils::configure_namespace(false, &root_dir, &action_dir));
     }
     let child = command.spawn()?;
     let pgid = i32::try_from(child.id().unwrap()).unwrap();

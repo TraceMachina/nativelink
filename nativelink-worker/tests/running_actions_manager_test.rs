@@ -3871,7 +3871,11 @@ exit 0
         let partial = compute_buf_digest(b"partial\n", &mut DigestHasherFunc::Sha256.hasher());
         assert_eq!(result.stdout_digest, partial, "{result:?}");
         assert!(
-            cas_store.as_pin().has(partial).await?.is_some(),
+            cas_store
+                .as_pin()
+                .has(StoreKey::Digest(partial))
+                .await?
+                .is_some(),
             "the killed action's stdout should be in CAS"
         );
         Ok(())
