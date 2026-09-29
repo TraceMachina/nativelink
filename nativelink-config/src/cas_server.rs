@@ -1080,6 +1080,28 @@ pub struct LocalWorkerConfig {
     /// handle them.
     pub experimental_precondition_script: Option<String>,
 
+    /// Milliseconds the precondition script may run before it counts as
+    /// failed and the action is refused as backpressure. A script that
+    /// hangs used to hold the action forever.
+    /// Default: 30000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub precondition_timeout_ms: u64,
+
+    /// Bytes of an action's stdout or stderr kept in memory. Past this the
+    /// output spills to a file under the action directory and is uploaded
+    /// from disk, so an action that prints gigabytes does not grow the
+    /// worker by that much. 0 keeps everything in memory.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_captured_output_bytes: u64,
+
+    /// Seconds between sweeps of `work_directory` for action directories no
+    /// running action owns, left by a cleanup that failed. 0 disables the
+    /// sweep; the directory is still purged at startup.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub orphan_sweep_interval_s: u64,
+
     /// Underlying CAS store that the worker will use to download CAS artifacts.
     /// This store must be a `FastSlowStore`. The `fast` store must be a
     /// `FileSystemStore` because it will use hardlinks when building out the files

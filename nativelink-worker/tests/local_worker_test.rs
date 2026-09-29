@@ -1130,7 +1130,12 @@ async fn preconditions_met_extra_envs() -> Result<(), Error> {
     // So we have bash for nix cases, because the PATH gets reset
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    preconditions_met(Some("bash -c \"echo $DEMO_ENV\"".to_string()), &extra_envs).await?;
+    preconditions_met(
+        Some("bash -c \"echo $DEMO_ENV\"".to_string()),
+        &extra_envs,
+        Duration::from_secs(30),
+    )
+    .await?;
     assert!(logs_contain("test_value_for_demo_env"));
     Ok(())
 }
@@ -1320,5 +1325,25 @@ async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error
         )
     })?;
 
+    Ok(())
+}
+
+/// A precondition script that hangs is refused as backpressure after the
+/// timeout instead of holding the action forever.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn precondition_script_that_hangs_times_out() -> Result<(), Error> {
+    let extra_envs: HashMap<String, String> = HashMap::new();
+    // A busy loop rather than `sleep`: the script runs with a cleared
+    // environment, and in a build sandbox only `/bin/sh` is on any path.
+    let err = preconditions_met(
+        Some("/bin/sh -c 'while :; do :; done'".to_string()),
+        &extra_envs,
+        Duration::from_millis(200),
+    )
+    .await
+    .expect_err("a hanging script must not pass");
+    assert_eq!(err.code, Code::ResourceExhausted, "{err}");
+    assert!(err.to_string().contains("did not finish"), "{err}");
     Ok(())
 }

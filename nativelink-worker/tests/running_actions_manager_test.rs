@@ -29,7 +29,7 @@ mod tests {
     use std::io::{Cursor, Write};
     #[cfg(target_family = "unix")]
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2626,6 +2626,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: None,
@@ -2792,6 +2793,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([
@@ -2926,6 +2928,168 @@ exit 0
         Ok(())
     }
 
+    /// Output past the cap spills to disk and is uploaded whole; the worker
+    /// keeps only the cap in memory.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn output_past_the_cap_spills_to_disk_and_uploads_whole()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        const OUTPUT_BYTES: usize = 3_000_000;
+        let (_, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 1_000_000,
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "head -c {OUTPUT_BYTES} /dev/zero | tr '\\0' a; head -c 100 /dev/zero | tr '\\0' b >&2"
+                ),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        let result = run_action(running_action_impl).await?;
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout_digest.size_bytes(), OUTPUT_BYTES as u64);
+        let stdout = slow_store
+            .as_ref()
+            .get_part_unchunked(result.stdout_digest, 0, None)
+            .await?;
+        assert_eq!(stdout.len(), OUTPUT_BYTES);
+        assert!(
+            stdout.iter().all(|b| *b == b'a'),
+            "spilled output should be intact"
+        );
+        assert_eq!(
+            result.stderr_digest.size_bytes(),
+            100,
+            "small stderr stays in memory"
+        );
+        Ok(())
+    }
+
+    /// A directory under the action root that no running action owns and
+    /// that has settled is removed by the sweep; a running action's is kept.
+    #[nativelink_test]
+    async fn orphan_sweep_removes_settled_unowned_directories()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                // Zero: anything unowned counts as settled at once.
+                max_cleanup_wait: Duration::ZERO,
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let stray = format!("{root_action_directory}/left-behind-by-a-failed-cleanup");
+        fs::create_dir_all(&stray).await?;
+        let stray_file = format!("{root_action_directory}/not-a-directory");
+        tokio::fs::write(&stray_file, b"x").await?;
+
+        assert_eq!(
+            running_actions_manager.sweep_orphaned_directories().await?,
+            1
+        );
+        assert!(!Path::new(&stray).exists(), "the orphan should be gone");
+        assert!(
+            Path::new(&stray_file).exists(),
+            "files are not the sweep's business"
+        );
+        assert_eq!(
+            running_actions_manager.sweep_orphaned_directories().await?,
+            0
+        );
+        Ok(())
+    }
+
     #[cfg_attr(feature = "nix", ignore)]
     #[nativelink_test]
     async fn entrypoint_sends_timeout_via_side_channel() -> Result<(), Box<dyn core::error::Error>>
@@ -2983,6 +3147,7 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([(
@@ -4656,7 +4821,7 @@ exit 1
         use nativelink_config::cas_server::Buck2FileCaptureConfig;
         use nativelink_proto::build::bazel::remote::execution::v2::{RequestMetadata, ToolDetails};
 
-        async fn wait_for_file(path: &std::path::Path) -> Result<(), tokio::time::error::Elapsed> {
+        async fn wait_for_file(path: &Path) -> Result<(), tokio::time::error::Elapsed> {
             tokio::time::timeout(Duration::from_secs(10), async {
                 while !path.exists() {
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -5374,6 +5539,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,
@@ -5522,6 +5688,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_captured_output_bytes: 0,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,
