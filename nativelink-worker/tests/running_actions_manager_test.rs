@@ -3881,15 +3881,16 @@ exit 0
         Ok(())
     }
 
-    /// Only what the action wrote counts: files modified at or after its
-    /// start. An input materialized before it, hard-linked or copied and
+    /// Only what the action wrote counts: files modified at or after the
+    /// directory's stamp, taken from the filesystem's own clock, which on
+    /// Linux lags the wall clock by a tick. An input materialized before it, hard-linked or copied and
     /// whatever its link count now, keeps its earlier time and is not
     /// counted; nor are a symlink or the directories' own blocks.
     #[cfg(target_family = "unix")]
     #[test]
     fn directory_private_kb_counts_only_files_newer_than_the_start() {
         let dir = tempfile::tempdir().unwrap();
-        let before = SystemTime::now() - Duration::from_secs(60);
+        let before = SystemTime::now() - Duration::from_secs(90);
         // An input with one link, as after the store evicted its blob, and
         // one with two: both older than the action, both left out.
         let input = dir.path().join("input.bin");
@@ -3905,7 +3906,8 @@ exit 0
             .set_modified(before)
             .unwrap();
         std::fs::hard_link(&linked, dir.path().join("linked-2.bin")).unwrap();
-        let since = SystemTime::now();
+        let since =
+            nativelink_worker::running_actions_manager::directory_stamp(dir.path()).unwrap();
         let own = dir.path().join("own.bin");
         std::fs::write(&own, vec![0u8; 64 * 1024]).unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();

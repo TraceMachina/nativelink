@@ -300,7 +300,8 @@ fn start_action_resource_usage_sampler(
 }
 
 /// KiB on disk of the files under `directory` that the action wrote: regular
-/// files modified at or after `since`, the moment its command started. Its
+/// files modified at or after `since`, the directory's stamp from just
+/// before its command started (see [`directory_stamp`]). Its
 /// inputs were materialized before that, as hard links into the CAS store
 /// or private copies, and keep their earlier times, so they are told apart
 /// by time rather than by link count: a hard link drops to one link the
@@ -336,6 +337,37 @@ pub fn directory_private_kb(directory: &Path, since: SystemTime) -> u64 {
 #[cfg(not(target_family = "unix"))]
 pub fn directory_private_kb(_directory: &Path, _since: SystemTime) -> u64 {
     0
+}
+
+/// Touches `directory` and returns the time the filesystem recorded for it.
+/// File mtimes come from the kernel's coarse clock, which on Linux can lag
+/// the wall clock by a tick, so a file written right after
+/// `SystemTime::now()` can look older than that moment. The walk compares
+/// mtimes against this stamp, taken from the same clock, so a file the
+/// action writes afterwards is never older than it.
+#[cfg(target_family = "unix")]
+pub fn directory_stamp(directory: &Path) -> Result<SystemTime, Error> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::fs::File::open(directory)
+        .err_tip(|| format!("Opening {} to stamp it", directory.display()))?;
+    // SAFETY: a zeroed timespec is valid; only tv_nsec is set.
+    let mut now: libc::timespec = unsafe { core::mem::zeroed() };
+    now.tv_nsec = libc::UTIME_NOW;
+    let times = [now, now];
+    // SAFETY: futimens takes an open fd and a pointer to two timespecs that
+    // outlive the call.
+    if unsafe { libc::futimens(dir.as_raw_fd(), times.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .err_tip(|| format!("Stamping {}", directory.display()));
+    }
+    dir.metadata()
+        .and_then(|metadata| metadata.modified())
+        .err_tip(|| format!("Reading the stamp on {}", directory.display()))
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn directory_stamp(_directory: &Path) -> Result<SystemTime, Error> {
+    Ok(SystemTime::now())
 }
 
 /// Starts a disk sample: the action's own files, walked on the blocking
@@ -2597,8 +2629,14 @@ impl RunningActionImpl {
             let over_limit_tx = (memory_limit_kb.is_some() || disk_limit_kb.is_some())
                 .then(|| over_limit_keepalive.take())
                 .flatten();
-            let disk_directory = disk_enforcement
-                .map(|_| (PathBuf::from(&self.action_directory), SystemTime::now()));
+            let disk_directory = disk_enforcement.map(|_| {
+                let directory = PathBuf::from(&self.action_directory);
+                let since = directory_stamp(&directory).unwrap_or_else(|err| {
+                    warn!(?err, "Timing the disk walk by the wall clock instead");
+                    SystemTime::now()
+                });
+                (directory, since)
+            });
             start_action_resource_usage_sampler(
                 pgid,
                 Ceilings {
