@@ -3457,6 +3457,15 @@ short fix and all five are prerequisites.
 Before you write a readiness probe, understand what `/status` actually
 measures, because the answer is surprising in both directions.
 
+## Readiness is a different question
+
+`/status` answers whether the components that registered a health indicator
+have failed. It stays `200` while a component is still initializing, which is
+the right answer for a liveness probe and the wrong one for readiness. The
+`health` service therefore also serves `/ready` (`readiness_path`, default
+`/ready`), which answers `503` while anything is initializing or failed and
+`200` otherwise.
+
 ## Build the deployment
 
 <li>
