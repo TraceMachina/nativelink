@@ -112,6 +112,17 @@ pub struct ExecuteComplete {
     #[prost(string, tag = "1")]
     pub operation_id: ::prost::alloc::string::String,
 }
+/// / The reservation an action was admitted under, echoed by the worker so
+/// / the measurement and the number it was measured against travel together.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Reservation {
+    #[prost(uint64, tag = "1")]
+    pub cpu_count: u64,
+    #[prost(uint64, tag = "2")]
+    pub memory_kb: u64,
+    #[prost(uint64, tag = "3")]
+    pub disk_kb: u64,
+}
 /// / Resource usage observed by the worker while running one action.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActionResourceUsage {
@@ -132,6 +143,80 @@ pub struct ActionResourceUsage {
     /// / action's process group.
     #[prost(uint64, tag = "5")]
     pub cpu_time_ms: u64,
+    /// / Wall time from spawn to exit, in milliseconds; cores used is
+    /// / cpu_time_ms / wall_time_ms.
+    #[prost(uint64, tag = "6")]
+    pub wall_time_ms: u64,
+    /// / Peak bytes under the action's work directory, in KiB. Not yet
+    /// / measured; zero.
+    #[prost(uint64, tag = "7")]
+    pub peak_disk_kb: u64,
+    /// / How the action ended.
+    #[prost(enumeration = "ResourceOutcome", tag = "8")]
+    pub outcome: i32,
+    /// / True when a worker-side limit, not the kernel or a timeout, ended
+    /// / the action.
+    #[prost(bool, tag = "9")]
+    pub enforced: bool,
+    /// / What the action was admitted with, from its platform properties.
+    #[prost(message, optional, tag = "10")]
+    pub reserved: ::core::option::Option<Reservation>,
+}
+/// / How an action ended, as the worker saw it. Separate from the exit code:
+/// / a kill by the worker or the kernel is a sizing fact, not a tool failure.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    ::prost::Enumeration
+)]
+#[repr(i32)]
+pub enum ResourceOutcome {
+    Unknown = 0,
+    /// / The process exited on its own, whatever its exit code.
+    Completed = 1,
+    /// / Killed for memory: by the worker's reservation enforcement, or by
+    /// / the kernel with the last sample within 10% of the memory limit.
+    KilledMemory = 2,
+    /// / Killed for disk. Reserved for disk enforcement.
+    KilledDisk = 3,
+    /// / Killed by the action timeout.
+    KilledTimeout = 4,
+    /// / Killed from outside: a scheduler cancel, or a signal nobody here sent.
+    KilledExternal = 5,
+}
+impl ResourceOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unknown => "RESOURCE_OUTCOME_UNKNOWN",
+            Self::Completed => "COMPLETED",
+            Self::KilledMemory => "KILLED_MEMORY",
+            Self::KilledDisk => "KILLED_DISK",
+            Self::KilledTimeout => "KILLED_TIMEOUT",
+            Self::KilledExternal => "KILLED_EXTERNAL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RESOURCE_OUTCOME_UNKNOWN" => Some(Self::Unknown),
+            "COMPLETED" => Some(Self::Completed),
+            "KILLED_MEMORY" => Some(Self::KilledMemory),
+            "KILLED_DISK" => Some(Self::KilledDisk),
+            "KILLED_TIMEOUT" => Some(Self::KilledTimeout),
+            "KILLED_EXTERNAL" => Some(Self::KilledExternal),
+            _ => None,
+        }
+    }
 }
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

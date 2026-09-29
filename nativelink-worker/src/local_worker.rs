@@ -54,8 +54,9 @@ use tonic::{Streaming, async_trait};
 use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
 
 use crate::running_actions_manager::{
-    ExecutionConfiguration, Metrics as RunningActionManagerMetrics, ResourceEnforcement,
-    RunningAction, RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
+    ExecutionConfiguration, MISSING_INPUT_ERROR_TIP, Metrics as RunningActionManagerMetrics,
+    ResourceEnforcement, RunningAction, RunningActionsManager, RunningActionsManagerArgs,
+    RunningActionsManagerImpl,
 };
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_connect_worker_request;
@@ -117,6 +118,8 @@ const DEFAULT_MAX_CLEANUP_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_CLEANUP_BACKOFF: Duration = Duration::from_millis(500);
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_PRECONDITION_TIMEOUT: Duration = Duration::from_secs(30);
+/// If this value gets modified the documentation in `cas_server.rs` must also be updated.
+const DEFAULT_KILL_GRACE: Duration = Duration::from_secs(5);
 
 struct FinishedActionResult {
     action_result: ActionResult,
@@ -621,8 +624,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .err_tip(|| "Error while calling execution_response")?;
                                         },
                                         Err(e) => {
+                                            // The manager tags a NotFound on anything the client
+                                            // referenced by digest; no store's wording involved.
                                             let is_cas_blob_missing = e.code == Code::NotFound
-                                                && e.message_string().contains("not found in either fast or slow store");
+                                                && e.messages.iter().any(|m| m == MISSING_INPUT_ERROR_TIP);
                                             if is_cas_blob_missing {
                                                 warn!(
                                                     ?e,
@@ -1020,6 +1025,12 @@ pub async fn new_local_worker(
             root_action_directory: config.work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
                 max_captured_output_bytes: config.max_captured_output_bytes,
+                kill_grace: if config.kill_grace_ms == 0 {
+                    DEFAULT_KILL_GRACE
+                } else {
+                    Duration::from_millis(config.kill_grace_ms)
+                },
+                set_tmpdir: config.set_tmpdir,
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),

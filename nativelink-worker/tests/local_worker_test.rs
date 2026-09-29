@@ -58,6 +58,7 @@ use nativelink_worker::capacity::free_memory_kb;
 use nativelink_worker::local_worker::new_local_worker;
 #[cfg(target_family = "unix")]
 use nativelink_worker::local_worker::preconditions_met;
+use nativelink_worker::running_actions_manager::MISSING_INPUT_ERROR_TIP;
 use pretty_assertions::assert_eq;
 use prost::Message;
 use tokio::io::AsyncWriteExt;
@@ -996,14 +997,13 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Simulate prepare_action failing with a CAS NotFound error containing the
-    // specific "not found in either fast or slow store" message. This is the exact
-    // condition that the code checks to decide whether to return FailedPrecondition.
+    // Simulate prepare_action failing the way the manager fails a missing
+    // input: NotFound tagged with the missing-input tip, whatever the store
+    // itself said.
+    let missing_input = make_err!(Code::NotFound, "Hash 0123456789abcdef not found")
+        .append(MISSING_INPUT_ERROR_TIP);
     running_action
-        .expect_prepare_action(Err(make_err!(
-            Code::NotFound,
-            "Hash 0123456789abcdef not found in either fast or slow store"
-        )))
+        .expect_prepare_action(Err(missing_input.clone()))
         .await?;
 
     // Cleanup is still called even when prepare_action fails.
@@ -1016,7 +1016,8 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
     let expected_action_result = ActionResult {
         error: Some(make_err!(
             Code::FailedPrecondition,
-            "Hash 0123456789abcdef not found in either fast or slow store"
+            "{}",
+            missing_input.message_string()
         )),
         ..ActionResult::default()
     };

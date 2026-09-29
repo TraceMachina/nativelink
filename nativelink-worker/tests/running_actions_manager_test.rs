@@ -60,7 +60,7 @@ mod tests {
         digest_function::Value as ProtoDigestFunction, platform::Property,
     };
     use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-        HistoricalExecuteResponse, StartExecute,
+        HistoricalExecuteResponse, ResourceOutcome, StartExecute,
     };
     use nativelink_proto::google::rpc::Status;
     #[cfg(target_family = "unix")]
@@ -93,9 +93,12 @@ mod tests {
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::free_disk_kb;
     use nativelink_worker::running_actions_manager::{
-        Callbacks, ExecutionConfiguration, ResourceEnforcement, RunningAction, RunningActionImpl,
-        RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
-        download_to_directory, log_excerpt, parse_kb_field,
+    use nativelink_worker::running_actions_manager::{
+        Callbacks, ExecutionConfiguration, KillReason, ResourceEnforcement, RunningAction,
+        RunningActionImpl, RunningActionsManager, RunningActionsManagerArgs,
+        RunningActionsManagerImpl, classify_outcome, download_to_directory, log_excerpt,
+        parse_kb_field,
+    };
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -2650,6 +2653,8 @@ exit 0
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
+                    kill_grace: Duration::ZERO,
+                    set_tmpdir: false,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: None,
@@ -2818,6 +2823,8 @@ exit 0
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
+                    kill_grace: Duration::ZERO,
+                    set_tmpdir: false,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([
@@ -3728,6 +3735,313 @@ exit 0
             "{} in flight at most: the bound was never reached",
             gated.max_in_flight()
         );
+        // The measurement says what happened and what it was measured against.
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledMemory as i32,
+            "{usage:?}"
+        );
+        assert!(usage.enforced, "the worker's own limit ended it: {usage:?}");
+        assert_eq!(
+            usage.reserved.map(|r| r.memory_kb),
+            Some(2048),
+            "the reservation travels with the measurement: {usage:?}"
+        );
+        assert!(usage.wall_time_ms > 0, "{usage:?}");
+        Ok(())
+    }
+
+    /// A timed-out action gets SIGTERM first and keeps what it printed;
+    /// SIGKILL follows only when it ignores the grace period. Linux only:
+    /// the worker signals the process group, which only Linux sets up.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn timed_out_action_gets_a_grace_period_and_keeps_its_output()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    kill_grace: Duration::from_secs(5),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                // The namespaced stub turns SIGTERM into SIGKILL for its child,
+                // so the grace period is only observable without it.
+                #[cfg(target_os = "linux")]
+                use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces::No,
+            })?);
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo partial; trap 'echo cleaned > cleanup.marker; exit 3' TERM; while :; do sleep 0.1; done"
+                    .to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            timeout: Some(prost_types::Duration {
+                seconds: 1,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        let started = std::time::Instant::now();
+        let running_action = running_action.prepare_action().await?.execute().await?;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the shell exits on SIGTERM, so the grace period should not run out"
+        );
+        // The trap ran, so SIGTERM arrived before any SIGKILL.
+        let action_directory = std::fs::read_dir(&root_action_directory)?
+            .filter_map(Result::ok)
+            .find(|entry| entry.path().is_dir())
+            .expect("the action directory exists until cleanup")
+            .path();
+        assert!(
+            action_directory.join("work/cleanup.marker").exists(),
+            "the shell's TERM trap should have written its marker"
+        );
+        let running_action = running_action.upload_results().await?;
+        let usage = running_action
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledTimeout as i32,
+            "{usage:?}"
+        );
+        assert!(!usage.enforced, "{usage:?}");
+        assert!(usage.wall_time_ms >= 900, "{usage:?}");
+        let err = running_action
+            .clone()
+            .get_finished_result()
+            .await
+            .expect_err("a timed-out action fails");
+        running_action.cleanup().await?;
+        assert_eq!(err.code, Code::DeadlineExceeded, "{err}");
+        // What it printed before the kill was uploaded, not dropped.
+        let partial = compute_buf_digest(b"partial\n", &mut DigestHasherFunc::Sha256.hasher());
+        assert!(
+            cas_store.as_pin().has(partial).await?.is_some(),
+            "the killed action's stdout should be in CAS"
+        );
+        Ok(())
+    }
+
+    /// Each action gets its own `TMPDIR` under its action directory.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn set_tmpdir_gives_each_action_its_own_directory()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    set_tmpdir: true,
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "touch \"$TMPDIR/probe\" && printf %s \"$TMPDIR\" > out.txt".to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            output_paths: vec!["out.txt".to_string()],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        let result = run_action(running_action_impl.clone()).await?;
+        assert_eq!(result.exit_code, 0, "{result:?}");
+        let tmpdir = slow_store
+            .as_ref()
+            .get_part_unchunked(result.output_files[0].digest, 0, None)
+            .await?;
+        let tmpdir = String::from_utf8(tmpdir.to_vec())?;
+        assert!(
+            tmpdir.starts_with(&root_action_directory) && tmpdir.ends_with("/tmp"),
+            "TMPDIR should sit under the action directory, got {tmpdir}"
+        );
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::Completed as i32,
+            "{usage:?}"
+        );
+        Ok(())
+    }
+
+    /// The outcome names who ended the action: the worker's own kills by
+    /// reason, a SIGKILL near the memory limit as the kernel, anything else
+    /// from outside.
+    #[nativelink_test]
+    async fn outcome_classification() -> Result<(), Box<dyn core::error::Error>> {
+        const SIGKILL: i32 = 9;
+        const SIGTERM: i32 = 15;
+        assert_eq!(
+            classify_outcome(None, None, 900, Some(1000)),
+            (ResourceOutcome::Completed, false)
+        );
+        assert_eq!(
+            classify_outcome(Some(KillReason::Memory), None, 0, None),
+            (ResourceOutcome::KilledMemory, true)
+        );
+        assert_eq!(
+            classify_outcome(Some(KillReason::Timeout), Some(SIGKILL), 999, Some(1000)),
+            (ResourceOutcome::KilledTimeout, false)
+        );
+        assert_eq!(
+            classify_outcome(Some(KillReason::External), Some(SIGTERM), 0, None),
+            (ResourceOutcome::KilledExternal, false)
+        );
+        // The kernel's SIGKILL within 10% of the limit is an OOM kill.
+        assert_eq!(
+            classify_outcome(None, Some(SIGKILL), 900, Some(1000)),
+            (ResourceOutcome::KilledMemory, false)
+        );
+        assert_eq!(
+            classify_outcome(None, Some(SIGKILL), 899, Some(1000)),
+            (ResourceOutcome::KilledExternal, false)
+        );
+        // No yardstick, no verdict.
+        assert_eq!(
+            classify_outcome(None, Some(SIGKILL), 900, None),
+            (ResourceOutcome::KilledExternal, false)
+        );
+        assert_eq!(
+            classify_outcome(None, Some(SIGTERM), 1000, Some(1000)),
+            (ResourceOutcome::KilledExternal, false)
+        );
         Ok(())
     }
 
@@ -4067,7 +4381,7 @@ exit 0
             .await?;
 
         let started = std::time::Instant::now();
-        let result = run_action(running_action_impl).await?;
+        let result = run_action(running_action_impl.clone()).await?;
         let err = result
             .error
             .expect("an action over its reservation must fail with an error");
@@ -4142,6 +4456,8 @@ exit 1
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
+                    kill_grace: Duration::ZERO,
+                    set_tmpdir: false,
                     buck2_file_capture: None,
                     entrypoint: Some(test_wrapper_script.into_string().unwrap()),
                     additional_environment: Some(HashMap::from([(
@@ -4921,7 +5237,7 @@ exit 1
             );
         }
         {
-            // Ensure we reject tasks that have a timeout set too high.
+            // A timeout over the maximum is clamped to it, not rejected.
             static SENT_TIMEOUT: AtomicI64 = AtomicI64::new(-1);
             const MAX_TIMEOUT_DURATION: Duration = Duration::from_secs(100);
             const TASK_TIMEOUT: Duration = Duration::from_secs(200);
@@ -5007,8 +5323,12 @@ exit 1
                         })
                 })
                 .await;
-            assert_eq!(SENT_TIMEOUT.load(Ordering::Relaxed), -1);
-            assert_eq!(result.err().unwrap().code, Code::InvalidArgument);
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(
+                SENT_TIMEOUT.load(Ordering::Relaxed),
+                i64::try_from(MAX_TIMEOUT_DURATION.as_millis())
+                    .expect("MAX_TIMEOUT_DURATION.as_millis() exceeds i64::MAX")
+            );
         }
         Ok(())
     }
@@ -6536,6 +6856,8 @@ done
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
+                    kill_grace: Duration::ZERO,
+                    set_tmpdir: false,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,
@@ -6686,6 +7008,8 @@ done
                 execution_configuration: ExecutionConfiguration {
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
+                    kill_grace: Duration::ZERO,
+                    set_tmpdir: false,
                     buck2_file_capture: None,
                     entrypoint: None,
                     additional_environment: None,

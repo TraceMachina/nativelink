@@ -191,6 +191,22 @@ backpressure. **`orphan_sweep_interval_s`** (default 0, off) removes action
 directories under `work_directory` that no running action owns and that a
 failed cleanup left behind; the directory is always purged at startup.
 
+When the worker ends an action, for a timeout or a scheduler cancel, the
+process group gets SIGTERM first and **`kill_grace_ms`** (default 5000) to
+write its own cleanup before SIGKILL follows; the memory reservation kill
+skips the grace. A killed action keeps the stdout and stderr it produced.
+**`set_tmpdir`** (default true) gives every action its own `TMPDIR` under its
+action directory, so concurrent actions writing the same temporary file name
+no longer collide; a `TMPDIR` in the action's own environment still wins, and
+code that hard-codes `/tmp` is unaffected. A timeout above `max_action_timeout_s`
+is clamped to it rather than rejected.
+
+Every executed action reports its resource usage to the scheduler with an
+`outcome`: `COMPLETED`, `KILLED_MEMORY` (the worker's reservation kill, or a
+SIGKILL from the kernel with the last memory sample within 10% of the limit),
+`KILLED_TIMEOUT` or `KILLED_EXTERNAL`, plus wall time and the reservation the
+action ran under. The scheduler logs every kill outcome with its mnemonic.
+
 **`resource_enforcement`** (off by default, Linux only) makes the worker hold an
 action to the memory reservation the scheduler placed it by. With
 `memory: soft` the worker kills the action's process group once two
