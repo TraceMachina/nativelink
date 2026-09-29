@@ -531,9 +531,9 @@ async fn update_splits_buffers_larger_than_the_grpc_message_limit() -> Result<()
     let (server, port) = make_fake_bytestream_server_draining().await;
     let mut spec = test_spec(format!("http://localhost:{port}"), false);
     // This test moves and reassembles almost 10 MiB under instrumented builds.
-    // Keep the RPC deadline comfortably above sanitizer overhead; timeout
-    // behavior is not what this test exercises.
-    spec.rpc_timeout_s = 5;
+    // The deadline is headroom for that, not part of the test: at 5 s the
+    // ASan job timed out on a loaded runner with nothing else wrong.
+    spec.rpc_timeout_s = 30;
     let store = GrpcStore::new(&spec)?;
     let digest = DigestInfo::try_new(VALID_HASH, BLOB_LEN).unwrap();
 
@@ -691,7 +691,8 @@ async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<()
     let (server, port) = make_fake_cas_server().await;
     let mut spec = test_spec(format!("http://localhost:{port}"), false);
     spec.instance_name = "backend_instance".to_string();
-    spec.rpc_timeout_s = 5;
+    // Over 10 MiB through the fake server; headroom for sanitizer builds.
+    spec.rpc_timeout_s = 30;
     let store = GrpcStore::new(&spec)?;
 
     let requests: Vec<batch_update_blobs_request::Request> = (0..ENTRIES)
