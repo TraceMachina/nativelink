@@ -4070,6 +4070,114 @@ exit 0
         Ok(())
     }
 
+    /// An action that exits leaving a process behind holding its stdout
+    /// finishes when it exits, with what it printed, instead of sitting
+    /// there until its timeout. On Linux the straggler is killed with the
+    /// group; elsewhere the drain deadline ends the wait.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn an_action_that_leaves_a_process_on_its_pipes_still_finishes()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        // The sleep inherits stdout and would hold it for a minute.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "echo partial; sleep 60 & exit 0".to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            timeout: Some(prost_types::Duration {
+                seconds: 60,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    platform: None,
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        let started = std::time::Instant::now();
+        let result = run_action(running_action_impl).await?;
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the action waited on the straggler: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(result.exit_code, 0, "{result:?}");
+        assert!(result.error.is_none(), "{:?}", result.error);
+        let stdout = slow_store
+            .as_ref()
+            .get_part_unchunked(result.stdout_digest, 0, None)
+            .await?;
+        assert_eq!(stdout, "partial\n", "what it printed is kept");
+        Ok(())
+    }
+
     /// Each action gets its own `TMPDIR` under its action directory.
     #[cfg(target_family = "unix")]
     #[nativelink_test]

@@ -20,6 +20,7 @@ pub mod local_worker;
 pub mod namespace_utils;
 pub mod persistent_worker;
 pub mod qos;
+pub mod reaper;
 pub mod running_actions_manager;
 pub mod worker_api_client_wrapper;
 pub mod worker_utils;
