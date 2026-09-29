@@ -75,7 +75,7 @@ mod tests {
     use nativelink_worker::namespace_utils;
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, RunningAction, RunningActionImpl, RunningActionsManager,
-        RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory,
+        RunningActionsManagerArgs, RunningActionsManagerImpl, download_to_directory, log_excerpt,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -3151,6 +3151,20 @@ exit 0
             100,
             "small stderr stays in memory"
         );
+        Ok(())
+    }
+
+    /// The log excerpt of a failed command is cut by bytes: through a
+    /// multibyte character it ends in U+FFFD instead of panicking, and
+    /// bytes that were never text are shown the same way.
+    #[nativelink_test]
+    async fn log_excerpt_cuts_multibyte_output_safely() -> Result<(), Box<dyn core::error::Error>> {
+        let text = "héllo wörld";
+        assert_eq!(log_excerpt(text.as_bytes(), 2), "h\u{FFFD}");
+        assert_eq!(log_excerpt(text.as_bytes(), 3), "hé");
+        assert_eq!(log_excerpt(text.as_bytes(), 1000), text);
+        assert_eq!(log_excerpt(&[0xff, b'a'], 1000), "\u{FFFD}a");
+        assert_eq!(log_excerpt(b"", 1000), "");
         Ok(())
     }
 

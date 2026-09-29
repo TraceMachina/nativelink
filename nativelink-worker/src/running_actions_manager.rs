@@ -1512,6 +1512,13 @@ impl CapturedOutput {
     }
 }
 
+/// The first `limit` bytes of captured output as text for a log line. The
+/// cut is by bytes, so one through a multibyte character becomes U+FFFD
+/// rather than a panic.
+pub fn log_excerpt(bytes: &[u8], limit: usize) -> Cow<'_, str> {
+    String::from_utf8_lossy(&bytes[..min(bytes.len(), limit)])
+}
+
 impl From<Bytes> for CapturedOutput {
     fn from(bytes: Bytes) -> Self {
         Self::Memory(bytes)
@@ -2582,14 +2589,10 @@ impl RunningActionImpl {
         let mut output_file_symlinks = vec![];
 
         if execution_result.exit_code != 0 {
-            let stdout =
-                core::str::from_utf8(execution_result.stdout.head()).unwrap_or("<no-utf8>");
-            let stderr =
-                core::str::from_utf8(execution_result.stderr.head()).unwrap_or("<no-utf8>");
             error!(
                 exit_code = ?execution_result.exit_code,
-                stdout = ?stdout[..min(stdout.len(), 1000)],
-                stderr = ?stderr[..min(stderr.len(), 1000)],
+                stdout = ?log_excerpt(execution_result.stdout.head(), 1000),
+                stderr = ?log_excerpt(execution_result.stderr.head(), 1000),
                 command = ?command_proto.arguments,
                 "Command returned non-zero exit code",
             );
@@ -3516,7 +3519,14 @@ impl RunningActionsManagerImpl {
     /// is logged and counted and the sweep carries on, or one stubborn
     /// entry would stop every sweep at the same place. Returns how many
     /// were removed; the error is for the listing itself failing.
-    pub async fn sweep_orphaned_directories(&self) -> Result<usize, Error> {
+    ///
+    /// A directory is named for its operation, and a retry of that
+    /// operation may be starting at any moment. The retry's
+    /// `wait_for_cleanup_if_needed` waits while the operation is marked as
+    /// cleaning, so the sweep takes that mark for the removal and reads
+    /// ownership and age under it; a mark already held is the action's own
+    /// cleanup, which finishes the job.
+    pub async fn sweep_orphaned_directories(self: &Arc<Self>) -> Result<usize, Error> {
         let (_permit, dir_handle) = fs::read_dir(&self.root_action_directory)
             .await
             .err_tip(|| format!("Reading {} for orphans", self.root_action_directory))?
@@ -3527,6 +3537,10 @@ impl RunningActionsManagerImpl {
         while let Some(entry) = dir_stream.next().await {
             let entry = entry.err_tip(|| "Iterating action root for orphans")?;
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(_cleaning_guard) = self.perform_cleanup(OperationId::from(name.as_str()))
+            else {
                 continue;
             };
             let owned = self
