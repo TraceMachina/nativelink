@@ -3880,18 +3880,33 @@ exit 0
         Ok(())
     }
 
-    /// Only the action's own files count: a hard-linked input (two links)
-    /// is the CAS store's, a symlink and the directories' own blocks are
-    /// not data the action wrote.
+    /// Only what the action wrote counts: files modified at or after its
+    /// start. An input materialized before it, hard-linked or copied and
+    /// whatever its link count now, keeps its earlier time and is not
+    /// counted; nor are a symlink or the directories' own blocks.
     #[cfg(target_family = "unix")]
     #[test]
-    fn directory_private_kb_counts_only_single_link_files() {
+    fn directory_private_kb_counts_only_files_newer_than_the_start() {
         let dir = tempfile::tempdir().unwrap();
-        let own = dir.path().join("own.bin");
-        std::fs::write(&own, vec![0u8; 64 * 1024]).unwrap();
+        let before = SystemTime::now() - Duration::from_secs(60);
+        // An input with one link, as after the store evicted its blob, and
+        // one with two: both older than the action, both left out.
         let input = dir.path().join("input.bin");
         std::fs::write(&input, vec![0u8; 64 * 1024]).unwrap();
-        std::fs::hard_link(&input, dir.path().join("input-link.bin")).unwrap();
+        std::fs::File::open(&input)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        let linked = dir.path().join("linked.bin");
+        std::fs::write(&linked, vec![0u8; 64 * 1024]).unwrap();
+        std::fs::File::open(&linked)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        std::fs::hard_link(&linked, dir.path().join("linked-2.bin")).unwrap();
+        let since = SystemTime::now();
+        let own = dir.path().join("own.bin");
+        std::fs::write(&own, vec![0u8; 64 * 1024]).unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::fs::write(
             dir.path().join("sub").join("deep.bin"),
@@ -3899,10 +3914,11 @@ exit 0
         )
         .unwrap();
         std::os::unix::fs::symlink(&own, dir.path().join("own-symlink")).unwrap();
-        let kb = nativelink_worker::running_actions_manager::directory_private_kb(dir.path());
+        let kb =
+            nativelink_worker::running_actions_manager::directory_private_kb(dir.path(), since);
         assert!(
             (90..=100).contains(&kb),
-            "own 64 KiB plus deep 32 KiB, not the hard-linked input: {kb} KiB"
+            "own 64 KiB plus deep 32 KiB, not the inputs: {kb} KiB"
         );
     }
 

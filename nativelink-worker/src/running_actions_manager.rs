@@ -70,6 +70,8 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+#[cfg(target_os = "linux")]
+use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -297,12 +299,16 @@ fn start_action_resource_usage_sampler(
     ActionResourceUsageSampler { stop_tx, handle }
 }
 
-/// KiB on disk of the files under `directory` that belong to the action
-/// itself: regular files with one link. Inputs are hard links into the CAS
-/// store (two links or more) and are not counted, nor are symlinks or the
-/// directories' own blocks. Blocking; run it on the blocking pool.
+/// KiB on disk of the files under `directory` that the action wrote: regular
+/// files modified at or after `since`, the moment its command started. Its
+/// inputs were materialized before that, as hard links into the CAS store
+/// or private copies, and keep their earlier times, so they are told apart
+/// by time rather than by link count: a hard link drops to one link the
+/// moment the store evicts the blob, and would then pass for the action's
+/// own. Symlinks and the directories' own blocks are not counted. Blocking;
+/// run it on the blocking pool.
 #[cfg(target_family = "unix")]
-pub fn directory_private_kb(directory: &Path) -> u64 {
+pub fn directory_private_kb(directory: &Path, since: SystemTime) -> u64 {
     let mut total_blocks: u64 = 0;
     let mut pending = vec![directory.to_path_buf()];
     while let Some(dir) = pending.pop() {
@@ -316,7 +322,9 @@ pub fn directory_private_kb(directory: &Path) -> u64 {
             let file_type = metadata.file_type();
             if file_type.is_dir() {
                 pending.push(entry.path());
-            } else if file_type.is_file() && metadata.nlink() == 1 {
+            } else if file_type.is_file()
+                && metadata.modified().is_ok_and(|modified| modified >= since)
+            {
                 total_blocks = total_blocks.saturating_add(metadata.blocks());
             }
         }
@@ -326,19 +334,21 @@ pub fn directory_private_kb(directory: &Path) -> u64 {
 }
 
 #[cfg(not(target_family = "unix"))]
-pub fn directory_private_kb(_directory: &Path) -> u64 {
+pub fn directory_private_kb(_directory: &Path, _since: SystemTime) -> u64 {
     0
 }
 
-/// A disk sample: the action's own files, walked on the blocking pool.
+/// Starts a disk sample: the action's own files, walked on the blocking
+/// pool as a task of its own, so the memory samples carry on while a large
+/// tree is being walked. `None` when there is no directory to measure.
 #[cfg(target_os = "linux")]
-async fn sample_disk(directory: Option<&PathBuf>) -> Option<u64> {
-    let directory = directory?.clone();
-    spawn_blocking!("action_disk_sample", move || {
-        directory_private_kb(&directory)
-    })
-    .await
-    .ok()
+fn start_disk_sample(
+    directory: Option<&(PathBuf, SystemTime)>,
+) -> Option<JoinHandleDropGuard<u64>> {
+    let (directory, since) = directory?.clone();
+    Some(spawn_blocking!("action_disk_sample", move || {
+        directory_private_kb(&directory, since)
+    }))
 }
 
 /// A signal to every process in the action's group. The action is its own
@@ -371,13 +381,15 @@ async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
     mut ceilings: Ceilings,
-    disk_directory: Option<PathBuf>,
+    disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
     let mut last_memory_kb = 0;
     let mut peak_disk_kb = 0;
     let mut samples_over_limit = 0u32;
     let mut samples_since_disk = DISK_SAMPLE_EVERY;
+    // The walk in flight, if one is; polled, never awaited, from the loop.
+    let mut disk_sample: Option<JoinHandleDropGuard<u64>> = None;
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
     // short-lived. Keep the last figure seen for each pid and total them at
@@ -423,10 +435,13 @@ async fn sample_action_resource_usage(
             }
         }
 
-        samples_since_disk += 1;
-        if samples_since_disk >= DISK_SAMPLE_EVERY {
-            samples_since_disk = 0;
-            if let Some(disk_kb) = sample_disk(disk_directory.as_ref()).await {
+        // A walk that finished since the last sample; the memory samples
+        // above never waited for it.
+        if let Some(handle) = disk_sample.as_mut()
+            && let core::task::Poll::Ready(finished) = futures::poll!(handle)
+        {
+            disk_sample = None;
+            if let Ok(disk_kb) = finished {
                 peak_disk_kb = peak_disk_kb.max(disk_kb);
                 if let Some(limit_kb) = ceilings.disk_limit_kb
                     && disk_kb > limit_kb
@@ -436,6 +451,16 @@ async fn sample_action_resource_usage(
                     debug!(disk_kb, "Disk ceiling breached, action already ended");
                 }
             }
+        }
+        // The periodic walk belongs to the soft limit; the guard alone
+        // measures once, at the end, and pays no walk while running.
+        samples_since_disk += 1;
+        if ceilings.disk_limit_kb.is_some()
+            && samples_since_disk >= DISK_SAMPLE_EVERY
+            && disk_sample.is_none()
+        {
+            samples_since_disk = 0;
+            disk_sample = start_disk_sample(disk_directory.as_ref());
         }
 
         if *stop_rx.borrow() {
@@ -455,8 +480,12 @@ async fn sample_action_resource_usage(
         }
     }
     // What the action left on disk at the end is the figure that matters
-    // for sizing; a walk here costs one stat per file the action wrote.
-    if let Some(disk_kb) = sample_disk(disk_directory.as_ref()).await {
+    // for sizing; this walk, one stat per entry under the action directory,
+    // is the only one the guard mode pays.
+    drop(disk_sample.take());
+    if let Some(handle) = start_disk_sample(disk_directory.as_ref())
+        && let Ok(disk_kb) = handle.await
+    {
         peak_disk_kb = peak_disk_kb.max(disk_kb);
     }
 
@@ -2568,7 +2597,8 @@ impl RunningActionImpl {
             let over_limit_tx = (memory_limit_kb.is_some() || disk_limit_kb.is_some())
                 .then(|| over_limit_keepalive.take())
                 .flatten();
-            let disk_directory = disk_enforcement.map(|_| PathBuf::from(&self.action_directory));
+            let disk_directory = disk_enforcement
+                .map(|_| (PathBuf::from(&self.action_directory), SystemTime::now()));
             start_action_resource_usage_sampler(
                 pgid,
                 Ceilings {
@@ -2840,7 +2870,9 @@ impl RunningActionImpl {
                         cpu_time_ms: sampled_usage.cpu_time_ms,
                         // An action too short to catch a sample leaves both at
                         // zero; say so rather than report a misleading zero.
-                        sampled: sampled_usage.peak_memory_kb > 0 || sampled_usage.cpu_time_ms > 0,
+                        sampled: sampled_usage.peak_memory_kb > 0
+                            || sampled_usage.cpu_time_ms > 0
+                            || sampled_usage.peak_disk_kb > 0,
                         operation_id: String::new(),
                         worker_id: String::new(),
                         wall_time_ms: u64::try_from(execution_started.elapsed().as_millis()).unwrap_or(u64::MAX),
