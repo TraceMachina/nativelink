@@ -8408,6 +8408,81 @@ backpressure. **`orphan_sweep_interval_s`** (default 0, off) removes action
 directories under `work_directory` that no running action owns and that a
 failed cleanup left behind; the directory is always purged at startup.
 
+When the worker ends an action, for a timeout or a scheduler cancel, the
+process group gets SIGTERM first and **`kill_grace_ms`** (default 5000) to
+write its own cleanup before SIGKILL follows; the memory reservation kill
+skips the grace. A killed action keeps the stdout and stderr it produced.
+**`set_tmpdir`** (default true) gives every action its own `TMPDIR` under its
+action directory, so concurrent actions writing the same temporary file name
+no longer collide; a `TMPDIR` in the action's own environment still wins, and
+code that hard-codes `/tmp` is unaffected. A timeout above `max_action_timeout_s`
+is clamped to it rather than rejected.
+
+Every executed action reports its resource usage to the scheduler with an
+`outcome`: `COMPLETED`, `KILLED_MEMORY` (the worker's reservation kill, or a
+SIGKILL from the kernel with the last memory sample within 10% of the limit),
+`KILLED_TIMEOUT` or `KILLED_EXTERNAL`, plus wall time and the reservation the
+action ran under. The scheduler logs every kill outcome with its mnemonic.
+
+**`resource_enforcement`** (off by default, Linux only) makes the worker hold an
+action to the memory reservation the scheduler placed it by. With
+`memory: soft` the worker kills the action's process group once two
+consecutive samples exceed `memory_kb` plus `memory_headroom_percent`
+(default 20), or one sample exceeds twice that, and fails it with
+`FAILED_PRECONDITION` naming the reservation and the observed peak. Samples
+are 250 ms apart, so an action that allocates faster than the pod's whole
+limit in half a second can still reach the cgroup limit first; the
+reservations admitted onto a worker must also sum to less than its limit
+with the headroom included. Without it the kill comes from the pod's cgroup limit,
+and on cgroup v2 that kill takes the worker and every action on it, not just
+the one that grew. The sample is the group's proportional set size, so a
+parent's pages shared with its forked children count once. Actions run
+through a persistent worker are not covered: that process outlives the action
+and serves others, so only the pod's limit bounds it. With enforcement on, the
+worker reads an action's properties from the scheduler's dispatch rather than
+the client's request, so a reservation the scheduler placed the action by is
+the one enforced and exported to the environment.
+
+`disk: guard` adds a check before any input is fetched: an action whose
+`disk_kb` reservation exceeds the free space under the work directory, less
+what the actions already admitted reserved, is refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
+counting an attempt and holds off this worker until its next keepalive,
+instead of running the fetch into a full disk.
+
+```json5
+"resource_enforcement": {
+  "memory": "soft",
+  "memory_property_name": "memory_kb",
+  "memory_headroom_percent": 20,
+  "disk": "guard",
+  "disk_property_name": "disk_kb"
+}
+```
+
+**`capacity`** makes the worker advertise CPU and memory from its own cgroup
+limits instead of from `platform_properties`: it reads `cpu.max` and
+`memory.max` at its cgroup v2 root, keeps back `overhead_cpu_millicores`
+(thousandths of a core) and `overhead_memory_kb` for itself, divides the
+memory by the enforcement headroom (`memory_headroom_percent`, which follows
+`resource_enforcement` unless set), and sets the two properties to the
+result at registration. The limit is the number the kernel enforces, so the
+number the scheduler packs against is derived from it rather than typed next
+to it. Where the cgroup cannot be read, hand-typed `cpu_count` and
+`memory_kb` stand with a warning; with neither typed the worker refuses to
+start, since it could take no action that asks for either. `cpu_unit` is the scale of the CPU
+property: `cores` by default, rounded down, the scale `cpu_count: {
+query_cmd: "nproc" }` and an action's `cpu_count=1` use; a fleet that
+advertises and requests thousandths of a core sets `millicores`. The
+overhead is always in thousandths of a core.
+
+```json5
+"capacity": {
+  "cpu_unit": "cores",
+  "overhead_cpu_millicores": 1000,
+  "overhead_memory_kb": 4194304
+}
+```
+
 <Callout type="info" title="Scheduler state is in memory by default">
   `experimental_backend` defaults to memory, so restarting the scheduler loses
   the queue. A Redis backend exists for shared state across scheduler
@@ -16734,6 +16809,43 @@ each check) and `200` otherwise.
   "nothing objected," which for most compositions is vacuous.
 </Callout>
 
+## Readiness is a different question [#readiness-is-a-different-question]
+
+`/status` answers whether the components that registered a health indicator
+have failed. It stays `200` while a component is still initializing, which is
+the right answer for a liveness probe and the wrong one for readiness. The
+`health` service therefore also serves `/ready` (`readiness_path`, default
+`/ready`), which answers `503` while anything is initializing or failed and
+`200` otherwise.
+
+For a worker, the component that matters is its registration with the
+scheduler. Each worker registers a `workers/<name>` indicator that reads
+`Initializing` until the scheduler has answered its `connect_worker` with a
+`ConnectionResult`, `Ok` while that connection holds, and `Initializing`
+again after it is lost and the worker is reconnecting, so only `/ready`
+drops: a liveness probe on `/status` stays green through a scheduler roll
+instead of restarting every worker. A Kubernetes readiness probe on the
+worker's `/ready` turns the pod Ready when the worker can take work rather
+than when its container started, and turns it not Ready again if it loses
+the scheduler. Anything that reads pod readiness, an autoscaler's idle clock
+included, then counts from registration.
+
+```json5
+// On the worker pod's HTTP listener.
+services: {
+  health: { path: "/status", readiness_path: "/ready" },
+}
+```
+
+```yaml
+readinessProbe:
+  httpGet: { path: /ready, port: 50061 }
+  periodSeconds: 5
+  failureThreshold: 3
+```
+
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="WorkerRegistration" />
+
 ## Build the deployment [#build-the-deployment]
 
 <Steps>
@@ -23301,8 +23413,10 @@ a how-to showing a renamed field keeps showing it, and nothing fails until a
 reader copies it and the binary answers `unknown field`.
 
 `lint:snippets` closes that gap. It harvests every field name out of the
-generated reference and checks every `json`/`json5` fence under
-`content/docs/` against it.
+generated reference, the latest release's page and main's, and checks every
+`json`/`json5` fence under `content/docs/` against it. A snippet for a field
+added since the last release passes once `gen:config-reference main` has
+been run in the same change.
 
 ```bash
 bun --filter @nativelink/docs lint:snippets
