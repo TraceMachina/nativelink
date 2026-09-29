@@ -1053,6 +1053,23 @@ pub async fn new_local_worker(
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
+    // What actions leave behind is reaped here; see `crate::reaper`.
+    if let Err(err) = crate::reaper::become_subreaper() {
+        warn!(
+            ?err,
+            "Could not become the subreaper; orphans of actions will not be reaped here"
+        );
+    }
+    drop(background_spawn!("orphan_reaper", async move {
+        let mut seen_last = std::collections::HashSet::new();
+        loop {
+            time::sleep(crate::reaper::REAP_INTERVAL).await;
+            let reaped = crate::reaper::reap_orphaned_zombies(&mut seen_last);
+            if reaped > 0 {
+                info!(reaped, "Reaped zombies that actions left behind");
+            }
+        }
+    }));
     if config.orphan_sweep_interval_s > 0 {
         let interval = Duration::from_secs(config.orphan_sweep_interval_s);
         let manager = running_actions_manager.clone();

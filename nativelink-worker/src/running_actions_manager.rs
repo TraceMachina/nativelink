@@ -147,10 +147,11 @@ fn tag_missing_input(err: Error) -> Error {
     }
 }
 
-/// How long a killed action's output pipes get to drain. They close when
-/// the process group is gone; a process that left the group could hold
-/// them open, so the wait is bounded.
-const KILLED_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an ended action's output pipes get to drain. They close when
+/// every process holding them is gone, which the SIGKILL to the group at
+/// exit sees to; a process that left the group could still hold them, so
+/// the wait is bounded, and what was read by then is kept.
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Classifies how an action ended. A kill the worker sent names itself; a
 /// SIGKILL nobody here sent, with the last memory sample within 10% of the
@@ -1744,15 +1745,36 @@ impl From<Bytes> for CapturedOutput {
     }
 }
 
-/// Reads a child's stream to the end. Up to `cap` bytes stay in memory; the
-/// moment the buffer passes the cap, everything so far and everything after
-/// goes to `spill_path`, and the buffer is cut back to the cap as the head.
-async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
+/// Reads a child's stream to the end, or until `stop` says to keep what
+/// has been read: an action can leave a process behind that holds the
+/// pipe open after the action itself has exited, and its output must not
+/// wait on that. Up to `cap` bytes stay in memory; the moment the buffer
+/// passes the cap, everything so far and everything after goes to
+/// `spill_path`, and the buffer is cut back to the cap as the head.
+pub async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
     mut reader: R,
     cap: u64,
     spill_path: PathBuf,
     what: &str,
+    mut stop: watch::Receiver<bool>,
 ) -> Result<CapturedOutput, Error> {
+    // `None` when told to stop; a closed sender counts as that too.
+    async fn read_or_stop<R: tokio::io::AsyncRead + Unpin>(
+        reader: &mut R,
+        buf: &mut BytesMut,
+        stop: &mut watch::Receiver<bool>,
+        what: &str,
+    ) -> Result<Option<usize>, Error> {
+        if *stop.borrow() {
+            return Ok(None);
+        }
+        tokio::select! {
+            read = reader.read_buf(buf) => read
+                .map(Some)
+                .err_tip(|| format!("Error reading {what} stream")),
+            _ = stop.changed() => Ok(None),
+        }
+    }
     let mut buf = BytesMut::new();
     // A raw handle, outside the open-file budget on purpose: the spill
     // lives as long as the child's stream, an fd the budget never covered,
@@ -1762,10 +1784,9 @@ async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
     loop {
         if let Some((file, len)) = spill.as_mut() {
             let mut chunk = BytesMut::with_capacity(64 * 1024);
-            let sz = reader
-                .read_buf(&mut chunk)
-                .await
-                .err_tip(|| format!("Error reading {what} stream"))?;
+            let Some(sz) = read_or_stop(&mut reader, &mut chunk, &mut stop, what).await? else {
+                break;
+            };
             if sz == 0 {
                 break;
             }
@@ -1775,10 +1796,9 @@ async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
             *len += sz as u64;
             continue;
         }
-        let sz = reader
-            .read_buf(&mut buf)
-            .await
-            .err_tip(|| format!("Error reading {what} stream"))?;
+        let Some(sz) = read_or_stop(&mut reader, &mut buf, &mut stop, what).await? else {
+            break;
+        };
         if sz == 0 {
             break;
         }
@@ -2487,12 +2507,32 @@ impl RunningActionImpl {
             .max_captured_output_bytes;
         let stdout_spill = PathBuf::from(&self.action_directory).join("nativelink.stdout");
         let stderr_spill = PathBuf::from(&self.action_directory).join("nativelink.stderr");
+        // Flipped when the pipes have had their drain after the action
+        // ended; the readers then keep what they have.
+        let (drain_stop_tx, drain_stop_rx) = watch::channel(false);
+        let stdout_stop = drain_stop_rx.clone();
         let all_stdout_fut = spawn!("stdout_reader", async move {
-            capture_output(stdout_reader, output_cap, stdout_spill, "stdout").await
+            capture_output(
+                stdout_reader,
+                output_cap,
+                stdout_spill,
+                "stdout",
+                stdout_stop,
+            )
+            .await
         });
         let all_stderr_fut = spawn!("stderr_reader", async move {
-            capture_output(stderr_reader, output_cap, stderr_spill, "stderr").await
+            capture_output(
+                stderr_reader,
+                output_cap,
+                stderr_spill,
+                "stderr",
+                drain_stop_rx,
+            )
+            .await
         });
+        #[cfg(target_os = "linux")]
+        let action_pgid = child_process.id();
         let mut kill_reason: Option<KillReason> = None;
         let kill_grace = self
             .running_actions_manager
@@ -2582,29 +2622,37 @@ impl RunningActionImpl {
                     } else {
                         timer.measure();
                     }
-                    // A killed action keeps what it printed: that is usually
-                    // the only clue to why it hung or grew. Its pipes close
-                    // when the group is gone, so the wait is bounded only
-                    // for the killed case.
-                    let outputs = if killed_action {
-                        tokio::time::timeout(KILLED_OUTPUT_DRAIN_TIMEOUT, async {
-                            tokio::join!(all_stdout_fut, all_stderr_fut)
-                        }).await.ok()
-                    } else {
-                        Some(tokio::join!(all_stdout_fut, all_stderr_fut))
+                    // The action is over; anything still running in its
+                    // group is a straggler (a background job, a helper that
+                    // daemonized) holding the pipes open, and without this
+                    // the action would sit here until its timeout. The
+                    // sandboxes Bazel runs locally end them the same way.
+                    #[cfg(target_os = "linux")]
+                    if let Some(pgid) = action_pgid {
+                        signal_process_group(pgid, libc::SIGKILL);
+                    }
+                    // The pipes close as the group goes; a process that left
+                    // the group could still hold them, so the wait is
+                    // bounded and what was read by then is kept. A killed
+                    // action's output is usually the only clue to why it
+                    // hung or grew.
+                    let mut drain = core::pin::pin!(async { tokio::join!(all_stdout_fut, all_stderr_fut) });
+                    let (maybe_all_stdout, maybe_all_stderr) = tokio::select! {
+                        outputs = &mut drain => outputs,
+                        () = tokio::time::sleep(OUTPUT_DRAIN_TIMEOUT) => {
+                            warn!(
+                                operation_id = ?self.operation_id,
+                                drain_s = OUTPUT_DRAIN_TIMEOUT.as_secs(),
+                                "A process outside the action's group held its output pipes open past the drain; keeping what was read"
+                            );
+                            drain_stop_tx.send_replace(true);
+                            drain.await
+                        }
                     };
-                    let (stdout, stderr) = if let Some((maybe_all_stdout, maybe_all_stderr)) = outputs {
-                        (
-                            maybe_all_stdout.err_tip(|| "Internal error reading from stdout of worker task")??,
-                            maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??,
-                        )
-                    } else {
-                        warn!(
-                            operation_id = ?self.operation_id,
-                            "Killed action's output pipes stayed open, dropping its output"
-                        );
-                        (Bytes::new().into(), Bytes::new().into())
-                    };
+                    let (stdout, stderr) = (
+                        maybe_all_stdout.err_tip(|| "Internal error reading from stdout of worker task")??,
+                        maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??,
+                    );
 
                     #[cfg(target_os = "linux")]
                     let sampled_usage = match maybe_resource_usage_sampler.take() {
