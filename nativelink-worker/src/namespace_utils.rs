@@ -111,9 +111,14 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
         error!("Namespaces: isolating /tmp requires /tmp to exist and be a directory");
         return false;
     }
-    // SAFETY: Posix requires that geteuid is always successful.
+    // SAFETY: Posix requires that geteuid and getegid are always successful.
     let uid = unsafe { libc::geteuid() };
+    // SAFETY: As above.
+    let gid = unsafe { libc::getegid() };
+    // Read before the fork: once the child has unshared, its ids are the
+    // unmapped overflow ids until the maps are written.
     let uid_map = format!("{uid} {uid} 1\n");
+    let gid_map = format!("{gid} {gid} 1\n");
     // SAFETY: We ensure that if pid == 0 we only call async-signal-safe functions.
     let pid = unsafe { libc::fork() };
     match pid {
@@ -126,8 +131,32 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
             // SAFETY: Unshare does not have any unsafe effects and modifies no
             // memory, it is also async-signal-safe.
             if unsafe { libc::unshare(flags) } == 0 {
+                // The maps `configure_namespace` writes for an action, in
+                // its order and with its tolerance. The gid has to be mapped
+                // too: an inode created on a filesystem mounted inside the
+                // namespace, as the mkdir below does, needs the creator's
+                // group to map, or the kernel refuses it with EOVERFLOW.
+                if let Err(err) = write_signal_safe(c"/proc/self/setgroups", b"deny")
+                    && err != libc::EPERM
+                    && err != libc::EACCES
+                    && err != libc::ENOENT
+                {
+                    exit(
+                        (NamespaceErrorType::WriteSignalSafe as i32) | (err << NS_ERROR_TYPE_BITS),
+                    );
+                }
                 match write_signal_safe(c"/proc/self/uid_map", uid_map.as_bytes()) {
                     Ok(()) => {
+                        if let Err(err) =
+                            write_signal_safe(c"/proc/self/gid_map", gid_map.as_bytes())
+                            && err != libc::EPERM
+                            && err != libc::EACCES
+                        {
+                            exit(
+                                (NamespaceErrorType::WriteSignalSafe as i32)
+                                    | (err << NS_ERROR_TYPE_BITS),
+                            );
+                        }
                         if !mount {
                             exit(0);
                         }
@@ -207,7 +236,7 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
                     s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::WriteSignalSafe as i32 => {
                         error!(
                             errno = s >> NS_ERROR_TYPE_BITS,
-                            "Namespaces: Error while writing to /proc/self/uid_map"
+                            "Namespaces: Error while writing the id maps under /proc/self"
                         );
                     }
                     s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::Mount as i32 => {
