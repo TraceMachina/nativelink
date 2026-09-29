@@ -402,7 +402,7 @@ workers: [{
 
 `use_namespaces` puts each action in its own process namespace;
 `use_mount_namespace` additionally isolates the worker root in a new mount
-namespace and gives each action a private `/tmp` (its own tmp directory,
+namespace and gives each action a private `/tmp` (its own temporary directory,
 bound over `/tmp` and removed with the action), and only works when
 `use_namespaces` is on. Both are off by default and both are recommended in
 production. Set `isolate_tmp: false` if actions must see the host's `/tmp`,
