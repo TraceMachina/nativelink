@@ -8392,6 +8392,22 @@ On the worker side, **`max_inflight_tasks`** (default 0, meaning unlimited) is
 the one to set on any real machine. Unlimited means the worker accepts every
 action the scheduler offers and lets the OS sort out the contention.
 
+**`drain_on_shutdown`** (off by default) makes a worker announce that it is
+draining the moment it gets `SIGTERM`, so the scheduler stops dispatching to
+it while it finishes what it holds. It needs a scheduler that understands the
+drain flag; an older one removes the worker on the spot and requeues its
+actions.
+
+Three bounds keep one action from taking the worker with it.
+**`max_captured_output_bytes`** (default 0, unbounded) caps how much of an
+action's stdout or stderr the worker holds in memory; past it the output
+spills to a file under the action directory and is uploaded from disk, so a
+tool that prints gigabytes costs disk, not RAM. **`precondition_timeout_ms`**
+(default 30000) ends a hanging precondition script and refuses the action as
+backpressure. **`orphan_sweep_interval_s`** (default 0, off) removes action
+directories under `work_directory` that no running action owns and that a
+failed cleanup left behind; the directory is always purged at startup.
+
 <Callout type="info" title="Scheduler state is in memory by default">
   `experimental_backend` defaults to memory, so restarting the scheduler loses
   the queue. A Redis backend exists for shared state across scheduler
@@ -14578,10 +14594,14 @@ reconnect path calls `kill_all()` first, destroying every action it was
 running. Restart the scheduler when the queue is quiet, and restart it once.
 
 **Workers** drain themselves on `SIGTERM` (and on a first `SIGINT`; a second
-`SIGINT` exits at once): the process rejects new actions,
-waits for the ones it is running to finish, sends the scheduler a
-`GoingAway`, and exits. `systemctl stop` is therefore safe as long as
-`TimeoutStopSec` outlasts your longest action. To take a worker out of
+`SIGINT` exits at once): with `drain_on_shutdown: true`
+the process tells the scheduler at once that it is draining (a `GoingAway`
+with the drain flag), so nothing new is dispatched to it, finishes the
+actions it is running, and exits; the scheduler removes it when the stream
+closes. Without the flag the worker finishes first and announces itself
+last, and until then the scheduler keeps offering it work it refuses. The
+wait is bounded by `max_action_timeout_s`. `systemctl stop` is therefore
+safe as long as `TimeoutStopSec` outlasts your longest action. To take a worker out of
 rotation without stopping it, and if your scheduler configuration enables the
 `admin` service on the worker API listener:
 
@@ -14949,7 +14969,7 @@ each one decides where you have to point the collector:
 | Cache | `nativelink_cache_*` | Any process with a store wrapped in `cache_metrics` | Hit rate, operation latency, bytes in and out, per cache type |
 | Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
 | Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
-| Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes and whether it succeeded |
+| Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes, whether it succeeded, and how many waiting actions took room that opened mid-pass ahead of newer ones |
 | gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
 | Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
 | Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |
@@ -15812,6 +15832,22 @@ and the `admin` service has to be enabled on a listener for the route to
 exist at all. Nothing in the repository wires this up for you. It is a short
 script, and it's the difference between a clean scale-in and a burst of
 retried actions.
+
+Two read-only listings sit next to it, for the same scripts and for an
+autoscaler that wants the scheduler's own view rather than its store:
+
+```
+GET {admin_path}/scheduler/{scheduler_name}/workers
+GET {admin_path}/scheduler/{scheduler_name}/demand
+```
+
+`workers` returns every connected worker with what it registered, what it
+has left after its running actions' reservations, its running count, its
+pause and drain flags and the free memory it last reported. `demand`
+returns every queued action with its operation id, when it was queued, its
+priority and its platform properties, reservations included. A worker's id
+starts with the name it registered under, which on Kubernetes is the pod
+name, so a drain script can find the ids to drain from the pod.
 
 <SourceLink file="src/bin/nativelink.rs" symbol="set_drain_worker" />
 
@@ -17587,6 +17623,85 @@ The new open file limit (1024) is below the recommended value of 24576.
 Consider raising max_open_files.
 ```
 
+## Every build stalls at `[Sched]` and nothing errors [#every-build-stalls-and-nothing-errors]
+
+Clients sit on `WaitExecution` for hours, the scheduler log is quiet apart
+from `Could not find AwaitedAction for the given operation id`, idle workers
+take nothing, and the provisioner reads demand as zero. The scheduler's
+records are being evicted from Redis.
+
+`maxmemory` and `maxmemory-policy` are per Redis server, not per database.
+A deployment that puts the scheduler's records in the same instance as the
+CAS's small blobs and the BEP event stream, under `allkeys-lru`, has agreed
+that growth in any of them may evict any of them. An evicted CAS blob is a
+cache miss. An evicted scheduler record is a client waiting on an operation
+nothing will ever finish, and a queue entry that, until v1.7.3, stopped the
+abandoned sweep at the first record it could not read, so the corpses behind
+it were never retired either.
+
+What to check, in order:
+
+1. `redis-cli info memory`: `used_memory` against `maxmemory`, and
+   `evicted_keys` in `info stats`. Any eviction at all on the scheduler's
+   instance is this incident in progress.
+2. What is growing. A stalled BEP consumer is the usual cause: count keys by
+   prefix. Postgres disk full stops the consumer, so check that too.
+3. The scheduler's own counters: `scheduler.awaited_action.orphans` (queue
+   entries whose record was gone on read), `scheduler.queue.depth`,
+   `scheduler.sweep.failures`, and `worker.connected.count`. Depth above
+   zero with no connected worker for minutes is the stall itself.
+
+What to change:
+
+- Give the scheduler its own Redis with `maxmemory-policy noeviction`. A
+  full instance then refuses writes, which is an error the scheduler reports
+  and a client sees, instead of a silent loss. The Helm chart deploys one as
+  `scheduler-redis`.
+- Bound the BEP stream with `key_ttl_s` sized for the longest consumer
+  outage you mean to survive, not for convenience.
+- Alert on Redis memory and evictions and on the counters above before the
+  queue does the alerting for you.
+
+From v1.7.3 the matching pass and the abandoned sweep skip a listed
+operation whose record is gone, count it, and carry on, so an eviction no
+longer makes the pile permanent. It still makes every affected client wait
+out its timeout.
+
+## The scheduler's Redis keeps every completed action [#scheduler-redis-keeps-completed-actions]
+
+**Symptom.** With the Redis scheduler backend, `DBSIZE` on the scheduler's
+database grows by one `aa_*` hash per action ever run and never falls; the
+records all read `completed` and `TTL` says `-1`. Once the search index holds
+more than one cursor page, listings over it (the admin read the worker
+provisioner makes, the scheduler admin endpoints) can fail with
+`Failed to get operations list! Parse: Non map item`.
+
+**Cause.** Before v1.7.3 the Redis backend received `retain_completed_for_s`
+as configured, without the default applied: left unset it arrived as 0, and the versioned update treats a
+zero TTL as no expiry, so completed records were written to live forever.
+The memory backend applied the 60 second default; only Redis leaked. The
+listing failure is a second bug in the same release: a cursor page arrived
+in the RESP3 shape the first page's parser understood but the cursor reader
+did not.
+
+**Fix.** Upgrade to v1.7.3 or later; new completions expire after
+`retain_completed_for_s`. Records written before the upgrade keep their
+missing expiry, so give them one once, on the scheduler's Redis database
+(0 in the chart's layout):
+
+```bash
+redis-cli -n 0 --scan --pattern 'aa_*' \
+  | while read -r key; do
+      if [ "$(redis-cli -n 0 hget "$key" state)" = "completed" ] \
+         && [ "$(redis-cli -n 0 ttl "$key")" = "-1" ]; then
+        redis-cli -n 0 expire "$key" 60 > /dev/null
+      fi
+    done
+```
+
+A queued or executing record is left alone; only completed ones get the
+sixty seconds a fresh completion would.
+
 ## Restarting the scheduler [#restarting-the-scheduler]
 
 Not an incident so much as a procedure that behaves worse than you expect.
@@ -18964,11 +19079,46 @@ values per worker.
 For clusters of tens or low hundreds of workers this is not the bottleneck.
 It is worth knowing about before you plan for thousands.
 
-`allocation_strategy` is a smaller knob than its name suggests: it chooses
-**which end of the LRU the scan starts from**, and nothing else. Starting
-from the least-recently-used end spreads load; starting from the
-most-recently-used end packs work onto hot workers and leaves the rest idle
-long enough to be scaled down. Neither is a bin-packing algorithm.
+`allocation_strategy` is a smaller knob than its name suggests. The two
+original values choose **which end of the LRU the scan starts from**, and
+nothing else. Starting from the least-recently-used end spreads load;
+starting from the most-recently-used end packs work onto hot workers and
+leaves the rest idle long enough to be scaled down. `least_loaded` takes the
+eligible worker with the fewest running actions, least recently used among
+equals, so a worker that just joined takes the next action instead of
+waiting for every older worker to be used once more, and a burst that lands
+while most of the fleet is still starting does not fill the first worker to
+its concurrency cap. None of them is a bin-packing algorithm.
+
+The admission ledger only subtracts what an action declares, so an action
+that declared too little is invisible to it. **`live_memory_veto`** names a
+`minimum` property, usually `memory_kb`, that the scheduler checks against the
+free memory each worker reports with its keepalive (the cgroup limit less
+current usage, or `MemAvailable` without a limit). A worker reporting less
+than the action asks for is skipped for that action; a worker that reports
+nothing, such as one older than v1.7.3, is never vetoed. Two metrics go with
+this: `worker.keepalive.gap` is the seconds between consecutive messages from
+a worker, which is what `worker_timeout_s` should be judged against, and
+`worker.disconnections` carries a `worker.disconnect.reason` of
+`disconnected`, `drained`, `timeout`, `kill_unacknowledged`, `error`,
+`removed` or `shutdown`.
+
+Within a priority the queue is ordered by insert time to the nanosecond, on
+both backends, so a burst submitted together dispatches in arrival order.
+
+The pass keeps that order when a worker frees up while it is running. A pass
+reads the queue one action at a time, a store round trip each on a
+store-backed queue (the listing serves the record it already loaded, and
+only the client keepalive is read), so on a long queue a worker that
+finishes mid-pass would otherwise hand its room to whatever action the pass
+happened to be reading, newer than everything it had already passed over. Instead, actions that found
+no room are parked in the order the queue listed them, highest priority first
+and then oldest, and when the fleet's capacity changes the pass offers the
+room to the parked actions in that order before the one in hand, asking the
+fleet once per property shape. `scheduler.matching.parked_dispatched` counts
+the parked actions a worker was actually told to run that way; a non-zero
+rate is normal on a busy fleet and means the head of the queue is being
+served.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
@@ -19293,7 +19443,8 @@ command finished slightly before the bytes exist.
     participant sched as Scheduler
     participant w as Worker
     participant cas as CAS + AC
-    sched->>w: assign action (over ConnectWorker)
+    sched->>w: StartExecute (over ConnectWorker)
+    w->>sched: ExecuteAccepted, or ExecuteDeclined and stop here
     w->>w: create work directory for the operation
     w->>cas: fetch missing blobs
     w->>w: hardlink inputs from filesystem CAS
@@ -19304,6 +19455,24 @@ command finished slightly before the bytes exist.
     w->>cas: write ActionResult to AC
     w->>sched: final result update
 `}</Mermaid>
+
+The first reply is the worker's admission decision. A dispatch is a
+proposal until the worker answers it: `ExecuteAccepted` confirms the ledger
+charge the scheduler made on the send, `ExecuteDeclined` hands it back. The
+worker declines when it already holds `max_inflight_tasks` actions, when the
+action's memory reservation is more than the worker currently has free, or
+when it is shutting down. A declined action returns to the queue without
+counting as an attempt, and the worker is paused until its next keepalive,
+or, for a decline for memory, until a keepalive reports that much free. The
+scheduler's channel to each worker is bounded at its concurrency plus a
+margin; a worker that has stopped reading has its dispatch requeued the same
+way rather than piling up work it will never see. A worker only sends these
+replies to a scheduler that announced support in its `ConnectionResult`, so
+an older scheduler sees the old behaviour: the worker runs whatever it is
+sent. `dispatch_ack_timeout_s` on the scheduler adds the converse: a dispatch
+no worker acknowledged within the timeout is taken back, which only makes
+sense once every connected worker acknowledges.
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="Refusal" />
 
 Four behaviours in the upload path:
 
