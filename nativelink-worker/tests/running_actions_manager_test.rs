@@ -93,12 +93,10 @@ mod tests {
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::free_disk_kb;
     use nativelink_worker::running_actions_manager::{
-    use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, KillReason, ResourceEnforcement, RunningAction,
         RunningActionImpl, RunningActionsManager, RunningActionsManagerArgs,
         RunningActionsManagerImpl, classify_outcome, download_to_directory, log_excerpt,
         parse_kb_field,
-    };
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -3735,22 +3733,6 @@ exit 0
             "{} in flight at most: the bound was never reached",
             gated.max_in_flight()
         );
-        // The measurement says what happened and what it was measured against.
-        let usage = running_action_impl
-            .resource_usage()
-            .expect("usage is reported for every executed action");
-        assert_eq!(
-            usage.outcome,
-            ResourceOutcome::KilledMemory as i32,
-            "{usage:?}"
-        );
-        assert!(usage.enforced, "the worker's own limit ended it: {usage:?}");
-        assert_eq!(
-            usage.reserved.map(|r| r.memory_kb),
-            Some(2048),
-            "the reservation travels with the measurement: {usage:?}"
-        );
-        // No wall time assertion: the gross-overrun kill lands within a millisecond.
         Ok(())
     }
 
@@ -4397,6 +4379,22 @@ exit 0
             started.elapsed() < Duration::from_secs(20),
             "the worker should have killed the action long before its 30s sleep ended"
         );
+        // The measurement says what happened and what it was measured against.
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledMemory as i32,
+            "{usage:?}"
+        );
+        assert!(usage.enforced, "the worker's own limit ended it: {usage:?}");
+        assert_eq!(
+            usage.reserved.map(|r| r.memory_kb),
+            Some(2048),
+            "the reservation travels with the measurement: {usage:?}"
+        );
+        // No wall time assertion: the gross-overrun kill lands within a millisecond.
         Ok(())
     }
 

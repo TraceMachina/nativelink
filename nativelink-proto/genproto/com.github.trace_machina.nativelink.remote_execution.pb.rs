@@ -162,62 +162,6 @@ pub struct ActionResourceUsage {
     #[prost(message, optional, tag = "10")]
     pub reserved: ::core::option::Option<Reservation>,
 }
-/// / How an action ended, as the worker saw it. Separate from the exit code:
-/// / a kill by the worker or the kernel is a sizing fact, not a tool failure.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    ::prost::Enumeration
-)]
-#[repr(i32)]
-pub enum ResourceOutcome {
-    Unknown = 0,
-    /// / The process exited on its own, whatever its exit code.
-    Completed = 1,
-    /// / Killed for memory: by the worker's reservation enforcement, or by
-    /// / the kernel with the last sample within 10% of the memory limit.
-    KilledMemory = 2,
-    /// / Killed for disk. Reserved for disk enforcement.
-    KilledDisk = 3,
-    /// / Killed by the action timeout.
-    KilledTimeout = 4,
-    /// / Killed from outside: a scheduler cancel, or a signal nobody here sent.
-    KilledExternal = 5,
-}
-impl ResourceOutcome {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unknown => "RESOURCE_OUTCOME_UNKNOWN",
-            Self::Completed => "COMPLETED",
-            Self::KilledMemory => "KILLED_MEMORY",
-            Self::KilledDisk => "KILLED_DISK",
-            Self::KilledTimeout => "KILLED_TIMEOUT",
-            Self::KilledExternal => "KILLED_EXTERNAL",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "RESOURCE_OUTCOME_UNKNOWN" => Some(Self::Unknown),
-            "COMPLETED" => Some(Self::Completed),
-            "KILLED_MEMORY" => Some(Self::KilledMemory),
-            "KILLED_DISK" => Some(Self::KilledDisk),
-            "KILLED_TIMEOUT" => Some(Self::KilledTimeout),
-            "KILLED_EXTERNAL" => Some(Self::KilledExternal),
-            _ => None,
-        }
-    }
-}
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConnectionResult {
@@ -446,6 +390,52 @@ pub struct HistoricalExecuteResponse {
     pub execute_response: ::core::option::Option<
         super::super::super::super::super::build::bazel::remote::execution::v2::ExecuteResponse,
     >,
+}
+/// / How an action ended, as the worker saw it. Separate from the exit code:
+/// / a kill by the worker or the kernel is a sizing fact, not a tool failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ResourceOutcome {
+    Unknown = 0,
+    /// / The process exited on its own, whatever its exit code.
+    Completed = 1,
+    /// / Killed for memory: by the worker's reservation enforcement, or by
+    /// / the kernel with the last sample within 10% of the memory limit.
+    KilledMemory = 2,
+    /// / Killed for disk. Reserved for disk enforcement.
+    KilledDisk = 3,
+    /// / Killed by the action timeout.
+    KilledTimeout = 4,
+    /// / Killed from outside: a scheduler cancel, or a signal nobody here sent.
+    KilledExternal = 5,
+}
+impl ResourceOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unknown => "RESOURCE_OUTCOME_UNKNOWN",
+            Self::Completed => "COMPLETED",
+            Self::KilledMemory => "KILLED_MEMORY",
+            Self::KilledDisk => "KILLED_DISK",
+            Self::KilledTimeout => "KILLED_TIMEOUT",
+            Self::KilledExternal => "KILLED_EXTERNAL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RESOURCE_OUTCOME_UNKNOWN" => Some(Self::Unknown),
+            "COMPLETED" => Some(Self::Completed),
+            "KILLED_MEMORY" => Some(Self::KilledMemory),
+            "KILLED_DISK" => Some(Self::KilledDisk),
+            "KILLED_TIMEOUT" => Some(Self::KilledTimeout),
+            "KILLED_EXTERNAL" => Some(Self::KilledExternal),
+            _ => None,
+        }
+    }
 }
 /// Generated client implementations.
 pub mod worker_api_client {

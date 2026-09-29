@@ -184,7 +184,11 @@ async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> 
         std::fs::read_to_string(&marker).err_tip(|| "The trap did not run")?,
         "the action did not get to run its TERM trap"
     );
-    assert_eq!(status.code(), Some(0), "the trap's exit code should come through: {status:?}");
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "the trap's exit code should come through: {status:?}"
+    );
     let _ = std::fs::remove_file(&marker);
     Ok(())
 }

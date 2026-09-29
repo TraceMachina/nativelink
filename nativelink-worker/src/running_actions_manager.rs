@@ -2667,7 +2667,10 @@ impl RunningActionImpl {
                         .resource_enforcement
                         .as_ref()
                         .map_or((None, None), |e| {
-                            (Some(e.memory_property_name.as_str()), e.disk_property_name.as_deref())
+                            (
+                                e.memory.as_ref().map(|m| m.property_name.as_str()),
+                                e.disk_property_name.as_deref(),
+                            )
                         });
                     let resource_usage = Some(ActionResourceUsage {
                         peak_memory_kb: sampled_usage.peak_memory_kb,
