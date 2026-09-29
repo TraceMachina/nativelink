@@ -3878,7 +3878,10 @@ exit 0
         assert!(usage.wall_time_ms >= 900, "{usage:?}");
         let result = running_action.clone().get_finished_result().await?;
         running_action.cleanup().await?;
-        let err = result.error.expect("a timed-out action carries the error");
+        let err = result
+            .error
+            .as_ref()
+            .expect("a timed-out action carries the error");
         assert_eq!(err.code, Code::DeadlineExceeded, "{err}");
         // The shell left through its trap, not through SIGKILL.
         assert_eq!(result.exit_code, 3, "{result:?}");
