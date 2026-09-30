@@ -4334,6 +4334,15 @@ pub struct RunningActionsManagerImpl {
     #[cfg(target_os = "linux")]
     use_namespaces: UseNamespaces,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
+    /// Kills received for operations that are not yet resident in
+    /// `running_actions`. A `KillOperationRequest` can arrive while
+    /// `create_and_add_action` is still awaiting (fetching the Action, waiting
+    /// for prior cleanup, making the directory) — before the op is inserted.
+    /// Without a record, the kill looked up nothing, logged, and was forgotten,
+    /// and the action then started executing unkilled (finding N1). We record
+    /// the op here under the same lock that guards the `running_actions`
+    /// insert, so registration can observe an in-transit kill and apply it.
+    pending_kills: Mutex<HashSet<OperationId>>,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
     action_done_tx: watch::Sender<()>,
@@ -4401,6 +4410,7 @@ impl RunningActionsManagerImpl {
             max_download_timeout: args.max_download_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
+            pending_kills: Mutex::new(HashSet::new()),
             action_done_tx,
             callbacks,
             metrics: Arc::new(Metrics {
@@ -4842,7 +4852,13 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     timeout,
                     self.clone(),
                 ));
+                // True if a kill arrived for this op while its registration was
+                // still in flight (recorded in `pending_kills` before the op
+                // became resident). Determined under the `running_actions` lock
+                // so it cannot race with a concurrent kill.
+                let killed_in_transit;
                 {
+                    // Lock ordering: `running_actions` before `pending_kills`.
                     let mut running_actions = self.running_actions.lock();
                     // Check if action already exists and is still alive
                     if let Some(existing_weak) = running_actions.get(&operation_id)
@@ -4857,6 +4873,18 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                     running_action
                         .has_manager_entry
                         .store(true, Ordering::Release);
+                    killed_in_transit = self.pending_kills.lock().remove(&operation_id);
+                }
+                if killed_in_transit {
+                    // A kill was requested before this op finished registering.
+                    // Apply it now that the action object exists so the kill is
+                    // not lost: `execute()` will observe the consumed kill
+                    // channel and abort instead of running the process.
+                    warn!(
+                        %operation_id,
+                        "Applying kill requested while action registration was in flight",
+                    );
+                    Self::kill_operation(running_action.clone()).await;
                 }
                 if let Some(config) = &self.execution_configuration.buck2_file_capture
                     && Buck2FileCapture::eligible(capture_metadata.as_ref()) {
@@ -4901,12 +4929,26 @@ impl RunningActionsManager for RunningActionsManagerImpl {
     }
 
     async fn kill_operation(&self, operation_id: &OperationId) -> Result<(), Error> {
+        // Lock ordering: `running_actions` before `pending_kills`. Decide under
+        // the `running_actions` lock whether the op is resident: if it is not,
+        // it may still be mid-registration (create_and_add_action fetches the
+        // Action, waits for prior cleanup, and makes the directory across await
+        // points before inserting), so record the kill as pending rather than
+        // dropping it. Registration checks `pending_kills` under this same lock
+        // and applies the kill, so the request stays effective through the
+        // registration race (finding N1).
         let running_action = {
             let running_actions = self.running_actions.lock();
-            running_actions
-                .get(operation_id)
-                .and_then(Weak::upgrade)
-                .ok_or_else(|| make_input_err!("Failed to get running action {operation_id}"))?
+            let Some(running_action) = running_actions.get(operation_id).and_then(Weak::upgrade)
+            else {
+                self.pending_kills.lock().insert(operation_id.clone());
+                warn!(
+                    %operation_id,
+                    "Kill received for an operation not yet resident; recorded as pending so registration applies it",
+                );
+                return Ok(());
+            };
+            running_action
         };
         Self::kill_operation(running_action).await;
         Ok(())

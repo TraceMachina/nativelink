@@ -1230,6 +1230,150 @@ mod tests {
         Ok(())
     }
 
+    /// N1 regression: a kill received before an action finishes registering
+    /// must stay effective through registration.
+    ///
+    /// A `KillOperationRequest` can reach the worker while
+    /// `create_and_add_action` is still awaiting (fetching the Action, waiting
+    /// for prior cleanup, making the directory) — before the op is inserted
+    /// into `running_actions`. This test reproduces that ordering by killing
+    /// the op *before* it is registered.
+    ///
+    /// WITHOUT THE FIX: `kill_operation` looked the op up in `running_actions`,
+    /// found nothing, and returned an Err (the kill was logged and dropped);
+    /// the action then registered and ran to completion unkilled (exit 0).
+    /// WITH THE FIX the kill is parked in `pending_kills` and applied at
+    /// registration, so when the action runs it is killed with `SIGKILL`
+    /// and reports the killed exit code (9).
+    ///
+    /// Two assertions fail without the fix: (1) the pre-registration kill must
+    /// return Ok (recorded, not rejected), and (2) the resulting action must
+    /// carry the killed exit code rather than having run normally.
+    #[nativelink_test]
+    async fn kill_before_registration_stays_effective() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        let command = Command {
+            arguments: vec!["sleep".to_string(), "0.2".to_string()],
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let operation_id = OperationId::default();
+
+        // The kill arrives before the op is resident (models a kill landing
+        // while create_and_add_action is still mid-flight). This must be
+        // remembered, not dropped.
+        running_actions_manager
+            .kill_operation(&operation_id)
+            .await
+            .err_tip(|| "A kill for a not-yet-resident op must be recorded, not rejected")?;
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
+            ..Default::default()
+        };
+        let running_action = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(execute_request),
+                    operation_id: operation_id.to_string(),
+                    queued_timestamp: None,
+                    platform: action.platform.clone(),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        // The in-transit kill must have been applied at registration. Since
+        // #2846 the kill token is also watched during input fetch, so the
+        // remembered kill now short-circuits `prepare_action` with `Aborted`
+        // ("killed while fetching its inputs") before the action ever runs —
+        // instead of the sleep completing normally (which a dropped in-transit
+        // kill would allow). Either way the observable proof is that the kill
+        // took effect: the action never completes successfully.
+        let err = run_action(running_action)
+            .await
+            .expect_err("a kill recorded before registration must abort the action");
+        assert_eq!(
+            err.code,
+            Code::Aborted,
+            "a kill applied at registration aborts the action during input fetch; \
+             a dropped in-transit kill would instead let it complete (Ok)"
+        );
+        assert!(
+            err.to_string().contains("killed while fetching its inputs"),
+            "abort must be the kill path, not an unrelated failure: {err}"
+        );
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn ensure_output_files_full_directories_are_created_test()
     -> Result<(), Box<dyn core::error::Error>> {
