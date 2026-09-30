@@ -235,7 +235,7 @@ async fn classes_resolve_hints_and_cold_start() -> Result<(), Error> {
 
     // No hint, an unknown mnemonic, a long timeout: the timeout rule.
     let mut long = (*base).clone();
-    long.timeout = Duration::from_secs(3600);
+    long.timeout = Duration::from_hours(1);
     let properties = properties_after_add(
         &scheduler,
         &mock_scheduler,
