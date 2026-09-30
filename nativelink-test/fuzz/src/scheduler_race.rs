@@ -139,8 +139,15 @@ struct Sim {
     scheduler: Arc<SimpleScheduler>,
     worker_scheduler: Arc<dyn WorkerScheduler>,
     workers: Vec<SimWorker>,
-    /// Live client listeners; dropping one simulates client disconnect.
-    listeners: HashMap<u8, Box<dyn ActionStateResult>>,
+    /// Live client pollers: a spawned task long-polling `changed()` per
+    /// listener, mirroring the execution server. The timeout machinery is
+    /// client-driven (ClientActionStateResult wraps the matching-engine
+    /// subscriber), so an undriven listener would model a client that never
+    /// polls — and mask nothing OR everything. Abort = client disconnect.
+    listeners: HashMap<u8, tokio::task::JoinHandle<()>>,
+    /// ActionInfo per key so the drain can re-attach a client to a zombie
+    /// operation via cache-key merge, modeling "the next client shows up".
+    infos: HashMap<u8, Arc<ActionInfo>>,
     /// operation -> worker currently believed to be executing it; the
     /// double-execution invariant checks insertions against this.
     executing_on: HashMap<OperationId, usize>,
@@ -175,6 +182,7 @@ impl Sim {
             worker_scheduler,
             workers: Vec::new(),
             listeners: HashMap::new(),
+            infos: HashMap::new(),
             executing_on: HashMap::new(),
             next_client_id: 0,
         }
@@ -192,6 +200,9 @@ impl Sim {
                 match update.update {
                     Some(update_for_worker::Update::StartAction(start)) => {
                         let operation_id = OperationId::from(start.operation_id.as_str());
+                        if std::env::var("FUZZ_DEBUG").is_ok() {
+                            eprintln!("  pump: worker[{idx}] StartAction {operation_id}");
+                        }
                         if let Some(&other) = self.executing_on.get(&operation_id) {
                             let other_live = self.workers[other].connected
                                 && self.workers[other].running.contains(&operation_id);
@@ -234,12 +245,23 @@ impl Sim {
             Op::AddAction { key, timeout_s, skip_cache } => {
                 self.next_client_id += 1;
                 let client_id = OperationId::from(format!("client-{}", self.next_client_id));
-                if let Ok(listener) = self
-                    .scheduler
-                    .add_action(client_id, Arc::new(action_info(key % 8, timeout_s, skip_cache)))
-                    .await
-                {
-                    self.listeners.insert(key, listener);
+                let info = Arc::new(action_info(key % 8, timeout_s, skip_cache));
+                self.infos.insert(key, info.clone());
+                if let Ok(mut listener) = self.scheduler.add_action(client_id, info).await {
+                    if let Some(old) = self.listeners.insert(
+                        key,
+                        tokio::task::spawn(async move {
+                            loop {
+                                match listener.changed().await {
+                                    Ok((state, _)) if state.stage.is_finished() => break,
+                                    Ok(_) => {}
+                                    Err(_) => break,
+                                }
+                            }
+                        }),
+                    ) {
+                        old.abort();
+                    }
                 }
             }
             Op::ConnectWorker { w, slots } => {
@@ -341,7 +363,9 @@ impl Sim {
                 MockClock::advance(Duration::from_millis(u64::from(ms)));
             }
             Op::DropClient { key } => {
-                self.listeners.remove(&key);
+                if let Some(poller) = self.listeners.remove(&key) {
+                    poller.abort();
+                }
             }
         }
         self.pump_workers();
@@ -379,10 +403,11 @@ impl Sim {
         }
     }
 
-    /// The liveness engine: with one healthy worker attached and every
-    /// configured ceiling elapsed, every surviving operation must reach a
-    /// terminal stage. Anything still Queued/Executing is a wedge.
+    /// The liveness engine: with one healthy worker attached, actively
+    /// polled clients, and every configured ceiling elapsed, every
+    /// operation must reach a terminal stage. Anything else is a wedge.
     async fn drain(&mut self) {
+        let dbg = std::env::var("FUZZ_DEBUG").is_ok();
         // A fresh worker, in an id namespace fuzz schedules cannot collide
         // with, with generous capacity to absorb requeues.
         let worker_id = WorkerId("drain-worker".to_string());
@@ -392,7 +417,7 @@ impl Sim {
             PlatformProperties::default(),
             tx,
             now_ts(),
-            4,
+            8,
         );
         self.worker_scheduler
             .add_worker(worker)
@@ -404,57 +429,105 @@ impl Sim {
             running: Vec::new(),
             connected: true,
         });
-        let drain_idx = self.workers.len().checked_sub(1).expect("drain worker connected");
+        let drain_idx = self.workers.len() - 1;
         self.pump_workers();
+
         let step = Duration::from_secs(WORKER_TIMEOUT_S / 2 + 1);
-        // Enough steps to walk past worker_timeout + max_executing several
-        // times over, servicing requeues as they land.
-        for _ in 0..24 {
-            MockClock::advance(step);
-            drop(self.worker_scheduler.remove_timedout_workers(now_ts()).await);
-            let match_result = self.scheduler.do_try_match_for_test().await;
-            self.pump_workers();
-            if std::env::var("FUZZ_DEBUG").is_ok() {
-                if let Err(err) = &match_result {
-                    eprintln!("drain try_match err: {err:?}");
-                }
-                for (i, w) in self.workers.iter().enumerate() {
-                    eprintln!(
-                        "  t={:?} worker[{i}] {} connected={} running={:?}",
-                        MockClock::time(), w.id, w.connected, w.running
-                    );
+        for phase in 0..2u8 {
+            if phase == 1 {
+                // Model "the next client shows up": re-attach an actively
+                // polling client to every action via cache-key merge —
+                // recovery of an abandoned operation is client-driven by
+                // design, so the contract is "heals once any client polls".
+                for info in self.infos.values() {
+                    self.next_client_id += 1;
+                    let client_id =
+                        OperationId::from(format!("adopter-{}", self.next_client_id));
+                    if let Ok(mut listener) =
+                        self.scheduler.add_action(client_id, info.clone()).await
+                    {
+                        if dbg { eprintln!("  adopter attached"); }
+                        self.listeners.insert(200 + (self.next_client_id % 50) as u8,
+                            tokio::task::spawn(async move {
+                                loop {
+                                    match listener.changed().await {
+                                        Ok((state, _)) if state.stage.is_finished() => break,
+                                        Ok(_) => {}
+                                        Err(_) => break,
+                                    }
+                                }
+                            }));
+                    }
                 }
             }
-            // The drain worker follows the full dispatch protocol:
-            // acknowledge, then complete, everything it is handed.
-            while self.workers[drain_idx].connected
-                && !self.workers[drain_idx].running.is_empty()
-            {
-                let id = self.workers[drain_idx].id.clone();
-                if let Some(operation_id) = self.workers[drain_idx].running.last().cloned() {
+            for iter in 0..24 {
+                MockClock::advance(step);
+                // Let poller mock-clock sleeps observe the advance
+                // (MockInstantWrapped::sleep spins on yield_now).
+                for _ in 0..512 {
+                    tokio::task::yield_now().await;
+                }
+                drop(self.worker_scheduler.remove_timedout_workers(now_ts()).await);
+                drop(self.scheduler.do_try_match_for_test().await);
+                self.pump_workers();
+                // The drain worker follows the full dispatch protocol:
+                // acknowledge, then complete, everything it is handed.
+                while self.workers[drain_idx].connected
+                    && !self.workers[drain_idx].running.is_empty()
+                {
+                    let id = self.workers[drain_idx].id.clone();
+                    let operation_id = self.workers[drain_idx]
+                        .running
+                        .last()
+                        .cloned()
+                        .expect("non-empty");
+                    if dbg {
+                        eprintln!("  drain[{phase}.{iter}]: accept+complete {operation_id}");
+                    }
                     drop(
                         self.worker_scheduler
                             .worker_dispatch_accepted(&id, &operation_id)
                             .await,
                     );
+                    self.complete_at(drain_idx, None).await;
+                    // Let completion notifications propagate before deciding
+                    // whether more work arrived.
+                    for _ in 0..64 {
+                        tokio::task::yield_now().await;
+                    }
+                    self.pump_workers();
                 }
-                self.complete_at(drain_idx, None).await;
-            }
-            // Keep the drain worker alive through the virtual time jumps.
-            {
-                let id = self.workers[drain_idx].id.clone();
-                drop(
-                    self.worker_scheduler
-                        .worker_keep_alive_received(&id, now_ts(), None)
-                        .await,
-                );
+                {
+                    let id = self.workers[drain_idx].id.clone();
+                    drop(
+                        self.worker_scheduler
+                            .worker_keep_alive_received(&id, now_ts(), None)
+                            .await,
+                    );
+                }
+                if dbg {
+                    use futures::StreamExt;
+                    if let Ok(mut stream) = self
+                        .scheduler
+                        .filter_operations(OperationFilter::default())
+                        .await
+                    {
+                        while let Some(entry) = stream.next().await {
+                            if let Ok((state, _)) = entry.as_state().await {
+                                eprintln!(
+                                    "  [{phase}.{iter}] t={:?} op {} stage={:?}",
+                                    MockClock::time(),
+                                    state.client_operation_id,
+                                    state.stage
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
-        // Debug visibility for harness bring-up.
-        if std::env::var("FUZZ_DEBUG").is_ok() {
-            let drain_idx = self.workers.len();
-            eprintln!("drain: {} workers, drain worker connected={:?}", drain_idx,
-                self.workers.last().map(|w| w.connected));
+        for (_, poller) in self.listeners.drain() {
+            poller.abort();
         }
         // Every operation the scheduler still knows about must be terminal.
         let filter = OperationFilter::default();
@@ -492,6 +565,23 @@ pub fn run(data: &[u8]) {
     if ops.is_empty() || ops.len() > 512 {
         return;
     }
+    if std::env::var("FUZZ_TRACE").is_ok() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    if std::env::var("FUZZ_TRACE").as_deref() == Ok("trace") {
+                        "nativelink_scheduler=trace"
+                    } else {
+                        "nativelink_scheduler=debug,nativelink_util=warn"
+                    },
+                )
+                .with_writer(std::io::stderr)
+                .without_time()
+                .try_init();
+        });
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
@@ -523,6 +613,26 @@ mod tests {
             self.0 ^= self.0 << 17;
             self.0
         }
+    }
+
+    #[test]
+    fn dump_one_case() {
+        let Ok(case_target) = std::env::var("FUZZ_DUMP_CASE").map(|v| v.parse::<u64>().unwrap()) else { return; };
+        let mut rng = Rng(0x5EED_CAFE_F00D_D00D);
+        let mut data = Vec::new();
+        for _case in 0..=case_target {
+            let len = (rng.next() % 900 + 40) as usize;
+            data = vec![0u8; len];
+            for byte in &mut data {
+                *byte = (rng.next() & 0xFF) as u8;
+            }
+        }
+        if let Some(ops) = super::decode(&data) {
+            for (i, op) in ops.iter().enumerate() {
+                eprintln!("{i:3}: {op:?}");
+            }
+        }
+        run(&data);
     }
 
     /// Not a substitute for coverage-guided fuzzing — a harness self-check

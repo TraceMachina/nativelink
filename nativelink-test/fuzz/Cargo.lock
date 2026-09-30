@@ -2315,12 +2315,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e1d4c44418358edcac6e1d9ce59cea7fb38052429c7704033f1196f0c179e6a"
 
 [[package]]
-name = "mock_instant"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bb517913cfcfb9eeda59f36020269075a152701a01606c612f547e4890be399"
-
-[[package]]
 name = "moka"
 version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2461,7 +2455,7 @@ dependencies = [
  "arbitrary",
  "futures",
  "libfuzzer-sys",
- "mock_instant 0.6.1",
+ "mock_instant",
  "nativelink-config",
  "nativelink-error",
  "nativelink-proto",
@@ -2469,6 +2463,8 @@ dependencies = [
  "nativelink-util",
  "serde_json5",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -2525,7 +2521,7 @@ dependencies = [
  "futures",
  "humantime",
  "lru",
- "mock_instant 0.5.3",
+ "mock_instant",
  "nativelink-config",
  "nativelink-error",
  "nativelink-metric",
@@ -2630,7 +2626,7 @@ dependencies = [
  "hyper-util",
  "libc",
  "lru",
- "mock_instant 0.5.3",
+ "mock_instant",
  "nativelink-config",
  "nativelink-error",
  "nativelink-metric",
