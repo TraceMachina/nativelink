@@ -364,10 +364,6 @@ where
     }
 }
 
-/// `SimpleSchedulerStateManager` is responsible for maintaining the state of the scheduler.
-/// Scheduler state includes the actions that are queued, active, and recently completed.
-/// It also includes the workers that are available to execute actions based on allocation
-/// strategy.
 /// How often an action is queued again, by cause, before the scheduler
 /// completes it with `FailedPrecondition`. Each cause has its own budget:
 /// an action's own failures, the workers it lost through no fault of its
@@ -398,6 +394,11 @@ impl From<usize> for RetryLimits {
         }
     }
 }
+
+/// `SimpleSchedulerStateManager` is responsible for maintaining the state of the scheduler.
+/// Scheduler state includes the actions that are queued, active, and recently completed.
+/// It also includes the workers that are available to execute actions based on allocation
+/// strategy.
 
 #[derive(MetricsComponent, Debug)]
 pub struct SimpleSchedulerStateManager<T, I, NowFn>

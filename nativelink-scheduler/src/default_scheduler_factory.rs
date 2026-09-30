@@ -121,6 +121,14 @@ async fn simple_scheduler_factory(
     now_fn: fn() -> SystemTime,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
+    if let Some(policy) = &spec.memory_escalation
+        && policy.percent <= 100
+    {
+        return Err(make_input_err!(
+            "memory_escalation.percent must be above 100 to grow the reservation, got {}",
+            policy.percent
+        ));
+    }
     match spec
         .experimental_backend
         .as_ref()

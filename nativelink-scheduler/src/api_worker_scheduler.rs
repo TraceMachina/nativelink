@@ -131,8 +131,6 @@ pub struct SchedulerMetrics {
     pub dispatch_channel_full: AtomicU64,
     /// Dispatches requeued because the worker never acknowledged them.
     pub dispatches_unacknowledged: AtomicU64,
-    /// Actions requeued with a larger memory reservation after a kill.
-    pub memory_escalations: AtomicU64,
 }
 
 use crate::match_outcome::{
@@ -662,10 +660,19 @@ impl ApiWorkerSchedulerImpl {
             // The ledger only knows what actions declared; the worker's own
             // report of what it has left catches the ones that declared too
             // little. A worker that reports nothing is never vetoed.
+            // An action that asks for the worker's whole advertised memory
+            // (the last escalation step) is not vetoed: no worker ever
+            // reports that much free, since its own binary, the kernel and
+            // the page cache hold some, and the ledger already keeps it
+            // alone there.
             if let (Some(property), Some(load)) = (self.live_memory_veto.as_deref(), w.last_load)
                 && let Some(PlatformPropertyValue::Minimum(needed_kb)) =
                     platform_properties.properties.get(property)
                 && *needed_kb > load.free_memory_kb
+                && matches!(
+                    w.total_platform_properties.properties.get(property),
+                    Some(PlatformPropertyValue::Minimum(advertised_kb)) if *needed_kb < *advertised_kb
+                )
             {
                 if full_worker_logging {
                     info!(
@@ -802,8 +809,11 @@ impl ApiWorkerSchedulerImpl {
             Some(PlatformPropertyValue::Minimum(value)) => Some(*value),
             _ => None,
         };
+        // A draining worker is leaving: escalating to it would strand the
+        // action at a size the remaining fleet cannot serve.
         self.workers
             .iter()
+            .filter(|(_, worker)| !worker.is_draining)
             .filter_map(|(_, worker)| {
                 minimum(worker, property).map(|memory_kb| {
                     let cpu = if cpu_property.is_empty() {
@@ -867,8 +877,10 @@ impl ApiWorkerSchedulerImpl {
             .unwrap_or(0);
         let (fleet_memory_kb, fleet_cpu) =
             self.fleet_largest_worker(&policy.property, &policy.cpu_property);
+        // `max_kb` caps the fleet's ceiling; it cannot raise it past what a
+        // worker declares, or the escalation lands where nothing can run.
         let ceiling_kb = if policy.max_kb > 0 {
-            policy.max_kb
+            fleet_memory_kb.min(policy.max_kb)
         } else {
             fleet_memory_kb
         };
@@ -918,6 +930,17 @@ impl ApiWorkerSchedulerImpl {
         } else {
             usage.peak_memory_kb
         };
+        if base_kb == 0 {
+            // Nothing to grow from: no reservation and an unsampled kill.
+            // Scaling zero would hand out the smallest steps the ladder or
+            // the percent allow and burn the budget on them.
+            warn!(
+                ?worker_id,
+                ?operation_id,
+                "Action killed for memory with no reservation and no sampled peak; not escalating"
+            );
+            return (update, false);
+        }
         // With a ladder the next class up; without one, scale. Past the
         // top class or the ceiling, the whole worker.
         let next = if policy.ladder_kb.is_empty() {
@@ -1846,9 +1869,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
         let mut inner = self.inner.lock().await;
         let (update, escalated) = inner.maybe_escalate(worker_id, operation_id, update);
         if escalated {
-            self.metrics
-                .memory_escalations
-                .fetch_add(1, Ordering::Relaxed);
+            record_dispatch_requeue("memory_escalation");
         }
         inner.update_action(worker_id, operation_id, update).await
     }

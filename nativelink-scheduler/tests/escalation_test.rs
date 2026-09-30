@@ -57,6 +57,14 @@ fn make_scheduler_with_ladder(
     max_job_retries: usize,
     ladder_kb: Vec<u64>,
 ) -> (Arc<SimpleScheduler>, Arc<dyn WorkerScheduler>) {
+    make_scheduler_with_limits(max_job_retries, ladder_kb, 0)
+}
+
+fn make_scheduler_with_limits(
+    max_job_retries: usize,
+    ladder_kb: Vec<u64>,
+    max_steps: u64,
+) -> (Arc<SimpleScheduler>, Arc<dyn WorkerScheduler>) {
     MockClock::set_time(Duration::from_secs(NOW_TIME));
     let task_change_notify = Arc::new(Notify::new());
     let spec = SimpleSpec {
@@ -70,7 +78,7 @@ fn make_scheduler_with_ladder(
             max_kb: 0,
             ladder_kb,
             cpu_property: "cpu_count".to_string(),
-            max_steps: 0,
+            max_steps,
         }),
         max_job_retries,
         max_worker_loss_retries: 2,
@@ -238,7 +246,8 @@ async fn a_memory_kill_requeues_the_action_with_double_the_reservation() -> Resu
     Ok(())
 }
 
-/// The retry cap counts escalations; past it the action fails and says so.
+/// Escalations have their own budget: four kills on a `max_job_retries` of
+/// one, and the action is still running, each time with more memory.
 #[nativelink_test]
 async fn escalation_does_not_spend_the_retry_budget() -> Result<(), Error> {
     // One retry for the action's own failures; escalations are not those.
@@ -268,6 +277,41 @@ async fn escalation_does_not_spend_the_retry_budget() -> Result<(), Error> {
     // Four kills, four requeues, on a budget of one: still running.
     let (_, memory) = next_dispatch(&mut rx).await;
     assert_eq!(memory, 16_000);
+    Ok(())
+}
+
+/// `max_steps` bounds the escalations: with two, the third kill ends the
+/// action, and the client hears that the budget is spent.
+#[nativelink_test]
+async fn escalation_stops_at_max_steps() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler_with_limits(5, vec![], 2);
+    let mut rx = add_worker(&scheduler, 1_000_000).await?;
+
+    let base = make_base_action_info(
+        UNIX_EPOCH + MockClock::time(),
+        DigestInfo::new([4; 32], 512),
+    );
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: HashMap::from([("memory_kb".to_string(), "1000".to_string())]),
+        ..(*base).clone()
+    });
+    let mut listener = scheduler
+        .add_action(OperationId::default(), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+
+    let mut reserved = 1_000;
+    for _ in 0..3 {
+        let (dispatch, memory) = next_dispatch(&mut rx).await;
+        assert_eq!(memory, reserved);
+        report_memory_kill(worker_scheduler.as_ref(), &dispatch.operation_id, reserved).await?;
+        reserved *= 2;
+    }
+
+    let result = wait_for_completion(&mut listener).await;
+    let err = result.error.expect("the third kill is past the budget");
+    assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+    assert!(err.to_string().contains("more than max_steps"), "{err}");
     Ok(())
 }
 
