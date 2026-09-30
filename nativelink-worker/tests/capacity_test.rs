@@ -20,6 +20,8 @@ use nativelink_config::cas_server::{
     WorkerProperty,
 };
 use nativelink_error::Code;
+#[cfg(target_family = "unix")]
+use nativelink_worker::capacity::find_limit;
 use nativelink_worker::capacity::{
     ObservedCapacity, advertised, free_memory_kb_from, memory_headroom_percent, parse_cpu_max,
     parse_meminfo_available_kb, parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
@@ -255,4 +257,63 @@ fn cgroup_dir_is_the_own_path_under_the_mount_when_it_exists() {
     );
     // Nothing readable at all: the root, as before.
     assert_eq!(resolve_cgroup_dir(root, None, |_| true), root);
+}
+
+// The walk is Linux-only code, and the test's paths are unix strings.
+#[cfg(target_family = "unix")]
+#[test]
+fn limit_comes_from_the_nearest_limited_ancestor() {
+    let root = Path::new("/sys/fs/cgroup");
+    let own = root.join("kubepods.slice/kubepods-pod1.slice/cri-containerd-abc.scope");
+    // The scope itself is unlimited; the pod slice above it carries the limit.
+    let read = |path: &Path| -> Option<String> {
+        match path.to_str()? {
+            "/sys/fs/cgroup/kubepods.slice/kubepods-pod1.slice/cri-containerd-abc.scope/memory.max" => {
+                Some("max\n".to_string())
+            }
+            "/sys/fs/cgroup/kubepods.slice/kubepods-pod1.slice/memory.max" => {
+                Some("55834574848\n".to_string())
+            }
+            "/sys/fs/cgroup/kubepods.slice/kubepods-pod1.slice/cri-containerd-abc.scope/cpu.max" => {
+                Some("max 100000\n".to_string())
+            }
+            "/sys/fs/cgroup/kubepods.slice/cpu.max" => Some("1400000 100000\n".to_string()),
+            _ => None,
+        }
+    };
+    assert_eq!(
+        find_limit(&own, root, "memory.max", read),
+        Some((
+            root.join("kubepods.slice/kubepods-pod1.slice"),
+            "55834574848\n".to_string()
+        ))
+    );
+    // CPU and memory may be limited at different levels.
+    assert_eq!(
+        find_limit(&own, root, "cpu.max", read),
+        Some((root.join("kubepods.slice"), "1400000 100000\n".to_string()))
+    );
+}
+
+// The walk is Linux-only code, and the test's paths are unix strings.
+#[cfg(target_family = "unix")]
+#[test]
+fn no_limit_at_any_level_is_no_limit() {
+    let root = Path::new("/sys/fs/cgroup");
+    let own = root.join("system.slice/nativelink.service");
+    // A bare-metal systemd host: every level says max.
+    let all_max = |_: &Path| Some("max\n".to_string());
+    assert_eq!(find_limit(&own, root, "memory.max", all_max), None);
+    // Nothing readable at all.
+    assert_eq!(find_limit(&own, root, "memory.max", |_| None), None);
+    // The walk stops at the mount root, never above it.
+    let outside = |path: &Path| (path == Path::new("/sys/memory.max")).then(|| "1\n".to_string());
+    assert_eq!(find_limit(&own, root, "memory.max", outside), None);
+    // A directory not under the mount root is only looked at itself.
+    let own_only =
+        |path: &Path| (path == Path::new("/elsewhere/memory.max")).then(|| "2048\n".to_string());
+    assert_eq!(
+        find_limit(Path::new("/elsewhere"), root, "memory.max", own_only),
+        Some((PathBuf::from("/elsewhere"), "2048\n".to_string()))
+    );
 }
