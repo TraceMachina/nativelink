@@ -279,6 +279,13 @@ impl GrpcStore {
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Arc<Self>, Error> {
         error_if!(
+            matches!(
+                spec.store_type,
+                nativelink_config::stores::StoreType::EventSink
+            ) && spec.experimental_read_batching.is_some(),
+            "An event sink cannot batch reads"
+        );
+        error_if!(
             spec.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
         );
@@ -1565,6 +1572,15 @@ impl StoreDriver for GrpcStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            return Err(make_err!(
+                Code::Unimplemented,
+                "Event sinks do not support existence checks"
+            ));
+        }
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             keys.iter()
                 .zip(results.iter_mut())
@@ -1629,7 +1645,7 @@ impl StoreDriver for GrpcStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
-        _size_info: UploadSizeInfo,
+        size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         struct LocalState {
             resource_name: String,
@@ -1641,7 +1657,27 @@ impl StoreDriver for GrpcStore {
         }
 
         let is_digest_key = matches!(key, StoreKey::Digest(_));
-        let digest = key.into_digest();
+        let mut digest = key.into_digest();
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            let UploadSizeInfo::ExactSize(size) = size_info else {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Event sinks require an exact upload size"
+                ));
+            };
+            if is_digest_key {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Event sinks require string keys"
+                ));
+            }
+            // String-key digests normally encode the key's length. Event bytes
+            // have a different length and must pass the stream size validator.
+            digest = DigestInfo::try_new(&digest.packed_hash().to_string(), size)?;
+        }
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
@@ -1768,6 +1804,16 @@ impl StoreDriver for GrpcStore {
             writer: &'a mut DropCloserWriteHalf,
             read_offset: i64,
             read_limit: i64,
+        }
+
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            return Err(make_err!(
+                Code::Unimplemented,
+                "Event sinks do not support reads"
+            ));
         }
 
         let is_digest_key = matches!(key, StoreKey::Digest(_));
