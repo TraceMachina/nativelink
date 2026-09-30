@@ -164,7 +164,13 @@ client gives up.
 **`max_job_retries`** (default 3): how many times an action that fails with
 an internal error is retried before the last error is returned to the client.
 It exists to stop one poisonous action from cycling through and destabilising
-your whole fleet.
+your whole fleet. A lost worker and a memory escalation do not spend it.
+
+**`max_worker_loss_retries`** (default 10): how many times an action whose
+worker was lost (disconnected, timed out, evicted, or OOM-killed as a whole)
+is queued again before the client gets a `FAILED_PRECONDITION`. Losing a
+worker is not the action's failure, so this budget is separate and larger;
+it only stops an action that takes a worker down every time it runs.
 
 **`retain_completed_for_s`** (default 60 s): how long a completed action's
 result stays available for a late `WaitExecution` call. Clients that

@@ -20,8 +20,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad,
-    update_for_worker,
+    ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
+    WorkerLoad, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
@@ -84,6 +84,9 @@ pub struct PendingActionInfoData {
     /// unacknowledged sweep is opt-in.
     #[metric(help = "Whether the worker acknowledged the dispatch.")]
     pub accepted: bool,
+    /// The last resource usage the worker reported for this operation; it
+    /// arrives just before the result and says whether the result is a kill.
+    pub last_usage: Option<ActionResourceUsage>,
 }
 
 /// Represents a connection to a worker and used as the medium to
@@ -395,6 +398,7 @@ impl Worker {
                         kill_requested_at: None,
                         dispatched_at,
                         accepted: false,
+                        last_usage: None,
                     },
                 );
                 Ok(())
