@@ -1796,12 +1796,14 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    // Mark this operation as being cleaned up
-    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
-    else {
-        // Cleanup is already happening elsewhere.
-        return Ok(());
-    };
+    // Mark this operation as being cleaned up. The other holders of the
+    // mark are the orphan sweep and a retry's stale-directory removal, both
+    // brief; waiting on them is what keeps this cleanup from being skipped,
+    // which would leave the action's entries and reservations in place for
+    // good.
+    let _cleaning_guard = running_actions_manager
+        .take_cleanup_mark(operation_id.clone())
+        .await;
 
     let capture = running_actions_manager
         .buck2_captures
@@ -1825,9 +1827,23 @@ async fn do_cleanup(
 
     debug!(%action_directory, "Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = fs::remove_dir_all(action_directory)
-        .await
-        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    // A fetch or an upload ended by a kill or a timeout can leave a blocking
+    // copy or a stamp finishing inside the tree for a moment; the removal is
+    // retried through that instead of failing on the first try.
+    let remove_deadline = Instant::now() + running_actions_manager.max_cleanup_wait;
+    let remove_dir_result = loop {
+        match fs::remove_dir_all(action_directory).await {
+            Ok(()) => break Ok(()),
+            Err(err) if Instant::now() < remove_deadline => {
+                debug!(%operation_id, ?err, "Removing the working directory again");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => {
+                break Err(err)
+                    .err_tip(|| format!("Could not remove working directory {action_directory}"));
+            }
+        }
+    };
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
@@ -2076,6 +2092,9 @@ pub struct RunningActionImpl {
     input_lease: Option<Arc<ActionInputLease>>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
+    /// Set on a kill; every phase that can wait watches it, so a kill ends
+    /// a fetch or an upload as surely as it ends the command.
+    kill_token: watch::Sender<bool>,
     state: Mutex<RunningActionImplState>,
     has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
@@ -2099,7 +2118,9 @@ impl RunningActionImpl {
             )
         });
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
+        let (kill_token, _) = watch::channel(false);
         Self {
+            kill_token,
             operation_id,
             action_directory,
             work_directory,
@@ -3635,12 +3656,61 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        let res = self
-            .metrics()
-            .clone()
-            .prepare_action
-            .wrap(Self::inner_prepare_action(self))
-            .await;
+        let download_timeout = self.running_actions_manager.max_download_timeout;
+        let operation_id = self.operation_id.clone();
+        let metrics = self.metrics().clone();
+        let mut kill_rx = self.kill_token.subscribe();
+        // Boxed: the prepare state machine is large, and pinning it on the
+        // stack next to the select below overflowed a test thread.
+        let mut prepare_fut = Box::pin(
+            metrics
+                .prepare_action
+                .wrap(Self::inner_prepare_action(self)),
+        );
+        // A fetch that never answers would otherwise hold the slot for good
+        // while the worker's keepalives say it is fine: name it every minute
+        // and give up at the timeout, so the scheduler can retry elsewhere.
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = download_timeout.as_secs(),
+                    "prepare_action: still fetching inputs, possible stall",
+                );
+            }
+        };
+        let res = tokio::time::timeout(download_timeout, async {
+            tokio::pin!(stall_warn_fut);
+            tokio::select! {
+                result = &mut prepare_fut => result,
+                _ = kill_rx.wait_for(|killed| *killed) => {
+                    warn!(%operation_id, "prepare_action: killed while fetching inputs");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while fetching its inputs"
+                    ))
+                }
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|_| {
+            warn!(
+                %operation_id,
+                timeout_s = download_timeout.as_secs(),
+                "prepare_action: input fetch timed out"
+            );
+            make_err!(
+                Code::DeadlineExceeded,
+                "Fetching the inputs of operation {operation_id} took longer than max_download_timeout ({}s)",
+                download_timeout.as_secs(),
+            )
+        })
+        .and_then(|res| res);
         if let Err(ref e) = res {
             warn!(?e, "Error during prepare_action");
         }
@@ -3669,6 +3739,7 @@ impl RunningAction for RunningActionImpl {
             "upload_results: starting with timeout",
         );
         let metrics = self.metrics().clone();
+        let kill_token = self.kill_token.clone();
         let upload_fut = metrics
             .upload_results
             .wrap(Self::inner_upload_results(self));
@@ -3687,11 +3758,24 @@ impl RunningAction for RunningActionImpl {
             }
         };
 
+        // Only a kill that arrives during the upload ends it: a kill that
+        // already ended the command leaves a killed result that still has to
+        // reach the scheduler, so the token's current state is taken as seen
+        // and only a change from here on aborts.
+        let mut kill_rx = kill_token.subscribe();
+        kill_rx.borrow_and_update();
         let res = tokio::time::timeout(upload_timeout, async {
             tokio::pin!(upload_fut);
             tokio::pin!(stall_warn_fut);
             tokio::select! {
                 result = &mut upload_fut => result,
+                Ok(()) = kill_rx.changed() => {
+                    warn!(%operation_id, "upload_results: killed while uploading");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while uploading its results"
+                    ))
+                }
                 () = &mut stall_warn_fut => unreachable!(),
             }
         })
@@ -4198,6 +4282,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
+    pub max_download_timeout: Duration,
     pub max_cleanup_wait: Duration,
     pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
@@ -4211,7 +4296,10 @@ pub struct RunningActionsManagerArgs<'a> {
     pub use_namespaces: UseNamespaces,
 }
 
-struct CleanupGuard {
+/// The mark that an operation's directory is being cleaned; dropping it
+/// clears the mark and wakes whoever waits for it.
+#[derive(Debug)]
+pub struct CleanupGuard {
     manager: Weak<RunningActionsManagerImpl>,
     operation_id: OperationId,
 }
@@ -4238,6 +4326,7 @@ pub struct RunningActionsManagerImpl {
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
+    max_download_timeout: Duration,
     timeout_handled_externally: bool,
     /// The container's memory limit, the yardstick for calling a SIGKILL
     /// nobody here sent an OOM kill.
@@ -4309,6 +4398,7 @@ impl RunningActionsManagerImpl {
             max_action_timeout: args.max_action_timeout,
             pod_memory_limit_kb: pod_memory_limit_kb(),
             max_upload_timeout: args.max_upload_timeout,
+            max_download_timeout: args.max_download_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
@@ -4345,18 +4435,20 @@ impl RunningActionsManagerImpl {
     /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
     /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
     /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
-    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
+    async fn wait_for_cleanup_if_needed(
+        self: &Arc<Self>,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
         let start = Instant::now();
         let mut backoff = Duration::from_millis(10);
         let mut has_waited = false;
 
         loop {
-            let should_wait = {
-                let cleaning = self.cleaning_up_operations.lock();
-                cleaning.contains(operation_id)
-            };
-
-            if !should_wait {
+            // The mark is held for the removal below, so it cannot race the
+            // orphan sweep's removal of the same tree; while someone else
+            // holds it, this waits.
+            let mark = self.perform_cleanup(operation_id.clone());
+            if let Some(_cleaning_guard) = mark {
                 let action_is_running = self
                     .running_actions
                     .lock()
@@ -4544,16 +4636,25 @@ impl RunningActionsManagerImpl {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
+            // A running action's directory is not the sweep's to touch, and
+            // its cleanup waits on the mark, so the mark is taken only for
+            // an unowned directory and given back at once if the directory
+            // became owned in between: an action that starts and ends
+            // inside that window then cleans up as usual, not later.
+            let is_owned = || {
+                self.running_actions
+                    .lock()
+                    .keys()
+                    .any(|operation_id| operation_id.to_string() == name)
+            };
+            if is_owned() {
+                continue;
+            }
             let Some(_cleaning_guard) = self.perform_cleanup(OperationId::from(name.as_str()))
             else {
                 continue;
             };
-            let owned = self
-                .running_actions
-                .lock()
-                .keys()
-                .any(|operation_id| operation_id.to_string() == name);
-            if owned {
+            if is_owned() {
                 continue;
             }
             let path = entry.path();
@@ -4618,6 +4719,9 @@ impl RunningActionsManagerImpl {
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
+        // The token first: a phase waiting on it (a fetch, an upload) ends
+        // now, whether or not the command ever started.
+        action.kill_token.send_replace(true);
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
@@ -4632,14 +4736,41 @@ impl RunningActionsManagerImpl {
         }
     }
 
-    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
-        let mut cleaning = self.cleaning_up_operations.lock();
-        cleaning
-            .insert(operation_id.clone())
-            .then_some(CleanupGuard {
-                manager: Arc::downgrade(self),
-                operation_id,
-            })
+    /// Marks the operation as being cleaned and returns the guard that
+    /// clears the mark, or `None` when another cleanup already holds it.
+    ///
+    /// The guard is built only after the lock is released: its `Drop` takes
+    /// the same lock, so a guard made under it and thrown away (as
+    /// `then_some` did, whatever the insert said) deadlocked the thread on
+    /// its own mutex and, one by one, every runtime thread that then came to
+    /// clean up or start an action, while the worker's keepalives kept it
+    /// looking alive. The orphan sweep made the double mark routine: it marks
+    /// every directory it visits, and a directory whose action is mid-cleanup
+    /// is already marked.
+    pub fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
+        let inserted = self
+            .cleaning_up_operations
+            .lock()
+            .insert(operation_id.clone());
+        inserted.then(|| CleanupGuard {
+            manager: Arc::downgrade(self),
+            operation_id,
+        })
+    }
+
+    /// Takes the cleanup mark, waiting for whoever holds it to let go. The
+    /// wait is armed before the mark is tried, so a release in between is
+    /// not missed.
+    pub async fn take_cleanup_mark(self: &Arc<Self>, operation_id: OperationId) -> CleanupGuard {
+        loop {
+            let notified = self.cleanup_complete_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(guard) = self.perform_cleanup(operation_id.clone()) {
+                return guard;
+            }
+            notified.await;
+        }
     }
 }
 

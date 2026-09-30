@@ -551,6 +551,34 @@ where
         })
     }
 
+    /// `STRLEN` of a key, retried on a transient error like the reads are.
+    async fn strlen(
+        &self,
+        client: &mut ClientWithPermit<C>,
+        encoded_key: &str,
+    ) -> Result<u64, Error> {
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            match redis::cmd("STRLEN")
+                .arg(encoded_key)
+                .query_async::<u64>(&mut client.connection_manager)
+                .await
+            {
+                Ok(v) => return Ok(v),
+                Err(err)
+                    if attempt < MAX_REDIS_RETRY_ATTEMPTS && is_retryable_redis_error(&err) =>
+                {
+                    client.reconnect(&self.connection_manager).await?;
+                    sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                }
+                Err(err) => {
+                    return Err(Error::from(err).append("In RedisStore::get_part::strlen"));
+                }
+            }
+        }
+    }
+
     async fn get_client(&self) -> Result<ClientWithPermit<C>, Error> {
         let local_client_permits = self.client_permits.clone();
         let remaining = local_client_permits.available_permits();
@@ -1308,6 +1336,7 @@ where
         );
 
         let mut client = self.get_client().await?;
+        let mut bytes_read: u64 = 0;
         loop {
             // getrange is position-based and idempotent, so re-resolve the
             // master and retry on a transient failover without re-sending
@@ -1347,12 +1376,30 @@ where
                         .send(chunk)
                         .await
                         .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+                } else if bytes_read > 0 {
+                    // GETRANGE answers the same for a value that ends on a
+                    // chunk boundary and for a key removed between two
+                    // chunks (eviction under allkeys-lru). Handing the second
+                    // on as EOF is a truncated blob that every store above
+                    // caches as complete, so ask how long the value is now
+                    // and refuse anything but the end we stopped at.
+                    let value_len = self.strlen(&mut client, encoded_key).await?;
+                    let read_end = u64::try_from(data_start)
+                        .unwrap_or(0)
+                        .saturating_add(bytes_read);
+                    if value_len != read_end {
+                        return Err(make_err!(
+                            Code::NotFound,
+                            "Data for {key:?} changed under the read in the Redis store: read {bytes_read} bytes from offset {data_start}, the key now holds {value_len}"
+                        ));
+                    }
                 }
 
                 break; // No more data to read.
             }
 
             // We received a full chunk's worth of data, so write it...
+            bytes_read += chunk.len() as u64;
             writer
                 .send(chunk)
                 .await

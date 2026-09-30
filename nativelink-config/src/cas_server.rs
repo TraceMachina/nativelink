@@ -769,8 +769,11 @@ pub enum CpuUnit {
 }
 
 /// Advertise CPU and memory from what the worker can actually see. The
-/// worker reads `cpu.max` and `memory.max` at its own cgroup v2 root (the
-/// pod's limits on Kubernetes), takes off what it needs for itself, divides
+/// worker reads `cpu.max` and `memory.max` from its own cgroup v2 directory
+/// (found through `/proc/self/cgroup`, so a privileged container that sees
+/// the host's tree still finds its own) up to the nearest limited ancestor,
+/// the pod's limits on Kubernetes; with no limit at any level the configured
+/// properties stand. It takes off what it needs for itself, divides
 /// the memory by the enforcement headroom, and sets the two properties to
 /// the result at registration. What the scheduler packs against is then
 /// derived from the one number that is enforced, instead of typed in twice.
@@ -1263,6 +1266,21 @@ pub struct LocalWorkerConfig {
         alias = "max_upload_timeout"
     )]
     pub max_upload_timeout_s: usize,
+
+    /// Maximum time allowed for fetching an action's inputs into the worker's
+    /// store and its directory before the command runs. A fetch that hangs
+    /// (a store that never answers) otherwise holds the action's slot for
+    /// good while the worker looks healthy; past this the action fails with
+    /// `DeadlineExceeded` and may be retried by the scheduler, and a warning
+    /// names the action every minute before that. Value in seconds.
+    ///
+    /// Default: 10 minutes
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_download_timeout"
+    )]
+    pub max_download_timeout_s: usize,
 
     /// Maximum time to wait for action directory cleanup before timing out.
     /// Value in seconds.
