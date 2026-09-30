@@ -49,7 +49,7 @@ use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use parking_lot::Mutex;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
@@ -86,6 +86,11 @@ const FLEET_RECORD_TTL_INTERVALS: u32 = 3;
 /// failing a whole shape-class at once, and bounds the cumulative
 /// version-conflict backoff sleeps a single pass can incur.
 const MAX_UNSATISFIABLE_FAILS_PER_PASS: usize = 16;
+
+/// Test-only: milliseconds to stall inside the `Arc::new_cyclic` closure
+/// right after the matching-engine task is spawned. See the seam below.
+#[cfg(test)]
+static TEST_CONSTRUCTOR_PAUSE_MS: AtomicUsize = AtomicUsize::new(0);
 
 /// A backlog larger than `floor * DIVISOR` raises the cap to `backlog /
 /// DIVISOR`, so a large single-shape burst drains in ~DIVISOR back-to-back
@@ -1304,10 +1309,25 @@ impl SimpleScheduler {
             })
         };
 
+        // The matching task is spawned inside `Arc::new_cyclic`, during which
+        // `weak_inner.upgrade()` returns `None` (strong count is still zero).
+        // The task treats a failed upgrade as "shutting down", so if it gets
+        // polled before the closure finishes (e.g. `task_change_notify`
+        // already holds a permit from a pubsub event that raced construction),
+        // it would consume that permit, see `None`, and exit permanently.
+        // Gate the loop on this signal, sent after `new_cyclic` returns, so
+        // the task cannot observe a partially constructed scheduler.
+        let (constructed_tx, constructed_rx) = oneshot::channel::<()>();
         let action_scheduler = Arc::new_cyclic(move |weak_self| -> Self {
             let weak_inner = weak_self.clone();
             let task_worker_matching_spawn =
                 spawn!("simple_scheduler_task_worker_matching", async move {
+                    // Wait for construction to complete. An `Err` means the
+                    // sender was dropped without sending, which cannot happen:
+                    // it is sent unconditionally right after `new_cyclic`.
+                    if constructed_rx.await.is_err() {
+                        return;
+                    }
                     let mut last_match_successful = true;
                     let mut worker_match_logging_last: Option<Instant> = None;
                     // Break out of the loop only when the inner is dropped.
@@ -1445,6 +1465,19 @@ impl SimpleScheduler {
                     // Unreachable.
                 });
 
+            // Test-only timing seam: widens the window between spawning the
+            // matching task and the end of `Arc::new_cyclic` (during which
+            // `weak_inner.upgrade()` returns `None` because the strong count
+            // is still zero). This changes no logic, only timing, so a test
+            // can deterministically exercise the constructor race.
+            #[cfg(test)]
+            {
+                let pause_ms = TEST_CONSTRUCTOR_PAUSE_MS.load(Ordering::Acquire);
+                if pause_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(pause_ms as u64));
+                }
+            }
+
             let worker_match_logging_interval = match spec.worker_match_logging_interval_s {
                 // -1 or 0 means disabled (0 used to cause expensive logging on every call)
                 -1 | 0 => None,
@@ -1480,6 +1513,9 @@ impl SimpleScheduler {
                 now_fn: scheduler_now_fn,
             }
         });
+        // Release the matching-engine task now that `self` is fully
+        // constructed and weak upgrades succeed.
+        let _ = constructed_tx.send(());
         (action_scheduler, worker_scheduler_clone)
     }
 }
@@ -1646,5 +1682,88 @@ mod unsatisfiable_fail_cap_tests {
         let over = MAX_UNSATISFIABLE_FAILS_PER_PASS * UNSATISFIABLE_FAIL_BACKLOG_DIVISOR
             + UNSATISFIABLE_FAIL_BACKLOG_DIVISOR;
         assert!(unsatisfiable_fail_cap(over) > MAX_UNSATISFIABLE_FAILS_PER_PASS);
+    }
+}
+
+#[cfg(test)]
+mod constructor_race_tests {
+    use core::sync::atomic::Ordering;
+
+    use nativelink_config::schedulers::SimpleSpec;
+    use nativelink_config::stores::EvictionPolicy;
+    use nativelink_util::instant_wrapper::MockInstantWrapped;
+    use tokio::sync::{Notify, mpsc};
+    use tokio::time::Duration;
+
+    use super::{Arc, SimpleScheduler, TEST_CONSTRUCTOR_PAUSE_MS};
+    use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
+
+    /// Repro for the spawn-then-configure race in `SimpleScheduler::new*`:
+    /// the matching-engine task is spawned inside `Arc::new_cyclic`, holding
+    /// only a `Weak` whose `upgrade()` returns `None` until the closure
+    /// finishes. If `task_change_notify` already holds a permit (as the
+    /// Redis pubsub path can arrange before the constructor runs), the task's
+    /// first poll completes instantly, sees `upgrade() == None`, and
+    /// interprets "not yet constructed" as "shutting down": it returns and
+    /// the scheduler never matches anything again.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the race needs a multi-thread runtime so the spawned task \
+                  is polled while the constructor thread is blocked"
+    )]
+    #[test]
+    fn matching_engine_survives_prestored_notify_permit_during_construction() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            // Widen the in-closure window so the freshly spawned task is
+            // guaranteed to get its first poll while the strong count is 0.
+            TEST_CONSTRUCTOR_PAUSE_MS.store(500, Ordering::Release);
+
+            let task_change_notify = Arc::new(Notify::new());
+            // A permit stored before construction, exactly like
+            // pull_task_change_subscriber's notify_one() on a Redis pubsub
+            // event that arrives before SimpleScheduler::new.
+            task_change_notify.notify_one();
+
+            let db = MemoryAwaitedActionDb::new(
+                &EvictionPolicy::default(),
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+            );
+            let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+            let (_scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+                &SimpleSpec::default(),
+                db,
+                move || {
+                    // Runs after every matching pass; proves the engine is alive.
+                    let tx = tx.clone();
+                    async move {
+                        let _ = tx.send(());
+                    }
+                },
+                task_change_notify.clone(),
+                MockInstantWrapped::default,
+                None,
+            );
+            TEST_CONSTRUCTOR_PAUSE_MS.store(0, Ordering::Release);
+
+            // Nudge it again post-construction; a live engine must run a
+            // matching pass for either the pre-stored permit or this one.
+            task_change_notify.notify_one();
+            // `Ok(None)` means the channel closed: the matching task (which
+            // owns the only sender) returned. `Err(_)` means it is alive but
+            // never ran a pass. Either way it is dead or wedged.
+            let matched = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+            assert!(
+                matched == Ok(Some(())),
+                "matching engine never ran a pass: it exited during \
+                 Arc::new_cyclic because weak_inner.upgrade() was None \
+                 (strong count still 0), mistaking construction for shutdown"
+            );
+        });
     }
 }
