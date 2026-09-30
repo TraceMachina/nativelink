@@ -345,6 +345,23 @@ impl StoreDriver for DedupStore {
                     .await
                     .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 
+                // Content chunks are content-addressed and whole: a chunk must
+                // contain exactly the number of bytes its index entry declares.
+                // If the content store returns a short chunk (a torn/partial
+                // read, or an index/content size disagreement) the streaming
+                // loop below would either panic on the `bytes_to_skip` assert or
+                // silently under-deliver and send EOF as success. Reject the
+                // mismatch here so it surfaces as an error instead.
+                let declared = index_entry.size_bytes();
+                let actual = data.len() as u64;
+                if actual != declared {
+                    return Err(make_err!(
+                        Code::NotFound,
+                        "DedupStore content chunk {} is {actual} bytes but its index entry declares {declared}; refusing to serve a torn read as success",
+                        index_entry,
+                    ));
+                }
+
                 Result::<_, Error>::Ok(data)
             })
             .buffered(self.max_concurrent_fetch_per_get);
