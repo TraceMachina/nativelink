@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use nativelink_config::schedulers::{
-    ExperimentalSimpleSchedulerBackend, SchedulerSpec, SimpleSpec,
+    ExperimentalSimpleSchedulerBackend, PropertyType, SchedulerSpec, SimpleSpec,
 };
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -97,6 +97,36 @@ async fn inner_scheduler_factory(
             (Some(property_modifier_scheduler), worker_scheduler)
         }
         SchedulerSpec::HistoricalResource(spec) => {
+            HistoricalResourceScheduler::validate(spec)?;
+            // A number the scheduler writes into a property the nested
+            // scheduler does not treat as a minimum is matched as an exact
+            // string, and no worker advertises that string.
+            if let SchedulerSpec::Simple(simple) = spec.scheduler.as_ref()
+                && let Some(declared) = &simple.supported_platform_properties
+            {
+                let cold = spec.cold_start.unwrap_or_default();
+                let dimensions = [
+                    (
+                        &spec.cpu_property_name,
+                        spec.classes.iter().any(|c| c.cpu_count > 0) || cold.cpu_count > 0,
+                    ),
+                    (
+                        &spec.memory_property_name,
+                        spec.classes.iter().any(|c| c.memory_kb > 0) || cold.memory_kb > 0,
+                    ),
+                    (
+                        &spec.disk_property_name,
+                        spec.classes.iter().any(|c| c.disk_kb > 0) || cold.disk_kb > 0,
+                    ),
+                ];
+                for (name, used) in dimensions {
+                    if used && declared.get(name) != Some(&PropertyType::Minimum) {
+                        return Err(make_input_err!(
+                            "historical_resource reserves {name} but the nested scheduler does not declare it as a minimum property; add it to supported_platform_properties as minimum"
+                        ));
+                    }
+                }
+            }
             let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
