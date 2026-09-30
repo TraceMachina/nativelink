@@ -480,13 +480,23 @@ mod tests {
         path
     }
 
+    /// The worker process gets only the environment in its key, so the
+    /// scripts need PATH to find `sleep` wherever the tests run.
+    #[cfg(unix)]
+    fn path_env() -> Vec<(String, String)> {
+        vec![(
+            "PATH".to_string(),
+            std::env::var("PATH").unwrap_or_default(),
+        )]
+    }
+
     #[cfg(unix)]
     fn shell_worker_key(script: &Path) -> WorkerKey {
         WorkerKey {
             executable: PathBuf::from("/bin/sh"),
             startup_args: vec![script.display().to_string()],
             wire_format: WireFormat::Json,
-            env: Vec::new(),
+            env: path_env(),
         }
     }
 
