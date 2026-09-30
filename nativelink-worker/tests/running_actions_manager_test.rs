@@ -6788,6 +6788,12 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
         ) -> Result<(Action, DigestInfo), Error> {
             let command = Command {
                 arguments: vec![format!("./{WORKER_SCRIPT_NAME}"), "@args.txt".to_string()],
+                // The worker process gets the action's environment and no
+                // more, as Bazel sends it; the script needs PATH for sed.
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap_or_default(),
+                }],
                 output_paths: vec!["count.txt".to_string()],
                 platform: Some(Platform {
                     properties: vec![

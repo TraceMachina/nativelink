@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
@@ -2344,13 +2344,42 @@ impl RunningActionImpl {
             match wire_format_result {
                 Ok(wire_format) => {
                     let command_argv = os_args_to_strings(&args)?;
-                    let key = WorkerKey::from_argv(&command_argv, wire_format)?.with_env(
-                        command_proto
-                            .environment_variables
-                            .iter()
-                            .map(|variable| (variable.name.clone(), variable.value.clone()))
-                            .collect(),
-                    );
+                    // The process gets what a one-shot action gets: the
+                    // worker's `additional_environment`, then the action's
+                    // own variables on top. Only the sources that are the
+                    // same for every action go in; a timeout, a side channel
+                    // file or an action directory belongs to one action, and
+                    // a process that serves many cannot carry them.
+                    let mut env: BTreeMap<String, String> = BTreeMap::new();
+                    if let Some(additional_environment) = &self
+                        .running_actions_manager
+                        .execution_configuration
+                        .additional_environment
+                    {
+                        for (name, source) in additional_environment {
+                            let value = match source {
+                                EnvironmentSource::Property(property) => self
+                                    .action_info
+                                    .platform_properties
+                                    .get(property)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                                EnvironmentSource::Value(value) => value.clone(),
+                                EnvironmentSource::FromEnvironment => {
+                                    env::var(name).unwrap_or_default()
+                                }
+                                EnvironmentSource::TimeoutMillis
+                                | EnvironmentSource::SideChannelFile
+                                | EnvironmentSource::ActionDirectory => continue,
+                            };
+                            env.insert(name.clone(), value);
+                        }
+                    }
+                    for variable in &command_proto.environment_variables {
+                        env.insert(variable.name.clone(), variable.value.clone());
+                    }
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?
+                        .with_env(env.into_iter().collect());
                     let request = WorkRequest {
                         arguments: persistent_worker_request_arguments(&command_argv),
                         inputs: Vec::<PersistentWorkerInput>::new(),
