@@ -13,35 +13,43 @@ cargo-fuzz = true
 # behind a feature lets the light `cas_config` target build on that image
 # exactly as it did before this crate grew.
 scheduler_race = [
-    "dep:nativelink-error",
-    "dep:nativelink-proto",
-    "dep:nativelink-scheduler",
-    "dep:nativelink-util",
-    "nativelink-util/mock_operation_id",
-    "dep:arbitrary",
-    "dep:futures",
-    "dep:mock_instant",
-    "dep:tokio",
-    "dep:tracing",
-    "dep:tracing-subscriber",
+  "dep:arbitrary",
+  "dep:futures",
+  "dep:mock_instant",
+  "dep:nativelink-error",
+  "dep:nativelink-proto",
+  "dep:nativelink-scheduler",
+  "dep:nativelink-util",
+  "dep:tokio",
+  "dep:tracing",
+  "dep:tracing-subscriber",
+  "nativelink-util/mock_operation_id",
 ]
 
 [dependencies]
-nativelink-config = { path = "../../nativelink-config" }
 libfuzzer-sys = "0.4"
+nativelink-config = { path = "../../nativelink-config" }
 serde_json5 = { version = "0.2.1", default-features = false }
 
 # scheduler_race-only (optional; enabled by the feature above).
+arbitrary = { version = "1", features = ["derive"], optional = true }
+futures = { version = "0.3", default-features = false, optional = true }
+mock_instant = { version = "0.5.3", default-features = false, optional = true }
 nativelink-error = { path = "../../nativelink-error", optional = true }
 nativelink-proto = { path = "../../nativelink-proto", optional = true }
 nativelink-scheduler = { path = "../../nativelink-scheduler", optional = true }
 nativelink-util = { path = "../../nativelink-util", optional = true }
-arbitrary = { version = "1", features = ["derive"], optional = true }
-futures = { version = "0.3", default-features = false, optional = true }
-mock_instant = { version = "0.5.3", default-features = false, optional = true }
-tokio = { version = "1", features = ["rt", "sync", "time", "test-util"], optional = true }
+tokio = { version = "1", features = [
+  "rt",
+  "sync",
+  "test-util",
+  "time",
+], optional = true }
 tracing = { version = "0.1", default-features = false, optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+tracing-subscriber = { version = "0.3", features = [
+  "env-filter",
+  "fmt",
+], optional = true }
 
 [lib]
 path = "src/lib.rs"
@@ -58,5 +66,5 @@ bench = false
 doc = false
 name = "scheduler_race"
 path = "fuzz_targets/scheduler_race.rs"
-test = false
 required-features = ["scheduler_race"]
+test = false
