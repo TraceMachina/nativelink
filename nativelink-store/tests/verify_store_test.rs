@@ -401,6 +401,11 @@ async fn verify_size_true_fails_a_short_read() -> Result<(), Error> {
     let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
     inner_store.update_oneshot(digest, "1234".into()).await?;
 
+    // A range read that stops before the end is judged against the range,
+    // and passes while the bytes are there.
+    let result = store.get_part_unchunked(digest, 1, Some(3)).await?;
+    assert_eq!(result, "234");
+
     let result = store.get_part_unchunked(digest, 0, None).await;
     let err = result.unwrap_err();
     assert_eq!(err.code, Code::DataLoss, "{err:?}");
@@ -408,12 +413,10 @@ async fn verify_size_true_fails_a_short_read() -> Result<(), Error> {
         err.to_string().contains("Read 4 bytes of the 10 expected"),
         "{err:?}"
     );
-
-    // A range read that stops before the end is judged against the range.
-    let result = store.get_part_unchunked(digest, 1, Some(3)).await?;
-    assert_eq!(result, "234");
+    // The failed read dropped the copy, so a range past its end now finds
+    // nothing at all.
     let result = store.get_part_unchunked(digest, 1, Some(5)).await;
-    assert_eq!(result.unwrap_err().code, Code::DataLoss);
+    assert_eq!(result.unwrap_err().code, Code::NotFound);
     Ok(())
 }
 
@@ -539,5 +542,146 @@ async fn verify_size_true_fails_when_the_inner_read_errors_after_some_data() -> 
         err.to_string().contains("key removed under the read"),
         "{err:?}"
     );
+    Ok(())
+}
+
+/// The tier below serves more bytes than the digest names: the checker's
+/// `DataLoss` is what the caller sees, not the inner store's failed send
+/// once the checker stops reading.
+#[nativelink_test]
+async fn verify_size_true_reports_data_loss_on_an_over_long_read() -> Result<(), Error> {
+    use core::pin::Pin;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::Code;
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey};
+
+    /// Serves forty bytes for every key, in four chunks, whatever the digest
+    /// says.
+    #[derive(Debug)]
+    struct OverLongStore;
+
+    impl MetricsComponent for OverLongStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for OverLongStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            results.fill(Some(10));
+            Ok(())
+        }
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            Ok(0)
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            for _ in 0..4 {
+                writer.send("0123456789".into()).await?;
+            }
+            writer.send_eof()
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(OverLongStore);
+
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(Arc::new(OverLongStore)),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    let err = tokio::time::timeout(
+        core::time::Duration::from_secs(5),
+        store.get_part_unchunked(digest, 0, None),
+    )
+    .await
+    .expect("an over-long read must not hang")
+    .unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert!(
+        err.to_string().contains("more than the 10 expected"),
+        "{err:?}"
+    );
+    Ok(())
+}
+
+/// A copy that fails size verification is dropped from the tier that holds
+/// it, so the next read repopulates from below instead of failing the same
+/// way until the cache happens to evict it.
+#[nativelink_test]
+async fn verify_size_true_drops_a_copy_that_fails_verification() -> Result<(), Error> {
+    use nativelink_error::Code;
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    // Ten bytes claimed, four stored: a truncated copy.
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    inner_store.update_oneshot(digest, "1234".into()).await?;
+    assert!(inner_store.has(digest).await?.is_some());
+
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert_eq!(
+        inner_store.has(digest).await?,
+        None,
+        "the truncated copy is gone after the failed read"
+    );
+    // And the next read reports NotFound, the signal for a re-upload.
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
     Ok(())
 }

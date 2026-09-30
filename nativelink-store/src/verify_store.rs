@@ -31,6 +31,7 @@ use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
+use tracing::warn;
 
 #[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
@@ -296,10 +297,44 @@ impl StoreDriver for VerifyStore {
         };
         let check_fut = self.inner_check_read(rx, writer, expected, key.borrow());
         let (read_res, check_res) = tokio::join!(read_fut, check_fut);
-        match (read_res, check_res) {
+        // The checker's verdict first: on a read past the expected size it
+        // drops its receiver and the inner send then fails with Internal,
+        // which must not hide the DataLoss. Otherwise the inner error (a
+        // NotFound from below) comes before the checker's closed-channel
+        // Internal, as `update` orders the same pair.
+        let result = match (read_res, check_res) {
+            (_, Err(e)) if e.code == Code::DataLoss => Err(e),
             (Err(e), _) | (Ok(()), Err(e)) => Err(e),
             (Ok(()), Ok(())) => Ok(()),
+        };
+        if let Err(err) = &result
+            && err.code == Code::DataLoss
+        {
+            // The copy that served this read is bad; drop it from every
+            // cache below so the next read repopulates from the durable
+            // tier, or fails with NotFound and the client re-uploads.
+            match self
+                .inner_store
+                .as_store_driver_pin()
+                .remove(key.borrow())
+                .await
+            {
+                Ok(removed) => warn!(
+                    ?key,
+                    removed, "Dropped a copy that failed size verification"
+                ),
+                Err(remove_err) => warn!(
+                    ?key,
+                    ?remove_err,
+                    "Could not drop a copy that failed size verification"
+                ),
+            }
         }
+        result
+    }
+
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store.as_store_driver_pin().remove(key).await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
