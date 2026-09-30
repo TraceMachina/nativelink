@@ -54,8 +54,8 @@ pub struct ActionInfoWithProps {
 #[derive(Debug)]
 pub enum WorkerUpdate {
     /// Requests that the worker begin executing this action, dispatched at
-    /// this scheduler time.
-    RunAction(Box<(OperationId, ActionInfoWithProps, WorkerTimestamp)>),
+    /// this scheduler time with this scheduler-wide dispatch generation.
+    RunAction(Box<(OperationId, ActionInfoWithProps, WorkerTimestamp, u64)>),
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
@@ -79,6 +79,15 @@ pub struct PendingActionInfoData {
     /// The worker's last-seen timestamp when the dispatch was sent.
     #[metric(help = "When this operation was dispatched to the worker.")]
     pub dispatched_at: WorkerTimestamp,
+    /// The identity of this dispatch: a scheduler-wide monotonic counter
+    /// allocated under the scheduler mutex at send time. `dispatched_at`
+    /// has second resolution and so cannot distinguish a requeue and
+    /// re-dispatch inside one wall-clock second; the generation is strictly
+    /// increasing per dispatch, so a snapshot of it names exactly one
+    /// dispatch. Scheduler-wide (not per-worker) so a worker that
+    /// disconnects and re-registers under the same id can never reissue a
+    /// generation an old snapshot still holds.
+    pub dispatch_generation: u64,
     /// The worker said it took the action. A worker that does not speak
     /// the acknowledgement never sets this, which is why the
     /// unacknowledged sweep is opt-in.
@@ -260,9 +269,14 @@ impl Worker {
     pub async fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
             WorkerUpdate::RunAction(action) => {
-                let (operation_id, action_info, dispatched_at) = *action;
-                self.run_action(operation_id, action_info, dispatched_at)
-                    .await
+                let (operation_id, action_info, dispatched_at, dispatch_generation) = *action;
+                self.run_action(
+                    operation_id,
+                    action_info,
+                    dispatched_at,
+                    dispatch_generation,
+                )
+                .await
             }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
@@ -366,6 +380,7 @@ impl Worker {
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
         dispatched_at: WorkerTimestamp,
+        dispatch_generation: u64,
     ) -> Result<(), Error> {
         let tx = &mut self.tx;
         let worker_platform_properties = &mut self.platform_properties;
@@ -397,6 +412,7 @@ impl Worker {
                         action_info,
                         kill_requested_at: None,
                         dispatched_at,
+                        dispatch_generation,
                         accepted: false,
                         last_usage: None,
                     },

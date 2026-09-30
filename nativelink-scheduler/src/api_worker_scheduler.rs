@@ -254,6 +254,14 @@ struct ApiWorkerSchedulerImpl {
     /// about it without waiting for the next periodic exchange.
     local_fleet_change_notify: Arc<Notify>,
 
+    /// The next dispatch generation; incremented under this struct's mutex
+    /// for every dispatch, so each dispatch of any operation to any worker
+    /// carries a unique, strictly increasing identity. Scheduler-wide rather
+    /// than per-worker: a per-worker counter would restart when a worker
+    /// re-registers under the same id, letting a stale kill snapshot from
+    /// the old incarnation match a fresh dispatch on the new one.
+    next_dispatch_generation: u64,
+
     /// Whether an action with a given property shape could run on some
     /// connected worker when that worker is idle. `None` means it could. This
     /// depends only on what workers registered with, so it holds until the
@@ -1114,12 +1122,17 @@ impl ApiWorkerSchedulerImpl {
         action_info: ActionInfoWithProps,
         dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
+        // Allocated under the scheduler mutex: a re-dispatch always gets a
+        // strictly greater generation than any snapshot taken before it.
+        self.next_dispatch_generation += 1;
+        let dispatch_generation = self.next_dispatch_generation;
         if let Some(worker) = self.workers.get_mut(&worker_id) {
             let notify_worker_result = worker
                 .notify_update(WorkerUpdate::RunAction(Box::new((
                     operation_id.clone(),
                     action_info.clone(),
                     dispatched_at,
+                    dispatch_generation,
                 ))))
                 .await;
 
@@ -1298,13 +1311,24 @@ impl ApiWorkerSchedulerImpl {
         &mut self,
         worker_id: &WorkerId,
         operation_id: OperationId,
+        snapshot_dispatch_generation: u64,
     ) -> Result<(), Error> {
         let Some(worker) = self.workers.get_mut(worker_id) else {
             // Gone between the snapshot and now; its actions were requeued.
             return Ok(());
         };
         // Already told, or finished in the meantime; nothing more to send.
-        if !worker.running_action_infos.contains_key(&operation_id)
+        let Some(pending_action_info) = worker.running_action_infos.get(&operation_id) else {
+            return Ok(());
+        };
+        // A different generation means the snapshot's dispatch was requeued
+        // and the operation legitimately re-dispatched to this worker while
+        // the sweep ran lock-free; the revocation evidence belongs to the
+        // old dispatch, not this one. The generation, not `dispatched_at`,
+        // is the dispatch's identity: the timestamp has second resolution,
+        // so a requeue-and-redispatch inside one wall-clock second carries
+        // the same `dispatched_at` and would be killed by mistake.
+        if pending_action_info.dispatch_generation != snapshot_dispatch_generation
             || worker.is_kill_requested(&operation_id)
         {
             return Ok(());
@@ -1478,6 +1502,7 @@ impl ApiWorkerScheduler {
                 peer_fleet_known_since: None,
                 peer_fleet_last_refresh: None,
                 local_fleet_change_notify: local_fleet_change_notify.clone(),
+                next_dispatch_generation: 0,
                 static_verdicts: HashMap::new(),
             }),
             platform_property_manager,
@@ -2115,7 +2140,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
     async fn kill_revoked_operations(&self) -> Result<(), Error> {
         let (worker_state_manager, running) = {
             let inner = self.inner.lock().await;
-            let running: Vec<(WorkerId, OperationId)> = inner
+            let running: Vec<(WorkerId, OperationId, u64)> = inner
                 .workers
                 .iter()
                 .flat_map(|(worker_id, worker)| {
@@ -2132,7 +2157,16 @@ impl WorkerScheduler for ApiWorkerScheduler {
                         .filter(|(_, pending_action_info)| {
                             pending_action_info.kill_requested_at.is_none()
                         })
-                        .map(|(operation_id, _)| (worker_id.clone(), operation_id.clone()))
+                        // `dispatch_generation` identifies the dispatch
+                        // this snapshot saw; the kill is only sent if the
+                        // entry still carries it when the lock is re-taken.
+                        .map(|(operation_id, pending_action_info)| {
+                            (
+                                worker_id.clone(),
+                                operation_id.clone(),
+                                pending_action_info.dispatch_generation,
+                            )
+                        })
                 })
                 .collect();
             (inner.worker_state_manager.clone(), running)
@@ -2140,8 +2174,8 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
         // On store-backed deployments each check is a network round-trip,
         // so run them lock-free with bounded concurrency.
-        let revoked: Vec<(WorkerId, OperationId)> = futures::stream::iter(running)
-            .map(|(worker_id, operation_id)| {
+        let revoked: Vec<(WorkerId, OperationId, u64)> = futures::stream::iter(running)
+            .map(|(worker_id, operation_id, dispatch_generation)| {
                 let worker_state_manager = worker_state_manager.clone();
                 async move {
                     match worker_state_manager
@@ -2149,7 +2183,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                         .await
                     {
                         Ok(true) => None,
-                        Ok(false) => Some((worker_id, operation_id)),
+                        Ok(false) => Some((worker_id, operation_id, dispatch_generation)),
                         // Only kill on positive evidence; try again next pass.
                         Err(err) => {
                             warn!(
@@ -2174,10 +2208,13 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
         // Re-check lock-free so the scheduler mutex is never held across
         // store I/O; the checks above may be stale by the time we get here.
-        // The remaining TOCTOU window is fine: worker_notify_kill_operation
-        // re-guards with contains_key + is_kill_requested under the lock.
+        // The remaining TOCTOU window is closed under the lock:
+        // worker_notify_kill_operation only kills the entry whose
+        // `dispatch_generation` matches the snapshot, so an operation
+        // requeued and re-dispatched to the same worker while the sweep ran
+        // lock-free is left alone.
         let mut confirmed = Vec::new();
-        for (worker_id, operation_id) in revoked {
+        for (worker_id, operation_id, dispatch_generation) in revoked {
             // A result of Ok(true) or Err(_) means the operation was
             // reassigned to this worker after the first check, or the state
             // manager went quiet: nothing to kill on this pass.
@@ -2186,7 +2223,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 .await
                 .is_ok_and(|executing| !executing);
             if revoked {
-                confirmed.push((worker_id, operation_id));
+                confirmed.push((worker_id, operation_id, dispatch_generation));
             }
         }
 
@@ -2196,10 +2233,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
         let mut inner = self.inner.lock().await;
         let mut result = Ok(());
-        for (worker_id, operation_id) in confirmed {
+        for (worker_id, operation_id, dispatch_generation) in confirmed {
             result = result.merge(
                 inner
-                    .worker_notify_kill_operation(&worker_id, operation_id)
+                    .worker_notify_kill_operation(&worker_id, operation_id, dispatch_generation)
                     .await,
             );
         }

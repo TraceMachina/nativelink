@@ -79,6 +79,7 @@ rust_test_suite(
         "tests/execution_active_count_test.rs",
         "tests/fleet_capabilities_test.rs",
         "tests/historical_resource_scheduler_test.rs",
+        "tests/kill_revoked_redispatch_race_test.rs",
         "tests/live_memory_veto_test.rs",
         "tests/placement_test.rs",
         "tests/platform_property_manager_test.rs",
