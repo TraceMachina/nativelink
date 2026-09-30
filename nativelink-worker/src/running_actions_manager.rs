@@ -1827,9 +1827,23 @@ async fn do_cleanup(
 
     debug!(%action_directory, "Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = fs::remove_dir_all(action_directory)
-        .await
-        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    // A fetch or an upload ended by a kill or a timeout can leave a blocking
+    // copy or a stamp finishing inside the tree for a moment; the removal is
+    // retried through that instead of failing on the first try.
+    let remove_deadline = Instant::now() + running_actions_manager.max_cleanup_wait;
+    let remove_dir_result = loop {
+        match fs::remove_dir_all(action_directory).await {
+            Ok(()) => break Ok(()),
+            Err(err) if Instant::now() < remove_deadline => {
+                debug!(%operation_id, ?err, "Removing the working directory again");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => {
+                break Err(err)
+                    .err_tip(|| format!("Could not remove working directory {action_directory}"));
+            }
+        }
+    };
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
@@ -2078,6 +2092,9 @@ pub struct RunningActionImpl {
     input_lease: Option<Arc<ActionInputLease>>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
+    /// Set on a kill; every phase that can wait watches it, so a kill ends
+    /// a fetch or an upload as surely as it ends the command.
+    kill_token: watch::Sender<bool>,
     state: Mutex<RunningActionImplState>,
     has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
@@ -2101,7 +2118,9 @@ impl RunningActionImpl {
             )
         });
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
+        let (kill_token, _) = watch::channel(false);
         Self {
+            kill_token,
             operation_id,
             action_directory,
             work_directory,
@@ -3640,12 +3659,7 @@ impl RunningAction for RunningActionImpl {
         let download_timeout = self.running_actions_manager.max_download_timeout;
         let operation_id = self.operation_id.clone();
         let metrics = self.metrics().clone();
-        let this = self.clone();
-        // The kill channel is watched here too, and handed back for
-        // `execute` when the fetch completes: a kill that arrives while the
-        // inputs are still fetching used to wait for a fetch that might never
-        // end, and the scheduler evicts a worker that does not acknowledge.
-        let mut kill_channel_rx = this.state.lock().kill_channel_rx.take();
+        let mut kill_rx = self.kill_token.subscribe();
         // Boxed: the prepare state machine is large, and pinning it on the
         // stack next to the select below overflowed a test thread.
         let mut prepare_fut = Box::pin(
@@ -3669,20 +3683,11 @@ impl RunningAction for RunningActionImpl {
                 );
             }
         };
-        let killed_fut = async {
-            match kill_channel_rx.as_mut() {
-                Some(rx) => {
-                    let _ = rx.await;
-                }
-                None => core::future::pending::<()>().await,
-            }
-        };
         let res = tokio::time::timeout(download_timeout, async {
             tokio::pin!(stall_warn_fut);
-            tokio::pin!(killed_fut);
             tokio::select! {
                 result = &mut prepare_fut => result,
-                () = &mut killed_fut => {
+                _ = kill_rx.wait_for(|killed| *killed) => {
                     warn!(%operation_id, "prepare_action: killed while fetching inputs");
                     Err(make_err!(
                         Code::Aborted,
@@ -3706,7 +3711,6 @@ impl RunningAction for RunningActionImpl {
             )
         })
         .and_then(|res| res);
-        this.state.lock().kill_channel_rx = kill_channel_rx;
         if let Err(ref e) = res {
             warn!(?e, "Error during prepare_action");
         }
@@ -3735,6 +3739,7 @@ impl RunningAction for RunningActionImpl {
             "upload_results: starting with timeout",
         );
         let metrics = self.metrics().clone();
+        let kill_token = self.kill_token.clone();
         let upload_fut = metrics
             .upload_results
             .wrap(Self::inner_upload_results(self));
@@ -3753,11 +3758,24 @@ impl RunningAction for RunningActionImpl {
             }
         };
 
+        // Only a kill that arrives during the upload ends it: a kill that
+        // already ended the command leaves a killed result that still has to
+        // reach the scheduler, so the token's current state is taken as seen
+        // and only a change from here on aborts.
+        let mut kill_rx = kill_token.subscribe();
+        kill_rx.borrow_and_update();
         let res = tokio::time::timeout(upload_timeout, async {
             tokio::pin!(upload_fut);
             tokio::pin!(stall_warn_fut);
             tokio::select! {
                 result = &mut upload_fut => result,
+                Ok(()) = kill_rx.changed() => {
+                    warn!(%operation_id, "upload_results: killed while uploading");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while uploading its results"
+                    ))
+                }
                 () = &mut stall_warn_fut => unreachable!(),
             }
         })
@@ -4701,6 +4719,9 @@ impl RunningActionsManagerImpl {
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
+        // The token first: a phase waiting on it (a fetch, an upload) ends
+        // now, whether or not the command ever started.
+        action.kill_token.send_replace(true);
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()

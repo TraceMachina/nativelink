@@ -2559,7 +2559,18 @@ mod tests {
             )
             .await?;
 
-        let run_action_fut = run_action(running_action_impl);
+        // The inputs first: a kill that lands while they are still fetching
+        // ends the action there, and this test is about killing the command.
+        let running_action_impl = running_action_impl.prepare_action().await?;
+        let run_action_fut = running_action_impl
+            .clone()
+            .execute()
+            .and_then(RunningAction::upload_results)
+            .and_then(RunningAction::get_finished_result)
+            .then(|result| async move {
+                running_action_impl.cleanup().await?;
+                result
+            });
         tokio::pin!(run_action_fut);
 
         #[cfg(target_family = "unix")]
@@ -3613,23 +3624,31 @@ exit 0
     #[cfg(target_family = "unix")]
     default_health_status_indicator!(GatedStore);
 
-    /// A store that answers `has` and uploads normally but never finishes a
-    /// read of one digest: what a wedged tier looks like to the worker.
+    /// A store that answers `has` and uploads normally but can be told to
+    /// never finish a read of one digest, or any write: what a wedged tier
+    /// looks like to the worker.
+    #[cfg(target_family = "unix")]
     #[derive(Debug)]
     struct HangingStore {
         inner: Store,
         hang_on: DigestInfo,
+        hang_reads: AtomicBool,
+        hang_updates: AtomicBool,
     }
 
+    #[cfg(target_family = "unix")]
     impl HangingStore {
         fn new(inner: Arc<MemoryStore>, hang_on: DigestInfo) -> Arc<Self> {
             Arc::new(Self {
                 inner: Store::new(inner),
                 hang_on,
+                hang_reads: AtomicBool::new(true),
+                hang_updates: AtomicBool::new(false),
             })
         }
     }
 
+    #[cfg(target_family = "unix")]
     impl MetricsComponent for HangingStore {
         fn publish(
             &self,
@@ -3640,6 +3659,7 @@ exit 0
         }
     }
 
+    #[cfg(target_family = "unix")]
     #[async_trait]
     impl StoreDriver for HangingStore {
         async fn post_init(self: Arc<Self>) -> Result<(), Error> {
@@ -3661,6 +3681,9 @@ exit 0
             reader: DropCloserReadHalf,
             size_info: UploadSizeInfo,
         ) -> Result<u64, Error> {
+            if self.hang_updates.load(Ordering::Acquire) {
+                future::pending::<()>().await;
+            }
             self.inner
                 .as_store_driver_pin()
                 .update(key, reader, size_info)
@@ -3673,7 +3696,7 @@ exit 0
             offset: u64,
             length: Option<u64>,
         ) -> Result<(), Error> {
-            if key == StoreKey::Digest(self.hang_on) {
+            if self.hang_reads.load(Ordering::Acquire) && key == StoreKey::Digest(self.hang_on) {
                 future::pending::<()>().await;
             }
             self.inner
@@ -3698,13 +3721,23 @@ exit 0
         }
     }
 
+    #[cfg(target_family = "unix")]
     default_health_status_indicator!(HangingStore);
 
     /// A manager whose CAS never finishes reading one input of the action it
-    /// returns the digest of.
+    /// returns the digest of; the store comes back too, so a test can lift
+    /// that or make writes hang instead.
+    #[cfg(target_family = "unix")]
     async fn hung_fetch_setup(
         max_download_timeout: Duration,
-    ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo), Box<dyn core::error::Error>> {
+    ) -> Result<
+        (
+            Arc<RunningActionsManagerImpl>,
+            DigestInfo,
+            Arc<HangingStore>,
+        ),
+        Box<dyn core::error::Error>,
+    > {
         const FILE_CONTENT: &[u8] = b"never arrives";
         let inner = MemoryStore::new(&MemorySpec::default());
         let file_digest = DigestInfo::new([9u8; 32], FILE_CONTENT.len() as u64);
@@ -3729,7 +3762,7 @@ exit 0
                 bypass_dedup_threshold_bytes: 0,
             },
             Store::new(fast_store),
-            Store::new(slow_store),
+            Store::new(slow_store.clone()),
         );
         let input_root_digest = serialize_and_upload_message(
             &Directory {
@@ -3745,7 +3778,10 @@ exit 0
         )
         .await?;
         let command_digest = serialize_and_upload_message(
-            &Command::default(),
+            &Command {
+                arguments: vec!["sh".to_string(), "-c".to_string(), "echo hi".to_string()],
+                ..Default::default()
+            },
             inner.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
@@ -3784,9 +3820,10 @@ exit 0
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
             })?);
-        Ok((running_actions_manager, action_digest))
+        Ok((running_actions_manager, action_digest, slow_store))
     }
 
+    #[cfg(target_family = "unix")]
     fn start_execute_for(action_digest: DigestInfo, operation_id: &str) -> StartExecute {
         StartExecute {
             request_metadata: None,
@@ -3802,20 +3839,22 @@ exit 0
 
     /// An input whose fetch never completes fails the action at
     /// `max_download_timeout` with `DeadlineExceeded` instead of holding its
-    /// slot for good.
+    /// slot for good, and the action then cleans up like any other.
+    #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn prepare_action_times_out_on_a_hung_fetch() -> Result<(), Box<dyn core::error::Error>> {
-        let (running_actions_manager, action_digest) =
+        let (running_actions_manager, action_digest, _store) =
             hung_fetch_setup(Duration::from_secs(1)).await?;
+        let operation_id = OperationId::default();
         let started = std::time::Instant::now();
-        let result = running_actions_manager
+        let action = running_actions_manager
             .create_and_add_action(
                 "test-worker".to_string(),
-                start_execute_for(action_digest, &OperationId::default().to_string()),
+                start_execute_for(action_digest, &operation_id.to_string()),
             )
-            .await?
-            .prepare_action()
-            .await;
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let result = action.clone().prepare_action().await;
         let err = result.expect_err("the fetch never completes, prepare must fail");
         assert_eq!(err.code, Code::DeadlineExceeded, "{err:?}");
         assert!(err.to_string().contains("max_download_timeout"), "{err:?}");
@@ -3824,15 +3863,25 @@ exit 0
             "took {:?}",
             started.elapsed()
         );
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
         Ok(())
     }
 
     /// A kill that arrives while the inputs are still fetching ends the
-    /// action at once with `Aborted`; it does not wait for the fetch.
+    /// action at once with `Aborted`; it does not wait for the fetch, a
+    /// later `execute` fails instead of panicking, and cleanup runs.
+    #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn prepare_action_stops_on_a_kill() -> Result<(), Box<dyn core::error::Error>> {
-        let (running_actions_manager, action_digest) =
-            hung_fetch_setup(Duration::from_secs(60)).await?;
+        let (running_actions_manager, action_digest, _store) =
+            hung_fetch_setup(Duration::from_mins(1)).await?;
         let operation_id = OperationId::default();
         let action = running_actions_manager
             .create_and_add_action(
@@ -3840,6 +3889,7 @@ exit 0
                 start_execute_for(action_digest, &operation_id.to_string()),
             )
             .await?;
+        let action_directory = action.get_work_directory().clone();
         let started = std::time::Instant::now();
         let killer = {
             let manager = running_actions_manager.clone();
@@ -3849,7 +3899,7 @@ exit 0
                 manager.kill_operation(&operation_id).await
             }
         };
-        let (kill_res, prepare_res) = tokio::join!(killer, action.prepare_action());
+        let (kill_res, prepare_res) = tokio::join!(killer, action.clone().prepare_action());
         kill_res?;
         let err = prepare_res.expect_err("a killed fetch must not complete");
         assert_eq!(err.code, Code::Aborted, "{err:?}");
@@ -3858,6 +3908,68 @@ exit 0
             "took {:?}",
             started.elapsed()
         );
+        let err = action
+            .clone()
+            .execute()
+            .await
+            .expect_err("execute after a killed prepare must fail");
+        assert_ne!(err.code, Code::Ok, "{err:?}");
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        Ok(())
+    }
+
+    /// A kill that arrives while the results upload ends it at once with
+    /// `Aborted`: a kill is acknowledged in every phase, not only while the
+    /// command runs.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn upload_results_stops_on_a_kill() -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            hung_fetch_setup(Duration::from_mins(1)).await?;
+        // The fetch completes; the write of the results never does.
+        store.hang_reads.store(false, Ordering::Release);
+        store.hang_updates.store(true, Ordering::Release);
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let started = std::time::Instant::now();
+        let killer = {
+            let manager = running_actions_manager.clone();
+            let operation_id = operation_id.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                manager.kill_operation(&operation_id).await
+            }
+        };
+        let (kill_res, upload_res) = tokio::join!(killer, async {
+            action
+                .clone()
+                .prepare_action()
+                .await?
+                .execute()
+                .await?
+                .upload_results()
+                .await
+        });
+        kill_res?;
+        let err = upload_res.expect_err("a killed upload must not complete");
+        assert_eq!(err.code, Code::Aborted, "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "took {:?}",
+            started.elapsed()
+        );
+        action.cleanup().await?;
+        assert!(!Path::new(&action_directory).exists());
         Ok(())
     }
 
@@ -4763,6 +4875,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::ZERO,
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4833,6 +4946,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(2),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6491,17 +6605,17 @@ exit 1
         let result = execute_results_fut.await;
         kill_all_fut.await;
         {
-            // Ensure our results are correct.
-            let action_result = result?;
-            let err = action_result
-                .error
-                .as_ref()
-                .err_tip(|| format!("No error exists in result : {action_result:?}"))?;
-            assert_eq!(
-                err.code,
-                Code::Aborted,
-                "Expected Aborted : {action_result:?}"
-            );
+            // Ensure our results are correct. The kill lands on the command
+            // or, when the fetch has not finished yet, on the fetch; either
+            // way the action ends as aborted.
+            let err = match result {
+                Ok(action_result) => action_result
+                    .error
+                    .clone()
+                    .err_tip(|| format!("No error exists in result : {action_result:?}"))?,
+                Err(err) => err,
+            };
+            assert_eq!(err.code, Code::Aborted, "Expected Aborted : {err:?}");
         }
 
         Ok(())
