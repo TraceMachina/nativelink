@@ -28,7 +28,7 @@
 //!   * the drain epilogue: after all fuzz events, with one healthy worker
 //!     connected and the clock advanced past every configured ceiling, every
 //!     operation must reach a terminal stage — anything still `Executing` or
-//!     `Queued` is a wedge (the "dead peer / pre-empted timeout / lost
+//!     `Queued` is a wedge (the "dead peer / preempted timeout / lost
 //!     requeue" bug class).
 //!
 //! Determinism: single-threaded runtime, `MockClock` for time, no real I/O.

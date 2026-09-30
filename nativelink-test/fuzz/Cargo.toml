@@ -19,13 +19,12 @@ futures = { version = "0.3", default-features = false }
 libfuzzer-sys = "0.4"
 mock_instant = { version = "0.5.3", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }
-tokio = { version = "1", features = ["rt", "sync", "time", "test-util"] }
+tokio = { version = "1", features = ["rt", "sync", "test-util", "time"] }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [lib]
 path = "src/lib.rs"
-
 
 [[bin]]
 bench = false
