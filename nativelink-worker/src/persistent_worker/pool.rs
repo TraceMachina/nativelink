@@ -19,15 +19,17 @@
 //! executable + startup-flag prefix + wire format are identical share a worker
 //! process.
 
-use core::mem;
 use core::time::Duration;
+use core::{fmt, mem};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_util::background_spawn;
+use nativelink_util::task::JoinHandleDropGuard;
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
 use super::live_worker::LiveWorker;
@@ -45,9 +47,12 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_mins(5);
 /// dropped on `release` (helps recycle accumulated JVM state).
 pub const DEFAULT_MAX_REQUESTS_PER_WORKER: u64 = 200;
 
+/// Default wait for a worker to come back when a key is at its cap.
+pub const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Identity by which two persistent-worker actions are considered compatible.
 /// Same `WorkerKey` => same worker can serve both.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WorkerKey {
     /// Resolved tool executable. Mirrors `Action.arguments[0]`.
     pub executable: PathBuf,
@@ -57,6 +62,27 @@ pub struct WorkerKey {
     pub startup_args: Vec<String>,
     /// Wire format from the action's `requires-worker-protocol`.
     pub wire_format: WireFormat,
+    /// The action's environment, sorted by name. A worker process is
+    /// started with exactly this environment, the way a one-shot action is,
+    /// so two actions that differ in it do not share a process.
+    pub env: Vec<(String, String)>,
+}
+
+/// The key is logged on every spawn and completion and quoted in errors the
+/// client sees, so the environment shows as its variable names only: an
+/// action's environment can carry a token.
+impl fmt::Debug for WorkerKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerKey")
+            .field("executable", &self.executable)
+            .field("startup_args", &self.startup_args)
+            .field("wire_format", &self.wire_format)
+            .field(
+                "env",
+                &self.env.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 impl WorkerKey {
@@ -83,7 +109,16 @@ impl WorkerKey {
             executable: PathBuf::from(exe),
             startup_args,
             wire_format,
+            env: Vec::new(),
         })
+    }
+
+    /// The environment the worker process is started with, part of the key.
+    #[must_use]
+    pub fn with_env(mut self, mut env: Vec<(String, String)>) -> Self {
+        env.sort();
+        self.env = env;
+        self
     }
 }
 
@@ -96,6 +131,16 @@ pub struct PoolConfig {
     pub max_requests_per_worker: u64,
     /// SIGKILL grace when shutting a worker down.
     pub shutdown_grace: Duration,
+    /// How long `acquire` waits for a worker to come back when the key is
+    /// at `max_workers_per_key` with none idle, before the action runs
+    /// one-shot instead. Bazel itself queues on `worker_max_instances`; a
+    /// one-shot run of a worker tool pays the tool's startup again.
+    pub acquire_timeout: Duration,
+    /// Start each worker process in its own user, PID, UTS and IPC
+    /// namespaces, as one-shot actions are when the worker runs with
+    /// `use_namespaces`. Never a mount namespace: the process outlives any
+    /// one action, so a private `/tmp` per action cannot apply to it.
+    pub namespaced: bool,
 }
 
 impl Default for PoolConfig {
@@ -105,6 +150,8 @@ impl Default for PoolConfig {
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             max_requests_per_worker: DEFAULT_MAX_REQUESTS_PER_WORKER,
             shutdown_grace: Duration::from_secs(5),
+            acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
+            namespaced: false,
         }
     }
 }
@@ -230,15 +277,21 @@ impl KeyState {
 struct PoolInner {
     config: PoolConfig,
     state: Mutex<HashMap<WorkerKey, KeyState>>,
+    /// Woken whenever a worker is returned or a slot is freed, for an
+    /// `acquire` waiting on a key at its cap.
+    returned: Notify,
 }
 
 impl PoolInner {
     /// Helper used by Drop on a forgotten Lease.
     fn decrement_count(&self, key: &WorkerKey) {
-        let mut state = self.state.lock();
-        if let Some(s) = state.get_mut(key) {
-            s.total_count = s.total_count.saturating_sub(1);
+        {
+            let mut state = self.state.lock();
+            if let Some(s) = state.get_mut(key) {
+                s.total_count = s.total_count.saturating_sub(1);
+            }
         }
+        self.returned.notify_waiters();
     }
 
     async fn return_worker(self: Arc<Self>, key: WorkerKey, worker: LiveWorker, healthy: bool) {
@@ -255,9 +308,12 @@ impl PoolInner {
             count_slot.decrement_now();
             return;
         }
-        let mut state = self.state.lock();
-        let entry = state.entry(key).or_insert_with(KeyState::new);
-        entry.idle.push(worker);
+        {
+            let mut state = self.state.lock();
+            let entry = state.entry(key).or_insert_with(KeyState::new);
+            entry.idle.push(worker);
+        }
+        self.returned.notify_waiters();
     }
 }
 
@@ -274,11 +330,17 @@ impl Default for PersistentWorkerPool {
 }
 
 impl PersistentWorkerPool {
+    /// How long `acquire` waits at the cap before giving up.
+    pub fn acquire_timeout(&self) -> Duration {
+        self.inner.config.acquire_timeout
+    }
+
     pub fn new(config: PoolConfig) -> Self {
         Self {
             inner: Arc::new(PoolInner {
                 config,
                 state: Mutex::new(HashMap::new()),
+                returned: Notify::new(),
             }),
         }
     }
@@ -298,34 +360,49 @@ impl PersistentWorkerPool {
         executable_path: &Path,
         working_dir: &Path,
     ) -> Result<Lease, Error> {
-        // First, try to take an idle worker without blocking on spawn.
-        {
-            let mut state = self.inner.state.lock();
-            let entry = state.entry(key.clone()).or_insert_with(KeyState::new);
-            while let Some(mut worker) = entry.idle.pop() {
-                if worker.is_dead() {
-                    // Process died while idle (e.g. JVM OOM). Drop it.
-                    entry.total_count = entry.total_count.saturating_sub(1);
-                    continue;
+        let deadline = tokio::time::Instant::now() + self.inner.config.acquire_timeout;
+        loop {
+            // Take an idle worker, or reserve a slot to spawn one, without
+            // blocking on the spawn itself.
+            let notified = {
+                let mut state = self.inner.state.lock();
+                let entry = state.entry(key.clone()).or_insert_with(KeyState::new);
+                while let Some(mut worker) = entry.idle.pop() {
+                    if worker.is_dead() {
+                        // Process died while idle (e.g. JVM OOM). Drop it.
+                        entry.total_count = entry.total_count.saturating_sub(1);
+                        continue;
+                    }
+                    return Ok(Lease {
+                        inner: Some(LeaseInner {
+                            worker,
+                            pool: self.inner.clone(),
+                            key,
+                        }),
+                    });
                 }
-                return Ok(Lease {
-                    inner: Some(LeaseInner {
-                        worker,
-                        pool: self.inner.clone(),
-                        key,
-                    }),
-                });
-            }
-            if entry.total_count >= self.inner.config.max_workers_per_key {
+                if entry.total_count < self.inner.config.max_workers_per_key {
+                    // Reserve a slot before releasing the lock so a concurrent
+                    // acquire can't over-commit.
+                    entry.total_count += 1;
+                    break;
+                }
+                // At the cap with nothing idle: wait for a worker to come
+                // back. The waiter is registered under the lock so a return
+                // between the check and the wait is not missed.
+                let notified = self.inner.returned.notified();
+                let mut notified = Box::pin(notified);
+                notified.as_mut().enable();
+                notified
+            };
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 return Err(make_err!(
                     Code::ResourceExhausted,
-                    "Persistent worker pool for {key:?} is at capacity ({} workers)",
-                    self.inner.config.max_workers_per_key
+                    "Persistent worker pool for {key:?} is at capacity ({} workers) and none came back within {:?}",
+                    self.inner.config.max_workers_per_key,
+                    self.inner.config.acquire_timeout
                 ));
             }
-            // Reserve a slot before releasing the lock so a concurrent
-            // acquire can't over-commit.
-            entry.total_count += 1;
         }
 
         // Lock released; spawn outside the critical section.
@@ -335,6 +412,8 @@ impl PersistentWorkerPool {
             &key.startup_args,
             key.wire_format,
             working_dir,
+            &key.env,
+            self.inner.config.namespaced,
         );
         let worker = match spawn_result {
             Ok(w) => w,
@@ -351,6 +430,32 @@ impl PersistentWorkerPool {
                 key,
             }),
         })
+    }
+
+    /// Runs `sweep_idle` on a timer until the pool is dropped. Without it an
+    /// idle worker process, a JVM as a rule, lived as long as the worker did.
+    pub fn spawn_sweeper(&self) -> JoinHandleDropGuard<()> {
+        let inner = Arc::downgrade(&self.inner);
+        let interval = (self.inner.config.idle_timeout / 4).max(Duration::from_secs(1));
+        JoinHandleDropGuard::new(background_spawn!("persistent_worker_sweeper", async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(inner) = inner.upgrade() else {
+                    return;
+                };
+                Self { inner }.sweep_idle().await;
+            }
+        }))
+    }
+
+    /// How many worker processes the pool holds, idle or leased.
+    pub fn live_workers(&self) -> usize {
+        self.inner
+            .state
+            .lock()
+            .values()
+            .map(|entry| entry.total_count)
+            .sum()
     }
 
     /// Drop all idle workers whose `last_used` is older than `idle_timeout`.
@@ -397,12 +502,23 @@ mod tests {
         path
     }
 
+    /// The worker process gets only the environment in its key, so the
+    /// scripts need PATH to find `sleep` wherever the tests run.
+    #[cfg(unix)]
+    fn path_env() -> Vec<(String, String)> {
+        vec![(
+            "PATH".to_string(),
+            std::env::var("PATH").unwrap_or_default(),
+        )]
+    }
+
     #[cfg(unix)]
     fn shell_worker_key(script: &Path) -> WorkerKey {
         WorkerKey {
             executable: PathBuf::from("/bin/sh"),
             startup_args: vec![script.display().to_string()],
             wire_format: WireFormat::Json,
+            env: path_env(),
         }
     }
 
@@ -484,6 +600,52 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    #[test]
+    fn worker_key_distinguishes_environments_and_ignores_their_order() {
+        let base =
+            || WorkerKey::from_argv(&["javac", "@a"].map(String::from), WireFormat::Proto).unwrap();
+        let a = base().with_env(vec![
+            ("PATH".into(), "/bin".into()),
+            ("LANG".into(), "C".into()),
+        ]);
+        let b = base().with_env(vec![
+            ("LANG".into(), "C".into()),
+            ("PATH".into(), "/bin".into()),
+        ]);
+        let c = base().with_env(vec![("PATH".into(), "/usr/bin".into())]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[nativelink_test]
+    #[cfg(unix)]
+    async fn sweeper_retires_a_worker_idle_past_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = shell_script(dir.path(), "exec sleep 60\n");
+        let key = shell_worker_key(&script);
+        let pool = PersistentWorkerPool::new(PoolConfig {
+            idle_timeout: Duration::from_millis(200),
+            shutdown_grace: Duration::from_millis(100),
+            ..PoolConfig::default()
+        });
+        let _sweeper = pool.spawn_sweeper();
+
+        let lease = pool
+            .acquire(key, Path::new("/bin/sh"), dir.path())
+            .await
+            .unwrap();
+        lease.release(true).await;
+        assert_eq!(pool.live_workers(), 1);
+
+        // The sweeper runs every second at least; by then the worker has
+        // been idle far longer than its timeout.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while pool.live_workers() > 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(pool.live_workers(), 0, "the idle worker was not retired");
+    }
+
     #[nativelink_test]
     #[cfg(unix)]
     async fn dropping_unhealthy_release_frees_pool_slot() {
@@ -518,6 +680,45 @@ mod tests {
 
     #[nativelink_test]
     #[cfg(unix)]
+    async fn acquire_at_the_cap_waits_for_a_returned_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = shell_script(dir.path(), "exec sleep 60\n");
+        let key = shell_worker_key(&script);
+        let pool = PersistentWorkerPool::new(PoolConfig {
+            max_workers_per_key: 1,
+            shutdown_grace: Duration::from_millis(100),
+            acquire_timeout: Duration::from_secs(5),
+            ..PoolConfig::default()
+        });
+
+        let lease = pool
+            .acquire(key.clone(), Path::new("/bin/sh"), dir.path())
+            .await
+            .unwrap();
+        let waiter = {
+            let pool = pool.clone();
+            let key = key.clone();
+            let dir = dir.path().to_path_buf();
+            background_spawn!("persistent_worker_acquire_waiter", async move {
+                pool.acquire(key, Path::new("/bin/sh"), &dir).await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !waiter.is_finished(),
+            "the second acquire should be waiting at the cap"
+        );
+        lease.release(true).await;
+        let second = tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("the waiter got the returned worker")
+            .unwrap()
+            .unwrap();
+        second.release(false).await;
+    }
+
+    #[nativelink_test]
+    #[cfg(unix)]
     async fn concurrent_acquire_respects_per_key_cap() {
         let dir = tempfile::tempdir().unwrap();
         let script = shell_script(dir.path(), "exec sleep 60\n");
@@ -525,6 +726,7 @@ mod tests {
         let pool = PersistentWorkerPool::new(PoolConfig {
             max_workers_per_key: 1,
             shutdown_grace: Duration::from_millis(100),
+            acquire_timeout: Duration::from_millis(200),
             ..PoolConfig::default()
         });
 

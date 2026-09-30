@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
@@ -70,7 +70,6 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
-#[cfg(target_os = "linux")]
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
@@ -89,7 +88,8 @@ use uuid::Uuid;
 
 use crate::buck2_file_capture::Buck2FileCapture;
 use crate::persistent_worker::{
-    Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
+    Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
+    WorkerKey,
 };
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -429,6 +429,10 @@ async fn sample_action_resource_usage(
     // short-lived. Keep the last figure seen for each pid and total them at
     // the end instead.
     let mut cpu_ticks_by_pid = HashMap::new();
+    // What the group had already spent when sampling began. A one-shot
+    // process starts at nothing; a pooled process carries every request it
+    // served before, which is not this action's.
+    let mut baseline_ticks: Option<u64> = None;
 
     let sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
         let observed = sample_process_group(pgid, cpu_ticks_by_pid);
@@ -440,6 +444,9 @@ async fn sample_action_resource_usage(
 
     loop {
         let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        if baseline_ticks.is_none() {
+            baseline_ticks = Some(cpu_ticks_by_pid.values().sum());
+        }
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
         }
@@ -525,7 +532,12 @@ async fn sample_action_resource_usage(
 
     SampledResourceUsage {
         peak_memory_kb,
-        cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
+        cpu_time_ms: ticks_to_millis(
+            cpu_ticks_by_pid
+                .values()
+                .sum::<u64>()
+                .saturating_sub(baseline_ticks.unwrap_or(0)),
+        ),
         last_memory_kb,
         peak_disk_kb,
     }
@@ -2284,6 +2296,98 @@ impl RunningActionImpl {
         })
     }
 
+    /// The environment an action's process starts with: the worker's
+    /// `additional_environment`, then the action's own variables on top,
+    /// and on Windows the `SystemRoot` and `PATH` defaults without which
+    /// nothing runs. With `per_action` the sources that belong to one
+    /// action (its timeout, a side channel file, its directory) are in and
+    /// the side channel file is reported through it; without it they are
+    /// left out, for a pooled process that serves many actions.
+    fn action_environment(
+        &self,
+        command_proto: &ProtoCommand,
+        requested_timeout: Duration,
+        mut per_action: Option<&mut Option<Cow<'_, OsStr>>>,
+    ) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        if let Some(additional_environment) = &self
+            .running_actions_manager
+            .execution_configuration
+            .additional_environment
+        {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Property(property) => self
+                        .action_info
+                        .platform_properties
+                        .get(property)
+                        .cloned()
+                        .unwrap_or_default(),
+                    EnvironmentSource::Value(value) => value.clone(),
+                    EnvironmentSource::FromEnvironment => env::var(name).unwrap_or_default(),
+                    EnvironmentSource::TimeoutMillis => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        requested_timeout.as_millis().to_string()
+                    }
+                    EnvironmentSource::SideChannelFile => {
+                        let Some(side_channel_file) = per_action.as_mut() else {
+                            continue;
+                        };
+                        let file = format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
+                        **side_channel_file = Some(Cow::Owned(file.clone().into()));
+                        file
+                    }
+                    EnvironmentSource::ActionDirectory => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        self.action_directory.clone()
+                    }
+                };
+                env.insert(name.clone(), value);
+            }
+        }
+        for variable in &command_proto.environment_variables {
+            env.insert(variable.name.clone(), variable.value.clone());
+        }
+        // If SystemRoot is not set on windows we set it to default. Failing
+        // to do this causes all commands to fail.
+        #[cfg(target_family = "windows")]
+        {
+            if !env.keys().any(|name| name.to_uppercase() == "SYSTEMROOT") {
+                env.insert("SystemRoot".to_string(), "C:\\Windows".to_string());
+            }
+            if !env.keys().any(|name| name.to_uppercase() == "PATH") {
+                env.insert("PATH".to_string(), "C:\\Windows\\System32".to_string());
+            }
+        }
+        env
+    }
+
+    /// What the scheduler's kill leaves behind for a pooled action, whether
+    /// it came while waiting for a worker process or while one served it.
+    fn record_persistent_worker_kill(&self, command_proto: ProtoCommand, command: &str) {
+        let mut state = self.state.lock();
+        state.error = Error::merge_option(
+            state.error.take(),
+            Some(Error::new(
+                Code::Cancelled,
+                format!("Persistent worker command '{command}' was killed by scheduler"),
+            )),
+        );
+        state.command_proto = Some(command_proto);
+        state.execution_result = Some(RunningActionImplExecutionResult {
+            stdout: Bytes::new().into(),
+            stderr: Bytes::new().into(),
+            exit_code: EXIT_CODE_FOR_SIGNAL,
+            resource_usage: None,
+        });
+        state.execution_metadata.execution_completed_timestamp =
+            (self.running_actions_manager.callbacks.now_fn)();
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -2334,11 +2438,28 @@ impl RunningActionImpl {
         let program = self
             .canonicalise_path(args[0], &command_proto.working_directory)
             .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
-        if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
+        let requested_timeout = if self.action_info.timeout.is_zero() {
+            self.running_actions_manager.max_action_timeout
+        } else {
+            self.action_info.timeout
+        };
+        if self
+            .running_actions_manager
+            .execution_configuration
+            .persistent_workers
+            .enabled
+            && let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info)
+        {
             match wire_format_result {
                 Ok(wire_format) => {
                     let command_argv = os_args_to_strings(&args)?;
-                    let key = WorkerKey::from_argv(&command_argv, wire_format)?;
+                    // What a one-shot action gets, but for the sources that
+                    // belong to one action: a process that serves many
+                    // cannot carry a timeout, a side channel file or an
+                    // action directory.
+                    let env = self.action_environment(&command_proto, requested_timeout, None);
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?
+                        .with_env(env.into_iter().collect());
                     let request = WorkRequest {
                         arguments: persistent_worker_request_arguments(&command_argv),
                         inputs: Vec::<PersistentWorkerInput>::new(),
@@ -2350,23 +2471,81 @@ impl RunningActionImpl {
                     let worker_cwd =
                         PathBuf::from(&self.running_actions_manager.root_action_directory);
 
-                    match self
+                    // The wait for a process is bounded by the action's own
+                    // timeout as well as the pool's, and raced against the
+                    // kill: a cancelled action must not hold a slot, and a
+                    // short action cannot wait longer than it may run.
+                    let acquire_started = Instant::now();
+                    let acquire_bound = self
                         .running_actions_manager
                         .persistent_worker_pool
-                        .acquire(key.clone(), &program, &worker_cwd)
-                        .await
-                    {
+                        .acquire_timeout()
+                        .min(self.timeout);
+                    let acquired = {
+                        let acquire_fut = self
+                            .running_actions_manager
+                            .persistent_worker_pool
+                            .acquire(key.clone(), &program, &worker_cwd);
+                        tokio::pin!(acquire_fut);
+                        tokio::select! {
+                            result = &mut acquire_fut => Some(result),
+                            _ = &mut kill_channel_rx => None,
+                            () = tokio::time::sleep(acquire_bound) => Some(Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "No persistent worker came back within the action's remaining time ({acquire_bound:?})"
+                            ))),
+                        }
+                    };
+                    let Some(acquired) = acquired else {
+                        let command = args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                        self.record_persistent_worker_kill(command_proto, &command);
+                        return Ok(self);
+                    };
+                    match acquired {
                         Ok(mut lease) => {
+                            self.metrics().persistent_worker_dispatches.inc();
                             let timer = self.metrics().child_process.begin_timer();
+                            let execution_started = Instant::now();
+                            // What the pooled process and its children use
+                            // while they serve this request. The process is
+                            // shared, so nothing here is enforced against
+                            // the action's reservation; it is measured so
+                            // the sizing loop learns what the tool needs.
+                            // CPU is what the process spent from here on;
+                            // peak memory is the whole process, which holds
+                            // what earlier requests left in it.
+                            #[cfg(target_os = "linux")]
+                            let sampler = lease.worker().pid().map(|pgid| {
+                                start_action_resource_usage_sampler(
+                                    pgid,
+                                    Ceilings {
+                                        memory_limit_kb: None,
+                                        disk_limit_kb: None,
+                                        over_limit_tx: None,
+                                    },
+                                    None,
+                                )
+                            });
                             let dispatch_result = {
+                                let remaining =
+                                    self.timeout.saturating_sub(acquire_started.elapsed());
                                 let dispatch_fut =
-                                    lease.worker().dispatch_with_timeout(&request, self.timeout);
+                                    lease.worker().dispatch_with_timeout(&request, remaining);
                                 tokio::pin!(dispatch_fut);
                                 tokio::select! {
                                     result = &mut dispatch_fut => Some(result),
                                     _ = &mut kill_channel_rx => None,
                                 }
                             };
+                            #[cfg(target_os = "linux")]
+                            let sampled_usage = match sampler {
+                                Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                                    .await
+                                    .unwrap_or_default(),
+                                None => SampledResourceUsage::default(),
+                            };
+                            #[cfg(not(target_os = "linux"))]
+                            let sampled_usage = SampledResourceUsage::default();
                             let response = match dispatch_result {
                                 Some(Ok(response)) => {
                                     lease.release(true).await;
@@ -2381,29 +2560,9 @@ impl RunningActionImpl {
                                 None => {
                                     drop(timer);
                                     lease.release(false).await;
-                                    {
-                                        let mut state = self.state.lock();
-                                        state.error = Error::merge_option(
-                                            state.error.take(),
-                                            Some(Error::new(
-                                                Code::Cancelled,
-                                                format!(
-                                                    "Persistent worker command '{}' was killed by scheduler",
-                                                    args.join(OsStr::new(" ")).to_string_lossy()
-                                                ),
-                                            )),
-                                        );
-                                        state.command_proto = Some(command_proto);
-                                        state.execution_result =
-                                            Some(RunningActionImplExecutionResult {
-                                                stdout: Bytes::new().into(),
-                                                stderr: Bytes::new().into(),
-                                                exit_code: EXIT_CODE_FOR_SIGNAL,
-                                                resource_usage: None,
-                                            });
-                                        state.execution_metadata.execution_completed_timestamp =
-                                            (self.running_actions_manager.callbacks.now_fn)();
-                                    }
+                                    let command =
+                                        args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                                    self.record_persistent_worker_kill(command_proto, &command);
                                     return Ok(self);
                                 }
                             };
@@ -2415,6 +2574,39 @@ impl RunningActionImpl {
                                 self.metrics().child_process_failure_error_code.inc();
                             }
                             info!(?args, ?key, "Persistent worker command complete");
+                            let (memory_property, disk_property) = self
+                                .running_actions_manager
+                                .execution_configuration
+                                .resource_enforcement
+                                .as_ref()
+                                .map_or((None, None), |e| {
+                                    (
+                                        e.memory.as_ref().map(|m| m.property_name.as_str()),
+                                        e.disk_property_name.as_deref(),
+                                    )
+                                });
+                            let (outcome, enforced) =
+                                classify_outcome(None, None, sampled_usage.last_memory_kb, None);
+                            let resource_usage = Some(ActionResourceUsage {
+                                peak_memory_kb: sampled_usage.peak_memory_kb,
+                                cpu_time_ms: sampled_usage.cpu_time_ms,
+                                sampled: sampled_usage.peak_memory_kb > 0
+                                    || sampled_usage.cpu_time_ms > 0,
+                                operation_id: String::new(),
+                                worker_id: String::new(),
+                                wall_time_ms: u64::try_from(
+                                    execution_started.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX),
+                                peak_disk_kb: 0,
+                                outcome: outcome.into(),
+                                enforced,
+                                reserved: reservation_of(
+                                    &self.action_info.platform_properties,
+                                    memory_property,
+                                    disk_property,
+                                ),
+                            });
                             {
                                 let mut state = self.state.lock();
                                 state.command_proto = Some(command_proto);
@@ -2422,7 +2614,7 @@ impl RunningActionImpl {
                                     stdout: Bytes::new().into(),
                                     stderr: Bytes::from(response.output).into(),
                                     exit_code: response.exit_code,
-                                    resource_usage: None,
+                                    resource_usage,
                                 });
                                 state.execution_metadata.execution_completed_timestamp =
                                     (self.running_actions_manager.callbacks.now_fn)();
@@ -2430,6 +2622,7 @@ impl RunningActionImpl {
                             return Ok(self);
                         }
                         Err(err) => {
+                            self.metrics().persistent_worker_fallbacks.inc();
                             info!(
                                 ?err,
                                 ?key,
@@ -2439,6 +2632,7 @@ impl RunningActionImpl {
                     }
                 }
                 Err(err) => {
+                    self.metrics().persistent_worker_fallbacks.inc();
                     info!(
                         ?err,
                         "Falling back to one-shot execution; unsupported persistent worker protocol"
@@ -2474,73 +2668,13 @@ impl RunningActionImpl {
             command_builder.env("TMPDIR", &tmp_directory);
         }
 
-        let requested_timeout = if self.action_info.timeout.is_zero() {
-            self.running_actions_manager.max_action_timeout
-        } else {
-            self.action_info.timeout
-        };
-
         let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
-        if let Some(additional_environment) = &self
-            .running_actions_manager
-            .execution_configuration
-            .additional_environment
-        {
-            for (name, source) in additional_environment {
-                let value = match source {
-                    EnvironmentSource::Property(property) => self
-                        .action_info
-                        .platform_properties
-                        .get(property)
-                        .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
-                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::FromEnvironment => {
-                        Cow::Owned(env::var(name).unwrap_or_default())
-                    }
-                    EnvironmentSource::TimeoutMillis => {
-                        Cow::Owned(requested_timeout.as_millis().to_string())
-                    }
-                    EnvironmentSource::SideChannelFile => {
-                        let file_cow =
-                            format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
-                        maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
-                        Cow::Owned(file_cow)
-                    }
-                    EnvironmentSource::ActionDirectory => {
-                        Cow::Borrowed(self.action_directory.as_str())
-                    }
-                };
-                command_builder.env(name, value.as_ref());
-            }
-        }
-
-        #[cfg(target_family = "unix")]
-        let envs = &command_proto.environment_variables;
-        // If SystemRoot is not set on windows we set it to default. Failing to do
-        // this causes all commands to fail.
-        #[cfg(target_family = "windows")]
-        let envs = {
-            let mut envs = command_proto.environment_variables.clone();
-            if !envs.iter().any(|v| v.name.to_uppercase() == "SYSTEMROOT") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "SystemRoot".to_string(),
-                        value: "C:\\Windows".to_string(),
-                    },
-                );
-            }
-            if !envs.iter().any(|v| v.name.to_uppercase() == "PATH") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "PATH".to_string(),
-                        value: "C:\\Windows\\System32".to_string(),
-                    },
-                );
-            }
-            envs
-        };
-        for environment_variable in envs {
-            command_builder.env(&environment_variable.name, &environment_variable.value);
+        for (name, value) in self.action_environment(
+            &command_proto,
+            requested_timeout,
+            Some(&mut maybe_side_channel_file),
+        ) {
+            command_builder.env(name, value);
         }
 
         // Sandboxing of the command if we are running on Linux, this resolves issues where
@@ -3777,6 +3911,25 @@ pub struct ExecutionConfiguration {
     /// executes other than those in the `ActionInfo`.  On Windows, `SystemRoot`
     /// and PATH are also assigned (see `inner_execute`).
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+    /// Bazel persistent workers: whether an action that supports them runs
+    /// in a pooled process, and how the pool is sized.
+    pub persistent_workers: PersistentWorkersSettings,
+}
+
+/// See `ExecutionConfiguration::persistent_workers`.
+#[derive(Debug, Clone, Copy)]
+pub struct PersistentWorkersSettings {
+    pub enabled: bool,
+    pub pool: PoolConfig,
+}
+
+impl Default for PersistentWorkersSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pool: PoolConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -4118,6 +4271,8 @@ pub struct RunningActionsManagerImpl {
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
     persistent_worker_pool: PersistentWorkerPool,
+    /// Retires idle persistent workers; ends with the manager.
+    _persistent_worker_sweeper: JoinHandleDropGuard<()>,
     buck2_captures: Mutex<HashMap<OperationId, Buck2FileCapture>>,
 }
 
@@ -4137,6 +4292,9 @@ impl RunningActionsManagerImpl {
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());
+        let persistent_worker_pool =
+            PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
+        let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
@@ -4166,7 +4324,8 @@ impl RunningActionsManagerImpl {
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             active_input_leases: args.active_input_leases,
-            persistent_worker_pool: PersistentWorkerPool::default(),
+            persistent_worker_pool,
+            _persistent_worker_sweeper: persistent_worker_sweeper,
             buck2_captures: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
@@ -4722,6 +4881,12 @@ pub struct Metrics {
     disk_guard_refusals: CounterWithTime,
     #[metric(help = "Actions killed for writing past their disk reservation.")]
     disk_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions served by a pooled persistent worker process.")]
+    persistent_worker_dispatches: CounterWithTime,
+    #[metric(
+        help = "Actions that asked for a persistent worker and ran one-shot instead: pool at capacity, spawn failure or an unsupported protocol."
+    )]
+    persistent_worker_fallbacks: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]
