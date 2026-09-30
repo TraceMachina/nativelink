@@ -49,17 +49,32 @@ impl LenEntry for ExistenceItem {
     }
 }
 
+/// Tracks in-flight operations that must defer remove callbacks.
+///
+/// `pause_count` is the number of concurrent operations (e.g. `update()`
+/// calls) currently holding the pause. While it is non-zero, remove
+/// callbacks from the inner store are queued in `pending` instead of being
+/// applied immediately. Only when the *last* holder releases the pause
+/// (count drops to zero) is the queue drained, after every holder has
+/// inserted its key into the existence cache. This guarantees that an
+/// eviction notification for a key delivered during that key's own
+/// operation is applied *after* the insert, so the cache cannot be left
+/// claiming existence of a blob the inner store dropped.
+#[derive(Debug, Default)]
+struct PauseState {
+    pause_count: usize,
+    pending: Vec<StoreKey<'static>>,
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct ExistenceCacheStore<I: InstantWrapper> {
     #[metric(group = "inner_store")]
     inner_store: Store,
     existence_cache: EvictingMap<DigestInfo, DigestInfo, ExistenceItem, I>,
 
-    // We need to pause them temporarily when inserting into the inner store
-    // as if it immediately expires them, we should only apply the remove callbacks
-    // afterwards. If this is None, we're not pausing; if it's Some it's the location to
-    // store them in temporarily
-    pause_remove_callbacks: Mutex<Option<Vec<StoreKey<'static>>>>,
+    // We need to pause remove callbacks temporarily while operating on the
+    // inner store; see `PauseState`.
+    pause_remove_callbacks: Mutex<PauseState>,
 }
 
 impl ExistenceCacheStore<SystemTime> {
@@ -96,9 +111,11 @@ impl<I: InstantWrapper> RemoveItemCallback for ExistenceCacheCallback<I> {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let cache = self.cache.upgrade();
         if let Some(local_cache) = cache {
-            if let Some(callbacks) = local_cache.pause_remove_callbacks.lock().as_mut() {
-                callbacks.push(store_key.into_owned());
+            let mut state = local_cache.pause_remove_callbacks.lock();
+            if state.pause_count > 0 {
+                state.pending.push(store_key.into_owned());
             } else {
+                drop(state);
                 let store_key = store_key.into_owned();
                 return Box::pin(async move {
                     local_cache.callback(store_key).await;
@@ -122,7 +139,7 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
         let existence_cache_store = Arc::new(Self {
             inner_store,
             existence_cache: EvictingMap::new(eviction_policy, anchor_time),
-            pause_remove_callbacks: Mutex::new(None),
+            pause_remove_callbacks: Mutex::new(PauseState::default()),
         });
         let other_ref = Arc::downgrade(&existence_cache_store);
         existence_cache_store
@@ -142,6 +159,37 @@ impl<I: InstantWrapper> ExistenceCacheStore<I> {
 
     pub async fn remove_from_cache(&self, digest: &DigestInfo) {
         self.existence_cache.remove(digest).await;
+    }
+
+    /// Begin deferring remove callbacks for the duration of an operation.
+    /// Must be paired with exactly one call to `resume_remove_callbacks`.
+    fn pause_remove_callbacks(&self) {
+        self.pause_remove_callbacks.lock().pause_count += 1;
+    }
+
+    /// Release one hold on the pause. If this was the last concurrent
+    /// holder, drain the queued removals now — after every holder has
+    /// finished inserting into the existence cache — so evictions that
+    /// fired during the paused window take effect (including for keys
+    /// that were just inserted).
+    async fn resume_remove_callbacks(&self) {
+        let keys = {
+            let mut state = self.pause_remove_callbacks.lock();
+            state.pause_count = state
+                .pause_count
+                .checked_sub(1)
+                .expect("resume_remove_callbacks called without matching pause");
+            if state.pause_count == 0 {
+                core::mem::take(&mut state.pending)
+            } else {
+                Vec::new()
+            }
+        };
+        let mut callbacks: FuturesUnordered<_> = keys
+            .into_iter()
+            .map(|store_key| self.callback(store_key))
+            .collect();
+        while callbacks.next().await.is_some() {}
     }
 
     async fn inner_has_with_results(
@@ -251,12 +299,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .err_tip(|| "In ExistenceCacheStore::update")?;
             return Ok(size);
         }
-        {
-            let mut locked_callbacks = self.pause_remove_callbacks.lock();
-            if locked_callbacks.is_none() {
-                locked_callbacks.replace(vec![]);
-            }
-        }
+        self.pause_remove_callbacks();
         trace!(?digest, "Inserting into inner cache");
         let result = self.inner_store.update(digest, reader, size_info).await;
         if let Ok(size) = &result {
@@ -266,16 +309,10 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .insert(digest, ExistenceItem(*size))
                 .await;
         }
-        {
-            let maybe_keys = self.pause_remove_callbacks.lock().take();
-            if let Some(keys) = maybe_keys {
-                let mut callbacks: FuturesUnordered<_> = keys
-                    .into_iter()
-                    .map(|store_key| self.callback(store_key))
-                    .collect();
-                while callbacks.next().await.is_some() {}
-            }
-        }
+        // Note: the insert above happens *before* releasing the pause, so a
+        // removal for `digest` queued during the inner update is applied
+        // after the insert and cannot be lost.
+        self.resume_remove_callbacks().await;
         result
     }
 
@@ -287,6 +324,12 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
         length: Option<u64>,
     ) -> Result<(), Error> {
         let digest = key.into_digest();
+        // Pause remove callbacks over the read + insert: the inner store may
+        // evict `digest` while a read of it is still in flight (e.g. a
+        // filesystem store keeps streaming from an open file handle). The
+        // eviction is queued and replayed after our insert, so the cache
+        // cannot resurrect an entry the inner store dropped mid-read.
+        self.pause_remove_callbacks();
         let result = self
             .inner_store
             .get_part(digest, writer, offset, length)
@@ -297,6 +340,7 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
                 .insert(digest, ExistenceItem(digest.size_bytes()))
                 .await;
         }
+        self.resume_remove_callbacks().await;
         result
     }
 
