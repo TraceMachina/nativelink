@@ -241,11 +241,17 @@ async fn read_file_contents(file_name: &OsStr) -> Result<Vec<u8>, Error> {
 }
 
 async fn wait_for_no_open_files() -> Result<(), Error> {
+    // `get_open_files_for_test` reads a process-global open-handle counter, so
+    // this drains handles opened by *any* concurrently running test in the same
+    // binary. Under asan (and other slow-execution configs) a 1s budget is too
+    // tight and this spuriously times out even though the handles do close, so
+    // give the drain a generous ceiling — the loop still exits the instant the
+    // count reaches zero, so a healthy run pays nothing for the larger cap.
     let mut counter = 0;
     while fs::get_open_files_for_test() != 0 {
         sleep(Duration::from_millis(1)).await;
         counter += 1;
-        if counter > 1000 {
+        if counter > 10000 {
             return Err(make_err!(
                 Code::Internal,
                 "Timed out waiting all files to close"
