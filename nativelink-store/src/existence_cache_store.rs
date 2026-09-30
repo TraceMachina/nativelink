@@ -96,7 +96,7 @@ struct PauseGuard<'a, I: InstantWrapper> {
     store: Option<&'a ExistenceCacheStore<I>>,
 }
 
-impl<'a, I: InstantWrapper> PauseGuard<'a, I> {
+impl<I: InstantWrapper> PauseGuard<'_, I> {
     /// Release the hold and drain queued removals if this was the last holder.
     async fn resume(mut self) {
         // Take the store so `Drop` becomes a no-op; we handle release here.
@@ -114,7 +114,7 @@ impl<I: InstantWrapper> Drop for PauseGuard<'_, I> {
             // Cancellation path: release the count so the pause mechanism is
             // never left permanently engaged. Any queued removals remain for
             // the next holder's `resume` to drain.
-            let _ = store.pause_remove_callbacks.lock().release();
+            drop(store.pause_remove_callbacks.lock().release());
         }
     }
 }

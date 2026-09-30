@@ -16,6 +16,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -683,7 +684,7 @@ async fn get_part_races_inner_eviction_and_resurrects_zombie_entry() -> Result<(
 /// fires the registered remove callbacks like `EvictingMap` does.
 #[derive(Debug)]
 struct BlockingUpdateStore {
-    present: AtomicBool,
+    present: Mutex<HashSet<StoreKey<'static>>>,
     update_started: Notify,
     allow_update_finish: Notify,
     remove_callbacks: Mutex<Vec<RemoveCallback>>,
@@ -691,9 +692,9 @@ struct BlockingUpdateStore {
 }
 
 impl BlockingUpdateStore {
-    fn new(len: u64) -> Arc<Self> {
+    fn new(len: u64, present: &[StoreKey<'static>]) -> Arc<Self> {
         Arc::new(Self {
-            present: AtomicBool::new(true),
+            present: Mutex::new(present.iter().cloned().collect()),
             update_started: Notify::new(),
             allow_update_finish: Notify::new(),
             remove_callbacks: Mutex::new(vec![]),
@@ -702,7 +703,7 @@ impl BlockingUpdateStore {
     }
 
     async fn evict(&self, key: StoreKey<'static>) {
-        self.present.store(false, Ordering::SeqCst);
+        self.present.lock().remove(&key);
         let callbacks: Vec<RemoveCallback> = self.remove_callbacks.lock().clone();
         for callback in callbacks {
             callback.callback(key.borrow()).await;
@@ -728,32 +729,33 @@ impl StoreDriver for BlockingUpdateStore {
 
     async fn has_with_results(
         self: Pin<&Self>,
-        _keys: &[StoreKey<'_>],
+        keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        let value = if self.present.load(Ordering::SeqCst) {
-            Some(self.len)
-        } else {
-            None
-        };
-        for result in results.iter_mut() {
-            *result = value;
+        let present = self.present.lock();
+        for (key, result) in keys.iter().zip(results.iter_mut()) {
+            *result = if present.contains(&key.borrow().into_owned()) {
+                Some(self.len)
+            } else {
+                None
+            };
         }
         Ok(())
     }
 
     async fn update(
         self: Pin<&Self>,
-        _key: StoreKey<'_>,
+        key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
         _size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         // Park at a genuine await point with the pause held, then wait for
         // the test. The test drops the future before ever releasing this.
+        let key = key.into_owned();
         self.update_started.notify_one();
         self.allow_update_finish.notified().await;
         let size = reader.drain().await?;
-        self.present.store(true, Ordering::SeqCst);
+        self.present.lock().insert(key);
         Ok(size)
     }
 
@@ -806,7 +808,12 @@ impl HealthStatusIndicator for BlockingUpdateStore {
 #[nativelink_test]
 async fn cancelled_update_does_not_leave_callbacks_paused() -> Result<(), Error> {
     const LEN: u64 = 2;
-    let inner = BlockingUpdateStore::new(LEN);
+    let digest_a = DigestInfo::try_new(VALID_HASH1, LEN)?;
+    let digest_b = DigestInfo::try_new(VALID_HASH2, LEN)?;
+
+    // Only A is present in the inner store; B is absent so its update proceeds
+    // to the parking inner `update` (rather than short-circuiting on `has`).
+    let inner = BlockingUpdateStore::new(LEN, &[digest_a.into()]);
     let store = ExistenceCacheStore::new_with_time(
         &ExistenceCacheSpec {
             backend: StoreSpec::Noop(NoopSpec::default()),
@@ -816,11 +823,8 @@ async fn cancelled_update_does_not_leave_callbacks_paused() -> Result<(), Error>
         MockInstantWrapped::default(),
     );
 
-    let digest_a = DigestInfo::try_new(VALID_HASH1, LEN)?;
-    let digest_b = DigestInfo::try_new(VALID_HASH2, LEN)?;
-
     // Populate A's existence entry via a has() that the inner store answers
-    // positively (present == true).
+    // positively (A is present).
     assert_eq!(store.has(digest_a).await?, Some(LEN));
     assert!(store.exists_in_cache(&digest_a).await);
 
@@ -828,7 +832,7 @@ async fn cancelled_update_does_not_leave_callbacks_paused() -> Result<(), Error>
     let store_b = store.clone();
     let mut update_b = Box::pin(async move {
         store_b
-            .update_oneshot(digest_b, vec![0u8; LEN as usize].into())
+            .update_oneshot(digest_b, vec![0u8; usize::try_from(LEN).unwrap()].into())
             .await
     });
     // Drive it until it parks at the inner update await, then cancel it by
