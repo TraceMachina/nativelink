@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #![no_main]
+#![cfg(feature = "scheduler_race")]
 
 use libfuzzer_sys::fuzz_target;
 use nativelink_fuzz::scheduler_race::run;
