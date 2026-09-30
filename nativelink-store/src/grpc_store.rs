@@ -1781,13 +1781,27 @@ impl StoreDriver for GrpcStore {
             ))
         }));
 
-        self.write(
-            WriteRequestStreamWrapper::from(stream)
-                .await
-                .err_tip(|| "in GrpcStore::update()")?,
-        )
-        .await
-        .err_tip(|| "in GrpcStore::update()")?;
+        let response = self
+            .write(
+                WriteRequestStreamWrapper::from(stream)
+                    .await
+                    .err_tip(|| "in GrpcStore::update()")?,
+            )
+            .await
+            .err_tip(|| "in GrpcStore::update()")?;
+
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) && u64::try_from(response.get_ref().committed_size).ok() != Some(digest.size_bytes())
+        {
+            return Err(make_err!(
+                Code::DataLoss,
+                "Event sink acknowledged {} bytes; expected {}",
+                response.get_ref().committed_size,
+                digest.size_bytes()
+            ));
+        }
 
         Ok(digest.size_bytes())
     }

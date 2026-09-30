@@ -99,6 +99,8 @@ struct FakeStreamServer {
     /// Record every `WriteRequest`, not just the first, so a test can assert
     /// on how the client chunked the stream.
     drain_all: bool,
+    committed_size_override: Option<i64>,
+    fail_after_commit: Arc<Mutex<bool>>,
 }
 
 impl FakeStreamServer {
@@ -107,6 +109,8 @@ impl FakeStreamServer {
             write_requests: Arc::new(Mutex::new(vec![])),
             read_requests: Arc::new(Mutex::new(vec![])),
             drain_all: false,
+            committed_size_override: None,
+            fail_after_commit: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -177,7 +181,14 @@ impl ByteStream for FakeStreamServer {
                 committed_size += i64::try_from(req.data.len()).unwrap();
                 self.write_requests.lock().await.push(req);
             }
-            return Ok(Response::new(WriteResponse { committed_size }));
+            if core::mem::take(&mut *self.fail_after_commit.lock().await) {
+                return Err(Status::unavailable(
+                    "simulated lost acknowledgement after commit",
+                ));
+            }
+            return Ok(Response::new(WriteResponse {
+                committed_size: self.committed_size_override.unwrap_or(committed_size),
+            }));
         }
         let write_request = match stream.next().await {
             None => {
@@ -335,6 +346,50 @@ async fn event_sink_uses_payload_size_and_rejects_cache_operations() -> Result<(
             .code,
         tonic::Code::InvalidArgument
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn event_sink_rejects_incomplete_acknowledgement() -> Result<(), Error> {
+    let server = FakeStreamServer {
+        committed_size_override: Some(0),
+        ..FakeStreamServer::new_draining()
+    };
+    let (_, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.store_type = StoreType::EventSink;
+    let store = GrpcStore::new(&spec)?;
+    let err = store
+        .update_oneshot(StoreKey::from("event-ack"), "event payload".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, tonic::Code::DataLoss);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn event_sink_retry_preserves_upload_identity_after_lost_ack() -> Result<(), Error> {
+    let server = FakeStreamServer::new_draining();
+    *server.fail_after_commit.lock().await = true;
+    let (server, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.store_type = StoreType::EventSink;
+    spec.retry.max_retries = 1;
+    let store = GrpcStore::new(&spec)?;
+    let payload = b"event delivered before the acknowledgement was lost";
+    store
+        .update_oneshot(StoreKey::from("event-retry"), payload.as_slice().into())
+        .await?;
+    let requests = server.write_requests.lock().await;
+    let writes: Vec<_> = requests
+        .iter()
+        .filter(|request| !request.data.is_empty())
+        .collect();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[0].resource_name, writes[1].resource_name);
+    assert_eq!(writes[0].write_offset, writes[1].write_offset);
+    assert_eq!(writes[0].data, payload.as_slice());
+    assert_eq!(writes[1].data, payload.as_slice());
     Ok(())
 }
 

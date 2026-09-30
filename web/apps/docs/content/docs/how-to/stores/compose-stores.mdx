@@ -325,9 +325,14 @@ with exact payload sizes and sends uncompressed `ByteStream.Write` requests.
 The resource hash identifies the event key, while the size describes the event
 bytes. Configure it only as an event publisher's store: reads, existence checks,
 and digest-key writes are rejected. A normal CAS endpoint cannot receive these
-writes. The receiver must acknowledge only after its durable append completes;
-NativeLink's BEP response waits for that acknowledgement. Origin publishing
-retains its existing bounded retry policy.
+writes. The receiver must acknowledge the full payload size only after its
+durable append completes; NativeLink rejects a different committed size, and
+its BEP response waits for that acknowledgement. A lost acknowledgement can
+cause a retry after the receiver has already persisted an event. The receiver
+must use the stable event key to detect and ignore duplicate events, including
+retries that start a new upload; the upload UUID alone is not an event identity.
+Origin publishing retains its existing bounded retry policy. This transport
+provides neither exactly-once processing nor a durable publisher recovery ledger.
 
 <SourceLink file="nativelink-config/src/stores.rs" symbol="StoreType" />
 
