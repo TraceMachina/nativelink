@@ -24,7 +24,7 @@ use nativelink_config::stores::{ExistenceCacheSpec, RedisMode, RedisSpec, StoreS
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::{
-    ReadOnlyRedis, SubscriptionManagerNotify, add_lua_script, add_to_response,
+    ReadOnlyRedis, SubscriptionManagerNotify, add_lua_script, add_to_response, add_to_response_raw,
     fake_redis_sentinel_master_stream, fake_redis_sentinel_stream, fake_redis_stream,
     make_fake_redis_with_responses,
 };
@@ -2641,6 +2641,86 @@ async fn callback_for_eviction_no_all() -> Result<(), Error> {
 async fn callback_for_eviction_good() -> Result<(), Error> {
     callback_for_eviction_core(logs_contain, b"KA").await?;
     assert!(!logs_contain("ERROR"));
+    Ok(())
+}
+
+// Repro for a fail-silent one-shot init bug: `register_remove_callback`
+// returns Ok(()) immediately and performs the CONFIG GET + PSUBSCRIBE lazily
+// inside a `background_spawn` via `OnceCell::get_or_try_init`. If that init
+// hits a single transient Redis error (here: `-LOADING`), the error is only
+// logged, the OnceCell stays uninitialized, and nothing ever retries — so the
+// `__key*__:*` subscription is never established and evicted/expired keys
+// never fire remove callbacks, silently and permanently.
+#[nativelink_test]
+async fn transient_init_error_permanently_disables_remove_callbacks() -> Result<(), Error> {
+    let redis_span = info_span!("redis");
+
+    let mut responses = add_lua_version_script(fake_redis_stream());
+    // The one-time init query fails with a transient, retryable server error
+    // (Redis restarting/failing over). The server is otherwise healthy and
+    // would happily accept a PSUBSCRIBE.
+    add_to_response_raw(
+        &mut responses,
+        redis::cmd("CONFIG")
+            .arg("GET")
+            .arg("notify-keyspace-events"),
+        "-LOADING Redis is loading the dataset in memory\r\n".to_string(),
+    );
+    add_to_response(
+        &mut responses,
+        redis::cmd("PSUBSCRIBE").arg("__key*__:*"),
+        vec![Value::Nil],
+    );
+    let redis_port = make_fake_redis_with_responses(responses)
+        .instrument(redis_span)
+        .await;
+    let spec = RedisSpec {
+        addresses: vec![format!("redis://127.0.0.1:{redis_port}/")],
+        mode: RedisMode::Standard,
+        ..Default::default()
+    };
+    let mut raw_store =
+        Arc::into_inner(RedisStore::new_standard(spec).await.expect("Working spec")).unwrap();
+    raw_store.replace_temp_name_generator(mock_uuid_generator);
+    let store = Arc::new(raw_store);
+    // The caller (e.g. ExistenceCacheStore at construction, its only call
+    // site) is told Ok(()) and believes eviction tracking is live.
+    store.register_remove_callback(Arc::new(LoggingRemoveCallback {}))?;
+
+    // Deterministic sync point: wait until the background init task has hit
+    // the transient error and logged it.
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if logs_contain("Error while trying to initialise remove_callback_subscribe") {
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("background init never ran/logged its error");
+
+    // Since register_remove_callback reported success, the keyspace-event
+    // subscription must (eventually) be established — otherwise remove
+    // callbacks are silently dead forever. On current code there is no retry
+    // path at all (the OnceCell is left empty and only another
+    // register_remove_callback call could re-drive it), so this never happens.
+    let subscribed = timeout(Duration::from_secs(2), async {
+        loop {
+            if logs_contain("new psubscribe complete pattern=\"__key*__:*\"") {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    assert!(
+        subscribed,
+        "register_remove_callback returned Ok(()) but a single transient CONFIG GET \
+         error permanently disabled the __key*__:* subscription; evicted/expired keys \
+         will never invoke remove callbacks (stale ExistenceCacheStore entries)"
+    );
     Ok(())
 }
 

@@ -324,12 +324,31 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
             let guard = self.subscriptions.lock();
             guard.iter().map(Clone::clone).collect::<Vec<_>>()
         };
-        for subscription in subscriptions {
-            connection_manager.psubscribe(&subscription).await?;
+        for subscription in &subscriptions {
+            connection_manager.psubscribe(subscription).await?;
         }
-        // Publish the new handle under a brief exclusive lock.
+        let mut replayed = subscriptions.into_iter().collect::<HashSet<_>>();
+        // Publish the new handle under a brief exclusive lock. Before
+        // publishing, replay any patterns registered since the snapshot above:
+        // `psubscribe` records its pattern in `self.subscriptions` *before* it
+        // fetches a connection, so a pattern missing from this final delta was
+        // inserted while we hold the write lock, and its `get_connection` will
+        // block here and observe the new handle — it subscribes on the live
+        // connection itself. Either way there is no window where a pattern is
+        // recorded as active but subscribed only on the old connection.
         {
             let mut guard = self.connection_manager.write().await;
+            let missing = {
+                let subs = self.subscriptions.lock();
+                subs.iter()
+                    .filter(|s| !replayed.contains(*s))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            for subscription in missing {
+                connection_manager.psubscribe(&subscription).await?;
+                replayed.insert(subscription);
+            }
             *guard = (connection_manager.clone(), new_uuid);
         }
         info!(old = %uuid, new = %new_uuid, "StandardRedisManager re-resolved the Redis master");
@@ -342,10 +361,21 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
 
     async fn psubscribe(&self, pattern: &str) -> Result<(), Error> {
         debug!(pattern, "new psubscribe");
-        let mut connection = self.get_connection().await?.0;
+        // Record the pattern BEFORE fetching a connection. A concurrent
+        // `reconnect` either sees the pattern in the snapshot it replays under
+        // its pre-publish write lock (subscribing it on the new connection),
+        // or it published first — in which case `get_connection` below returns
+        // the new live connection and we subscribe on it ourselves. Inserting
+        // after fetching the connection (the previous order) left a window
+        // where the pattern was recorded as active but PSUBSCRIBEd only on the
+        // old, about-to-be-replaced connection.
         let new_subscription = self.subscriptions.lock().insert(String::from(pattern));
         if new_subscription {
-            let result = connection.psubscribe(pattern).await;
+            let result = async {
+                let mut connection = self.get_connection().await?.0;
+                connection.psubscribe(pattern).await.map_err(Error::from)
+            }
+            .await;
             if result.is_err() {
                 self.subscriptions.lock().remove(pattern);
             }
@@ -1424,35 +1454,68 @@ where
 
     fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
         debug!(?callback, "New callback");
-        let local_self = self.clone();
         background_spawn!("remove_callback_subscribe", async move {
             self.remove_callbacks.lock().await.push(callback);
-            if let Err(err) = local_self.clone().has_remove_callback_subscribe
-                .get_or_try_init(|| async move {
-                    let mut client = local_self.get_client().await?;
-                    let cfg = redis::cmd("CONFIG").arg("GET").arg("notify-keyspace-events").to_owned().query_async::<Vec<(String,String)>>(&mut client.connection_manager).await.map_err(|e| Error::from(e).append("Parsing notify-keyspace-events"))?;
-                    if cfg.len() != 1 {
-                        warn!(?cfg, "Got multiple items for CONFIG GET, expected one");
-                        return Err(make_input_err!("Got multiple items for CONFIG GET, expected one"));
+            // The subscription init is retried until it succeeds: this
+            // function already told its caller Ok(()) (e.g.
+            // ExistenceCacheStore, which relies on eviction callbacks for
+            // invalidation), so a transient Redis error here (e.g. -LOADING
+            // during a restart/failover) must not permanently disable remove
+            // callbacks. Previously a one-shot `get_or_try_init` failure was
+            // only logged, the OnceCell stayed empty, and nothing ever
+            // retried, so the `__key*__:*` subscription was silently never
+            // established.
+            let mut retry_delay = Duration::from_millis(50);
+            loop {
+                let local_self = self.clone();
+                let init_result = self
+                    .has_remove_callback_subscribe
+                    .get_or_try_init(|| async move {
+                        // The notify-keyspace-events check is advisory: we log
+                        // misconfiguration loudly, but a failure to *read* the
+                        // config must not block the subscription itself.
+                        let cfg_result = async {
+                            let mut client = local_self.get_client().await?;
+                            redis::cmd("CONFIG").arg("GET").arg("notify-keyspace-events").to_owned().query_async::<Vec<(String,String)>>(&mut client.connection_manager).await.map_err(|e| Error::from(e).append("Parsing notify-keyspace-events"))
+                        }.await;
+                        match &cfg_result {
+                            Ok(cfg) => {
+                                if cfg.len() != 1 {
+                                    warn!(?cfg, "Got multiple items for CONFIG GET, expected one");
+                                } else if let Some((_, events_cfg)) = cfg.first() {
+                                    if events_cfg.is_empty() {
+                                        error!("notify-keyspace-events not enabled for Redis, will fail to get remove callbacks");
+                                    } else if !events_cfg.contains('K') {
+                                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'K' so won't get keyspace events we need for eviction events");
+                                    } else if !events_cfg.contains('A') {
+                                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'A' so we won't get eviction events");
+                                    }
+                                    // FIXME: Redis events spec appears unreliable, so we subscribe anyways
+                                    // It should just need Ke as per https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/
+                                    // but I'm yet to get reliable eviction events out of that
+                                    info!(notify_keyspace_events=events_cfg, "Attempting to subscribe to eviction events");
+                                }
+                            }
+                            Err(err) => {
+                                error!(?err, "Error while trying to initialise remove_callback_subscribe: could not verify notify-keyspace-events; subscribing anyway");
+                            }
+                        }
+                        local_self.connection_manager.psubscribe("__key*__:*").await?;
+                        Ok::<(), Error>(())
+                    })
+                    .await;
+                match init_result {
+                    Ok(()) => break,
+                    Err(err) => {
+                        error!(
+                            ?err,
+                            "Error while trying to initialise remove_callback_subscribe; will retry"
+                        );
+                        sleep(retry_delay).await;
+                        retry_delay = (retry_delay * 2).min(Duration::from_secs(5));
                     }
-                    let events_cfg = &cfg.first().ok_or_else(|| make_err!(Code::InvalidArgument, "Only one item"))?.1;
-                    if events_cfg.is_empty() {
-                        error!("notify-keyspace-events not enabled for Redis, will fail to get remove callbacks");
-                    } else if !events_cfg.contains('K') {
-                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'K' so won't get keyspace events we need for eviction events");
-                    } else if !events_cfg.contains('A') {
-                        error!(notify_keyspace_events=events_cfg, "notify-keyspace-events does not contain 'A' so we won't get eviction events");
-                    }
-                    // FIXME: Redis events spec appears unreliable, so we subscribe anyways
-                    // It should just need Ke as per https://redis.io/docs/latest/develop/pubsub/keyspace-notifications/
-                    // but I'm yet to get reliable eviction events out of that
-                    info!(notify_keyspace_events=events_cfg, "Attempting to subscribe to eviction events");
-                    self.connection_manager.psubscribe("__key*__:*").await?;
-                    Ok::<(), Error>(())
-                 })
-                .await {
-                    error!(?err, "Error while trying to initialise remove_callback_subscribe");
                 }
+            }
         });
         Ok(())
     }
@@ -2548,5 +2611,248 @@ where
                 format!("In RedisStore::get_with_version::notversioned::decode {key}")
             })?,
         ))
+    }
+}
+
+#[cfg(test)]
+// This module hand-rolls a minimal RESP3 server plus a dedicated
+// current-thread runtime so the psubscribe/reconnect interleaving is exact and
+// timing-independent; that legitimately needs the otherwise-disallowed tokio
+// runtime/spawn primitives.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "deterministic in-test RESP server needs a hand-built runtime and raw spawns"
+)]
+#[expect(
+    clippy::doc_markdown,
+    reason = "choreography docs reference bare Redis/RESP identifiers (PSUBSCRIBE, Sha1) by name"
+)]
+#[expect(
+    trivial_casts,
+    reason = "explicit Pin<Box<dyn Future>> coercion for the connect closure's return type"
+)]
+mod psubscribe_reconnect_race_tests {
+    use core::time::Duration;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    use redis::aio::{ConnectionManager, ConnectionManagerConfig};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Notify;
+
+    use super::{RedisManager, StandardRedisManager};
+
+    /// Reads one CRLF-terminated line from the stream.
+    async fn read_line(stream: &mut TcpStream) -> Option<String> {
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            if stream.read_exact(&mut byte).await.is_err() {
+                return None;
+            }
+            if byte[0] == b'\n' {
+                break;
+            }
+            if byte[0] != b'\r' {
+                line.push(byte[0]);
+            }
+        }
+        Some(String::from_utf8_lossy(&line).into_owned())
+    }
+
+    /// Parses one RESP command (array of bulk strings) from the client.
+    async fn parse_command(stream: &mut TcpStream) -> Option<Vec<String>> {
+        let header = read_line(stream).await?;
+        if !header.starts_with('*') {
+            return Some(vec![header]);
+        }
+        let count: usize = header[1..].parse().ok()?;
+        let mut parts = Vec::with_capacity(count);
+        for _ in 0..count {
+            let len_line = read_line(stream).await?;
+            let len: usize = len_line.strip_prefix('$')?.parse().ok()?;
+            let mut data = vec![0u8; len + 2]; // include trailing CRLF
+            stream.read_exact(&mut data).await.ok()?;
+            parts.push(String::from_utf8_lossy(&data[..len]).into_owned());
+        }
+        Some(parts)
+    }
+
+    struct FakeServerState {
+        /// Sha1 to return for SCRIPT LOAD (must match the client's own hash).
+        script_hash: String,
+        /// Patterns each connection (by accept order) was PSUBSCRIBEd to.
+        patterns_per_conn: parking_lot::Mutex<Vec<Vec<String>>>,
+        /// Signalled when conn #1 (the reconnect connection) receives its
+        /// first PSUBSCRIBE (the replay of the pre-existing pattern).
+        replay_psubscribe_arrived: Notify,
+        /// The server holds conn #1's first PSUBSCRIBE reply until this is
+        /// notified, keeping reconnect() parked inside its replay loop.
+        release_replay_reply: Notify,
+    }
+
+    async fn handle_conn(mut stream: TcpStream, conn_idx: usize, state: Arc<FakeServerState>) {
+        let mut first_psubscribe_on_this_conn = true;
+        while let Some(cmd) = parse_command(&mut stream).await {
+            let name = cmd
+                .first()
+                .map(|c| c.to_ascii_uppercase())
+                .unwrap_or_default();
+            match name.as_str() {
+                "HELLO" => {
+                    stream
+                        .write_all(
+                            b"%3\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$5\r\n7.4.0\r\n$5\r\nproto\r\n:3\r\n",
+                        )
+                        .await
+                        .unwrap();
+                }
+                "SCRIPT" => {
+                    let reply =
+                        format!("${}\r\n{}\r\n", state.script_hash.len(), state.script_hash);
+                    stream.write_all(reply.as_bytes()).await.unwrap();
+                }
+                "PSUBSCRIBE" => {
+                    let pattern = cmd.get(1).cloned().unwrap_or_default();
+                    state.patterns_per_conn.lock()[conn_idx].push(pattern.clone());
+                    if conn_idx == 1 && first_psubscribe_on_this_conn {
+                        first_psubscribe_on_this_conn = false;
+                        // Tell the test that reconnect() is now parked awaiting
+                        // this reply inside its replay loop, then hold the
+                        // reply until the test releases it.
+                        state.replay_psubscribe_arrived.notify_one();
+                        state.release_replay_reply.notified().await;
+                    }
+                    let reply = format!(
+                        ">3\r\n$10\r\npsubscribe\r\n${}\r\n{}\r\n:1\r\n",
+                        pattern.len(),
+                        pattern
+                    );
+                    stream.write_all(reply.as_bytes()).await.unwrap();
+                }
+                _ => {
+                    stream.write_all(b"+OK\r\n").await.unwrap();
+                }
+            }
+        }
+    }
+
+    /// Deterministic repro: a `psubscribe` that interleaves with a `reconnect`
+    /// whose subscription snapshot was taken before the insert lands only on
+    /// the old (about-to-be-replaced) connection. The new live connection is
+    /// never subscribed, yet the pattern is recorded as active in
+    /// `self.subscriptions`, so notifications are silently lost until an
+    /// unrelated future reconnect replays the set.
+    ///
+    /// Choreography (all real await points, no timing races):
+    ///   1. Manager connects (conn #0) and psubscribes "pre".
+    ///   2. Task B calls reconnect(): connects conn #1, snapshots
+    ///      subscriptions = {"pre"}, and parks in the replay loop because the
+    ///      fake server withholds conn #1's PSUBSCRIBE "pre" reply.
+    ///   3. The test (task A) calls psubscribe("pat"): get_connection still
+    ///      returns conn #0 (reconnect has not published yet), the pattern is
+    ///      inserted into `subscriptions`, and PSUBSCRIBE succeeds on conn #0.
+    ///   4. The server releases the reply; reconnect publishes conn #1.
+    ///   5. Conn #1 — now the live connection — was never subscribed to "pat".
+    #[test]
+    fn psubscribe_lost_across_reconnect() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let state = Arc::new(FakeServerState {
+                script_hash: redis::Script::new(super::LUA_VERSION_SET_SCRIPT)
+                    .get_hash()
+                    .to_string(),
+                patterns_per_conn: parking_lot::Mutex::new(Vec::new()),
+                replay_psubscribe_arrived: Notify::new(),
+                release_replay_reply: Notify::new(),
+            });
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let mut conn_idx = 0usize;
+                    loop {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        state.patterns_per_conn.lock().push(Vec::new());
+                        tokio::spawn(handle_conn(stream, conn_idx, state.clone()));
+                        conn_idx += 1;
+                    }
+                });
+            }
+
+            // Keep the push receiver alive for the whole test.
+            let (push_tx, _push_rx) = tokio::sync::mpsc::unbounded_channel();
+            let url = format!("redis://127.0.0.1:{port}/?protocol=resp3");
+            let connect_func = Box::new(move || {
+                let url = url.clone();
+                let push_tx = push_tx.clone();
+                Box::pin(async move {
+                    let client = redis::Client::open(url.as_str()).unwrap();
+                    let config = ConnectionManagerConfig::new()
+                        .set_number_of_retries(0)
+                        .set_connection_timeout(Some(Duration::from_secs(5)))
+                        .set_response_timeout(Some(Duration::from_secs(5)))
+                        .set_push_sender(push_tx);
+                    ConnectionManager::new_with_config(client, config)
+                        .await
+                        .map_err(Into::into)
+                }) as core::pin::Pin<Box<_>>
+            });
+
+            let manager = Arc::new(StandardRedisManager::new(connect_func).await.unwrap());
+
+            // Step 1: a pre-existing subscription so reconnect's replay loop
+            // has an await point we can park it on.
+            manager.psubscribe("pre").await.unwrap();
+            let (_conn, uuid0) = manager.get_connection().await.unwrap();
+
+            // Step 2: start reconnect; it will connect conn #1, snapshot
+            // subscriptions (= {"pre"}), and park replaying "pre".
+            let reconnect_task = {
+                let manager = manager.clone();
+                tokio::spawn(async move { manager.reconnect(uuid0).await })
+            };
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                state.replay_psubscribe_arrived.notified(),
+            )
+            .await
+            .expect("reconnect never reached its subscription replay loop");
+
+            // Step 3: concurrent psubscribe while reconnect is parked
+            // post-snapshot, pre-publish. It succeeds — on the old connection.
+            manager.psubscribe("pat").await.unwrap();
+
+            // Step 4: let reconnect finish and publish conn #1.
+            state.release_replay_reply.notify_one();
+            let (_new_conn, new_uuid) = reconnect_task.await.unwrap().unwrap();
+            assert_ne!(
+                uuid0, new_uuid,
+                "reconnect must have published a new connection"
+            );
+
+            // The manager believes "pat" is an active subscription...
+            let recorded: HashSet<String> = manager.subscriptions.lock().clone();
+            assert!(
+                recorded.contains("pat"),
+                "sanity: pattern recorded as active"
+            );
+
+            // ...but the live connection (conn #1) was never subscribed to it.
+            let conn1_patterns = state.patterns_per_conn.lock()[1].clone();
+            assert!(
+                conn1_patterns.contains(&"pat".to_string()),
+                "RACE REPRODUCED: pattern \"pat\" is recorded as an active \
+                 subscription but the live post-reconnect connection was only \
+                 subscribed to {conn1_patterns:?}; keyspace notifications for \
+                 \"pat\" are silently lost until the next reconnect",
+            );
+        });
     }
 }
