@@ -383,13 +383,19 @@ mod tests {
         }
     }
 
-    /// The worker process gets only the environment it is given, so the
-    /// scripts need PATH to find `sleep` wherever the tests run.
+    /// The worker process gets only the environment it is given. The shell
+    /// scripts need PATH to find `sleep` wherever the tests run; PowerShell
+    /// needs the rest of what Windows sets, so there the whole environment
+    /// goes through, as `action_environment` does with its defaults.
     fn path_env() -> Vec<(String, String)> {
-        vec![(
-            "PATH".to_string(),
-            std::env::var("PATH").unwrap_or_default(),
-        )]
+        if cfg!(windows) {
+            std::env::vars().collect()
+        } else {
+            vec![(
+                "PATH".to_string(),
+                std::env::var("PATH").unwrap_or_default(),
+            )]
+        }
     }
 
     #[cfg(unix)]
