@@ -1796,12 +1796,14 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    // Mark this operation as being cleaned up
-    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
-    else {
-        // Cleanup is already happening elsewhere.
-        return Ok(());
-    };
+    // Mark this operation as being cleaned up. The other holders of the
+    // mark are the orphan sweep and a retry's stale-directory removal, both
+    // brief; waiting on them is what keeps this cleanup from being skipped,
+    // which would leave the action's entries and reservations in place for
+    // good.
+    let _cleaning_guard = running_actions_manager
+        .take_cleanup_mark(operation_id.clone())
+        .await;
 
     let capture = running_actions_manager
         .buck2_captures
@@ -4348,18 +4350,20 @@ impl RunningActionsManagerImpl {
     /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
     /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
     /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
-    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
+    async fn wait_for_cleanup_if_needed(
+        self: &Arc<Self>,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
         let start = Instant::now();
         let mut backoff = Duration::from_millis(10);
         let mut has_waited = false;
 
         loop {
-            let should_wait = {
-                let cleaning = self.cleaning_up_operations.lock();
-                cleaning.contains(operation_id)
-            };
-
-            if !should_wait {
+            // The mark is held for the removal below, so it cannot race the
+            // orphan sweep's removal of the same tree; while someone else
+            // holds it, this waits.
+            let mark = self.perform_cleanup(operation_id.clone());
+            if let Some(_cleaning_guard) = mark {
                 let action_is_running = self
                     .running_actions
                     .lock()
@@ -4547,23 +4551,27 @@ impl RunningActionsManagerImpl {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            // Ownership before the mark: an action's own cleanup steps aside
-            // when the mark is held, so marking a running action's directory
-            // for even an instant would let its cleanup be skipped. A
-            // directory that becomes owned after this check is young, and
-            // the age test below leaves it alone.
-            let owned = self
-                .running_actions
-                .lock()
-                .keys()
-                .any(|operation_id| operation_id.to_string() == name);
-            if owned {
+            // A running action's directory is not the sweep's to touch, and
+            // its cleanup waits on the mark, so the mark is taken only for
+            // an unowned directory and given back at once if the directory
+            // became owned in between: an action that starts and ends
+            // inside that window then cleans up as usual, not later.
+            let is_owned = || {
+                self.running_actions
+                    .lock()
+                    .keys()
+                    .any(|operation_id| operation_id.to_string() == name)
+            };
+            if is_owned() {
                 continue;
             }
             let Some(_cleaning_guard) = self.perform_cleanup(OperationId::from(name.as_str()))
             else {
                 continue;
             };
+            if is_owned() {
+                continue;
+            }
             let path = entry.path();
             // Not followed: a symlink under the root is not an action
             // directory, whatever it points at.
@@ -4660,6 +4668,21 @@ impl RunningActionsManagerImpl {
             manager: Arc::downgrade(self),
             operation_id,
         })
+    }
+
+    /// Takes the cleanup mark, waiting for whoever holds it to let go. The
+    /// wait is armed before the mark is tried, so a release in between is
+    /// not missed.
+    pub async fn take_cleanup_mark(self: &Arc<Self>, operation_id: OperationId) -> CleanupGuard {
+        loop {
+            let notified = self.cleanup_complete_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(guard) = self.perform_cleanup(operation_id.clone()) {
+                return guard;
+            }
+            notified.await;
+        }
     }
 }
 

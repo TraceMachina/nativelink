@@ -4542,6 +4542,168 @@ exit 0
         Ok(())
     }
 
+    /// A manager with a root directory, a cleanup wait of two seconds and no
+    /// directory cache.
+    async fn manager_for_cleanup_tests(
+        root_action_directory: &str,
+    ) -> Result<(Arc<RunningActionsManagerImpl>, Arc<MemoryStore>), Box<dyn core::error::Error>>
+    {
+        let (_, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.to_string(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(2),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        Ok((running_actions_manager, slow_store))
+    }
+
+    async fn empty_action_digest(
+        store: &Arc<MemoryStore>,
+    ) -> Result<DigestInfo, Box<dyn core::error::Error>> {
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        Ok(serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?)
+    }
+
+    fn start_execute_with(action_digest: DigestInfo, operation_id: &OperationId) -> StartExecute {
+        StartExecute {
+            request_metadata: None,
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: operation_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// An action's cleanup waits for a held mark (the sweep's, a retry's)
+    /// and then cleans; it does not step aside and leave its entries behind.
+    #[nativelink_test]
+    async fn cleanup_waits_for_a_held_mark_then_cleans() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let (running_actions_manager, store) =
+            manager_for_cleanup_tests(&root_action_directory).await?;
+        let action_digest = empty_action_digest(&store).await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_with(action_digest, &operation_id),
+            )
+            .await?;
+        let action_directory = format!("{root_action_directory}/{operation_id}");
+        assert!(Path::new(&action_directory).exists());
+        let held = running_actions_manager
+            .perform_cleanup(operation_id.clone())
+            .expect("the mark is free");
+        let mut cleanup = tokio::spawn(action.cleanup());
+        tokio::select! {
+            _ = &mut cleanup => panic!("cleanup ran while the mark was held"),
+            () = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        assert!(
+            Path::new(&action_directory).exists(),
+            "nothing is removed while the mark is held"
+        );
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5), cleanup)
+            .await
+            .expect("cleanup did not resume when the mark was released")??;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the directory goes once cleanup runs"
+        );
+        // The manager entry went with it: nothing for kill_all to wait on.
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A retry removes the stale directory of its earlier attempt only with
+    /// the mark held, so it waits while the sweep (or anyone) holds it and
+    /// never races a removal of the same tree.
+    #[nativelink_test]
+    async fn retry_waits_for_the_mark_before_removing_a_stale_directory()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let (running_actions_manager, store) =
+            manager_for_cleanup_tests(&root_action_directory).await?;
+        let action_digest = empty_action_digest(&store).await?;
+        let operation_id = OperationId::default();
+        let stale = format!("{root_action_directory}/{operation_id}");
+        fs::create_dir_all(&stale).await?;
+        tokio::fs::write(format!("{stale}/left-behind"), b"x").await?;
+        let held = running_actions_manager
+            .perform_cleanup(operation_id.clone())
+            .expect("the mark is free");
+        let manager = running_actions_manager.clone();
+        let start_execute = start_execute_with(action_digest, &operation_id);
+        let mut retry = tokio::spawn(async move {
+            manager
+                .create_and_add_action("w".to_string(), start_execute)
+                .await
+        });
+        tokio::select! {
+            _ = &mut retry => panic!("the retry proceeded while the mark was held"),
+            () = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        assert!(
+            Path::new(&format!("{stale}/left-behind")).exists(),
+            "the stale tree is untouched while the mark is held"
+        );
+        drop(held);
+        let action = tokio::time::timeout(Duration::from_secs(5), retry)
+            .await
+            .expect("the retry did not proceed once the mark was released")??;
+        assert!(
+            !Path::new(&format!("{stale}/left-behind")).exists(),
+            "the stale tree was replaced by the retry's fresh directory"
+        );
+        action.cleanup().await?;
+        Ok(())
+    }
+
     /// that has settled is removed by the sweep; a running action's is kept.
     #[nativelink_test]
     async fn orphan_sweep_removes_settled_unowned_directories()
