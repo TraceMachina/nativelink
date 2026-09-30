@@ -35,7 +35,7 @@
 //! A crashing input replays exactly.
 
 use core::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,7 +56,7 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ClientStateManager, OperationFilter,
+    ClientStateManager, OperationFilter,
 };
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::{Notify, mpsc};
@@ -180,6 +180,15 @@ struct Sim {
     /// double-execution invariant checks insertions against this.
     executing_on: HashMap<OperationId, usize>,
     next_client_id: u64,
+    /// Client operation ids observed in a terminal stage. RESULT-ONCE: once
+    /// here, an op must never be observed non-terminal again.
+    terminal: HashSet<OperationId>,
+    /// StartAction pumps per scheduler operation id. RETRY-BUDGET: this must
+    /// not exceed `max_job_retries + 1` plus the requeue-untried allowance.
+    dispatches: HashMap<OperationId, u32>,
+    /// Extra dispatch allowance per op for events the scheduler requeues
+    /// without consuming an attempt (declines, kills).
+    extra_budget: HashMap<OperationId, u32>,
 }
 
 impl Sim {
@@ -213,6 +222,9 @@ impl Sim {
             infos: HashMap::new(),
             executing_on: HashMap::new(),
             next_client_id: 0,
+            terminal: HashSet::new(),
+            dispatches: HashMap::new(),
+            extra_budget: HashMap::new(),
         }
     }
 
@@ -240,6 +252,20 @@ impl Sim {
                                  worker {idx} while worker {other} still runs it"
                             );
                         }
+                        // RETRY-BUDGET: an op may be handed to a worker at
+                        // most `max_job_retries + 1` times, plus one per
+                        // requeue-untried event (decline/kill) the scheduler
+                        // explicitly does not charge an attempt for.
+                        let count = self.dispatches.entry(operation_id.clone()).or_insert(0);
+                        *count += 1;
+                        let budget = MAX_JOB_RETRIES
+                            + 1
+                            + self.extra_budget.get(&operation_id).copied().unwrap_or(0);
+                        assert!(
+                            *count <= budget,
+                            "INVARIANT: RETRY-BUDGET: operation {operation_id} dispatched \
+                             {count} times (budget {budget})"
+                        );
                         self.executing_on.insert(operation_id.clone(), idx);
                         self.workers[idx].running.push(operation_id);
                     }
@@ -253,6 +279,7 @@ impl Sim {
                         let operation_id = OperationId::from(kill.operation_id.as_str());
                         self.workers[idx].running.retain(|id| *id != operation_id);
                         self.executing_on.remove(&operation_id);
+                        *self.extra_budget.entry(operation_id).or_insert(0) += 1;
                     }
                     _ => {}
                 }
@@ -268,7 +295,87 @@ impl Sim {
         self.workers[idx].connected.then_some(idx)
     }
 
+    /// Sampled state invariants, checked through the same
+    /// `filter_operations` surface a real client/admin would use.
+    ///
+    /// RESULT-ONCE: a client operation observed terminal
+    /// (`Completed`/`CompletedFromCache`) must never be observed in a
+    /// non-terminal stage afterwards.
+    ///
+    /// NO-GHOST-ASSIGNMENT: no operation may be `Executing` with its
+    /// scheduler-side worker assignment naming a worker the harness knows is
+    /// disconnected/removed (and not since reconnected under the same id).
+    async fn check_state_invariants(&mut self) {
+        use futures::StreamExt;
+        use nativelink_util::operation_state_manager::OperationStageFlags;
+        if let Ok(mut stream) = self
+            .scheduler
+            .filter_operations(OperationFilter::default())
+            .await
+        {
+            while let Some(entry) = stream.next().await {
+                if let Ok((state, _)) = entry.as_state().await {
+                    let is_terminal = matches!(
+                        state.stage,
+                        ActionStage::Completed(_) | ActionStage::CompletedFromCache(_)
+                    );
+                    if is_terminal {
+                        self.terminal.insert(state.client_operation_id.clone());
+                    } else {
+                        assert!(
+                            !self.terminal.contains(&state.client_operation_id),
+                            "INVARIANT: RESULT-ONCE: operation {} observed in {:?} \
+                             after being observed terminal",
+                            state.client_operation_id,
+                            state.stage,
+                        );
+                    }
+                }
+            }
+        }
+        let live: HashSet<&str> = self
+            .workers
+            .iter()
+            .filter(|worker| worker.connected)
+            .map(|worker| worker.id.0.as_str())
+            .collect();
+        let dead: HashSet<WorkerId> = self
+            .workers
+            .iter()
+            .filter(|worker| !worker.connected && !live.contains(worker.id.0.as_str()))
+            .map(|worker| worker.id.clone())
+            .collect();
+        for worker_id in dead {
+            let filter = OperationFilter {
+                stages: OperationStageFlags::Executing,
+                worker_id: Some(worker_id.clone()),
+                ..Default::default()
+            };
+            if let Ok(mut stream) = self.scheduler.filter_operations(filter).await {
+                while let Some(entry) = stream.next().await {
+                    if let Ok((state, _)) = entry.as_state().await {
+                        panic!(
+                            "INVARIANT: NO-GHOST-ASSIGNMENT: operation {} Executing on \
+                             dead worker {worker_id}",
+                            state.client_operation_id,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     async fn apply(&mut self, op: Op) {
+        let sample = matches!(
+            op,
+            Op::CompleteOk { .. }
+                | Op::CompleteRetryableErr { .. }
+                | Op::DispatchDecline { .. }
+                | Op::Disconnect { .. }
+                | Op::RemoveWorker { .. }
+                | Op::RemoveTimedoutWorkers
+                | Op::TryMatch
+        );
         match op {
             Op::AddAction {
                 key,
@@ -347,6 +454,9 @@ impl Sim {
                 {
                     let id = self.workers[idx].id.clone();
                     self.executing_on.remove(&operation_id);
+                    // Declines requeue "untried" (no attempt charged), so
+                    // they extend the RETRY-BUDGET allowance.
+                    *self.extra_budget.entry(operation_id.clone()).or_insert(0) += 1;
                     drop(
                         self.worker_scheduler
                             .worker_dispatch_declined(
@@ -410,6 +520,9 @@ impl Sim {
             }
         }
         self.pump_workers();
+        if sample {
+            self.check_state_invariants().await;
+        }
     }
 
     async fn complete(&mut self, w: u8, err: Option<nativelink_error::Code>) {
@@ -553,6 +666,7 @@ impl Sim {
                             .await,
                     );
                 }
+                self.check_state_invariants().await;
                 if dbg {
                     use futures::StreamExt;
                     if let Ok(mut stream) = self
