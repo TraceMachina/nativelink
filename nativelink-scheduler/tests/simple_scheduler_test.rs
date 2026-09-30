@@ -1545,6 +1545,109 @@ async fn update_action_sends_completed_result_to_client_test() -> Result<(), Err
     Ok(())
 }
 
+/// A worker re-registering under an id the pool still holds must be treated
+/// as a disconnect of the old incarnation: what it was running is requeued,
+/// its channel hears Disconnect, and the new incarnation can pick the work
+/// up and complete it. Silent replacement used to drop the old `Worker` with
+/// its `running_action_infos`, leaving the operation Executing against an
+/// incarnation that never held it (double execution after timeout).
+#[nativelink_test]
+async fn worker_reregistration_evicts_old_incarnation_and_requeues_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_old_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let insert_timestamp = make_system_time(1);
+    let mut action_listener =
+        setup_action(&scheduler, action_digest, HashMap::new(), insert_timestamp).await?;
+
+    let operation_id = {
+        // Other tests check full data. We only care if we got StartAction.
+        match rx_from_old_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(start_execute)) => {
+                assert_eq!(
+                    action_listener.changed().await.unwrap().0.stage,
+                    ActionStage::Executing
+                );
+                OperationId::from(start_execute.operation_id)
+            }
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+    };
+
+    // The same worker id re-registers on a fresh channel, as a restarted
+    // worker process does.
+    let mut rx_from_new_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    scheduler.do_try_match_for_test().await?;
+
+    {
+        // The old incarnation's channel must hear a Disconnect.
+        let msg_for_worker = rx_from_old_worker.recv().await.unwrap();
+        assert_eq!(
+            msg_for_worker,
+            UpdateForWorker {
+                update: Some(update_for_worker::Update::Disconnect(()))
+            }
+        );
+    }
+    {
+        // The operation must be requeued and re-dispatched to the new
+        // incarnation, not left Executing against the dropped one.
+        match rx_from_new_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(start_execute)) => {
+                assert_eq!(
+                    OperationId::from(start_execute.operation_id),
+                    operation_id,
+                    "expected the same operation re-dispatched to the new incarnation"
+                );
+                assert_eq!(start_execute.worker_id, worker_id.to_string());
+            }
+            v => panic!("Expected StartAction on the new channel, got : {v:?}"),
+        }
+    }
+
+    // The new incarnation completes the action and the client sees it.
+    let action_result = ActionResult::default();
+    scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                action_result.clone(),
+            )),
+        )
+        .await?;
+
+    // The listener may see intermediate transitions from the requeue; wait
+    // for the final one.
+    let mut stage = action_listener.changed().await.unwrap().0.stage.clone();
+    for _ in 0..8 {
+        if stage == ActionStage::Completed(action_result.clone()) {
+            break;
+        }
+        stage = action_listener.changed().await.unwrap().0.stage.clone();
+    }
+    assert_eq!(stage, ActionStage::Completed(action_result));
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn update_action_sends_completed_result_after_disconnect() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());

@@ -407,8 +407,11 @@ impl ApiWorkerSchedulerImpl {
     fn add_worker(&mut self, worker: Worker) -> Result<(), Error> {
         let worker_id = worker.id.clone();
         let platform_properties = worker.platform_properties.clone();
-        // A replacement is one out and one in, so the gauge only moves for a
-        // genuinely new worker.
+        // The caller evicts a live entry under this id before admitting the
+        // new incarnation (see `ApiWorkerScheduler::add_worker`), so `put`
+        // does not normally replace anything. The branch below is kept as a
+        // defensive path: a replacement is one out and one in, so the gauge
+        // only moves for a genuinely new worker.
         let replaced = self.workers.put(worker_id.clone(), worker);
 
         // Add to capability index for fast matching
@@ -1841,6 +1844,36 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 Code::Unavailable,
                 "Received request to add worker while shutting down"
             ));
+        }
+        // A worker re-registering under an id the pool still holds is a new
+        // incarnation of the process, not the one the pool knows. Silently
+        // replacing the entry dropped the old `Worker` together with its
+        // `running_action_infos`: nothing was requeued, the old channel never
+        // heard a Disconnect, and its operations stayed Executing against
+        // this id until they timed out and were requeued to another worker
+        // while the original process might still be running them (double
+        // execution). Evict the old incarnation exactly like a disconnect
+        // first, then admit the new one. A failure to requeue must not block
+        // the reconnecting worker, so it is logged and the add proceeds.
+        if inner.workers.contains(&worker_id) {
+            let evict_res = inner
+                .immediate_evict_worker(
+                    &worker_id,
+                    make_err!(
+                        Code::Internal,
+                        "Worker {worker_id} re-registered; evicting the old incarnation"
+                    ),
+                    true,
+                    WorkerDisconnectReason::Disconnected,
+                )
+                .await;
+            if let Err(err) = evict_res {
+                warn!(
+                    ?worker_id,
+                    ?err,
+                    "Failed to requeue everything the replaced worker incarnation was running"
+                );
+            }
         }
         let result = inner
             .add_worker(worker)
