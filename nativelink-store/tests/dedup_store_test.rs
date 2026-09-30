@@ -16,7 +16,8 @@ use nativelink_config::stores::{DedupSpec, MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
-use nativelink_store::dedup_store::DedupStore;
+use nativelink_store::compression_store::WincodeConfig;
+use nativelink_store::dedup_store::{DedupIndex, DedupStore};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::{Store, StoreLike};
@@ -399,5 +400,85 @@ async fn has_with_zero_digest_returns_some_test() -> Result<(), Error> {
             size_info
         );
     }
+    Ok(())
+}
+
+// Regression: a content chunk must contain exactly the number of bytes its
+// index entry declares. If the content store returns a short chunk (a torn or
+// partial read, or an index/content size disagreement), `DedupStore::get_part`
+// previously either panicked on the `bytes_to_skip` assert or silently
+// under-delivered and sent EOF, serving a truncated read as success. This test
+// hand-builds an index whose single entry declares more bytes than the stored
+// content and asserts the read now surfaces an error.
+#[nativelink_test]
+async fn get_part_short_chunk_is_error_test() -> Result<(), Error> {
+    const DECLARED_SIZE: usize = 100;
+    const ACTUAL_SIZE: usize = 10;
+
+    let index_store = MemoryStore::new(&MemorySpec::default());
+    let content_store = MemoryStore::new(&MemorySpec::default());
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(index_store.clone()),
+        Store::new(content_store.clone()),
+    )?;
+
+    let chunk_digest = DigestInfo::try_new(VALID_HASH2, DECLARED_SIZE).unwrap();
+    content_store
+        .update_oneshot(chunk_digest, vec![7u8; ACTUAL_SIZE].into())
+        .await
+        .err_tip(|| "Failed to write short content chunk")?;
+
+    let serialized = wincode::config::serialize(
+        &DedupIndex {
+            entries: vec![chunk_digest],
+        },
+        WincodeConfig::new(),
+    )
+    .unwrap();
+    let top_digest = DigestInfo::try_new(VALID_HASH1, DECLARED_SIZE).unwrap();
+    Store::new(index_store.clone())
+        .update_oneshot(top_digest, serialized.into())
+        .await
+        .err_tip(|| "Failed to write index entry")?;
+
+    let result = store
+        .get_part_unchunked(top_digest, 0, Some(DECLARED_SIZE as u64))
+        .await;
+    assert!(
+        result.is_err(),
+        "Expected short-chunk read to error, got Ok with {} bytes",
+        result.map_or(0, |d| d.len())
+    );
+    Ok(())
+}
+
+// Guard against over-correction: a bounded request for MORE bytes than the blob
+// actually contains must still succeed and return the available bytes, matching
+// the clamp-to-available semantics of the underlying stores. The
+// size-consistency check must not turn a legitimate over-length request into an
+// error.
+#[nativelink_test]
+async fn get_part_over_length_request_still_ok_test() -> Result<(), Error> {
+    const DATA_SIZE: usize = 64 * 1024;
+
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?;
+
+    let original_data = make_random_data(DATA_SIZE);
+    let digest = DigestInfo::try_new(VALID_HASH1, DATA_SIZE).unwrap();
+    store
+        .update_oneshot(digest, original_data.clone().into())
+        .await
+        .err_tip(|| "Failed to write data to dedup store")?;
+
+    let rt = store
+        .get_part_unchunked(digest, 0, Some((DATA_SIZE as u64) * 2))
+        .await
+        .err_tip(|| "Over-length bounded read should still succeed")?;
+    assert_eq!(rt, original_data, "Expected available bytes to be returned");
     Ok(())
 }
