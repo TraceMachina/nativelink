@@ -1267,6 +1267,21 @@ pub struct LocalWorkerConfig {
     )]
     pub max_upload_timeout_s: usize,
 
+    /// Maximum time allowed for fetching an action's inputs into the worker's
+    /// store and its directory before the command runs. A fetch that hangs
+    /// (a store that never answers) otherwise holds the action's slot for
+    /// good while the worker looks healthy; past this the action fails with
+    /// `DeadlineExceeded` and may be retried by the scheduler, and a warning
+    /// names the action every minute before that. Value in seconds.
+    ///
+    /// Default: 10 minutes
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_download_timeout"
+    )]
+    pub max_download_timeout_s: usize,
+
     /// Maximum time to wait for action directory cleanup before timing out.
     /// Value in seconds.
     ///

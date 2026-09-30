@@ -1827,9 +1827,23 @@ async fn do_cleanup(
 
     debug!(%action_directory, "Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = fs::remove_dir_all(action_directory)
-        .await
-        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    // A fetch or an upload ended by a kill or a timeout can leave a blocking
+    // copy or a stamp finishing inside the tree for a moment; the removal is
+    // retried through that instead of failing on the first try.
+    let remove_deadline = Instant::now() + running_actions_manager.max_cleanup_wait;
+    let remove_dir_result = loop {
+        match fs::remove_dir_all(action_directory).await {
+            Ok(()) => break Ok(()),
+            Err(err) if Instant::now() < remove_deadline => {
+                debug!(%operation_id, ?err, "Removing the working directory again");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => {
+                break Err(err)
+                    .err_tip(|| format!("Could not remove working directory {action_directory}"));
+            }
+        }
+    };
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
@@ -2078,6 +2092,9 @@ pub struct RunningActionImpl {
     input_lease: Option<Arc<ActionInputLease>>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
+    /// Set on a kill; every phase that can wait watches it, so a kill ends
+    /// a fetch or an upload as surely as it ends the command.
+    kill_token: watch::Sender<bool>,
     state: Mutex<RunningActionImplState>,
     has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
@@ -2101,7 +2118,9 @@ impl RunningActionImpl {
             )
         });
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
+        let (kill_token, _) = watch::channel(false);
         Self {
+            kill_token,
             operation_id,
             action_directory,
             work_directory,
@@ -3637,12 +3656,61 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        let res = self
-            .metrics()
-            .clone()
-            .prepare_action
-            .wrap(Self::inner_prepare_action(self))
-            .await;
+        let download_timeout = self.running_actions_manager.max_download_timeout;
+        let operation_id = self.operation_id.clone();
+        let metrics = self.metrics().clone();
+        let mut kill_rx = self.kill_token.subscribe();
+        // Boxed: the prepare state machine is large, and pinning it on the
+        // stack next to the select below overflowed a test thread.
+        let mut prepare_fut = Box::pin(
+            metrics
+                .prepare_action
+                .wrap(Self::inner_prepare_action(self)),
+        );
+        // A fetch that never answers would otherwise hold the slot for good
+        // while the worker's keepalives say it is fine: name it every minute
+        // and give up at the timeout, so the scheduler can retry elsewhere.
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = download_timeout.as_secs(),
+                    "prepare_action: still fetching inputs, possible stall",
+                );
+            }
+        };
+        let res = tokio::time::timeout(download_timeout, async {
+            tokio::pin!(stall_warn_fut);
+            tokio::select! {
+                result = &mut prepare_fut => result,
+                _ = kill_rx.wait_for(|killed| *killed) => {
+                    warn!(%operation_id, "prepare_action: killed while fetching inputs");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while fetching its inputs"
+                    ))
+                }
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|_| {
+            warn!(
+                %operation_id,
+                timeout_s = download_timeout.as_secs(),
+                "prepare_action: input fetch timed out"
+            );
+            make_err!(
+                Code::DeadlineExceeded,
+                "Fetching the inputs of operation {operation_id} took longer than max_download_timeout ({}s)",
+                download_timeout.as_secs(),
+            )
+        })
+        .and_then(|res| res);
         if let Err(ref e) = res {
             warn!(?e, "Error during prepare_action");
         }
@@ -3671,6 +3739,7 @@ impl RunningAction for RunningActionImpl {
             "upload_results: starting with timeout",
         );
         let metrics = self.metrics().clone();
+        let kill_token = self.kill_token.clone();
         let upload_fut = metrics
             .upload_results
             .wrap(Self::inner_upload_results(self));
@@ -3689,11 +3758,24 @@ impl RunningAction for RunningActionImpl {
             }
         };
 
+        // Only a kill that arrives during the upload ends it: a kill that
+        // already ended the command leaves a killed result that still has to
+        // reach the scheduler, so the token's current state is taken as seen
+        // and only a change from here on aborts.
+        let mut kill_rx = kill_token.subscribe();
+        kill_rx.borrow_and_update();
         let res = tokio::time::timeout(upload_timeout, async {
             tokio::pin!(upload_fut);
             tokio::pin!(stall_warn_fut);
             tokio::select! {
                 result = &mut upload_fut => result,
+                Ok(()) = kill_rx.changed() => {
+                    warn!(%operation_id, "upload_results: killed while uploading");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while uploading its results"
+                    ))
+                }
                 () = &mut stall_warn_fut => unreachable!(),
             }
         })
@@ -4200,6 +4282,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
+    pub max_download_timeout: Duration,
     pub max_cleanup_wait: Duration,
     pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
@@ -4243,6 +4326,7 @@ pub struct RunningActionsManagerImpl {
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
+    max_download_timeout: Duration,
     timeout_handled_externally: bool,
     /// The container's memory limit, the yardstick for calling a SIGKILL
     /// nobody here sent an OOM kill.
@@ -4314,6 +4398,7 @@ impl RunningActionsManagerImpl {
             max_action_timeout: args.max_action_timeout,
             pod_memory_limit_kb: pod_memory_limit_kb(),
             max_upload_timeout: args.max_upload_timeout,
+            max_download_timeout: args.max_download_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
@@ -4634,6 +4719,9 @@ impl RunningActionsManagerImpl {
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
+        // The token first: a phase waiting on it (a fetch, an upload) ends
+        // now, whether or not the command ever started.
+        action.kill_token.send_replace(true);
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
