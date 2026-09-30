@@ -274,15 +274,27 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub no_worker_action_timeout_s: u64,
 
-    /// If a job returns an internal error, times out, or loses its worker
-    /// this many times the scheduler completes it with `FailedPrecondition`
-    /// carrying the last error, a code clients do not retry. This is to help
-    /// prevent one rogue job from infinitely retrying and taking up a lot of
-    /// resources when the task itself is the one causing the server to go
-    /// into a bad state.
+    /// If a job returns an internal error or times out this many times the
+    /// scheduler completes it with `FailedPrecondition` carrying the last
+    /// error, a code clients do not retry. This is to help prevent one rogue
+    /// job from infinitely retrying and taking up a lot of resources when the
+    /// task itself is the one causing the server to go into a bad state.
+    /// A lost worker and a memory escalation are not the action's failures
+    /// and have their own budgets: `max_worker_loss_retries` and
+    /// `memory_escalation.max_steps`.
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_job_retries: usize,
+
+    /// How many times an action whose worker was lost (disconnected, timed
+    /// out, evicted, or OOM-killed as a whole) is queued again before the
+    /// scheduler completes it with `FailedPrecondition`. A lost worker is
+    /// usually not the action's fault, so these do not spend
+    /// `max_job_retries`; the cap only stops an action that takes a worker
+    /// down every time it runs.
+    /// Default: 10
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_worker_loss_retries: usize,
 
     /// The strategy used to assign workers jobs.
     #[serde(default)]
@@ -298,6 +310,18 @@ pub struct SimpleSpec {
     /// Default: unset (off)
     #[serde(default)]
     pub live_memory_veto: Option<String>,
+
+    /// When a worker reports an action killed for memory (`KILLED_MEMORY`,
+    /// by its own reservation enforcement or by the kernel), requeue the
+    /// action with a larger reservation instead of failing it. Escalations
+    /// have their own budget (`max_steps`) and do not spend
+    /// `max_job_retries`. The reservation grows to the largest memory any
+    /// connected worker advertises (or `max_kb`); the last step reserves
+    /// that worker whole, memory and CPU, so the action runs alone, and only
+    /// a kill there fails the action: nothing in the fleet could run it.
+    /// Default: unset (a memory kill fails the action)
+    #[serde(default)]
+    pub memory_escalation: Option<MemoryEscalationSpec>,
 
     /// The storage backend to use for the scheduler.
     /// Default: memory
@@ -451,6 +475,63 @@ fn default_historical_resource_cpu_property_name() -> String {
 
 fn default_historical_resource_memory_property_name() -> String {
     "memory_kb".to_string()
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct MemoryEscalationSpec {
+    /// The `minimum` platform property carrying the memory reservation.
+    /// Default: `memory_kb`
+    #[serde(default = "default_historical_resource_memory_property_name")]
+    pub property: String,
+
+    /// Each kill scales the reservation by this factor, in hundredths:
+    /// 200 doubles it, 150 adds half.
+    /// Default: 200
+    #[serde(default = "default_memory_escalation_percent")]
+    pub percent: u64,
+
+    /// Never reserve more than this many KiB; 0 takes the largest memory
+    /// any connected worker advertises.
+    /// Default: 0
+    #[serde(default)]
+    pub max_kb: u64,
+
+    /// The memory values of the fleet's size classes, ascending, in KiB.
+    /// When set, a kill steps the reservation to the next class above it
+    /// instead of scaling by `percent`; past the top class the last step
+    /// reserves the largest worker whole. The chart fills this from the
+    /// same classes the `historical_resource` scheduler uses.
+    /// Default: empty (scale by `percent`)
+    #[serde(default)]
+    pub ladder_kb: Vec<u64>,
+
+    /// The `minimum` platform property carrying the CPU reservation. The
+    /// last escalation reserves the largest worker's whole memory and,
+    /// through this property, its whole CPU, so nothing shares the worker
+    /// with the action. Empty leaves CPU alone.
+    /// Default: `cpu_count`
+    #[serde(default = "default_memory_escalation_cpu_property")]
+    pub cpu_property: String,
+
+    /// The most escalations one action gets before the scheduler completes
+    /// it with `FailedPrecondition`; 0 lets the ceiling alone bound them.
+    /// Default: 8
+    #[serde(default = "default_memory_escalation_max_steps")]
+    pub max_steps: u64,
+}
+
+fn default_memory_escalation_cpu_property() -> String {
+    "cpu_count".to_string()
+}
+
+const fn default_memory_escalation_max_steps() -> u64 {
+    8
+}
+
+const fn default_memory_escalation_percent() -> u64 {
+    200
 }
 
 #[derive(Deserialize, Serialize, Debug)]

@@ -144,12 +144,31 @@ pub enum UpdateOperationType {
     /// dispatch never reached it, or it never acknowledged it. Requeue
     /// without counting an attempt; nothing was tried.
     UpdateWithDecline(Decline),
+
+    /// The worker killed the action for a resource it had declared too
+    /// little of; requeue it with a larger reservation, within the retry cap.
+    UpdateWithEscalation(Escalation),
 }
 
 /// Why a dispatched action is going back to the queue untried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decline {
     pub reason: String,
+}
+
+/// A reservation to raise before an action runs again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Escalation {
+    /// The platform property carrying the reservation.
+    pub property: String,
+    /// The new value.
+    pub value: u64,
+    /// Why: the error the kill produced, kept for the client if the cap
+    /// ends the escalation.
+    pub reason: Error,
+    /// Set on the last step: the CPU property and the largest worker's
+    /// whole CPU, so the action runs alone there.
+    pub cpu: Option<(String, u64)>,
 }
 
 #[async_trait]
