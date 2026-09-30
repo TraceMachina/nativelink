@@ -17,7 +17,7 @@ use core::pin::Pin;
 use futures::future::pending;
 use futures::try_join;
 use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::verify_store::VerifyStore;
@@ -380,6 +380,164 @@ async fn verify_size_and_hash_succeeds_on_small_data() -> Result<(), Error> {
         inner_store.has(digest).await,
         Ok(Some(VALUE.len() as u64)),
         "Expected data to exist in store after update"
+    );
+    Ok(())
+}
+
+// The tier below holds fewer bytes than the digest names: the read fails
+// instead of ending early, so nothing above caches a truncated blob.
+#[nativelink_test]
+async fn verify_size_true_fails_a_short_read() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    // Ten bytes claimed, four stored: the inner store does not check.
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    inner_store.update_oneshot(digest, "1234".into()).await?;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert!(
+        err.to_string().contains("Read 4 bytes of the 10 expected"),
+        "{err:?}"
+    );
+
+    // A range read that stops before the end is judged against the range.
+    let result = store.get_part_unchunked(digest, 1, Some(3)).await?;
+    assert_eq!(result, "234");
+    let result = store.get_part_unchunked(digest, 1, Some(5)).await;
+    assert_eq!(result.unwrap_err().code, Code::DataLoss);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_size_true_passes_a_whole_read() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 4).unwrap();
+    inner_store.update_oneshot(digest, "1234".into()).await?;
+
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, "1234");
+    assert_eq!(store.get_part_unchunked(digest, 2, None).await?, "34");
+    assert_eq!(store.get_part_unchunked(digest, 1, Some(2)).await?, "23");
+    // Past the end there is nothing to read and nothing expected.
+    assert_eq!(store.get_part_unchunked(digest, 4, None).await?, "");
+    Ok(())
+}
+
+/// The tier below sends part of the blob and then fails, as the Redis store
+/// does for a key evicted between two chunks: the read fails with that
+/// error and does not wait for bytes that will never come.
+#[nativelink_test]
+async fn verify_size_true_fails_when_the_inner_read_errors_after_some_data() -> Result<(), Error> {
+    use core::pin::Pin;
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::{Code, make_err};
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{RemoveItemCallback, StoreDriver, StoreKey};
+
+    #[derive(Debug)]
+    struct PartialThenErrorStore;
+
+    impl MetricsComponent for PartialThenErrorStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for PartialThenErrorStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            results.fill(Some(10));
+            Ok(())
+        }
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            Ok(0)
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send("1234".into()).await?;
+            Err(make_err!(Code::NotFound, "key removed under the read"))
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(PartialThenErrorStore);
+
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(Arc::new(PartialThenErrorStore)),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 10).unwrap();
+    let result = tokio::time::timeout(
+        core::time::Duration::from_secs(5),
+        store.get_part_unchunked(digest, 0, None),
+    )
+    .await
+    .expect("a failed inner read must not hang the verify store");
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert!(
+        err.to_string().contains("key removed under the read"),
+        "{err:?}"
     );
     Ok(())
 }
