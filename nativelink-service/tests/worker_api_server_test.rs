@@ -192,6 +192,7 @@ async fn setup_api_server_with(
         platform_property_manager,
         WorkerAllocationStrategy::default(),
         None,
+        None,
         tasks_or_worker_change_notify,
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
@@ -412,8 +413,9 @@ pub async fn server_does_not_timeout_if_execute_complete_test()
     );
 
     // And it is still evicted once it goes quiet for a full window. The
-    // eviction fails the running action through the state manager, so
-    // that call has to be serviced alongside it.
+    // eviction hands the running action back to the queue as a lost worker
+    // through the state manager, so that call has to be serviced alongside
+    // it.
     let timestamp = add_and_return_timestamp(BASE_WORKER_TIMEOUT_S);
     let (remove_result, (evicted_operation_id, evicted_worker_id, evicted_update)) = join!(
         test_context.scheduler.remove_timedout_workers(timestamp),
@@ -423,8 +425,8 @@ pub async fn server_does_not_timeout_if_execute_complete_test()
     assert_eq!(evicted_operation_id, operation_id);
     assert_eq!(evicted_worker_id, test_context.worker_id);
     assert!(
-        matches!(evicted_update, UpdateOperationType::UpdateWithError(_)),
-        "expected the running action to be failed on eviction, got {evicted_update:?}"
+        matches!(evicted_update, UpdateOperationType::UpdateWithDisconnect),
+        "expected the running action to be requeued as a lost worker, got {evicted_update:?}"
     );
     assert!(
         !test_context

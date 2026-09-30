@@ -364,10 +364,42 @@ where
     }
 }
 
+/// How often an action is queued again, by cause, before the scheduler
+/// completes it with `FailedPrecondition`. Each cause has its own budget:
+/// an action's own failures, the workers it lost through no fault of its
+/// own, and the memory escalations it was granted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryLimits {
+    /// Internal errors and timeouts the action produced.
+    pub max_job_retries: usize,
+    /// Workers lost while the action ran.
+    pub max_worker_loss_retries: usize,
+    /// Memory escalations; 0 leaves only the fleet's ceiling to bound them.
+    pub max_escalations: usize,
+}
+
+impl RetryLimits {
+    /// Lost workers allowed by default; the action did nothing wrong.
+    pub const DEFAULT_WORKER_LOSS_RETRIES: usize = 10;
+}
+
+/// Only the job budget stated: the other two take their defaults, which is
+/// what older callers meant.
+impl From<usize> for RetryLimits {
+    fn from(max_job_retries: usize) -> Self {
+        Self {
+            max_job_retries,
+            max_worker_loss_retries: Self::DEFAULT_WORKER_LOSS_RETRIES,
+            max_escalations: 0,
+        }
+    }
+}
+
 /// `SimpleSchedulerStateManager` is responsible for maintaining the state of the scheduler.
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
+
 #[derive(MetricsComponent, Debug)]
 pub struct SimpleSchedulerStateManager<T, I, NowFn>
 where
@@ -384,6 +416,14 @@ where
     // of always having it on every SimpleScheduler.
     #[metric(help = "Maximum number of times a job can be retried")]
     max_job_retries: usize,
+
+    #[metric(help = "Maximum number of times a job is queued again after losing its worker")]
+    max_worker_loss_retries: usize,
+
+    #[metric(
+        help = "Maximum number of memory escalations for a job; 0 leaves the ceiling to bound them"
+    )]
+    max_escalations: usize,
 
     /// Duration after which an action is considered to be timed out if
     /// no event is received.
@@ -425,7 +465,7 @@ where
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
     pub fn new(
-        max_job_retries: usize,
+        retry_limits: impl Into<RetryLimits>,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
         max_executing_timeout: Duration,
@@ -433,9 +473,16 @@ where
         now_fn: NowFn,
         worker_registry: Option<SharedWorkerRegistry>,
     ) -> Arc<Self> {
+        let RetryLimits {
+            max_job_retries,
+            max_worker_loss_retries,
+            max_escalations,
+        } = retry_limits.into();
         Arc::new_cyclic(|weak_self| Self {
             action_db,
             max_job_retries,
+            max_worker_loss_retries,
+            max_escalations,
             no_event_action_timeout,
             client_action_timeout,
             max_executing_timeout,
@@ -928,6 +975,7 @@ where
             UpdateOperationType::UpdateWithDisconnect => "Disconnect",
             UpdateOperationType::ExecutionComplete => "ExecutionComplete",
             UpdateOperationType::UpdateWithDecline(_) => "Decline",
+            UpdateOperationType::UpdateWithEscalation(_) => "Escalation",
         };
 
         debug!(
@@ -1080,15 +1128,15 @@ where
                     }
                 }
                 UpdateOperationType::UpdateWithDisconnect => {
-                    // A worker disconnect (e.g. OOMKill, pod eviction, network
-                    // drop) used to requeue without counting as an attempt,
-                    // which let an action that always crashes its worker loop
-                    // forever until the Bazel client's --test_timeout fired.
-                    // Count disconnects as attempts so max_job_retries caps the
-                    // loop and the client sees a backend-attributable error.
-                    awaited_action.attempts += 1;
+                    // A lost worker (OOM-killed as a whole, pod evicted,
+                    // network drop, timed out) is usually not this action's
+                    // doing, so it has its own budget rather than spending
+                    // the action's `max_job_retries`. The budget is what
+                    // stops an action that takes a worker down every time
+                    // it runs from doing so forever.
+                    awaited_action.worker_losses += 1;
 
-                    if awaited_action.attempts > self.max_job_retries {
+                    if awaited_action.worker_losses > self.max_worker_loss_retries {
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
                                 worker: maybe_worker_id
@@ -1097,9 +1145,9 @@ where
                             },
                             error: Some(make_err!(
                                 Code::FailedPrecondition,
-                                "Worker disconnected repeatedly while executing this action ({} > {} attempts); the worker was likely OOM-killed or its pod evicted. Give the action a memory reservation or raise the pool's memory limit before retrying. {}",
-                                awaited_action.attempts,
-                                self.max_job_retries,
+                                "The worker running this action was lost {} times, more than max_worker_loss_retries ({}); the action is likely what takes the worker down (OOM-killed pod, eviction). Give it a memory reservation or raise the pool's memory limit before retrying. {}",
+                                awaited_action.worker_losses,
+                                self.max_worker_loss_retries,
                                 format!(
                                     "for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"
                                 ),
@@ -1107,6 +1155,54 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        is_retry = true;
+                        ActionStage::Queued
+                    }
+                }
+                UpdateOperationType::UpdateWithEscalation(escalation) => {
+                    // The scheduler's own sizing decision, not a failure of
+                    // the action: it has its own budget and does not spend
+                    // `max_job_retries`. The fleet's ceiling bounds it
+                    // anyway; the budget catches a fleet whose ceiling is
+                    // far above where the action started.
+                    awaited_action.escalations += 1;
+                    if self.max_escalations > 0 && awaited_action.escalations > self.max_escalations
+                    {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id
+                                    .map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(
+                                make_err!(
+                                    Code::FailedPrecondition,
+                                    "Job cancelled after being killed for memory at every reservation tried ({} escalations, more than max_steps {}); the last reservation was {} {} {}",
+                                    awaited_action.escalations,
+                                    self.max_escalations,
+                                    escalation.value,
+                                    escalation.property,
+                                    format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
+                                )
+                                .merge(escalation.reason.clone()),
+                            ),
+                            ..ActionResult::default()
+                        })
+                    } else {
+                        // The same action, asking for more: the next
+                        // dispatch carries the raised reservation and the
+                        // worker holds it to that. The last step also asks
+                        // for the worker's whole CPU, so it runs alone.
+                        let mut action_info = (**awaited_action.action_info()).clone();
+                        action_info
+                            .platform_properties
+                            .insert(escalation.property.clone(), escalation.value.to_string());
+                        if let Some((cpu_property, cpu_value)) = &escalation.cpu {
+                            action_info
+                                .platform_properties
+                                .insert(cpu_property.clone(), cpu_value.to_string());
+                        }
+                        awaited_action.set_action_info(Arc::new(action_info));
                         is_retry = true;
                         ActionStage::Queued
                     }

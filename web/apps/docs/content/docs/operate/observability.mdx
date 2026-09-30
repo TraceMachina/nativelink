@@ -348,6 +348,16 @@ sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[
 sum(rate(nativelink_execution_completed_count_total[5m]))
 ```
 
+Actions the worker killed for memory, as a share of the sampled ones. The
+per-action resource histograms carry `execution_outcome` (`completed`,
+`killed_memory`, `killed_disk`), so a kill can be told from a completion and
+the memory escalation rate read against it:
+
+```text
+sum(rate(nativelink_execution_peak_memory_count{execution_outcome="killed_memory"}[5m])) /
+sum(rate(nativelink_execution_peak_memory_count[5m]))
+```
+
 Workers connected to each scheduler instance, and how many of them are paused
 or draining:
 

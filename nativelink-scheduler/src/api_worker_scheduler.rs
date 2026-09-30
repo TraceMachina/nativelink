@@ -22,7 +22,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex;
 use futures::{StreamExt, future};
 use lru::LruCache;
-use nativelink_config::schedulers::WorkerAllocationStrategy;
+use nativelink_config::schedulers::{MemoryEscalationSpec, WorkerAllocationStrategy};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -34,13 +34,15 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ResourceOutcome, WorkerLoad,
 };
-use nativelink_util::action_messages::{OperationId, WorkerId};
+use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
     record_execution_peak_memory, record_worker_connected, record_worker_disconnected,
     record_worker_keepalive, record_worker_keepalive_gap, record_worker_state,
 };
-use nativelink_util::operation_state_manager::{Decline, UpdateOperationType, WorkerStateManager};
+use nativelink_util::operation_state_manager::{
+    Decline, Escalation, UpdateOperationType, WorkerStateManager,
+};
 use nativelink_util::origin_event::get_node_id;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -189,6 +191,9 @@ struct ApiWorkerSchedulerImpl {
     /// The `minimum` property compared against each worker's reported free
     /// memory before placement; unset means no veto.
     live_memory_veto: Option<String>,
+    /// How a memory kill is turned into a retry with a larger reservation;
+    /// unset means the kill fails the action.
+    memory_escalation: Option<MemoryEscalationSpec>,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
     /// Bumped with every notification, under the same lock as placement, so
@@ -655,10 +660,19 @@ impl ApiWorkerSchedulerImpl {
             // The ledger only knows what actions declared; the worker's own
             // report of what it has left catches the ones that declared too
             // little. A worker that reports nothing is never vetoed.
+            // An action that asks for the worker's whole advertised memory
+            // (the last escalation step) is not vetoed: no worker ever
+            // reports that much free, since its own binary, the kernel and
+            // the page cache hold some, and the ledger already keeps it
+            // alone there.
             if let (Some(property), Some(load)) = (self.live_memory_veto.as_deref(), w.last_load)
                 && let Some(PlatformPropertyValue::Minimum(needed_kb)) =
                     platform_properties.properties.get(property)
                 && *needed_kb > load.free_memory_kb
+                && matches!(
+                    w.total_platform_properties.properties.get(property),
+                    Some(PlatformPropertyValue::Minimum(advertised_kb)) if *needed_kb < *advertised_kb
+                )
             {
                 if full_worker_logging {
                     info!(
@@ -781,6 +795,204 @@ impl ApiWorkerSchedulerImpl {
         MatchOutcome::WaitingForCapacity
     }
 
+    /// The largest memory reservation any connected worker could hold.
+    /// The largest memory any connected worker advertises under `property`,
+    /// and that worker's whole CPU under `cpu_property` (`None` when the
+    /// property is empty or the worker does not advertise it). Reserving
+    /// both is what runs an action alone there.
+    fn fleet_largest_worker(&self, property: &str, cpu_property: &str) -> (u64, Option<u64>) {
+        let minimum = |worker: &Worker, name: &str| match worker
+            .total_platform_properties
+            .properties
+            .get(name)
+        {
+            Some(PlatformPropertyValue::Minimum(value)) => Some(*value),
+            _ => None,
+        };
+        // A draining worker is leaving: escalating to it would strand the
+        // action at a size the remaining fleet cannot serve.
+        self.workers
+            .iter()
+            .filter(|(_, worker)| !worker.is_draining)
+            .filter_map(|(_, worker)| {
+                minimum(worker, property).map(|memory_kb| {
+                    let cpu = if cpu_property.is_empty() {
+                        None
+                    } else {
+                        minimum(worker, cpu_property)
+                    };
+                    (memory_kb, cpu)
+                })
+            })
+            .max_by_key(|(memory_kb, _)| *memory_kb)
+            .unwrap_or((0, None))
+    }
+
+    /// Turns a result that the worker's last usage report says was a memory
+    /// kill into a requeue with a larger reservation, when escalation is
+    /// configured and there is room to grow. Returns the update to apply
+    /// and whether it was escalated.
+    fn maybe_escalate(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        update: UpdateOperationType,
+    ) -> (UpdateOperationType, bool) {
+        let Some(policy) = &self.memory_escalation else {
+            return (update, false);
+        };
+        let UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(result)) = &update
+        else {
+            return (update, false);
+        };
+        let Some(pending) = self
+            .workers
+            .peek(worker_id)
+            .and_then(|worker| worker.running_action_infos.get(operation_id))
+        else {
+            return (update, false);
+        };
+        let Some(usage) = pending.last_usage.as_ref() else {
+            return (update, false);
+        };
+        if usage.outcome != ResourceOutcome::KilledMemory as i32 {
+            return (update, false);
+        }
+        // What it ran under: the worker's echo, else what the scheduler sent.
+        let reserved_kb = usage
+            .reserved
+            .map(|r| r.memory_kb)
+            .filter(|kb| *kb > 0)
+            .or_else(|| {
+                match pending
+                    .action_info
+                    .platform_properties
+                    .properties
+                    .get(&policy.property)
+                {
+                    Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
+                    _ => None,
+                }
+            })
+            .unwrap_or(0);
+        let (fleet_memory_kb, fleet_cpu) =
+            self.fleet_largest_worker(&policy.property, &policy.cpu_property);
+        // `max_kb` caps the fleet's ceiling; it cannot raise it past what a
+        // worker declares, or the escalation lands where nothing can run.
+        let ceiling_kb = if policy.max_kb > 0 {
+            fleet_memory_kb.min(policy.max_kb)
+        } else {
+            fleet_memory_kb
+        };
+        if ceiling_kb == 0 {
+            return (update, false);
+        }
+        // The last step reserves the largest worker whole: its memory and,
+        // when the fleet advertises one, its CPU, so nothing shares the
+        // worker with the action. A kill there is the end: no worker in
+        // the fleet can run the action, and the client hears exactly that.
+        let cpu_held = match pending
+            .action_info
+            .platform_properties
+            .properties
+            .get(&policy.cpu_property)
+        {
+            Some(PlatformPropertyValue::Minimum(cores)) => *cores,
+            _ => 0,
+        };
+        let whole_worker_cpu = fleet_cpu.filter(|cores| *cores > 0);
+        let already_whole =
+            reserved_kb >= ceiling_kb && whole_worker_cpu.is_none_or(|cores| cpu_held >= cores);
+        if already_whole {
+            warn!(
+                ?worker_id,
+                ?operation_id,
+                reserved_kb,
+                ceiling_kb,
+                "Action killed for memory with the largest worker reserved whole; no worker in the fleet can run it"
+            );
+            let mut failed = result.clone();
+            let no_worker = make_err!(
+                Code::FailedPrecondition,
+                "Action was killed for memory at {reserved_kb} KiB with the largest worker in the fleet ({ceiling_kb} KiB) reserved for it alone; no worker can run it. It needs a bigger worker or less memory"
+            );
+            failed.error = Some(match result.error.clone() {
+                Some(worker_error) => no_worker.merge(worker_error),
+                None => no_worker,
+            });
+            return (
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(failed)),
+                false,
+            );
+        }
+        let base_kb = if reserved_kb > 0 {
+            reserved_kb
+        } else {
+            usage.peak_memory_kb
+        };
+        if base_kb == 0 {
+            // Nothing to grow from: no reservation and an unsampled kill.
+            // Scaling zero would hand out the smallest steps the ladder or
+            // the percent allow and burn the budget on them.
+            warn!(
+                ?worker_id,
+                ?operation_id,
+                "Action killed for memory with no reservation and no sampled peak; not escalating"
+            );
+            return (update, false);
+        }
+        // With a ladder the next class up; without one, scale. Past the
+        // top class or the ceiling, the whole worker.
+        let next = if policy.ladder_kb.is_empty() {
+            Some(
+                base_kb
+                    .saturating_mul(policy.percent)
+                    .checked_div(100)
+                    .unwrap_or(base_kb)
+                    .max(base_kb.saturating_add(1)),
+            )
+        } else {
+            policy
+                .ladder_kb
+                .iter()
+                .copied()
+                .filter(|kb| *kb > base_kb)
+                .min()
+        };
+        let value = next.map_or(ceiling_kb, |kb| kb.min(ceiling_kb));
+        let cpu = if value >= ceiling_kb {
+            whole_worker_cpu.map(|cores| (policy.cpu_property.clone(), cores))
+        } else {
+            None
+        };
+        let reason = result.error.clone().unwrap_or_else(|| {
+            make_err!(
+                Code::FailedPrecondition,
+                "Action was killed for memory at {} KiB",
+                usage.peak_memory_kb
+            )
+        });
+        warn!(
+            ?worker_id,
+            ?operation_id,
+            reserved_kb,
+            peak_memory_kb = usage.peak_memory_kb,
+            escalated_kb = value,
+            ceiling_kb,
+            property = %policy.property,
+            "Action killed for memory; requeuing with a larger reservation"
+        );
+        (
+            UpdateOperationType::UpdateWithEscalation(Escalation {
+                property: policy.property.clone(),
+                value,
+                reason,
+                cpu,
+            }),
+            true,
+        )
+    }
+
     async fn update_action(
         &mut self,
         worker_id: &WorkerId,
@@ -821,7 +1033,8 @@ impl ApiWorkerSchedulerImpl {
             // A decline pauses like backpressure: the worker said it has no
             // room, so it gets nothing more until it says otherwise.
             UpdateOperationType::UpdateWithDecline(_) => (true, true),
-            UpdateOperationType::UpdateWithDisconnect => (true, false),
+            UpdateOperationType::UpdateWithDisconnect
+            | UpdateOperationType::UpdateWithEscalation(_) => (true, false),
             UpdateOperationType::ExecutionComplete => {
                 // The process has exited but the action is still resident on
                 // the worker until its result arrives, so nothing is released
@@ -1165,11 +1378,11 @@ impl ApiWorkerSchedulerImpl {
             record_worker_disconnected(reason, worker.is_draining, worker.is_paused);
             // We don't care if we fail to send message to worker, this is only a best attempt.
             drop(worker.notify_update(WorkerUpdate::Disconnect).await);
-            let update = if is_disconnect {
-                UpdateOperationType::UpdateWithDisconnect
-            } else {
-                UpdateOperationType::UpdateWithError(err)
-            };
+            // Whatever took the worker away (its stream ended, it timed
+            // out, a command to it failed, an operator removed it), the
+            // action running on it did nothing wrong: it is a worker loss
+            // with its own budget, not an attempt the action spent.
+            let update = UpdateOperationType::UpdateWithDisconnect;
             for (operation_id, _) in worker.running_action_infos.drain() {
                 result = result.merge(
                     self.worker_state_manager
@@ -1228,6 +1441,7 @@ impl ApiWorkerScheduler {
         platform_property_manager: Arc<PlatformPropertyManager>,
         allocation_strategy: WorkerAllocationStrategy,
         live_memory_veto: Option<String>,
+        memory_escalation: Option<MemoryEscalationSpec>,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
@@ -1249,6 +1463,7 @@ impl ApiWorkerScheduler {
                 worker_state_manager,
                 allocation_strategy,
                 live_memory_veto,
+                memory_escalation,
                 worker_change_notify,
                 capacity_generation: capacity_generation.clone(),
                 worker_registry: worker_registry.clone(),
@@ -1517,6 +1732,18 @@ impl WorkerScheduler for ApiWorkerScheduler {
         // default and `observed_worker_peak_memory_mib` was never recorded.
         // Sampling is optional, so only record when the worker actually took a
         // reading. A zero here means "not sampled", not "used no memory".
+        {
+            // The result follows this report; what it says decides whether
+            // that result is a kill to escalate.
+            let mut inner = self.inner.lock().await;
+            if let Some(pending) = inner
+                .workers
+                .get_mut(worker_id)
+                .and_then(|worker| worker.running_action_infos.get_mut(operation_id))
+            {
+                pending.last_usage = Some(resource_usage.clone());
+            }
+        }
         let maybe_action_info = self.running_action_info(worker_id, operation_id).await;
         let action_mnemonic = maybe_action_info
             .as_ref()
@@ -1546,10 +1773,20 @@ impl WorkerScheduler for ApiWorkerScheduler {
 
         if resource_usage.sampled {
             if resource_usage.peak_memory_kb > 0 {
-                record_execution_peak_memory(resource_usage.peak_memory_kb, "", &action_mnemonic);
+                record_execution_peak_memory(
+                    resource_usage.peak_memory_kb,
+                    "",
+                    &action_mnemonic,
+                    outcome.as_str_name(),
+                );
             }
             if resource_usage.cpu_time_ms > 0 {
-                record_execution_cpu_time(resource_usage.cpu_time_ms, "", &action_mnemonic);
+                record_execution_cpu_time(
+                    resource_usage.cpu_time_ms,
+                    "",
+                    &action_mnemonic,
+                    outcome.as_str_name(),
+                );
             }
         }
 
@@ -1630,6 +1867,10 @@ impl WorkerScheduler for ApiWorkerScheduler {
         update: UpdateOperationType,
     ) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
+        let (update, escalated) = inner.maybe_escalate(worker_id, operation_id, update);
+        if escalated {
+            record_dispatch_requeue("memory_escalation");
+        }
         inner.update_action(worker_id, operation_id, update).await
     }
 
