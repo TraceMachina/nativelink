@@ -4211,7 +4211,10 @@ pub struct RunningActionsManagerArgs<'a> {
     pub use_namespaces: UseNamespaces,
 }
 
-struct CleanupGuard {
+/// The mark that an operation's directory is being cleaned; dropping it
+/// clears the mark and wakes whoever waits for it.
+#[derive(Debug)]
+pub struct CleanupGuard {
     manager: Weak<RunningActionsManagerImpl>,
     operation_id: OperationId,
 }
@@ -4544,10 +4547,11 @@ impl RunningActionsManagerImpl {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
-            let Some(_cleaning_guard) = self.perform_cleanup(OperationId::from(name.as_str()))
-            else {
-                continue;
-            };
+            // Ownership before the mark: an action's own cleanup steps aside
+            // when the mark is held, so marking a running action's directory
+            // for even an instant would let its cleanup be skipped. A
+            // directory that becomes owned after this check is young, and
+            // the age test below leaves it alone.
             let owned = self
                 .running_actions
                 .lock()
@@ -4556,6 +4560,10 @@ impl RunningActionsManagerImpl {
             if owned {
                 continue;
             }
+            let Some(_cleaning_guard) = self.perform_cleanup(OperationId::from(name.as_str()))
+            else {
+                continue;
+            };
             let path = entry.path();
             // Not followed: a symlink under the root is not an action
             // directory, whatever it points at.
@@ -4632,14 +4640,26 @@ impl RunningActionsManagerImpl {
         }
     }
 
-    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
-        let mut cleaning = self.cleaning_up_operations.lock();
-        cleaning
-            .insert(operation_id.clone())
-            .then_some(CleanupGuard {
-                manager: Arc::downgrade(self),
-                operation_id,
-            })
+    /// Marks the operation as being cleaned and returns the guard that
+    /// clears the mark, or `None` when another cleanup already holds it.
+    ///
+    /// The guard is built only after the lock is released: its `Drop` takes
+    /// the same lock, so a guard made under it and thrown away (as
+    /// `then_some` did, whatever the insert said) deadlocked the thread on
+    /// its own mutex and, one by one, every runtime thread that then came to
+    /// clean up or start an action, while the worker's keepalives kept it
+    /// looking alive. The orphan sweep made the double mark routine: it marks
+    /// every directory it visits, and a directory whose action is mid-cleanup
+    /// is already marked.
+    pub fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
+        let inserted = self
+            .cleaning_up_operations
+            .lock()
+            .insert(operation_id.clone());
+        inserted.then(|| CleanupGuard {
+            manager: Arc::downgrade(self),
+            operation_id,
+        })
     }
 }
 
