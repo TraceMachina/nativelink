@@ -22,6 +22,7 @@
 
 use core::hash::BuildHasher;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use nativelink_config::cas_server::{
     CapacityConfig, CpuUnit, MemoryEnforcement, ResourceEnforcementConfig, WorkerProperty,
@@ -125,27 +126,117 @@ pub fn without_cgroup<S: BuildHasher>(
         .collect();
     if missing.is_empty() {
         warn!(
-            "capacity is configured but the cgroup v2 root could not be read; advertising the configured platform_properties instead"
+            "capacity is configured but no cgroup v2 limit applies to the worker (see the line above for the cgroup looked at); advertising the configured platform_properties instead"
         );
         return Ok(());
     }
     Err(make_err!(
         Code::FailedPrecondition,
-        "capacity is configured but the cgroup v2 root could not be read (not Linux, cgroup v1, or no permission), and platform_properties carries no {}: set them, or drop the capacity block",
+        "capacity is configured but no cgroup v2 limit applies to the worker (not Linux, cgroup v1, no permission, or no limit at any level; see the line above), and platform_properties carries no {}: set them, or drop the capacity block",
         missing.join(" or ")
     ))
 }
 
-/// Reads the worker's own cgroup v2 root. `None` where there is no such
-/// cgroup to read (not Linux, cgroup v1, or no permission).
+/// The cgroup v2 path of this process from `/proc/self/cgroup`: the `0::`
+/// line, which is `/` inside a container with its own cgroup namespace and
+/// the full `/kubepods.slice/.../cri-containerd-<id>.scope` path in one that
+/// shares the host's, as a privileged container does.
+pub fn parse_self_cgroup(self_cgroup: &str) -> Option<&str> {
+    self_cgroup
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(str::trim)
+        .filter(|path| path.starts_with('/'))
+}
+
+/// Where this process's own `cpu.max`, `memory.max` and `memory.current`
+/// live: the mount root joined with the path from `/proc/self/cgroup` when
+/// that directory exists under the mount, the mount root otherwise. A
+/// container with a private cgroup namespace sees itself at the root, so its
+/// path is `/` and both agree. A privileged container sees the host's tree,
+/// where the root's files are the host's (or absent, as on a systemd host),
+/// and its own numbers sit further down.
+pub fn resolve_cgroup_dir(
+    mount_root: &Path,
+    self_cgroup: Option<&str>,
+    is_dir: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    if let Some(path) = self_cgroup.and_then(parse_self_cgroup) {
+        let own = mount_root.join(path.trim_start_matches('/'));
+        if is_dir(&own) {
+            return own;
+        }
+    }
+    mount_root.to_path_buf()
+}
+
+/// This process's cgroup directory on the live system.
+fn cgroup_dir() -> PathBuf {
+    let self_cgroup = std::fs::read_to_string("/proc/self/cgroup").ok();
+    resolve_cgroup_dir(Path::new("/sys/fs/cgroup"), self_cgroup.as_deref(), |dir| {
+        dir.join("memory.max").is_file()
+    })
+}
+
+/// Whether a `cpu.max` or `memory.max` value is "no limit": `max`, or for
+/// `cpu.max` `max <period>`.
+fn is_unlimited(value: &str) -> bool {
+    value.split_whitespace().next() == Some("max")
+}
+
+/// The first limit for `file` from `dir` up to and including `mount_root`,
+/// with the directory it was found in. The process's own cgroup is often
+/// an unlimited child of a limited parent (a systemd scope in a pod, a
+/// split cgroup, a privileged container under `kubepods.slice`), and the
+/// parent's limit is the one the kernel enforces on it. `None` when every
+/// level says `max` or nothing is readable: no limit applies.
+pub fn find_limit(
+    dir: &Path,
+    mount_root: &Path,
+    file: &str,
+    read: impl Fn(&Path) -> Option<String>,
+) -> Option<(PathBuf, String)> {
+    let mut at = dir;
+    loop {
+        if let Some(value) = read(&at.join(file))
+            && !is_unlimited(value.trim())
+        {
+            return Some((at.to_path_buf(), value));
+        }
+        if at == mount_root || !at.starts_with(mount_root) {
+            return None;
+        }
+        at = at.parent()?;
+    }
+}
+
+fn read_file(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// Reads the limits that apply to the worker: for CPU and for memory, the
+/// nearest limit from its own cgroup up to the mount root. `None` where no
+/// limit applies at any level (not Linux, cgroup v1, no permission, or a
+/// host where nothing is limited), so the configured properties stand.
 pub fn observe_cgroup() -> Option<ObservedCapacity> {
     let host_cpus = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
     let host_memory_kb = std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|meminfo| parse_meminfo_total_kb(&meminfo))
         .unwrap_or(0);
-    let cpu_max = std::fs::read_to_string("/sys/fs/cgroup/cpu.max").ok()?;
-    let memory_max = std::fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
+    let mount_root = Path::new("/sys/fs/cgroup");
+    let dir = cgroup_dir();
+    let cpu = find_limit(&dir, mount_root, "cpu.max", read_file);
+    let memory = find_limit(&dir, mount_root, "memory.max", read_file);
+    if cpu.is_none() && memory.is_none() {
+        warn!(
+            cgroup = %dir.display(),
+            "no cgroup v2 cpu.max or memory.max limit from this cgroup up to the mount root; keeping the configured platform_properties"
+        );
+        return None;
+    }
+    let cpu_max = cpu.map_or_else(|| "max".to_string(), |(_, value)| value);
+    let memory_max = memory.map_or_else(|| "max".to_string(), |(_, value)| value);
     Some(ObservedCapacity {
         cpu_millicores: parse_cpu_max(&cpu_max, host_cpus)?,
         memory_kb: parse_memory_max(&memory_max, host_memory_kb)?,
@@ -220,17 +311,22 @@ pub const fn free_memory_kb_from(
 /// worker reports nothing and is never vetoed.
 #[cfg(target_os = "linux")]
 pub fn free_memory_kb() -> Option<u64> {
-    let limit_kb = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
-        .ok()
-        .and_then(|max| {
-            let max = max.trim();
-            (max != "max")
-                .then(|| parse_memory_current_kb(max))
-                .flatten()
-        });
-    let current_kb = std::fs::read_to_string("/sys/fs/cgroup/memory.current")
-        .ok()
-        .and_then(|current| parse_memory_current_kb(&current));
+    // The limit and the usage counted against it come from the same level:
+    // the nearest limited ancestor, which charges everything below it.
+    let limited = find_limit(
+        &cgroup_dir(),
+        Path::new("/sys/fs/cgroup"),
+        "memory.max",
+        read_file,
+    );
+    let limit_kb = limited
+        .as_ref()
+        .and_then(|(_, max)| parse_memory_current_kb(max.trim()));
+    let current_kb = limited.as_ref().and_then(|(dir, _)| {
+        std::fs::read_to_string(dir.join("memory.current"))
+            .ok()
+            .and_then(|current| parse_memory_current_kb(&current))
+    });
     let available_kb = std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|meminfo| parse_meminfo_available_kb(&meminfo));
