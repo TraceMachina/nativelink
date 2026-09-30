@@ -1003,15 +1003,40 @@ where
             tokio::pin!(stream);
             // This index search is by prefix. In particular, an unscoped key
             // is a prefix of its scoped variants and must not join those jobs.
+            //
+            // The index retains completed records alongside any live successor
+            // for the same qualifier, and the backend does not order results by
+            // state. Stopping at the first exact match can therefore hand back a
+            // finished record while a joinable live one is also present, forcing
+            // an unnecessary recreate. Scan every exact match and prefer a
+            // joinable (neither finished nor abandoned) candidate; keep the
+            // first exact match only as a fallback when none is joinable.
+            let mut fallback: Option<AwaitedAction> = None;
             while let Some(candidate) = stream
                 .try_next()
                 .await
                 .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?
             {
-                if &candidate.action_info().unique_qualifier == unique_qualifier {
+                if &candidate.action_info().unique_qualifier != unique_qualifier {
+                    continue;
+                }
+                let abandoned = self
+                    .executing_action_is_abandoned(
+                        &candidate,
+                        no_event_action_timeout,
+                        (self.now_fn)().now(),
+                    )
+                    .await;
+                if !candidate.state().stage.is_finished() && !abandoned {
                     maybe_awaited_action = Some(candidate);
                     break;
                 }
+                if fallback.is_none() {
+                    fallback = Some(candidate);
+                }
+            }
+            if maybe_awaited_action.is_none() {
+                maybe_awaited_action = fallback;
             }
             if maybe_awaited_action.is_some() {
                 break;
