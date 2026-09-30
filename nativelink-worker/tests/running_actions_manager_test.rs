@@ -93,10 +93,10 @@ mod tests {
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::free_disk_kb;
     use nativelink_worker::running_actions_manager::{
-        Callbacks, ExecutionConfiguration, KillReason, ResourceEnforcement, RunningAction,
-        RunningActionImpl, RunningActionsManager, RunningActionsManagerArgs,
-        RunningActionsManagerImpl, classify_outcome, download_to_directory, log_excerpt,
-        parse_kb_field,
+        Callbacks, ExecutionConfiguration, KillReason, PersistentWorkersSettings,
+        ResourceEnforcement, RunningAction, RunningActionImpl, RunningActionsManager,
+        RunningActionsManagerArgs, RunningActionsManagerImpl, classify_outcome,
+        download_to_directory, log_excerpt, parse_kb_field,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -2654,6 +2654,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -2824,6 +2825,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -3264,6 +3266,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     // The guard alone: the memory axis is off.
                     resource_enforcement: Some(ResourceEnforcement {
                         memory: None,
@@ -3761,6 +3764,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     resource_enforcement: Some(ResourceEnforcement {
                         memory: None,
                         disk_property_name: Some("disk_kb".to_string()),
@@ -3945,6 +3949,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     kill_grace: Duration::from_secs(5),
                     ..Default::default()
                 },
@@ -4196,6 +4201,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     set_tmpdir: true,
                     ..Default::default()
                 },
@@ -4352,6 +4358,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 1_000_000,
                     ..Default::default()
                 },
@@ -4764,6 +4771,7 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -6626,6 +6634,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
             let manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: actions.to_string_lossy().into_owned(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     resource_enforcement: None,
                     buck2_file_capture: Some(Buck2FileCaptureConfig {
                         executable: helper.to_string_lossy().into_owned(),
@@ -6779,6 +6788,12 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
         ) -> Result<(Action, DigestInfo), Error> {
             let command = Command {
                 arguments: vec![format!("./{WORKER_SCRIPT_NAME}"), "@args.txt".to_string()],
+                // The worker process gets the action's environment and no
+                // more, as Bazel sends it; the script needs PATH for sed.
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap_or_default(),
+                }],
                 output_paths: vec!["count.txt".to_string()],
                 platform: Some(Platform {
                     properties: vec![
@@ -7293,6 +7308,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -7445,6 +7461,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
