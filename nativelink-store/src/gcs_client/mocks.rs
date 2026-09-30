@@ -39,6 +39,9 @@ pub struct MockGcsOperations {
     call_counts: CallCounts,
     // For capturing requests to verify correct parameter passing
     requests: RwLock<Vec<MockRequest>>,
+    // When non-zero, every content read returns at most this many bytes,
+    // simulating an HTTP body that ends before the requested range.
+    truncate_reads_to: AtomicUsize,
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +133,14 @@ impl MockGcsOperations {
             failure_mode: RwLock::new(FailureMode::None),
             call_counts: CallCounts::default(),
             requests: RwLock::new(Vec::new()),
+            truncate_reads_to: AtomicUsize::new(0),
         }
+    }
+
+    /// Cap every content read at `max_bytes` (0 disables), so a read body ends
+    /// before the requested range like a truncated HTTP response would.
+    pub fn set_truncate_reads_to(&self, max_bytes: usize) {
+        self.truncate_reads_to.store(max_bytes, Ordering::Relaxed);
     }
 
     /// Set whether operations should fail or not
@@ -357,6 +367,12 @@ impl GcsOperations for MockGcsOperations {
                 core::cmp::min(usize::try_from(e).unwrap_or(usize::MAX), content.len())
             } else {
                 content.len()
+            };
+            let truncate = self.truncate_reads_to.load(Ordering::Relaxed);
+            let end_idx = if truncate > 0 {
+                core::cmp::min(end_idx, start_idx.saturating_add(truncate))
+            } else {
+                end_idx
             };
 
             Ok(Box::new(OnceStream {
