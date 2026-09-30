@@ -383,7 +383,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     /// The worker process gets only the environment it is given, so the
     /// scripts need PATH to find `sleep` wherever the tests run.
     fn path_env() -> Vec<(String, String)> {
@@ -393,6 +392,7 @@ mod tests {
         )]
     }
 
+    #[cfg(unix)]
     fn echo_script(working_dir: &Path, unix_body: &str, _windows_body: &str) -> TestWorkerProgram {
         let path = working_dir.join("worker.sh");
         let mut file = std::fs::File::create(&path).unwrap();
