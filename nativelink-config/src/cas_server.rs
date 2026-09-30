@@ -1114,6 +1114,53 @@ pub struct UploadActionResultConfig {
     pub failure_message_template: String,
 }
 
+/// The pool of persistent worker processes (Bazel `supports-workers`).
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct PersistentWorkersConfig {
+    /// Run an action whose platform properties carry `supports-workers=1`
+    /// in a pooled worker process that outlives it and serves the next
+    /// action with the same executable, startup arguments and environment.
+    /// Off, every such action runs as a one-shot process like any other.
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Most worker processes kept per key (executable, startup arguments,
+    /// environment, protocol). An action whose key is at the cap and has
+    /// no idle process runs one-shot. 0 takes the default.
+    /// Default: 4
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_workers_per_key: usize,
+
+    /// Seconds an idle worker process is kept before the sweeper shuts it
+    /// down. 0 takes the default.
+    /// Default: 300
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub idle_timeout_s: u64,
+
+    /// Requests a worker process serves before it is retired and replaced,
+    /// which bounds what a long-lived process accumulates. 0 takes the
+    /// default.
+    /// Default: 200
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_requests_per_worker: u64,
+
+    /// Milliseconds a worker process being shut down gets to exit on its
+    /// own (its stdin is closed) before SIGKILL. 0 takes the default.
+    /// Default: 5000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub shutdown_grace_ms: u64,
+
+    /// Seconds an action waits for a worker process to come back when its
+    /// key is at `max_workers_per_key` with none idle, before it runs
+    /// one-shot instead. 0 takes the default.
+    /// Default: 30
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub acquire_timeout_s: u64,
+}
+
 /// Opt-in file capture for the actual container executing a Buck2 action.
 /// Requires a fresh single-use container with no outer execution wrapper or
 /// separate action mount namespace. For nested runtimes, run `NativeLink` and the
@@ -1341,6 +1388,12 @@ pub struct LocalWorkerConfig {
     /// Default: true
     #[serde(default = "default_true")]
     pub set_tmpdir: bool,
+
+    /// Bazel persistent workers: how an action whose platform properties
+    /// carry `supports-workers=1` is run and how the pool of worker
+    /// processes is sized. Unset takes every default below.
+    #[serde(default)]
+    pub persistent_workers: Option<PersistentWorkersConfig>,
 
     /// Underlying CAS store that the worker will use to download CAS artifacts.
     /// This store must be a `FastSlowStore`. The `fast` store must be a

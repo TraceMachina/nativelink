@@ -82,11 +82,17 @@ impl LiveWorker {
         startup_args: &[String],
         wire_format: WireFormat,
         working_dir: &Path,
+        env: &[(String, String)],
+        namespaced: bool,
     ) -> Result<Self, Error> {
         let mut cmd = Command::new(executable);
         cmd.args(startup_args)
             .arg("--persistent_worker")
             .current_dir(working_dir)
+            // The action's environment and nothing else, as for a one-shot
+            // action; the environment is part of the worker's key.
+            .env_clear()
+            .envs(env.iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // WorkResponse.output carries per-action diagnostics. The child
@@ -94,6 +100,30 @@ impl LiveWorker {
             // safely to a single request.
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        // Its own process group, so the resource sampler can attribute the
+        // process and its children to the request being served.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        #[cfg(target_os = "linux")]
+        if namespaced {
+            use std::os::unix::ffi::OsStrExt;
+            let working_dir_c = std::ffi::CString::new(working_dir.as_os_str().as_bytes())
+                .err_tip(|| "Persistent worker working directory is not a valid C string")?;
+            let action_dir_c = working_dir_c.clone();
+            // SAFETY: configure_namespace is async-signal-safe and meant for pre_exec.
+            unsafe {
+                cmd.pre_exec(move || {
+                    crate::namespace_utils::configure_namespace(
+                        false,
+                        None,
+                        &working_dir_c,
+                        &action_dir_c,
+                    )
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = namespaced;
 
         debug!(
             ?executable,
@@ -134,6 +164,11 @@ impl LiveWorker {
 
     pub const fn wire_format(&self) -> WireFormat {
         self.wire_format
+    }
+
+    /// The worker process's id, which is also its process group.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
     }
 
     pub const fn request_count(&self) -> u64 {
@@ -392,6 +427,8 @@ mod tests {
             script.startup_args(),
             WireFormat::Json,
             dir.path(),
+            &[],
+            false,
         )
         .unwrap();
         let start = Instant::now();
@@ -415,6 +452,8 @@ mod tests {
             script.startup_args(),
             WireFormat::Json,
             dir.path(),
+            &[],
+            false,
         )
         .unwrap();
 
@@ -444,6 +483,8 @@ mod tests {
             script.startup_args(),
             WireFormat::Json,
             dir.path(),
+            &[],
+            false,
         )
         .unwrap();
 
@@ -472,6 +513,8 @@ mod tests {
             script.startup_args(),
             WireFormat::Json,
             dir.path(),
+            &[],
+            false,
         )
         .unwrap();
         let req = WorkRequest {

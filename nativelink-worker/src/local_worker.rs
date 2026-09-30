@@ -1047,6 +1047,16 @@ pub async fn new_local_worker(
         ));
     }
 
+    // A pooled worker process gets the same PID, user, UTS and IPC
+    // namespaces a one-shot action gets, never the mount namespace.
+    #[cfg(target_os = "linux")]
+    let persistent_workers_namespaced = !matches!(
+        use_namespaces,
+        crate::running_actions_manager::UseNamespaces::No
+    );
+    #[cfg(not(target_os = "linux"))]
+    let persistent_workers_namespaced = false;
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -1058,6 +1068,10 @@ pub async fn new_local_worker(
                     Duration::from_millis(config.kill_grace_ms)
                 },
                 set_tmpdir: config.set_tmpdir,
+                persistent_workers: persistent_worker_settings(
+                    config.persistent_workers.as_ref(),
+                    persistent_workers_namespaced,
+                ),
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
@@ -1441,5 +1455,46 @@ impl Metrics {
         fut: F,
     ) -> U {
         fut(self).await
+    }
+}
+
+/// The pool settings from the worker config, defaults for what it leaves at
+/// zero or unset.
+fn persistent_worker_settings(
+    config: Option<&nativelink_config::cas_server::PersistentWorkersConfig>,
+    namespaced: bool,
+) -> crate::running_actions_manager::PersistentWorkersSettings {
+    use crate::persistent_worker::PoolConfig;
+    let defaults = PoolConfig::default();
+    let pool = config.map_or(defaults, |c| {
+        let or_default = |value: u64, default: u64| if value == 0 { default } else { value };
+        PoolConfig {
+            max_workers_per_key: if c.max_workers_per_key == 0 {
+                defaults.max_workers_per_key
+            } else {
+                c.max_workers_per_key
+            },
+            idle_timeout: Duration::from_secs(or_default(
+                c.idle_timeout_s,
+                defaults.idle_timeout.as_secs(),
+            )),
+            max_requests_per_worker: or_default(
+                c.max_requests_per_worker,
+                defaults.max_requests_per_worker,
+            ),
+            shutdown_grace: Duration::from_millis(or_default(
+                c.shutdown_grace_ms,
+                u64::try_from(defaults.shutdown_grace.as_millis()).unwrap_or(5000),
+            )),
+            acquire_timeout: Duration::from_secs(or_default(
+                c.acquire_timeout_s,
+                defaults.acquire_timeout.as_secs(),
+            )),
+            namespaced,
+        }
+    });
+    crate::running_actions_manager::PersistentWorkersSettings {
+        enabled: config.is_none_or(|c| c.enabled),
+        pool: PoolConfig { namespaced, ..pool },
     }
 }

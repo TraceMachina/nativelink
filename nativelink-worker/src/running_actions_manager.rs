@@ -70,7 +70,6 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
-#[cfg(target_os = "linux")]
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
@@ -89,7 +88,8 @@ use uuid::Uuid;
 
 use crate::buck2_file_capture::Buck2FileCapture;
 use crate::persistent_worker::{
-    Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
+    Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
+    WorkerKey,
 };
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -2334,11 +2334,23 @@ impl RunningActionImpl {
         let program = self
             .canonicalise_path(args[0], &command_proto.working_directory)
             .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
-        if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
+        if self
+            .running_actions_manager
+            .execution_configuration
+            .persistent_workers
+            .enabled
+            && let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info)
+        {
             match wire_format_result {
                 Ok(wire_format) => {
                     let command_argv = os_args_to_strings(&args)?;
-                    let key = WorkerKey::from_argv(&command_argv, wire_format)?;
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?.with_env(
+                        command_proto
+                            .environment_variables
+                            .iter()
+                            .map(|variable| (variable.name.clone(), variable.value.clone()))
+                            .collect(),
+                    );
                     let request = WorkRequest {
                         arguments: persistent_worker_request_arguments(&command_argv),
                         inputs: Vec::<PersistentWorkerInput>::new(),
@@ -2357,7 +2369,19 @@ impl RunningActionImpl {
                         .await
                     {
                         Ok(mut lease) => {
+                            self.metrics().persistent_worker_dispatches.inc();
                             let timer = self.metrics().child_process.begin_timer();
+                            let execution_started = Instant::now();
+                            // What the pooled process and its children use
+                            // while they serve this request. The process is
+                            // shared, so nothing here is enforced against
+                            // the action's reservation; it is measured so
+                            // the sizing loop learns what the tool needs.
+                            #[cfg(target_os = "linux")]
+                            let sampler = lease
+                                .worker()
+                                .pid()
+                                .map(|pgid| start_action_resource_usage_sampler(pgid, None));
                             let dispatch_result = {
                                 let dispatch_fut =
                                     lease.worker().dispatch_with_timeout(&request, self.timeout);
@@ -2367,6 +2391,15 @@ impl RunningActionImpl {
                                     _ = &mut kill_channel_rx => None,
                                 }
                             };
+                            #[cfg(target_os = "linux")]
+                            let sampled_usage = match sampler {
+                                Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                                    .await
+                                    .unwrap_or_default(),
+                                None => SampledResourceUsage::default(),
+                            };
+                            #[cfg(not(target_os = "linux"))]
+                            let sampled_usage = SampledResourceUsage::default();
                             let response = match dispatch_result {
                                 Some(Ok(response)) => {
                                     lease.release(true).await;
@@ -2415,6 +2448,39 @@ impl RunningActionImpl {
                                 self.metrics().child_process_failure_error_code.inc();
                             }
                             info!(?args, ?key, "Persistent worker command complete");
+                            let (memory_property, disk_property) = self
+                                .running_actions_manager
+                                .execution_configuration
+                                .resource_enforcement
+                                .as_ref()
+                                .map_or((None, None), |e| {
+                                    (
+                                        e.memory.as_ref().map(|m| m.property_name.as_str()),
+                                        e.disk_property_name.as_deref(),
+                                    )
+                                });
+                            let (outcome, enforced) =
+                                classify_outcome(None, None, sampled_usage.last_memory_kb, None);
+                            let resource_usage = Some(ActionResourceUsage {
+                                peak_memory_kb: sampled_usage.peak_memory_kb,
+                                cpu_time_ms: sampled_usage.cpu_time_ms,
+                                sampled: sampled_usage.peak_memory_kb > 0
+                                    || sampled_usage.cpu_time_ms > 0,
+                                operation_id: String::new(),
+                                worker_id: String::new(),
+                                wall_time_ms: u64::try_from(
+                                    execution_started.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX),
+                                peak_disk_kb: 0,
+                                outcome: outcome.into(),
+                                enforced,
+                                reserved: reservation_of(
+                                    &self.action_info.platform_properties,
+                                    memory_property,
+                                    disk_property,
+                                ),
+                            });
                             {
                                 let mut state = self.state.lock();
                                 state.command_proto = Some(command_proto);
@@ -2422,7 +2488,7 @@ impl RunningActionImpl {
                                     stdout: Bytes::new().into(),
                                     stderr: Bytes::from(response.output).into(),
                                     exit_code: response.exit_code,
-                                    resource_usage: None,
+                                    resource_usage,
                                 });
                                 state.execution_metadata.execution_completed_timestamp =
                                     (self.running_actions_manager.callbacks.now_fn)();
@@ -2430,6 +2496,7 @@ impl RunningActionImpl {
                             return Ok(self);
                         }
                         Err(err) => {
+                            self.metrics().persistent_worker_fallbacks.inc();
                             info!(
                                 ?err,
                                 ?key,
@@ -2439,6 +2506,7 @@ impl RunningActionImpl {
                     }
                 }
                 Err(err) => {
+                    self.metrics().persistent_worker_fallbacks.inc();
                     info!(
                         ?err,
                         "Falling back to one-shot execution; unsupported persistent worker protocol"
@@ -3777,6 +3845,25 @@ pub struct ExecutionConfiguration {
     /// executes other than those in the `ActionInfo`.  On Windows, `SystemRoot`
     /// and PATH are also assigned (see `inner_execute`).
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+    /// Bazel persistent workers: whether an action that supports them runs
+    /// in a pooled process, and how the pool is sized.
+    pub persistent_workers: PersistentWorkersSettings,
+}
+
+/// See `ExecutionConfiguration::persistent_workers`.
+#[derive(Debug, Clone, Copy)]
+pub struct PersistentWorkersSettings {
+    pub enabled: bool,
+    pub pool: PoolConfig,
+}
+
+impl Default for PersistentWorkersSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pool: PoolConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -4118,6 +4205,8 @@ pub struct RunningActionsManagerImpl {
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
     persistent_worker_pool: PersistentWorkerPool,
+    /// Retires idle persistent workers; ends with the manager.
+    _persistent_worker_sweeper: JoinHandleDropGuard<()>,
     buck2_captures: Mutex<HashMap<OperationId, Buck2FileCapture>>,
 }
 
@@ -4137,6 +4226,9 @@ impl RunningActionsManagerImpl {
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());
+        let persistent_worker_pool =
+            PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
+        let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
@@ -4166,7 +4258,8 @@ impl RunningActionsManagerImpl {
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             active_input_leases: args.active_input_leases,
-            persistent_worker_pool: PersistentWorkerPool::default(),
+            persistent_worker_pool,
+            _persistent_worker_sweeper: persistent_worker_sweeper,
             buck2_captures: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
@@ -4722,6 +4815,12 @@ pub struct Metrics {
     disk_guard_refusals: CounterWithTime,
     #[metric(help = "Actions killed for writing past their disk reservation.")]
     disk_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions served by a pooled persistent worker process.")]
+    persistent_worker_dispatches: CounterWithTime,
+    #[metric(
+        help = "Actions that asked for a persistent worker and ran one-shot instead: pool at capacity, spawn failure or an unsupported protocol."
+    )]
+    persistent_worker_fallbacks: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]
