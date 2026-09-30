@@ -2396,19 +2396,38 @@ impl RunningActionImpl {
             let use_namespaces = self.running_actions_manager.use_namespaces;
 
             if !matches!(use_namespaces, UseNamespaces::No) {
+                let (mount, isolate_tmp) = match use_namespaces {
+                    UseNamespaces::YesAndMount { isolate_tmp } => (true, isolate_tmp),
+                    UseNamespaces::No | UseNamespaces::Yes => (false, false),
+                };
                 let root_action_directory = std::ffi::CString::new(
                     self.running_actions_manager.root_action_directory.clone(),
                 )
                 .err_tip(|| "In RunningActionImpl::inner_execute()")?;
                 let action_directory = std::ffi::CString::new(self.action_directory.clone())
                     .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+                // The action's private /tmp is its own tmp directory, the
+                // same one TMPDIR points at, bound over /tmp in the child.
+                let tmp_directory = if isolate_tmp {
+                    let tmp_directory = format!("{}/tmp", self.action_directory);
+                    fs::create_dir_all(&tmp_directory)
+                        .await
+                        .err_tip(|| format!("Creating {tmp_directory} for the private /tmp"))?;
+                    Some(
+                        std::ffi::CString::new(tmp_directory)
+                            .err_tip(|| "In RunningActionImpl::inner_execute()")?,
+                    )
+                } else {
+                    None
+                };
 
                 // SAFETY: This function is specifically designed to operate in a async-signal-safe
                 // environment.
                 unsafe {
                     command_builder.pre_exec(move || {
                         crate::namespace_utils::configure_namespace(
-                            matches!(use_namespaces, UseNamespaces::YesAndMount),
+                            mount,
+                            tmp_directory.as_deref(),
                             &root_action_directory,
                             &action_directory,
                         )
@@ -3774,7 +3793,12 @@ impl UploadActionResults {
 pub enum UseNamespaces {
     No,
     Yes,
-    YesAndMount,
+    /// Also unshare the mount namespace. With `isolate_tmp` each action gets
+    /// a private `/tmp`, its own tmp directory bound over `/tmp`, on top of
+    /// the masked root action directory.
+    YesAndMount {
+        isolate_tmp: bool,
+    },
 }
 
 #[derive(Debug)]
