@@ -70,6 +70,8 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+#[cfg(target_os = "linux")]
+use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -121,6 +123,9 @@ struct SampledResourceUsage {
     /// The last reading before the group was gone, which is what a kernel
     /// kill is judged against.
     last_memory_kb: u64,
+    /// The most the action's own files under its directory came to, when
+    /// disk was measured; 0 otherwise.
+    peak_disk_kb: u64,
 }
 
 /// Why the worker ended an action before the action ended itself.
@@ -128,6 +133,7 @@ struct SampledResourceUsage {
 pub enum KillReason {
     Timeout,
     Memory,
+    Disk,
     External,
 }
 
@@ -166,6 +172,7 @@ pub fn classify_outcome(
 ) -> (ResourceOutcome, bool) {
     match (kill_reason, signal) {
         (Some(KillReason::Memory), _) => (ResourceOutcome::KilledMemory, true),
+        (Some(KillReason::Disk), _) => (ResourceOutcome::KilledDisk, true),
         (Some(KillReason::Timeout), _) => (ResourceOutcome::KilledTimeout, false),
         (None, None) => (ResourceOutcome::Completed, false),
         (None, Some(SIGKILL_NUMBER)) => {
@@ -253,26 +260,130 @@ struct ActionResourceUsageSampler {
     handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
-/// A memory ceiling the sampler enforces: once two consecutive samples
-/// exceed `limit_kb`, the observed figure is sent on `over_limit_tx` and the
-/// caller kills the action.
-#[cfg(target_os = "linux")]
-struct MemoryCeiling {
-    limit_kb: u64,
-    over_limit_tx: oneshot::Sender<u64>,
+/// What the sampler found over a ceiling, with the figure it saw. Only the
+/// Linux sampler sends one; the arm that receives it is built everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum OverLimit {
+    Memory(u64),
+    Disk(u64),
 }
+
+/// The ceilings the sampler enforces. Memory: two consecutive samples over
+/// `memory_limit_kb`, or one at twice it. Disk: one sample of the action's
+/// own files over `disk_limit_kb`. The first breach is sent on
+/// `over_limit_tx` and the caller kills the action; nothing is sent when no
+/// ceiling is set, and the caller keeps the sender alive so the receiver
+/// stays pending.
+#[cfg(target_os = "linux")]
+struct Ceilings {
+    memory_limit_kb: Option<u64>,
+    disk_limit_kb: Option<u64>,
+    over_limit_tx: Option<oneshot::Sender<OverLimit>>,
+}
+
+/// One disk sample every this many memory samples: a walk of the action
+/// directory is a stat per file, so it runs every ten seconds, not four
+/// times a second.
+#[cfg(target_os = "linux")]
+const DISK_SAMPLE_EVERY: u32 = 40;
 
 #[cfg(target_os = "linux")]
 fn start_action_resource_usage_sampler(
     pgid: u32,
-    ceiling: Option<MemoryCeiling>,
+    ceilings: Ceilings,
+    disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx, ceiling)
+        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory)
     );
     ActionResourceUsageSampler { stop_tx, handle }
+}
+
+/// KiB on disk of the files under `directory` that the action wrote: regular
+/// files modified at or after `since`, the directory's stamp from just
+/// before its command started (see [`directory_stamp`]). Its
+/// inputs were materialized before that, as hard links into the CAS store
+/// or private copies, and keep their earlier times, so they are told apart
+/// by time rather than by link count: a hard link drops to one link the
+/// moment the store evicts the blob, and would then pass for the action's
+/// own. Symlinks and the directories' own blocks are not counted. Blocking;
+/// run it on the blocking pool.
+#[cfg(target_family = "unix")]
+pub fn directory_private_kb(directory: &Path, since: SystemTime) -> u64 {
+    let mut total_blocks: u64 = 0;
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let file_type = metadata.file_type();
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file()
+                && metadata.modified().is_ok_and(|modified| modified >= since)
+            {
+                total_blocks = total_blocks.saturating_add(metadata.blocks());
+            }
+        }
+    }
+    // st_blocks are 512-byte units whatever the filesystem's block size.
+    total_blocks / 2
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn directory_private_kb(_directory: &Path, _since: SystemTime) -> u64 {
+    0
+}
+
+/// Touches `directory` and returns the time the filesystem recorded for it.
+/// File mtimes come from the kernel's coarse clock, which on Linux can lag
+/// the wall clock by a tick, so a file written right after
+/// `SystemTime::now()` can look older than that moment. The walk compares
+/// mtimes against this stamp, taken from the same clock, so a file the
+/// action writes afterwards is never older than it.
+#[cfg(target_family = "unix")]
+pub fn directory_stamp(directory: &Path) -> Result<SystemTime, Error> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::fs::File::open(directory)
+        .err_tip(|| format!("Opening {} to stamp it", directory.display()))?;
+    // SAFETY: a zeroed timespec is valid; only tv_nsec is set.
+    let mut now: libc::timespec = unsafe { core::mem::zeroed() };
+    now.tv_nsec = libc::UTIME_NOW;
+    let times = [now, now];
+    // SAFETY: futimens takes an open fd and a pointer to two timespecs that
+    // outlive the call.
+    if unsafe { libc::futimens(dir.as_raw_fd(), times.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .err_tip(|| format!("Stamping {}", directory.display()));
+    }
+    dir.metadata()
+        .and_then(|metadata| metadata.modified())
+        .err_tip(|| format!("Reading the stamp on {}", directory.display()))
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn directory_stamp(_directory: &Path) -> Result<SystemTime, Error> {
+    Ok(SystemTime::now())
+}
+
+/// Starts a disk sample: the action's own files, walked on the blocking
+/// pool as a task of its own, so the memory samples carry on while a large
+/// tree is being walked. `None` when there is no directory to measure.
+#[cfg(target_os = "linux")]
+fn start_disk_sample(
+    directory: Option<&(PathBuf, SystemTime)>,
+) -> Option<JoinHandleDropGuard<u64>> {
+    let (directory, since) = directory?.clone();
+    Some(spawn_blocking!("action_disk_sample", move || {
+        directory_private_kb(&directory, since)
+    }))
 }
 
 /// A signal to every process in the action's group. The action is its own
@@ -303,11 +414,16 @@ async fn finish_action_resource_usage_sampler(
 async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
-    mut ceiling: Option<MemoryCeiling>,
+    mut ceilings: Ceilings,
+    disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
     let mut last_memory_kb = 0;
+    let mut peak_disk_kb = 0;
     let mut samples_over_limit = 0u32;
+    let mut samples_since_disk = DISK_SAMPLE_EVERY;
+    // The walk in flight, if one is; polled, never awaited, from the loop.
+    let mut disk_sample: Option<JoinHandleDropGuard<u64>> = None;
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
     // short-lived. Keep the last figure seen for each pid and total them at
@@ -337,20 +453,48 @@ async fn sample_action_resource_usage(
         // an allocation that fast reaches the pod's limit before the next
         // read (observed: twelve 20 GiB allocators filled a 52 GiB pod in
         // under a second).
-        if let (Some(observed_kb), Some(limit)) = (observed, ceiling.as_ref()) {
-            if observed_kb > limit.limit_kb {
+        if let (Some(observed_kb), Some(limit_kb)) = (observed, ceilings.memory_limit_kb) {
+            if observed_kb > limit_kb {
                 samples_over_limit += 1;
             } else {
                 samples_over_limit = 0;
             }
-            let gross = observed_kb >= limit.limit_kb.saturating_mul(2);
+            let gross = observed_kb >= limit_kb.saturating_mul(2);
             if (samples_over_limit >= 2 || gross)
-                && let Some(limit) = ceiling.take()
-                && limit.over_limit_tx.send(observed_kb).is_err()
+                && let Some(over_limit_tx) = ceilings.over_limit_tx.take()
+                && over_limit_tx.send(OverLimit::Memory(observed_kb)).is_err()
             {
                 // The receiver is gone only when the action already ended.
                 debug!(observed_kb, "Memory ceiling breached, action already ended");
             }
+        }
+
+        // A walk that finished since the last sample; the memory samples
+        // above never waited for it.
+        if let Some(handle) = disk_sample.as_mut()
+            && let core::task::Poll::Ready(finished) = futures::poll!(handle)
+        {
+            disk_sample = None;
+            if let Ok(disk_kb) = finished {
+                peak_disk_kb = peak_disk_kb.max(disk_kb);
+                if let Some(limit_kb) = ceilings.disk_limit_kb
+                    && disk_kb > limit_kb
+                    && let Some(over_limit_tx) = ceilings.over_limit_tx.take()
+                    && over_limit_tx.send(OverLimit::Disk(disk_kb)).is_err()
+                {
+                    debug!(disk_kb, "Disk ceiling breached, action already ended");
+                }
+            }
+        }
+        // The periodic walk belongs to the soft limit; the guard alone
+        // measures once, at the end, and pays no walk while running.
+        samples_since_disk += 1;
+        if ceilings.disk_limit_kb.is_some()
+            && samples_since_disk >= DISK_SAMPLE_EVERY
+            && disk_sample.is_none()
+        {
+            samples_since_disk = 0;
+            disk_sample = start_disk_sample(disk_directory.as_ref());
         }
 
         if *stop_rx.borrow() {
@@ -369,11 +513,21 @@ async fn sample_action_resource_usage(
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
     }
+    // What the action left on disk at the end is the figure that matters
+    // for sizing; this walk, one stat per entry under the action directory,
+    // is the only one the guard mode pays.
+    drop(disk_sample.take());
+    if let Some(handle) = start_disk_sample(disk_directory.as_ref())
+        && let Ok(disk_kb) = handle.await
+    {
+        peak_disk_kb = peak_disk_kb.max(disk_kb);
+    }
 
     SampledResourceUsage {
         peak_memory_kb,
         cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
         last_memory_kb,
+        peak_disk_kb,
     }
 }
 
@@ -2489,22 +2643,57 @@ impl RunningActionImpl {
                     (reserved_kb, limit_kb)
                 })
             });
-        let (over_limit_tx, over_limit_rx) = oneshot::channel::<u64>();
+        // The disk reservation, held to only with `disk: soft`; disk is
+        // measured whenever the enforcement names a disk property.
+        let disk_enforcement = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| {
+                let property = enforcement.disk_property_name.as_deref()?;
+                let reserved_kb = self
+                    .action_info
+                    .platform_properties
+                    .get(property)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let limit_kb = (enforcement.disk_soft && reserved_kb > 0).then(|| {
+                    reserved_kb.saturating_mul(100 + enforcement.disk_headroom_percent) / 100
+                });
+                Some((reserved_kb, limit_kb))
+            });
+        let (over_limit_tx, over_limit_rx) = oneshot::channel::<OverLimit>();
         // Holds the sender when no ceiling is enforced, so the receiver
         // below stays pending instead of resolving closed.
         let mut over_limit_keepalive = Some(over_limit_tx);
         #[cfg(target_os = "linux")]
         let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
-            let ceiling = memory_reservation.and_then(|(_, limit_kb)| {
-                over_limit_keepalive
-                    .take()
-                    .map(|over_limit_tx| MemoryCeiling {
-                        limit_kb,
-                        over_limit_tx,
-                    })
+            let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
+            let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
+            let over_limit_tx = (memory_limit_kb.is_some() || disk_limit_kb.is_some())
+                .then(|| over_limit_keepalive.take())
+                .flatten();
+            let disk_directory = disk_enforcement.map(|_| {
+                let directory = PathBuf::from(&self.action_directory);
+                let since = directory_stamp(&directory).unwrap_or_else(|err| {
+                    warn!(?err, "Timing the disk walk by the wall clock instead");
+                    SystemTime::now()
+                });
+                (directory, since)
             });
-            start_action_resource_usage_sampler(pgid, ceiling)
+            start_action_resource_usage_sampler(
+                pgid,
+                Ceilings {
+                    memory_limit_kb,
+                    disk_limit_kb,
+                    over_limit_tx,
+                },
+                disk_directory,
+            )
         });
+        #[cfg(not(target_os = "linux"))]
+        let _ = &disk_enforcement;
         let mut over_limit_fut = over_limit_rx.fuse();
 
         // The group to end when the action's own process has exited; taken
@@ -2606,35 +2795,71 @@ impl RunningActionImpl {
                     );
                     hard_kill(&mut child_process_guard, "grace period expired").await;
                 },
-                Ok(observed_kb) = &mut over_limit_fut => {
-                    self.running_actions_manager.metrics.memory_reservation_kills.inc();
-                    kill_reason = Some(KillReason::Memory);
-                    // Memory is still growing; no grace here.
-                    hard_kill(&mut child_process_guard, "memory reservation").await;
-                    let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
-                    let (property, headroom) = self
-                        .running_actions_manager
-                        .execution_configuration
-                        .resource_enforcement
-                        .as_ref()
-                        .and_then(|e| e.memory.as_ref())
-                        .map_or(("", 0), |m| (m.property_name.as_str(), m.headroom_percent));
-                    warn!(
-                        operation_id = ?self.operation_id,
-                        reserved_kb,
-                        limit_kb,
-                        observed_kb,
-                        "Action exceeded its memory reservation, killed"
-                    );
-                    let mut state = self.state.lock();
-                    state.error = Error::merge_option(state.error.take(), Some(Error::new(
-                        Code::FailedPrecondition,
-                        format!(
-                            "Action exceeded its memory reservation: reserved {reserved_kb} KiB ({property}), \
-                             limit {limit_kb} KiB with {headroom}% headroom, observed {observed_kb} KiB. \
-                             Raise the reservation or shrink the action."
-                        ),
-                    )));
+                Ok(over_limit) = &mut over_limit_fut => match over_limit {
+                    OverLimit::Disk(observed_kb) => {
+                        self.running_actions_manager.metrics.disk_reservation_kills.inc();
+                        kill_reason = Some(KillReason::Disk);
+                        // The files are still being written; no grace here.
+                        hard_kill(&mut child_process_guard, "disk reservation").await;
+                        let (reserved_kb, limit_kb) = disk_enforcement
+                            .map_or((0, 0), |(reserved_kb, limit_kb)| {
+                                (reserved_kb, limit_kb.unwrap_or(0))
+                            });
+                        let (property, headroom) = self
+                            .running_actions_manager
+                            .execution_configuration
+                            .resource_enforcement
+                            .as_ref()
+                            .map_or(("", 0), |e| (e.disk_property_name.as_deref().unwrap_or(""), e.disk_headroom_percent));
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            reserved_kb,
+                            limit_kb,
+                            observed_kb,
+                            "Action exceeded its disk reservation, killed"
+                        );
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action exceeded its disk reservation: reserved {reserved_kb} KiB ({property}), \
+                                 limit {limit_kb} KiB with {headroom}% headroom, its own files came to {observed_kb} KiB. \
+                                 Raise the reservation or write less."
+                            ),
+                        )));
+
+                    }
+                    OverLimit::Memory(observed_kb) => {
+                        self.running_actions_manager.metrics.memory_reservation_kills.inc();
+                        kill_reason = Some(KillReason::Memory);
+                        // Memory is still growing; no grace here.
+                        hard_kill(&mut child_process_guard, "memory reservation").await;
+                        let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
+                        let (property, headroom) = self
+                            .running_actions_manager
+                            .execution_configuration
+                            .resource_enforcement
+                            .as_ref()
+                            .and_then(|e| e.memory.as_ref())
+                            .map_or(("", 0), |m| (m.property_name.as_str(), m.headroom_percent));
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            reserved_kb,
+                            limit_kb,
+                            observed_kb,
+                            "Action exceeded its memory reservation, killed"
+                        );
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action exceeded its memory reservation: reserved {reserved_kb} KiB ({property}), \
+                                 limit {limit_kb} KiB with {headroom}% headroom, observed {observed_kb} KiB. \
+                                 Raise the reservation or shrink the action."
+                            ),
+                        )));
+
+                    }
                 },
                 maybe_exit_status = child_process_guard.wait() => {
                     // Defuse our guard so it does not try to cleanup and make senseless logs.
@@ -2768,11 +2993,13 @@ impl RunningActionImpl {
                         cpu_time_ms: sampled_usage.cpu_time_ms,
                         // An action too short to catch a sample leaves both at
                         // zero; say so rather than report a misleading zero.
-                        sampled: sampled_usage.peak_memory_kb > 0 || sampled_usage.cpu_time_ms > 0,
+                        sampled: sampled_usage.peak_memory_kb > 0
+                            || sampled_usage.cpu_time_ms > 0
+                            || sampled_usage.peak_disk_kb > 0,
                         operation_id: String::new(),
                         worker_id: String::new(),
                         wall_time_ms: u64::try_from(execution_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        peak_disk_kb: 0,
+                        peak_disk_kb: sampled_usage.peak_disk_kb,
                         outcome: outcome.into(),
                         enforced,
                         reserved: reservation_of(
@@ -3461,8 +3688,13 @@ pub struct ResourceEnforcement {
     pub memory: Option<MemoryLimit>,
     /// Refuse an action whose disk reservation, under this property, is
     /// more than the free space under the work directory less what the
-    /// actions already admitted reserved.
+    /// actions already admitted reserved, and measure what the action
+    /// writes.
     pub disk_property_name: Option<String>,
+    /// Kill an action whose own files pass the disk reservation plus
+    /// `disk_headroom_percent`.
+    pub disk_soft: bool,
+    pub disk_headroom_percent: u64,
 }
 
 /// The reservation a memory ceiling is built from.
@@ -3486,10 +3718,12 @@ impl ResourceEnforcement {
             }),
         };
         let disk_property_name =
-            (config.disk == DiskEnforcement::Guard).then(|| config.disk_property_name.clone());
+            (config.disk != DiskEnforcement::None).then(|| config.disk_property_name.clone());
         (memory.is_some() || disk_property_name.is_some()).then_some(Self {
             memory,
             disk_property_name,
+            disk_soft: config.disk == DiskEnforcement::Soft,
+            disk_headroom_percent: config.disk_headroom_percent,
         })
     }
 }
@@ -4486,6 +4720,8 @@ pub struct Metrics {
     memory_reservation_kills: CounterWithTime,
     #[metric(help = "Actions refused because their disk reservation exceeded the free space.")]
     disk_guard_refusals: CounterWithTime,
+    #[metric(help = "Actions killed for writing past their disk reservation.")]
+    disk_reservation_kills: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]

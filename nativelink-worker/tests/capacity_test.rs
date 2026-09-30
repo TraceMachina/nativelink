@@ -48,6 +48,7 @@ fn enforcement(memory: MemoryEnforcement, headroom: u64) -> ResourceEnforcementC
         disk_property_name: "disk_kb".to_string(),
         memory_property_name: "memory_kb".to_string(),
         memory_headroom_percent: headroom,
+        disk_headroom_percent: 20,
     }
 }
 

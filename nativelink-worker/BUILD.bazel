@@ -104,6 +104,7 @@ rust_test_suite(
         "@crates//:prost",
         "@crates//:prost-types",
         "@crates//:serial_test",
+        "@crates//:tempfile",
         "@crates//:tokio",
         "@crates//:tonic",
         "@crates//:tonic-prost",
