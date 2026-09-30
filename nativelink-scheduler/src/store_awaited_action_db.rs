@@ -56,6 +56,13 @@ const MAX_RETRIES_FOR_CLIENT_KEEPALIVE: u32 = 8;
 /// Use separate non-versioned Redis key for client keepalives.
 const USE_SEPARATE_CLIENT_KEEPALIVE_KEY: bool = true;
 
+/// How long to wait before retrying a client keepalive write that failed
+/// (e.g. a transient store error). The local `last_known_keepalive_ts` is
+/// only advanced on a successful write, so failures naturally re-arm the
+/// keepalive gate; this delay bounds the retry frequency so a hard store
+/// outage does not spin the subscriber loop.
+const CLIENT_KEEPALIVE_RETRY_DELAY: Duration = Duration::from_secs(1);
+
 /// How often the actions in each stage are recounted for
 /// `execution.active.count`.
 const ACTIVE_COUNT_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
@@ -309,6 +316,10 @@ where
         loop {
             // This is set if the maybe_last_state doesn't match the state in the store.
             let mut maybe_changed_action = None;
+            // Set when a client keepalive store write fails so the sleep
+            // below becomes a bounded retry delay instead of a full
+            // CLIENT_KEEPALIVE_DURATION park.
+            let mut keepalive_write_failed = false;
 
             let last_known_keepalive_ts = self.last_known_keepalive_ts.load(Ordering::Acquire);
             // Only a subscriber that stands for a client may say a client is
@@ -348,17 +359,26 @@ where
                         )
                         .await;
 
-                    if let Err(e) = update_result {
-                        warn!(
-                            ?self.subscription_key,
-                            ?e,
-                            "Failed to update client keepalive (non-versioned)"
-                        );
+                    match update_result {
+                        Ok(_) => {
+                            // Only advance the local timestamp once the store
+                            // actually holds the new keepalive. Advancing it on
+                            // failure would suppress retries for a full
+                            // CLIENT_KEEPALIVE_DURATION while the store's stamp
+                            // keeps aging, letting a peer replica retire this
+                            // live client's action as abandoned.
+                            self.last_known_keepalive_ts
+                                .store(now_ts, Ordering::Release);
+                        }
+                        Err(e) => {
+                            keepalive_write_failed = true;
+                            warn!(
+                                ?self.subscription_key,
+                                ?e,
+                                "Failed to update client keepalive (non-versioned), will retry"
+                            );
+                        }
                     }
-
-                    // Update local timestamp
-                    self.last_known_keepalive_ts
-                        .store(now_ts, Ordering::Release);
 
                     // Check if state changed (for unreliable subscription managers)
                     if self.maybe_last_stage.is_some() {
@@ -430,12 +450,19 @@ where
                     Some(core::mem::discriminant(&changed_action.state().stage));
                 return Ok(changed_action);
             }
-            // Determine the sleep time based on the last client keep alive.
-            let sleep_time = CLIENT_KEEPALIVE_DURATION
-                .checked_sub(
-                    I::from_secs(self.last_known_keepalive_ts.load(Ordering::Acquire)).elapsed(),
-                )
-                .unwrap_or(Duration::from_millis(100));
+            // Determine the sleep time based on the last successful client
+            // keep alive write. If the last write failed, wake after a
+            // bounded retry delay instead of parking for the full period.
+            let sleep_time = if keepalive_write_failed {
+                CLIENT_KEEPALIVE_RETRY_DELAY
+            } else {
+                CLIENT_KEEPALIVE_DURATION
+                    .checked_sub(
+                        I::from_secs(self.last_known_keepalive_ts.load(Ordering::Acquire))
+                            .elapsed(),
+                    )
+                    .unwrap_or(Duration::from_millis(100))
+            };
             tokio::select! {
                 result = &mut changed_fut => {
                     result?;

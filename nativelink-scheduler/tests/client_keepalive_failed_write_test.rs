@@ -187,13 +187,24 @@ fn make_queued_action(operation_id: &OperationId) -> AwaitedAction {
 /// a client that is actively listening.
 ///
 /// Uses `start_paused` tokio time: the subscriber's sleep between keepalive
-/// attempts is virtual, so 30 virtual seconds (3x CLIENT_KEEPALIVE_DURATION)
+/// attempts is virtual, so 30 virtual seconds (3x `CLIENT_KEEPALIVE_DURATION`)
 /// elapse instantly, while the retry gate — which reads the *local*
 /// `last_known_keepalive_ts` through real wall-clock `SystemTime::elapsed` —
 /// sees essentially zero elapsed real time after the failed write advanced
 /// it. This exposes exactly the bug: the local timestamp is advanced even
 /// though the store write failed, so no retry happens for a full
-/// CLIENT_KEEPALIVE_DURATION.
+/// `CLIENT_KEEPALIVE_DURATION`.
+type TestDb = StoreAwaitedActionDb<
+    KeepaliveWriteFailsStore,
+    fn() -> OperationId,
+    SystemTime,
+    fn() -> SystemTime,
+>;
+
+fn new_op_id() -> OperationId {
+    OperationId::from("unused-new-operation")
+}
+
 #[nativelink_test(start_paused = true)]
 async fn failed_keepalive_write_must_be_retried() -> Result<(), Error> {
     let operation_id = OperationId::from("live-client-operation");
@@ -204,17 +215,9 @@ async fn failed_keepalive_write_must_be_retried() -> Result<(), Error> {
         keepalive_write_attempts: AtomicUsize::new(0),
     });
 
-    fn new_op_id() -> OperationId {
-        OperationId::from("unused-new-operation")
-    }
     let now_fn: fn() -> SystemTime = SystemTime::now;
     let op_id_fn: fn() -> OperationId = new_op_id;
-    let db: StoreAwaitedActionDb<
-        KeepaliveWriteFailsStore,
-        fn() -> OperationId,
-        SystemTime,
-        fn() -> SystemTime,
-    > = StoreAwaitedActionDb::new(
+    let db: TestDb = StoreAwaitedActionDb::new(
         store.clone(),
         Arc::new(Notify::new()),
         now_fn,
