@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nativelink_error::{Code, Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
@@ -367,6 +367,19 @@ impl Worker {
         action_info: ActionInfoWithProps,
         dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
+        // Reject-if-exists: a same-worker retry can dispatch an op whose
+        // earlier attempt is still resident here (e.g. an execution-deadline
+        // requeue that left the ledger entry in place). Overwriting the
+        // op-keyed entry would deduct the platform budget a second time while
+        // completion only refunds the surviving entry, leaking the first
+        // reservation permanently. Refuse the redundant dispatch instead.
+        if self.running_action_infos.contains_key(&operation_id) {
+            return Err(make_err!(
+                Code::AlreadyExists,
+                "Worker {} already holds a reservation for operation {operation_id}; refusing redundant dispatch",
+                self.id,
+            ));
+        }
         let tx = &mut self.tx;
         let worker_platform_properties = &mut self.platform_properties;
         let running_action_infos = &mut self.running_action_infos;
