@@ -534,6 +534,59 @@ const fn default_memory_escalation_percent() -> u64 {
     200
 }
 
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ColdStartSpec {
+    /// Value for `cpu_property_name`, on the scale the workers advertise.
+    /// 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub cpu_count: u64,
+
+    /// Value for `memory_property_name`, in KiB. 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_kb: u64,
+}
+
+fn default_disk_property_name_for_hints() -> String {
+    "disk_kb".to_string()
+}
+
+/// A named point on the fleet's size ladder. List them ascending; each
+/// should dominate the one before on every dimension it names. A zero
+/// leaves that dimension alone.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct SizeClassSpec {
+    /// Free text, referenced by hints and by the cold-start policy.
+    pub name: String,
+
+    /// Value for `cpu_property_name`, on the scale the workers advertise.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub cpu_count: u64,
+
+    /// Value for `memory_property_name`, in KiB.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_kb: u64,
+
+    /// Value for `disk_property_name`, in KiB.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub disk_kb: u64,
+}
+
+/// A class for actions whose timeout is at least `min_timeout_s`. Bazel's
+/// test sizes arrive as timeouts (short 60 s, moderate 300 s, long 900 s,
+/// eternal 3600 s), so this maps them to classes without a CAS fetch.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct TimeoutClassSpec {
+    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    pub min_timeout_s: u64,
+    pub class: String,
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -577,6 +630,44 @@ pub struct HistoricalResourceSpec {
         deserialize_with = "convert_string_with_shellexpand"
     )]
     pub memory_property_name: String,
+
+    /// Platform property name used for disk minimums, expressed in KiB.
+    /// Default: `disk_kb`
+    #[serde(
+        default = "default_disk_property_name_for_hints",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub disk_property_name: String,
+
+    /// The fleet's size ladder. A hint may name a `class` instead of
+    /// numbers, and the cold-start policy below picks one for actions no
+    /// hint matches. Empty means raw numbers only.
+    #[serde(default)]
+    pub classes: Vec<SizeClassSpec>,
+
+    /// The class an untagged action gets when no hint and no rule below
+    /// matches. Takes precedence over `cold_start` when both are set.
+    #[serde(default)]
+    pub default_class: Option<String>,
+
+    /// Class by Bazel `action_mnemonic` for untagged actions; a known heavy
+    /// mnemonic (`TestRunner`, `Link`) starts in the right class.
+    #[serde(default)]
+    pub class_by_mnemonic: HashMap<String, String>,
+
+    /// Class by the action's timeout, the largest `min_timeout_s` at or
+    /// below the timeout wins. Checked before `default_class`, after the
+    /// mnemonic rule.
+    #[serde(default)]
+    pub class_by_timeout: Vec<TimeoutClassSpec>,
+
+    /// Reservation given to an action that no hint matches and the client
+    /// left untagged. Only a property that is absent is filled; a value the
+    /// client sent is kept. Without this an untagged action costs the
+    /// scheduler's ledger nothing, so any number of them can land on one
+    /// worker.
+    #[serde(default)]
+    pub cold_start: Option<ColdStartSpec>,
 
     /// The nested scheduler to use after applying resource hints.
     pub scheduler: Box<SchedulerSpec>,

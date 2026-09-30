@@ -1141,6 +1141,14 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_description("Abandoned-queue sweeps that ended in an error before finishing")
             .with_unit("{sweep}")
             .build(),
+
+        hint_resolutions: meter
+            .u64_counter("scheduler.hints.resolutions")
+            .with_description(
+                "Actions the historical resource scheduler sized, by where the numbers came from: a hint keyed by target, action digest, command digest or mnemonic, the cold start, or nothing",
+            )
+            .with_unit("{action}")
+            .build(),
     }
 });
 
@@ -1173,6 +1181,8 @@ pub struct SchedulerOtlpMetrics {
     pub awaited_action_orphans: metrics::Counter<u64>,
     /// Abandoned-queue sweeps that failed before finishing.
     pub sweep_failures: metrics::Counter<u64>,
+    /// Actions sized by the historical resource scheduler, by source.
+    pub hint_resolutions: metrics::Counter<u64>,
 }
 
 /// Records a completed matching pass.
@@ -1226,6 +1236,15 @@ pub fn record_awaited_action_orphan(site: &'static str) {
 /// Records an abandoned-queue sweep that failed before finishing.
 pub fn record_sweep_failure() {
     SCHEDULER_METRICS.sweep_failures.add(1, &[]);
+}
+
+/// Records where an action's reservation came from: `target`,
+/// `action_digest`, `command_digest`, `mnemonic`, `cold_start` or `none`.
+/// The cold-start share of a run is `cold_start` over the total.
+pub fn record_hint_resolution(source: &'static str) {
+    SCHEDULER_METRICS
+        .hint_resolutions
+        .add(1, &[KeyValue::new("source", source)]);
 }
 
 /// Records a queued action failed for being unsatisfiable. `properties`

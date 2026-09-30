@@ -196,6 +196,22 @@ and do not spend `max_job_retries`. The execution histograms carry an
 `execution.outcome` attribute so the killed samples can be told from the
 completed ones.
 
+The `historical_resource` scheduler that fills reservations reads hints by a
+key ladder: `(target_id, action_mnemonic)`, then `target_id`, then the
+action's `action_digest`, then its `command_digest` (each `hash-size` or
+`hash/size`), then the mnemonic alone. The digest keys reach every client,
+whether or not it sends Bazel request metadata; the action digest is what
+origin events carry, so it is what a producer fed by them writes. A hint may name a `class` instead of numbers, and
+**`classes`** on the same scheduler defines the fleet's size ladder: named
+points with `cpu_count`, `memory_kb` and `disk_kb`, listed ascending. An
+action no hint matches takes the class picked by `class_by_mnemonic`, then
+`class_by_timeout` (Bazel test sizes arrive as timeouts), then
+`default_class`; without classes the raw `cold_start` numbers apply. With
+`memory_escalation.ladder_kb` set to the classes' memory values, a memory
+kill steps the reservation to the next class instead of scaling it, and a
+kill at the top class fails the action. Older hint files still load: every
+new field is optional.
+
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
 Every property key a worker advertises has a declared type:

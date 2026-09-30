@@ -19,12 +19,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use nativelink_config::schedulers::HistoricalResourceSpec;
+use nativelink_config::schedulers::{HistoricalResourceSpec, SizeClassSpec, TimeoutClassSpec};
 use nativelink_error::{Error, ResultExt};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId};
+use nativelink_util::metrics::record_hint_resolution;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
@@ -41,8 +42,18 @@ use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 struct HintKey {
     target_id: Option<String>,
     action_mnemonic: Option<String>,
+    /// The action's `Command` digest as `hash-size`: an identity every
+    /// client has, whether or not it sends `RequestMetadata`.
+    command_digest: Option<String>,
+    /// The `Action` digest as `hash-size`: what origin events carry, so
+    /// what a producer fed by them can key on. Narrower than the command
+    /// digest (the inputs are part of it).
+    action_digest: Option<String>,
 }
 
+/// One hint. The v1 fields keep their meaning; the v2 fields are optional,
+/// so a v1 file still loads. `class` names a point on the configured
+/// ladder and stands in for any number the hint leaves out.
 #[derive(Debug, Clone, Deserialize)]
 struct HistoricalResourceHint {
     #[serde(default)]
@@ -50,21 +61,57 @@ struct HistoricalResourceHint {
     #[serde(default)]
     action_mnemonic: Option<String>,
     #[serde(default)]
+    command_digest: Option<String>,
+    #[serde(default)]
+    action_digest: Option<String>,
+    #[serde(default)]
     cpu_count: Option<u64>,
     #[serde(default)]
     memory_kb: Option<u64>,
     #[serde(default)]
     memory_mib: Option<u64>,
+    #[serde(default)]
+    disk_kb: Option<u64>,
+    #[serde(default)]
+    class: Option<String>,
+    /// Producer bookkeeping, carried for records.
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted from v2 files; not yet read")]
+    samples: Option<u64>,
+    #[serde(default)]
+    #[expect(dead_code, reason = "accepted from v2 files; not yet read")]
+    last_seen_s: Option<u64>,
+}
+
+/// `hash/size` and `hash-size` both name the same digest.
+fn normalize_digest_key(digest: &str) -> String {
+    digest.trim().replace('/', "-")
 }
 
 impl HistoricalResourceHint {
     fn key(&self) -> Option<HintKey> {
-        if self.target_id.is_none() && self.action_mnemonic.is_none() {
+        let command_digest = self
+            .command_digest
+            .as_deref()
+            .map(normalize_digest_key)
+            .filter(|d| !d.is_empty());
+        let action_digest = self
+            .action_digest
+            .as_deref()
+            .map(normalize_digest_key)
+            .filter(|d| !d.is_empty());
+        if self.target_id.is_none()
+            && self.action_mnemonic.is_none()
+            && command_digest.is_none()
+            && action_digest.is_none()
+        {
             return None;
         }
         Some(HintKey {
             target_id: self.target_id.clone(),
             action_mnemonic: self.action_mnemonic.clone(),
+            command_digest,
+            action_digest,
         })
     }
 
@@ -97,11 +144,37 @@ struct HintState {
     last_loaded: Option<Instant>,
 }
 
+/// The numbers an action leaves `add_action` with, before they become
+/// minimum properties. Zero means the dimension is not set.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Numbers {
+    cpu_count: u64,
+    memory_kb: u64,
+    disk_kb: u64,
+}
+
+impl From<&SizeClassSpec> for Numbers {
+    fn from(class: &SizeClassSpec) -> Self {
+        Self {
+            cpu_count: class.cpu_count,
+            memory_kb: class.memory_kb,
+            disk_kb: class.disk_kb,
+        }
+    }
+}
+
 pub struct HistoricalResourceScheduler {
     hints_file: String,
     refresh_interval: Duration,
     cpu_property_name: String,
     memory_property_name: String,
+    disk_property_name: String,
+    cold_start_cpu_count: u64,
+    cold_start_memory_kb: u64,
+    classes: Vec<SizeClassSpec>,
+    default_class: Option<String>,
+    class_by_mnemonic: HashMap<String, String>,
+    class_by_timeout: Vec<TimeoutClassSpec>,
     scheduler: Option<Arc<dyn KnownPlatformPropertyProvider>>,
     known_properties: Mutex<HashMap<String, Vec<String>>>,
     hint_state: Mutex<HintState>,
@@ -114,6 +187,10 @@ impl core::fmt::Debug for HistoricalResourceScheduler {
             .field("refresh_interval", &self.refresh_interval)
             .field("cpu_property_name", &self.cpu_property_name)
             .field("memory_property_name", &self.memory_property_name)
+            .field("cold_start_cpu_count", &self.cold_start_cpu_count)
+            .field("cold_start_memory_kb", &self.cold_start_memory_kb)
+            .field("classes", &self.classes)
+            .field("default_class", &self.default_class)
             .field("known_properties", &self.known_properties)
             .finish_non_exhaustive()
     }
@@ -130,6 +207,13 @@ impl HistoricalResourceScheduler {
             refresh_interval: Duration::from_secs(spec.refresh_interval_s),
             cpu_property_name: spec.cpu_property_name.clone(),
             memory_property_name: spec.memory_property_name.clone(),
+            disk_property_name: spec.disk_property_name.clone(),
+            cold_start_cpu_count: spec.cold_start.as_ref().map_or(0, |c| c.cpu_count),
+            cold_start_memory_kb: spec.cold_start.as_ref().map_or(0, |c| c.memory_kb),
+            classes: spec.classes.clone(),
+            default_class: spec.default_class.clone(),
+            class_by_mnemonic: spec.class_by_mnemonic.clone(),
+            class_by_timeout: spec.class_by_timeout.clone(),
             scheduler: Some(scheduler),
             known_properties: Mutex::new(HashMap::new()),
             hint_state: Mutex::default(),
@@ -174,53 +258,177 @@ impl HistoricalResourceScheduler {
         hint_state.last_loaded = Some(now);
     }
 
-    fn hint_for_current_action(&self) -> Option<HistoricalResourceHint> {
-        self.refresh_hints();
+    /// The Bazel request metadata for the current action, if the client
+    /// sent any: `(target_id, action_mnemonic)`, each empty string as `None`.
+    fn current_metadata() -> (Option<String>, Option<String>) {
         let ctx = Context::current();
-        let metadata = ctx
+        let Some(metadata) = ctx
             .baggage()
             .get(BAZEL_METADATA_KEY)
-            .and_then(|value| request_metadata_from_baggage(value.as_str()).ok())?;
-        let target_id = non_empty_string(metadata.target_id);
-        let action_mnemonic = non_empty_string(metadata.action_mnemonic);
-        let hint_state = self.hint_state.lock();
-        let exact_key = HintKey {
-            target_id: target_id.clone(),
-            action_mnemonic: action_mnemonic.clone(),
+            .and_then(|value| request_metadata_from_baggage(value.as_str()).ok())
+        else {
+            return (None, None);
         };
-        hint_state
-            .hints
-            .get(&exact_key)
-            .or_else(|| {
-                hint_state.hints.get(&HintKey {
-                    target_id,
-                    action_mnemonic: None,
-                })
-            })
-            .or_else(|| {
-                hint_state.hints.get(&HintKey {
-                    target_id: None,
-                    action_mnemonic,
-                })
-            })
-            .cloned()
+        (
+            non_empty_string(metadata.target_id),
+            non_empty_string(metadata.action_mnemonic),
+        )
     }
 
-    fn apply_hint(&self, action_info: &mut ActionInfo, hint: &HistoricalResourceHint) {
-        if let Some(cpu_count) = hint.cpu_count {
-            apply_minimum_platform_property(
-                &mut action_info.platform_properties,
-                &self.cpu_property_name,
-                cpu_count,
-            );
+    /// The key ladder, most specific first: `(target, mnemonic)`, then
+    /// `target`, then the action digest, then the command digest, then the
+    /// mnemonic alone. The digest keys are what make hints reach clients
+    /// that send no `RequestMetadata`, and the same command regardless of
+    /// who runs it.
+    fn hint_for_action(
+        &self,
+        action_info: &ActionInfo,
+        target_id: Option<&String>,
+        action_mnemonic: Option<&String>,
+    ) -> Option<(HistoricalResourceHint, &'static str)> {
+        self.refresh_hints();
+        let hint_state = self.hint_state.lock();
+        if hint_state.hints.is_empty() {
+            return None;
         }
-        if let Some(memory_kb) = hint.memory_kb() {
-            apply_minimum_platform_property(
-                &mut action_info.platform_properties,
-                &self.memory_property_name,
-                memory_kb,
-            );
+        let by = |target_id: Option<&String>,
+                  action_mnemonic: Option<&String>,
+                  command_digest: Option<String>,
+                  action_digest: Option<String>| {
+            hint_state.hints.get(&HintKey {
+                target_id: target_id.cloned(),
+                action_mnemonic: action_mnemonic.cloned(),
+                command_digest,
+                action_digest,
+            })
+        };
+        if (target_id.is_some() || action_mnemonic.is_some())
+            && let Some(hint) = by(target_id, action_mnemonic, None, None)
+        {
+            return Some((hint.clone(), "target"));
         }
+        if target_id.is_some()
+            && let Some(hint) = by(target_id, None, None, None)
+        {
+            return Some((hint.clone(), "target"));
+        }
+        if let Some(hint) = by(None, None, None, Some(action_info.digest().to_string())) {
+            return Some((hint.clone(), "action_digest"));
+        }
+        if let Some(hint) = by(
+            None,
+            None,
+            Some(action_info.command_digest.to_string()),
+            None,
+        ) {
+            return Some((hint.clone(), "command_digest"));
+        }
+        if action_mnemonic.is_some()
+            && let Some(hint) = by(None, action_mnemonic, None, None)
+        {
+            return Some((hint.clone(), "mnemonic"));
+        }
+        None
+    }
+
+    fn class(&self, name: &str) -> Option<&SizeClassSpec> {
+        self.classes.iter().find(|class| class.name == name)
+    }
+
+    /// A hint's numbers: what it states, with its class filling anything
+    /// it leaves out. A class the ladder does not know is logged and
+    /// contributes nothing.
+    fn numbers_from_hint(&self, hint: &HistoricalResourceHint) -> Numbers {
+        let from_class = hint
+            .class
+            .as_deref()
+            .and_then(|name| {
+                let class = self.class(name);
+                if class.is_none() {
+                    warn!(
+                        class = name,
+                        "Hint names a size class the ladder does not have"
+                    );
+                }
+                class
+            })
+            .map(Numbers::from)
+            .unwrap_or_default();
+        Numbers {
+            cpu_count: hint.cpu_count.unwrap_or(from_class.cpu_count),
+            memory_kb: hint.memory_kb().unwrap_or(from_class.memory_kb),
+            disk_kb: hint.disk_kb.unwrap_or(from_class.disk_kb),
+        }
+    }
+
+    /// Raises the action's minimums to `numbers`; never lowers a value the
+    /// client or an earlier step set.
+    fn apply_minimums(&self, action_info: &mut ActionInfo, numbers: Numbers) {
+        apply_minimum_platform_property(
+            &mut action_info.platform_properties,
+            &self.cpu_property_name,
+            numbers.cpu_count,
+        );
+        apply_minimum_platform_property(
+            &mut action_info.platform_properties,
+            &self.memory_property_name,
+            numbers.memory_kb,
+        );
+        apply_minimum_platform_property(
+            &mut action_info.platform_properties,
+            &self.disk_property_name,
+            numbers.disk_kb,
+        );
+    }
+
+    /// The cold-start policy for an action no hint matched: a class by
+    /// mnemonic, else by timeout, else the default class; without classes,
+    /// the raw `cold_start` numbers. Only absent properties are filled.
+    fn cold_start_numbers(
+        &self,
+        action_info: &ActionInfo,
+        action_mnemonic: Option<&String>,
+    ) -> Numbers {
+        let by_mnemonic = action_mnemonic.and_then(|m| self.class_by_mnemonic.get(m));
+        let by_timeout = if action_info.timeout.is_zero() {
+            None
+        } else {
+            self.class_by_timeout
+                .iter()
+                .filter(|rule| Duration::from_secs(rule.min_timeout_s) <= action_info.timeout)
+                .max_by_key(|rule| rule.min_timeout_s)
+                .map(|rule| &rule.class)
+        };
+        let class_name = by_mnemonic.or(by_timeout).or(self.default_class.as_ref());
+        if let Some(name) = class_name {
+            if let Some(class) = self.class(name) {
+                return Numbers::from(class);
+            }
+            warn!(class = %name, "Cold-start policy names a size class the ladder does not have");
+        }
+        Numbers {
+            cpu_count: self.cold_start_cpu_count,
+            memory_kb: self.cold_start_memory_kb,
+            disk_kb: 0,
+        }
+    }
+
+    fn apply_defaults(&self, action_info: &mut ActionInfo, numbers: Numbers) {
+        apply_default_platform_property(
+            &mut action_info.platform_properties,
+            &self.cpu_property_name,
+            numbers.cpu_count,
+        );
+        apply_default_platform_property(
+            &mut action_info.platform_properties,
+            &self.memory_property_name,
+            numbers.memory_kb,
+        );
+        apply_default_platform_property(
+            &mut action_info.platform_properties,
+            &self.disk_property_name,
+            numbers.disk_kb,
+        );
     }
 
     async fn inner_get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
@@ -241,6 +449,7 @@ impl HistoricalResourceScheduler {
         );
         known_properties.insert(self.cpu_property_name.clone());
         known_properties.insert(self.memory_property_name.clone());
+        known_properties.insert(self.disk_property_name.clone());
         let final_known_properties: Vec<String> = known_properties.into_iter().collect();
         self.known_properties
             .lock()
@@ -270,6 +479,17 @@ fn apply_minimum_platform_property(
     }
 }
 
+fn apply_default_platform_property(
+    platform_properties: &mut HashMap<String, String>,
+    property_name: &str,
+    default_value: u64,
+) {
+    if default_value == 0 || platform_properties.contains_key(property_name) {
+        return;
+    }
+    platform_properties.insert(property_name.to_string(), default_value.to_string());
+}
+
 #[async_trait]
 impl KnownPlatformPropertyProvider for HistoricalResourceScheduler {
     async fn get_known_properties(&self, instance_name: &str) -> Result<Vec<String>, Error> {
@@ -284,8 +504,21 @@ impl ClientStateManager for HistoricalResourceScheduler {
         client_operation_id: OperationId,
         mut action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
-        if let Some(hint) = self.hint_for_current_action() {
-            self.apply_hint(Arc::make_mut(&mut action_info), &hint);
+        let (target_id, action_mnemonic) = Self::current_metadata();
+        if let Some((hint, source)) =
+            self.hint_for_action(&action_info, target_id.as_ref(), action_mnemonic.as_ref())
+        {
+            let numbers = self.numbers_from_hint(&hint);
+            self.apply_minimums(Arc::make_mut(&mut action_info), numbers);
+            record_hint_resolution(source);
+        } else {
+            let numbers = self.cold_start_numbers(&action_info, action_mnemonic.as_ref());
+            if numbers == Numbers::default() {
+                record_hint_resolution("none");
+            } else {
+                self.apply_defaults(Arc::make_mut(&mut action_info), numbers);
+                record_hint_resolution("cold_start");
+            }
         }
         self.scheduler
             .as_ref()
