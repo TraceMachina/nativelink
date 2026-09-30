@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
 use nativelink_error::Error;
 use nativelink_metric::RootMetricsComponent;
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::ActionResourceUsage;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    ActionResourceUsage, WorkerLoad,
+};
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::operation_state_manager::UpdateOperationType;
 use nativelink_util::shutdown_guard::ShutdownGuard;
@@ -25,6 +29,25 @@ use crate::worker::{Worker, WorkerTimestamp};
 
 /// `WorkerScheduler` interface is responsible for interactions between the scheduler
 /// and worker related operations.
+/// One connected worker, as the admin API reports it. Property values are
+/// strings on both maps, the way they were registered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkerSummary {
+    pub id: String,
+    pub running_actions: u32,
+    pub max_inflight_tasks: u64,
+    pub is_paused: bool,
+    pub is_draining: bool,
+    /// Seconds since the epoch of the worker's last message.
+    pub last_update_timestamp: u64,
+    /// What the worker registered with.
+    pub platform_properties: HashMap<String, String>,
+    /// What is left after the running actions' reservations.
+    pub available_platform_properties: HashMap<String, String>,
+    /// What the worker last reported having to spare, if it reports.
+    pub free_memory_kb: Option<u64>,
+}
+
 #[async_trait]
 pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static {
     /// Returns the platform property manager.
@@ -32,6 +55,24 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Adds a worker to the scheduler and begin using it to execute actions (when able).
     async fn add_worker(&self, worker: Worker) -> Result<(), Error>;
+
+    /// The worker took the dispatched operation.
+    async fn worker_dispatch_accepted(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Result<(), Error>;
+
+    /// The worker will not run the dispatched operation; `reason` is the
+    /// worker's word for why, `needs_kb` what it said the action wanted
+    /// when the reason was load.
+    async fn worker_dispatch_declined(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: String,
+        needs_kb: Option<u64>,
+    ) -> Result<(), Error>;
 
     /// Updates the status of an action to the scheduler from the worker.
     async fn update_action(
@@ -51,8 +92,20 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         Ok(())
     }
 
-    /// Event for when the keep alive message was received from the worker.
+    /// Event for when the keep alive message was received from the worker,
+    /// with what the worker reported having to spare, if it did.
     async fn worker_keep_alive_received(
+        &self,
+        worker_id: &WorkerId,
+        timestamp: WorkerTimestamp,
+        load: Option<WorkerLoad>,
+    ) -> Result<(), Error>;
+
+    /// Any other message from the worker (an acknowledgement, a decline, an
+    /// execute result) proves it is alive. Unlike a keepalive it lifts no
+    /// pause: a decline is not the worker saying it is ready to be asked
+    /// again.
+    async fn worker_liveness_refreshed(
         &self,
         worker_id: &WorkerId,
         timestamp: WorkerTimestamp,
@@ -60,6 +113,11 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Removes worker from pool and reschedule any tasks that might be running on it.
     async fn remove_worker(&self, worker_id: &WorkerId) -> Result<(), Error>;
+
+    /// The worker's stream ended without a `GoingAway`: it crashed, was
+    /// OOM-killed or lost its connection. Its actions requeue as a
+    /// disconnect, so the retry cap names the worker rather than the job.
+    async fn worker_disconnected(&self, worker_id: &WorkerId) -> Result<(), Error>;
 
     /// Evict all workers from the scheduler, setting their actions back to queued.
     async fn shutdown(&self, shutdown_guard: ShutdownGuard);
@@ -70,6 +128,10 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
 
     /// Sets if the worker is draining or not.
     async fn set_drain_worker(&self, worker_id: &WorkerId, is_draining: bool) -> Result<(), Error>;
+
+    /// Every connected worker as the scheduler sees it right now, for the
+    /// admin API: what it advertised, what it has left, what it runs.
+    async fn worker_snapshot(&self) -> Vec<WorkerSummary>;
 
     /// Tells workers to kill operations they are still running but the
     /// scheduler has finished, requeued or dropped without them (client

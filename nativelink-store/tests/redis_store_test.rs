@@ -65,6 +65,20 @@ fn make_temp_key(final_name: &str) -> String {
     format!("temp-{TEMP_UUID}-{{{final_name}}}")
 }
 
+/// What `FT.INFO` says while the index created a moment ago is still
+/// scanning existing keys (`indexing 1`) and once it is done (`0`).
+fn make_ft_info(index: &str, indexing: i64) -> MockCmd {
+    MockCmd::new(
+        redis::cmd("FT.INFO").arg(index),
+        Ok(Value::Array(vec![
+            Value::BulkString(b"num_docs".to_vec()),
+            Value::Int(3),
+            Value::BulkString(b"indexing".to_vec()),
+            Value::Int(indexing),
+        ])),
+    )
+}
+
 async fn make_mock_store(
     commands: Vec<MockCmd>,
 ) -> RedisStore<MockRedisConnection, ClusterRedisManager<MockRedisConnection>> {
@@ -1538,7 +1552,9 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Array(vec![
                     Value::Int(1),
@@ -1575,6 +1591,7 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1597,6 +1614,88 @@ fn test_search_by_index() -> Result<(), Error> {
         search_results[0].content
     );
 
+    Ok(())
+}
+
+/// A provider that reads its index descending, the way the scheduler's
+/// awaited-action index does.
+struct SearchByContentPrefixDesc {
+    prefix: String,
+}
+
+impl SchedulerIndexProvider for SearchByContentPrefixDesc {
+    const KEY_PREFIX: &'static str = "test:";
+    const INDEX_NAME: &'static str = "content_prefix_desc";
+    type Versioned = TrueValue;
+
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    const SORT_DESCENDING: bool = true;
+
+    fn index_value(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(&self.prefix)
+    }
+}
+
+impl SchedulerStoreDecodeTo for SearchByContentPrefixDesc {
+    type DecodeOutput = TestSchedulerDataUnversioned;
+
+    fn decode(version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        TestSchedulerKey::decode(version, data)
+    }
+}
+
+// The direction on the wire follows the provider. The scheduler's queue index
+// is the descending one; serving it ascending is the bug that made the Redis
+// backend dispatch lowest priority first, newest first.
+#[nativelink_test]
+fn test_search_by_index_descending() -> Result<(), Error> {
+    let commands = vec![MockCmd::new(
+        redis::cmd("FT.AGGREGATE")
+            .arg("test:_content_prefix_desc_sort_key_3e762c15")
+            .arg("@content_prefix_desc:{ Searchable }")
+            .arg("TIMEOUT")
+            .arg(10000_u64)
+            .arg("LOAD")
+            .arg(2)
+            .arg("data")
+            .arg("version")
+            .arg("WITHCURSOR")
+            .arg("COUNT")
+            .arg(1500)
+            .arg("MAXIDLE")
+            .arg(30000)
+            .arg("SORTBY")
+            .arg(2usize)
+            .arg("@sort_key")
+            .arg("DESC")
+            .arg("MAX")
+            .arg(1_000_000_u64),
+        Ok(Value::Array(vec![
+            Value::Array(vec![
+                Value::Int(1),
+                Value::Array(vec![
+                    Value::BulkString(b"data".to_vec()),
+                    Value::BulkString(b"1234".to_vec()),
+                    Value::BulkString(b"version".to_vec()),
+                    Value::BulkString(b"1".to_vec()),
+                ]),
+            ]),
+            Value::Int(0),
+        ])),
+    )];
+    let store = make_mock_store(commands).await;
+
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(SearchByContentPrefixDesc {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(search_results.len(), 1);
+    assert_eq!(search_results[0].content, "1234");
     Ok(())
 }
 
@@ -1625,7 +1724,9 @@ fn test_search_by_index_retries_on_failover() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             result,
         )
     }
@@ -1726,7 +1827,9 @@ fn test_search_by_index_skips_docs_that_expired_mid_query() -> Result<(), Error>
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             // A page whose middle document expired between match and load.
             Ok(Value::Array(vec![
                 Value::Map(vec![
@@ -1769,6 +1872,10 @@ fn test_search_by_index_skips_docs_that_expired_mid_query() -> Result<(), Error>
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        // The index is still backfilling on the first ask and ready on the
+        // second; the read waits for the second.
+        make_ft_info("test:_content_prefix__3e762c15", 1),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1808,7 +1915,7 @@ fn test_search_by_index_failure() -> Result<(), Error> {
         "Client: TEST - Client: unexpected command", "Error with ft_create in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)", "---", "Client: TEST - Client: unexpected command", "Error with second ft_aggregate in RedisStore::search_by_index_prefix(test:_content_prefix_sort_key_3e762c15)"].iter().map(ToString::to_string).collect()));
 
     assert!(logs_contain(
-        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"] } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\"]"
+        "Error calling ft.aggregate e=TEST - Client: unexpected command index=\"test:_content_prefix_sort_key_3e762c15\" query=\"*\" options=FtAggregateOptions { load: [\"data\", \"version\"], cursor: FtAggregateCursor { count: 1500, max_idle: 30000 }, sort_by: [\"@sort_key\"], sort_desc: false } all_args=[\"FT.AGGREGATE\", \"test:_content_prefix_sort_key_3e762c15\", \"*\", \"TIMEOUT\", \"10000\", \"LOAD\", \"2\", \"data\", \"version\", \"WITHCURSOR\", \"COUNT\", \"1500\", \"MAXIDLE\", \"30000\", \"SORTBY\", \"2\", \"@sort_key\", \"ASC\", \"MAX\", \"1000000\"]"
     ));
 
     Ok(())
@@ -1840,7 +1947,9 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Err::<Value, _>(make_extension_error(
                 "BUSY".to_string(),
                 Some("Redis is busy running a script".to_string()),
@@ -1878,6 +1987,7 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
     let commands = vec![
         make_ft_aggregate(),
         make_ft_create_already_exists(),
+        make_ft_info("test:_content_prefix_sort_key_3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -1923,7 +2033,9 @@ fn test_search_by_index_preserves_other_ft_create_errors() -> Result<(), Error> 
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Err::<Value, _>(make_extension_error(
                 "BUSY".to_string(),
                 Some("Redis is busy running a script".to_string()),
@@ -2003,7 +2115,9 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Array(vec![
                     Value::Int(1),
@@ -2042,6 +2156,7 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("TAG"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix__3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -2088,7 +2203,9 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             Ok(Value::Array(vec![
                 Value::Map(vec![
                     (
@@ -2150,6 +2267,7 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("SORTABLE"),
             Ok(Value::Nil),
         ),
+        make_ft_info("test:_content_prefix_sort_key_3e762c15", 0),
         make_ft_aggregate(),
     ];
     let store = make_mock_store(commands).await;
@@ -2196,7 +2314,9 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
                 .arg("SORTBY")
                 .arg(2usize)
                 .arg("@sort_key")
-                .arg("ASC"),
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
             // First page: one entry, cursor=42 so the stream issues
             // FT.CURSOR READ for a second page.
             Ok(Value::Array(vec![
@@ -2257,6 +2377,113 @@ fn test_search_by_index_skips_int_from_cursor_read() -> Result<(), Error> {
     assert_eq!(search_results[0].content, "first");
     assert_eq!(search_results[1].content, "second");
 
+    Ok(())
+}
+
+/// The store speaks RESP3, under which a cursor page arrives as a map in
+/// the same shape as the aggregate's own first page. Before the cursor read
+/// parsed that shape, every listing longer than one page failed on its
+/// second page with "Non map item".
+#[nativelink_test]
+async fn search_by_index_prefix_reads_a_resp3_cursor_page() -> Result<(), Error> {
+    fn make_ft_aggregate() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("FT.AGGREGATE")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .arg("@content_prefix:{ Searchable }")
+                .arg("TIMEOUT")
+                .arg(10000_u64)
+                .arg("LOAD")
+                .arg(2)
+                .arg("data")
+                .arg("version")
+                .arg("WITHCURSOR")
+                .arg("COUNT")
+                .arg(1500)
+                .arg("MAXIDLE")
+                .arg(30000)
+                .arg("SORTBY")
+                .arg(2usize)
+                .arg("@sort_key")
+                .arg("ASC")
+                .arg("MAX")
+                .arg(1_000_000_u64),
+            Ok(Value::Array(vec![
+                Value::Array(vec![
+                    Value::Int(2),
+                    Value::Array(vec![
+                        Value::BulkString(b"data".to_vec()),
+                        Value::BulkString(b"first".to_vec()),
+                        Value::BulkString(b"version".to_vec()),
+                        Value::BulkString(b"1".to_vec()),
+                    ]),
+                ]),
+                Value::Int(42),
+            ])),
+        )
+    }
+
+    fn make_ft_cursor_read_resp3() -> MockCmd {
+        MockCmd::new(
+            redis::cmd("ft.cursor")
+                .arg("read")
+                .arg("test:_content_prefix_sort_key_3e762c15")
+                .cursor_arg(42),
+            Ok(Value::Array(vec![
+                Value::Map(vec![
+                    (
+                        Value::SimpleString("attributes".to_string()),
+                        Value::Array(vec![]),
+                    ),
+                    (
+                        Value::SimpleString("format".to_string()),
+                        Value::SimpleString("STRING".to_string()),
+                    ),
+                    (
+                        Value::SimpleString("results".to_string()),
+                        Value::Array(vec![Value::Map(vec![
+                            (
+                                Value::SimpleString("extra_attributes".to_string()),
+                                Value::Map(vec![
+                                    (
+                                        Value::BulkString(b"data".to_vec()),
+                                        Value::BulkString(b"second".to_vec()),
+                                    ),
+                                    (
+                                        Value::BulkString(b"version".to_vec()),
+                                        Value::BulkString(b"2".to_vec()),
+                                    ),
+                                ]),
+                            ),
+                            (
+                                Value::SimpleString("values".to_string()),
+                                Value::Array(vec![]),
+                            ),
+                        ])]),
+                    ),
+                ]),
+                Value::Int(0),
+            ])),
+        )
+    }
+
+    let store = make_mock_store(vec![make_ft_aggregate(), make_ft_cursor_read_resp3()]).await;
+    let search_results: Vec<TestSchedulerDataUnversioned> = store
+        .search_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to search by index")?
+        .try_collect()
+        .await?;
+
+    assert_eq!(
+        search_results.len(),
+        2,
+        "the RESP3 page is read like the first"
+    );
+    assert_eq!(search_results[0].content, "first");
+    assert_eq!(search_results[1].content, "second");
     Ok(())
 }
 
@@ -3018,5 +3245,77 @@ async fn update_sets_no_ttl_by_default() -> Result<(), Error> {
     .await;
 
     store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+/// Counting must not read any documents. `search_by_index_prefix` has to
+/// `LOAD` the data and version of every match and page through them, so using
+/// it to answer "how many" makes the cost grow with the number of matches; on
+/// the scheduler's queued/completed indexes that is the whole action body of
+/// every action, repeatedly. `count_by_index_prefix` asks `RediSearch` for the
+/// total instead, which is why this test pins the command shape.
+#[nativelink_test]
+async fn test_count_by_index_prefix_asks_for_the_total_only() -> Result<(), Error> {
+    let store = make_mock_store(vec![MockCmd::new(
+        redis::cmd("FT.SEARCH")
+            .arg("test:_content_prefix_sort_key_3e762c15")
+            .arg("@content_prefix:{ Searchable }")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(0)
+            .arg("TIMEOUT")
+            .arg(10000),
+        Ok(Value::Array(vec![Value::Int(42)])),
+    )])
+    .await;
+
+    let count = store
+        .count_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to count by index")?;
+
+    assert_eq!(count, 42);
+    Ok(())
+}
+
+/// The same reply under RESP3, which answers with a map rather than an array.
+#[nativelink_test]
+async fn test_count_by_index_prefix_reads_a_resp3_reply() -> Result<(), Error> {
+    let store = make_mock_store(vec![MockCmd::new(
+        redis::cmd("FT.SEARCH")
+            .arg("test:_content_prefix_sort_key_3e762c15")
+            .arg("@content_prefix:{ Searchable }")
+            .arg("LIMIT")
+            .arg(0)
+            .arg(0)
+            .arg("TIMEOUT")
+            .arg(10000),
+        Ok(Value::Map(vec![
+            (
+                Value::SimpleString("attributes".to_string()),
+                Value::Array(vec![]),
+            ),
+            (
+                Value::SimpleString("total_results".to_string()),
+                Value::Int(7),
+            ),
+            (
+                Value::SimpleString("results".to_string()),
+                Value::Array(vec![]),
+            ),
+        ])),
+    )])
+    .await;
+
+    let count = store
+        .count_by_index_prefix(SearchByContentPrefix {
+            prefix: "Searchable".to_string(),
+        })
+        .await
+        .err_tip(|| "Failed to count by index")?;
+
+    assert_eq!(count, 7);
     Ok(())
 }

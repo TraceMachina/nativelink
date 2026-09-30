@@ -15,6 +15,7 @@ use prost::Message as _;
 
 fn make_key() -> ActionUniqueKey {
     ActionUniqueKey {
+        execution_scope: None,
         instance_name: String::from("main"),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new(
@@ -44,6 +45,29 @@ fn old_unique_qualifier_uncachable_works() {
     assert_eq!(
         action_info.unique_qualifier,
         ActionUniqueQualifier::Uncacheable(make_key())
+    );
+}
+
+#[nativelink_test]
+fn execution_scope_survives_serialization_and_changes_the_scheduler_index() {
+    let unscoped = ActionUniqueQualifier::Cacheable(make_key());
+    let mut key = make_key();
+    key.execution_scope = Some("invocation-one".to_string());
+    let first = ActionUniqueQualifier::Cacheable(key.clone());
+    key.execution_scope = Some("invocation-two".to_string());
+    let second = ActionUniqueQualifier::Cacheable(key);
+    assert_ne!(first, second);
+    assert_ne!(first.to_string(), second.to_string());
+    assert_ne!(first.to_string(), unscoped.to_string());
+    assert_eq!(first.digest(), second.digest());
+    assert_eq!(
+        first,
+        serde_json::from_str(&serde_json::to_string(&first).unwrap()).unwrap()
+    );
+    assert!(
+        !serde_json::to_string(&unscoped)
+            .unwrap()
+            .contains("execution_scope")
     );
 }
 

@@ -28,6 +28,8 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::{EXECUTION_METRICS, EXECUTION_STAGE, ExecutionStage};
+use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
@@ -35,7 +37,9 @@ use nativelink_util::store_trait::{
     SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, TrueValue,
 };
 use nativelink_util::task::JoinHandleDropGuard;
-use tokio::sync::Notify;
+use opentelemetry::KeyValue;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{Notify, OnceCell};
 use tracing::{error, warn};
 
 use crate::awaited_action_db::{
@@ -52,6 +56,27 @@ const MAX_RETRIES_FOR_CLIENT_KEEPALIVE: u32 = 8;
 /// Use separate non-versioned Redis key for client keepalives.
 const USE_SEPARATE_CLIENT_KEEPALIVE_KEY: bool = true;
 
+/// How often the actions in each stage are recounted for
+/// `execution.active.count`.
+const ACTIVE_COUNT_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Every stage the store indexes, with the label it is reported under.
+const COUNTED_STATES: [(SortedAwaitedActionState, ExecutionStage); 4] = [
+    (
+        SortedAwaitedActionState::CacheCheck,
+        ExecutionStage::CacheCheck,
+    ),
+    (SortedAwaitedActionState::Queued, ExecutionStage::Queued),
+    (
+        SortedAwaitedActionState::Executing,
+        ExecutionStage::Executing,
+    ),
+    (
+        SortedAwaitedActionState::Completed,
+        ExecutionStage::Completed,
+    ),
+];
+
 enum OperationSubscriberState<Sub> {
     Unsubscribed,
     Subscribed(Sub),
@@ -66,6 +91,15 @@ pub struct OperationSubscriber<S: SchedulerStore, I: InstantWrapper, NowFn: Fn()
     >,
     last_known_keepalive_ts: AtomicU64,
     now_fn: NowFn,
+    /// The record as a listing read it, when this subscriber came from one.
+    /// A listing already loads every record it returns, so `borrow` serves
+    /// this instead of reading the record again; only the client keepalive,
+    /// kept under its own key, is read, once. The matching pass borrows each
+    /// queued action two or three times per pass, so without this a pass
+    /// cost several store round trips per queued action.
+    listed: Option<AwaitedAction>,
+    /// `listed` with the client keepalive merged in, filled on first borrow.
+    listed_with_keepalive: OnceCell<AwaitedAction>,
     // If the SchedulerSubscriptionManager is not reliable, then this is populated
     // when the state is set to subscribed.  When set it causes the state to be polled
     // as well as listening for the publishing.
@@ -116,10 +150,18 @@ where
             last_known_keepalive_ts: AtomicU64::new(0),
             state: OperationSubscriberState::Unsubscribed,
             now_fn,
+            listed: None,
+            listed_with_keepalive: OnceCell::const_new(),
             maybe_last_stage: None,
             retain_completed_for,
             client_keepalive_ttl,
         }
+    }
+
+    /// Serves `borrow` from the record a listing already read.
+    fn listed(mut self, awaited_action: AwaitedAction) -> Self {
+        self.listed = Some(awaited_action);
+        self
     }
 
     async fn inner_get_awaited_action(
@@ -141,14 +183,30 @@ where
         if let Some(client_operation_id) = maybe_client_operation_id {
             awaited_action.set_client_operation_id(client_operation_id);
         }
+        Self::merge_client_keepalive(
+            store,
+            key.0.as_ref(),
+            &mut awaited_action,
+            last_known_keepalive_ts,
+        )
+        .await;
+        Ok(awaited_action)
+    }
 
+    /// Folds the client keepalive kept under its own key into the action's
+    /// timestamp and remembers it.
+    async fn merge_client_keepalive(
+        store: &S,
+        operation_id: &OperationId,
+        awaited_action: &mut AwaitedAction,
+        last_known_keepalive_ts: &AtomicU64,
+    ) {
         // Helper to convert SystemTime to unix timestamp
         let to_unix_ts =
             |t: SystemTime| -> u64 { t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) };
 
         // Check the separate keepalive key for the most recent timestamp.
         let keepalive_ts = if USE_SEPARATE_CLIENT_KEEPALIVE_KEY {
-            let operation_id = key.0.as_ref();
             match store.get_and_decode(ClientKeepaliveKey(operation_id)).await {
                 Ok(Some(ts)) => {
                     let awaited_ts = to_unix_ts(awaited_action.last_client_keepalive_timestamp());
@@ -167,7 +225,6 @@ where
         };
 
         last_known_keepalive_ts.store(keepalive_ts, Ordering::Release);
-        Ok(awaited_action)
     }
 
     #[expect(clippy::future_not_send)] // TODO(jhpratt) remove this
@@ -176,6 +233,23 @@ where
             .weak_store
             .upgrade()
             .err_tip(|| "Store gone in OperationSubscriber::get_awaited_action")?;
+        if let Some(listed) = &self.listed {
+            let merged = self
+                .listed_with_keepalive
+                .get_or_init(|| async {
+                    let mut awaited_action = listed.clone();
+                    Self::merge_client_keepalive(
+                        store.as_ref(),
+                        self.subscription_key.0.as_ref(),
+                        &mut awaited_action,
+                        &self.last_known_keepalive_ts,
+                    )
+                    .await;
+                    awaited_action
+                })
+                .await;
+            return Ok(merged.clone());
+        }
         Self::inner_get_awaited_action(
             store.as_ref(),
             self.subscription_key.borrow(),
@@ -413,6 +487,12 @@ const CLIENT_ID_TO_OPERATION_ID_KEY_PREFIX: &str = "cid_";
 const CLIENT_ID_MAPPING_TTL: Duration = Duration::from_hours(24);
 /// Phase 2: Separate key prefix for client keepalives (non-versioned).
 const CLIENT_KEEPALIVE_KEY_PREFIX: &str = "ck_";
+/// One record per scheduler holding what its connected workers can run
+/// (non-versioned, expires on its own).
+const FLEET_CAPABILITIES_KEY_PREFIX: &str = "fc_";
+/// Index over every fleet capabilities record. The value is the same for
+/// all of them; the index exists so peers can be listed.
+const FLEET_CAPABILITIES_INDEX_NAME: &str = "fleet";
 
 #[derive(Debug)]
 struct OperationIdToAwaitedAction<'a>(Cow<'a, OperationId>);
@@ -498,6 +578,58 @@ impl SchedulerStoreDataProvider for UpdateClientKeepalive<'_> {
     }
 }
 
+/// What one scheduler's workers can run, as published to its peers.
+#[derive(Serialize, Deserialize)]
+struct FleetCapabilities {
+    scheduler_id: String,
+    workers: Vec<PlatformProperties>,
+}
+
+struct UpdateFleetCapabilities(FleetCapabilities);
+impl SchedulerStoreKeyProvider for UpdateFleetCapabilities {
+    type Versioned = FalseValue;
+    fn get_key(&self) -> StoreKey<'static> {
+        StoreKey::Str(Cow::Owned(format!(
+            "{FLEET_CAPABILITIES_KEY_PREFIX}{}",
+            self.0.scheduler_id
+        )))
+    }
+}
+impl SchedulerStoreDataProvider for UpdateFleetCapabilities {
+    fn try_into_bytes(self) -> Result<Bytes, Error> {
+        serde_json::to_string(&self.0)
+            .map(Bytes::from)
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append("Could not convert FleetCapabilities to json")
+            })
+    }
+    fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
+        Ok(vec![(
+            FLEET_CAPABILITIES_INDEX_NAME,
+            Bytes::from_static(b"1"),
+        )])
+    }
+}
+
+struct SearchFleetCapabilities;
+impl SchedulerIndexProvider for SearchFleetCapabilities {
+    const KEY_PREFIX: &'static str = FLEET_CAPABILITIES_KEY_PREFIX;
+    const INDEX_NAME: &'static str = FLEET_CAPABILITIES_INDEX_NAME;
+    type Versioned = FalseValue;
+    fn index_value(&self) -> Cow<'_, str> {
+        Cow::Borrowed("1")
+    }
+}
+impl SchedulerStoreDecodeTo for SearchFleetCapabilities {
+    type DecodeOutput = FleetCapabilities;
+    fn decode(_version: i64, data: Bytes) -> Result<Self::DecodeOutput, Error> {
+        serde_json::from_slice(&data).map_err(|e| {
+            Error::from_std_err(Code::Internal, &e).append("In SearchFleetCapabilities::decode")
+        })
+    }
+}
+
 // TODO(palfrey) We only need operation_id here, it would be nice if we had a way
 // to tell the decoder we only care about specific fields.
 struct SearchUniqueQualifierToAwaitedAction<'a>(&'a ActionUniqueQualifier);
@@ -521,6 +653,11 @@ impl SchedulerIndexProvider for SearchStateToAwaitedAction {
     const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
     const INDEX_NAME: &'static str = "state";
     const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    // The matcher walks the queue highest priority first, oldest first,
+    // which is descending over the packed sort key (see
+    // `AwaitedActionSortKey`). The memory backend does the same with
+    // `.rev()` over its `BTreeSet`.
+    const SORT_DESCENDING: bool = true;
     type Versioned = TrueValue;
     fn index_value(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.0)
@@ -533,12 +670,62 @@ impl SchedulerStoreDecodeTo for SearchStateToAwaitedAction {
     }
 }
 
+/// Counts the actions in a state. Uses the same index as
+/// [`SearchStateToAwaitedAction`], but only ever as a `count_by_index_prefix`
+/// argument, so the store returns a total and never reads the actions.
+struct CountActionsInState(&'static str);
+impl SchedulerIndexProvider for CountActionsInState {
+    const KEY_PREFIX: &'static str = OPERATION_ID_TO_AWAITED_ACTION_KEY_PREFIX;
+    const INDEX_NAME: &'static str = "state";
+    const MAYBE_SORT_KEY: Option<&'static str> = Some("sort_key");
+    type Versioned = TrueValue;
+    fn index_value(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.0)
+    }
+}
+
 const fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
     match state {
         SortedAwaitedActionState::CacheCheck => "cache_check",
         SortedAwaitedActionState::Queued => "queued",
         SortedAwaitedActionState::Executing => "executing",
         SortedAwaitedActionState::Completed => "completed",
+    }
+}
+
+/// Reports how many actions the store holds in each stage as
+/// `execution.active.count`.
+///
+/// The store is shared, so every scheduler replica reports the same totals:
+/// aggregate across replicas with `max`, not `sum`. Recording the change since
+/// the last pass, rather than adding and subtracting per transition, keeps the
+/// count right across restarts and for transitions another replica made.
+async fn report_active_counts<S: SchedulerStore>(
+    store: &S,
+    reported: &mut [Option<i64>; COUNTED_STATES.len()],
+) {
+    for ((state, stage), last) in COUNTED_STATES.iter().zip(reported.iter_mut()) {
+        let count = store
+            .count_by_index_prefix(CountActionsInState(get_state_prefix(*state)))
+            .await
+            .map(|count| i64::try_from(count).unwrap_or(i64::MAX));
+        match count {
+            // The first pass records even a zero, so every stage has a series
+            // and an empty queue reads as 0 rather than no data.
+            Ok(count) if *last != Some(count) => {
+                EXECUTION_METRICS.execution_active_count.add(
+                    count - last.unwrap_or(0),
+                    &[KeyValue::new(EXECUTION_STAGE, *stage)],
+                );
+                *last = Some(count);
+            }
+            Ok(_) => {}
+            Err(err) => warn!(
+                ?err,
+                ?stage,
+                "Failed to count actions for execution.active.count"
+            ),
+        }
     }
 }
 
@@ -584,8 +771,9 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
             let sorted_awaited_action = SortedAwaitedAction::from(&self.0);
             output.push((
                 "sort_key",
-                // We encode to hex to ensure that the sort key is lexicographically sorted.
-                Bytes::from(format!("{:016x}", sorted_awaited_action.sort_key.as_u64())),
+                // We encode to fixed-width hex to ensure that the sort key is
+                // lexicographically sorted.
+                Bytes::from(sorted_awaited_action.sort_key.index_field()),
             ));
         }
         Ok(output)
@@ -656,6 +844,7 @@ where
     now_fn: NowFn,
     operation_id_creator: F,
     _pull_task_change_subscriber_spawn: JoinHandleDropGuard<()>,
+    _active_count_spawn: Option<JoinHandleDropGuard<()>>,
     retain_completed_for: Duration,
     client_keepalive_ttl: Duration,
     worker_registry: Option<SharedWorkerRegistry>,
@@ -675,6 +864,7 @@ where
         operation_id_creator: F,
         retain_completed_for_s: u32,
         client_action_timeout_s: u64,
+        enable_active_action_count_metric: bool,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -705,11 +895,29 @@ where
                 }
             }
         );
+        // Off by default: counting queries the same store that serves action
+        // scheduling, once per interval per replica, so it is opt-in rather
+        // than a cost every deployment pays for a metric it may not read.
+        let active_count_spawn = enable_active_action_count_metric.then(|| {
+            let weak_store = Arc::downgrade(&store);
+            spawn!("store_awaited_action_db_active_count", async move {
+                let mut reported = [None; COUNTED_STATES.len()];
+                loop {
+                    // Wait first, so constructing the db never queries the store.
+                    tokio::time::sleep(ACTIVE_COUNT_REFRESH_INTERVAL).await;
+                    let Some(store) = weak_store.upgrade() else {
+                        return;
+                    };
+                    report_active_counts(store.as_ref(), &mut reported).await;
+                }
+            })
+        });
         Ok(Self {
             store,
             now_fn,
             operation_id_creator,
             _pull_task_change_subscriber_spawn: pull_task_change_subscriber,
+            _active_count_spawn: active_count_spawn,
             retain_completed_for: Duration::from_secs(retain_completed_for_s.into()),
             client_keepalive_ttl: Duration::from_secs(client_action_timeout_s),
             worker_registry: None,
@@ -793,10 +1001,18 @@ where
                 .await
                 .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
             tokio::pin!(stream);
-            maybe_awaited_action = stream
+            // This index search is by prefix. In particular, an unscoped key
+            // is a prefix of its scoped variants and must not join those jobs.
+            while let Some(candidate) = stream
                 .try_next()
                 .await
-                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?;
+                .err_tip(|| "In RedisAwaitedActionDb::try_subscribe")?
+            {
+                if &candidate.action_info().unique_qualifier == unique_qualifier {
+                    maybe_awaited_action = Some(candidate);
+                    break;
+                }
+            }
             if maybe_awaited_action.is_some() {
                 break;
             }
@@ -973,8 +1189,8 @@ where
                 });
 
             debug_assert!(
-                ActionStage::Queued == awaited_action.state().stage,
-                "Expected action to be queued"
+                !awaited_action.state().stage.is_finished(),
+                "Expected a queued or executing action; completed actions must be recreated"
             );
 
             let operation_id = awaited_action.operation_id().clone();
@@ -1033,6 +1249,44 @@ where
         self.worker_registry = Some(worker_registry);
     }
 
+    async fn exchange_fleet_capabilities(
+        &self,
+        scheduler_id: &str,
+        local: Vec<PlatformProperties>,
+        ttl: Duration,
+    ) -> Result<Vec<PlatformProperties>, Error> {
+        self.store
+            .update_data(
+                UpdateFleetCapabilities(FleetCapabilities {
+                    scheduler_id: scheduler_id.to_string(),
+                    workers: local,
+                }),
+                Some(ttl),
+            )
+            .await
+            .err_tip(|| "In StoreAwaitedActionDb::exchange_fleet_capabilities publish")?;
+
+        let stream = self
+            .store
+            .search_by_index_prefix(SearchFleetCapabilities)
+            .await
+            .err_tip(|| "In StoreAwaitedActionDb::exchange_fleet_capabilities search")?;
+        // Records that have expired on peers that stopped publishing are
+        // gone from the search already, so everything found here is live.
+        stream
+            .try_filter(|record| futures::future::ready(record.scheduler_id != scheduler_id))
+            .try_fold(Vec::new(), |mut peers, record| async move {
+                peers.extend(record.workers);
+                Ok(peers)
+            })
+            .await
+            .err_tip(|| "In StoreAwaitedActionDb::exchange_fleet_capabilities collect")
+    }
+
+    fn shares_state(&self) -> bool {
+        true
+    }
+
     async fn get_range_of_actions(
         &self,
         state: SortedAwaitedActionState,
@@ -1049,15 +1303,17 @@ where
         if !matches!(end, Bound::Unbounded) {
             return Err(make_err!(
                 Code::Unimplemented,
-                "Start bound is not supported in RedisAwaitedActionDb::get_range_of_actions",
+                "End bound is not supported in RedisAwaitedActionDb::get_range_of_actions",
             ));
         }
-        // TODO(palfrey) This API is not difficult to implement, but there is no code path
-        // that uses it, so no reason to implement it yet.
+        // The index is read in one direction, fixed by
+        // `SearchStateToAwaitedAction::SORT_DESCENDING`, and every caller
+        // asks for that direction. Ascending has no caller, so it is not
+        // implemented rather than silently served backwards.
         if !desc {
             return Err(make_err!(
                 Code::Unimplemented,
-                "Descending order is not supported in RedisAwaitedActionDb::get_range_of_actions",
+                "Ascending order is not supported in RedisAwaitedActionDb::get_range_of_actions",
             ));
         }
         Ok(self
@@ -1074,6 +1330,7 @@ where
                     self.retain_completed_for,
                     self.client_keepalive_ttl,
                 )
+                .listed(awaited_action)
             }))
     }
 
@@ -1094,6 +1351,7 @@ where
                     self.retain_completed_for,
                     self.client_keepalive_ttl,
                 )
+                .listed(awaited_action)
             }))
     }
 }

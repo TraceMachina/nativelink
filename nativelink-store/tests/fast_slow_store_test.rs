@@ -20,17 +20,20 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::join_all;
-use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::DigestInfo;
+use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
@@ -92,6 +95,50 @@ async fn check_data(
 }
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+
+#[nativelink_test]
+async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Result<(), Error> {
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        block_size: 1,
+        ..Default::default()
+    };
+    let filesystem = FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?;
+    let fast = Store::new(filesystem.clone());
+    let slow = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(filesystem_spec),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast.clone(),
+        slow.clone(),
+    ));
+    let content = Bytes::from_static(b"recover the missing fast-tier file");
+    let digest = DigestInfo::try_new(VALID_HASH, content.len())?;
+    store.update_oneshot(digest, content.clone()).await?;
+
+    for recover_by_read in [false, true] {
+        filesystem
+            .get_file_entry_for_digest(&digest)
+            .await?
+            .get_file_path_locked(|path| async move { fs::remove_file(path).await })
+            .await?;
+        assert_eq!(fast.has(digest).await?, Some(content.len() as u64));
+        if recover_by_read {
+            assert_eq!(store.get_part_unchunked(digest, 0, None).await?, content);
+        } else {
+            store.update_oneshot(digest, content.clone()).await?;
+        }
+        assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, content);
+        assert_eq!(slow.get_part_unchunked(digest, 0, None).await?, content);
+    }
+    Ok(())
+}
 
 #[nativelink_test]
 async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {

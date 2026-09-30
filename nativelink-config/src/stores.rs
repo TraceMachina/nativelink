@@ -1242,6 +1242,31 @@ pub struct ExperimentalAwsSpec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
 
+    /// Endpoint to talk to instead of the AWS regional endpoint. Set this to
+    /// point the store at an S3-compatible service, for example
+    /// `https://s3.example.com`. When omitted, the SDK resolves the endpoint
+    /// from `region`.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Address objects as `{endpoint}/{bucket}/{key}` rather than
+    /// `{bucket}.{endpoint}/{key}`. Many S3-compatible services serve only the
+    /// path-style form.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub force_path_style: bool,
+
+    /// Access key to sign requests with. When this and `secret_access_key` are
+    /// both omitted, the default AWS credential chain is used instead.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub access_key_id: Option<String>,
+
+    /// Secret key to sign requests with. Prefer `${ENV_VAR}` shell expansion
+    /// over writing the secret into the config file.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub secret_access_key: Option<String>,
+
     /// Common retry and upload configuration
     #[serde(flatten)]
     pub common: CommonObjectSpec,

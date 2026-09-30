@@ -47,6 +47,7 @@ async fn credential_client_allows_http() {
 
     let (credential_url, credential_server) = start_http_server().await;
     let credential_result = TlsClient::new_for_credentials(&common)
+        .unwrap()
         .call(HttpRequest::get(credential_url).unwrap())
         .await;
     assert!(
@@ -63,6 +64,7 @@ async fn s3_client_rejects_http_by_default() {
 
     let (s3_url, s3_server) = start_http_server().await;
     let s3_result = TlsClient::new(&common)
+        .unwrap()
         .call(HttpRequest::get(s3_url).unwrap())
         .await;
     drop(s3_server);

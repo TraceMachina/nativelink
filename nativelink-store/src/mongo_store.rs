@@ -1065,7 +1065,10 @@ impl SchedulerStore for ExperimentalMongoStore {
 
         // Add sort if specified
         let find_options = if let Some(sort_key) = K::MAYBE_SORT_KEY {
-            FindOptions::builder().sort(doc! { sort_key: 1 }).build()
+            let direction = if K::SORT_DESCENDING { -1 } else { 1 };
+            FindOptions::builder()
+                .sort(doc! { sort_key: direction })
+                .build()
         } else {
             FindOptions::default()
         };
@@ -1113,6 +1116,29 @@ impl SchedulerStore for ExperimentalMongoStore {
                 )
             })
         }))
+    }
+
+    async fn count_by_index_prefix<K>(&self, index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        let index_value = index.index_value();
+        let filter = doc! {
+            K::INDEX_NAME: {
+                "$regex": format!("^{}", regex::escape(index_value.as_ref())),
+            }
+        };
+        // Counting is a read-only observer, so unlike search_by_index_prefix it
+        // does not create the index.
+        self.scheduler_collection
+            .count_documents(filter)
+            .await
+            .map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to count in count_by_index_prefix: {e}"
+                )
+            })
     }
 
     async fn get_and_decode<K>(

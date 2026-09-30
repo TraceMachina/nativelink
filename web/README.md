@@ -9,7 +9,7 @@ The marketing site, docs, and shared design system that ship to
 web/
 ├── apps/
 │   ├── web/        Next.js 15 marketing site (nativelink.com)
-│   └── docs/       Next.js 15 + Fumadocs (nativelink.com/docs)
+│   └── docs/       Next.js + Fumadocs (docs.nativelink.com)
 └── packages/
     ├── tokens/     Design tokens (CSS custom properties)
     ├── ui/         shadcn-based React component library
@@ -42,9 +42,9 @@ bun install
 # Run both apps in parallel via Turborepo
 bun dev
 #   marketing → http://localhost:3000
-#   docs      → http://localhost:3001/docs
-#   marketing rewrites /docs/* to the docs server so you can browse
-#   both apps from http://localhost:3000
+#   docs      → http://localhost:3001
+#   marketing redirects /docs/* to the docs server, so /docs links
+#   keep working from http://localhost:3000
 
 # Or run a single app
 bun dev:web    # marketing only
@@ -62,13 +62,18 @@ lsof -i :3000 -i :3001 | awk 'NR>1 {print $2}' | sort -u | xargs kill -9
 ## Build
 
 ```bash
-# Build everything via Turborepo
-bun build
+# Build everything via Turborepo (`bun run`, not `bun build`, which is
+# Bun's own bundler)
+bun run build
 
 # Or build one app
 bun --filter @nativelink/web build
 bun --filter @nativelink/docs build
 ```
+
+Each build runs its generators first (the docs changelog page and the
+three `llms*.txt` files), so nothing has to be cleared beforehand; `.next/`
+is rebuilt in place.
 
 Build outputs land in each app's `.next/` directory. Both apps prerender
 as much as possible at build time:
@@ -77,6 +82,27 @@ as much as possible at build time:
   dynamic OG-image route.
 - **`apps/docs`** ships 33 prerendered MDX pages, a dynamic search API,
   and a dynamic OG-image route.
+
+## Preview a production build
+
+The `bun setup`, `bun docs` and `bun preview` commands belonged to the
+previous `web/platform` layout and no longer exist. Today's equivalent:
+
+```bash
+cd web
+bun install                                    # was: bun setup
+
+# Build both apps. DOCS_URL is baked into the marketing app's /docs redirect
+# at build time; point it at the local docs server for a full preview.
+DOCS_URL=http://localhost:3001 bun run build   # was: rm -r dist && bun run build
+
+# Serve the builds
+bun --filter @nativelink/web start             # was: bun preview → http://localhost:3000
+bun --filter @nativelink/docs start            #                    http://localhost:3001
+```
+
+For a live-reloading docs server instead of a build, `bun dev:docs` replaces
+the old `bun docs`.
 
 ## Typecheck & lint
 
@@ -123,9 +149,10 @@ Full conventions live at
 
 ## Deploy
 
-Two Vercel projects, one repo. The marketing app proxies `/docs/*` to
-the docs deployment via a Next.js rewrite that reads the `DOCS_URL`
-env var. Full walkthrough in [`DEPLOYMENT.md`](./DEPLOYMENT.md).
+Two Vercel projects, one repo. The marketing app redirects `/docs/*` to
+the docs deployment (docs.nativelink.com) via a Next.js redirect that reads
+the `DOCS_URL` env var at build time. Full walkthrough in
+[`DEPLOYMENT.md`](./DEPLOYMENT.md).
 
 ## License
 

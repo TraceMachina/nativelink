@@ -140,11 +140,78 @@ values per worker.
 For clusters of tens or low hundreds of workers this is not the bottleneck.
 It is worth knowing about before you plan for thousands.
 
-`allocation_strategy` is a smaller knob than its name suggests: it chooses
-**which end of the LRU the scan starts from**, and nothing else. Starting
-from the least-recently-used end spreads load; starting from the
-most-recently-used end packs work onto hot workers and leaves the rest idle
-long enough to be scaled down. Neither is a bin-packing algorithm.
+`allocation_strategy` is a smaller knob than its name suggests. The two
+original values choose **which end of the LRU the scan starts from**, and
+nothing else. Starting from the least-recently-used end spreads load;
+starting from the most-recently-used end packs work onto hot workers and
+leaves the rest idle long enough to be scaled down. `least_loaded` takes the
+eligible worker with the fewest running actions, least recently used among
+equals, so a worker that just joined takes the next action instead of
+waiting for every older worker to be used once more, and a burst that lands
+while most of the fleet is still starting does not fill the first worker to
+its concurrency cap. None of them is a bin-packing algorithm.
+
+The admission ledger only subtracts what an action declares, so an action
+that declared too little is invisible to it. **`live_memory_veto`** names a
+`minimum` property, usually `memory_kb`, that the scheduler checks against the
+free memory each worker reports with its keepalive (the cgroup limit less
+current usage, or `MemAvailable` without a limit). A worker reporting less
+than the action asks for is skipped for that action; a worker that reports
+nothing, such as one older than v1.7.3, is never vetoed. Two metrics go with
+this: `worker.keepalive.gap` is the seconds between consecutive messages from
+a worker, which is what `worker_timeout_s` should be judged against, and
+`worker.disconnections` carries a `worker.disconnect.reason` of
+`disconnected`, `drained`, `timeout`, `kill_unacknowledged`, `error`,
+`removed` or `shutdown`.
+
+Within a priority the queue is ordered by insert time to the nanosecond, on
+both backends, so a burst submitted together dispatches in arrival order.
+
+The pass keeps that order when a worker frees up while it is running. A pass
+reads the queue one action at a time, a store round trip each on a
+store-backed queue (the listing serves the record it already loaded, and
+only the client keepalive is read), so on a long queue a worker that
+finishes mid-pass would otherwise hand its room to whatever action the pass
+happened to be reading, newer than everything it had already passed over. Instead, actions that found
+no room are parked in the order the queue listed them, highest priority first
+and then oldest, and when the fleet's capacity changes the pass offers the
+room to the parked actions in that order before the one in hand, asking the
+fleet once per property shape. `scheduler.matching.parked_dispatched` counts
+the parked actions a worker was actually told to run that way; a non-zero
+rate is normal on a busy fleet and means the head of the queue is being
+served.
+
+When a worker reports an action killed for memory, by its own reservation
+enforcement or by the kernel near the limit, **`memory_escalation`** requeues
+the action with the reservation multiplied by `percent` (default 200) instead
+of failing it. With `ladder_kb` set to the memory values of the fleet's size
+classes, a kill steps the reservation to the next class up instead of
+scaling it. The next dispatch carries the raised value, so the worker holds
+the action to that. The reservation grows to the largest memory any connected
+worker advertises (or `max_kb`); the last step reserves that worker whole,
+its memory and, through `cpu_property`, its CPU, so the action runs alone.
+Only a kill there fails the action, with a message saying no worker in the
+fleet can run it. Escalations have their own budget (`max_steps`, default 8)
+and do not spend `max_job_retries`. The execution histograms carry an
+`execution.outcome` attribute so the killed samples can be told from the
+completed ones.
+
+The `historical_resource` scheduler that fills reservations reads hints by a
+key ladder, each step probed only when the action carries that key:
+`(target_id, action_mnemonic)`, then `target_id`, then the
+action's `action_digest`, then its `command_digest` (each `hash-size` or
+`hash/size`), then the mnemonic alone. The digest keys reach every client,
+whether or not it sends Bazel request metadata; the action digest is what
+origin events carry, so it is what a producer fed by them writes. A hint may name a `class` instead of numbers, and
+**`classes`** on the same scheduler defines the fleet's size ladder: named
+points with `cpu_count`, `memory_kb` and `disk_kb`, listed ascending. An
+action no hint matches takes the class picked by `class_by_mnemonic`, then
+`class_by_timeout` (Bazel test sizes arrive as timeouts), then
+`default_class`; without classes the raw `cold_start` numbers apply. With
+`memory_escalation.ladder_kb` set to the classes' memory values, a memory
+kill steps the reservation to the next class instead of scaling it, and a
+kill at the top class fails the action. Older hint files still load: every
+new field is optional.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
@@ -181,17 +248,25 @@ the configuration side.
 
 ## Retries, and what "failed" means [#retries-and-what-failed-means]
 
-The attempt counter is incremented by two different events, with different
-rules.
+The attempt counter is incremented by one event, and two other events that
+used to spend it now have budgets of their own.
 
 **`UpdateWithError` increments the attempt count, unless the error is
 `ResourceExhausted`.** Backpressure is free. A worker saying "I am too busy"
 does not spend one of the action's lives, which is what makes it safe for a
 worker to shed load.
 
-**`UpdateWithDisconnect` always increments.** A worker that vanishes mid-action
-always costs an attempt. Without this, an action that reliably OOM-kills its
-worker would retry forever, taking a worker down each time.
+**`UpdateWithDisconnect` counts against `max_worker_loss_retries`** (default
+10), not `max_job_retries`. A worker that vanishes mid-action is usually not
+the action's doing, so the action goes back to the queue without spending one
+of its lives; the separate budget is what stops an action that reliably
+OOM-kills its worker from taking one down forever. Past it the client sees a
+`FAILED_PRECONDITION` saying the worker was lost that many times.
+
+**`UpdateWithEscalation` counts against `memory_escalation.max_steps`**
+(default 8), not `max_job_retries` either: the scheduler chose to run the
+action again with more memory, and the fleet's ceiling bounds how far that
+goes.
 
 The limit is checked as `attempts > max_job_retries`, strictly, so the
 default of `3` permits **four** total executions. That off-by-one is in the

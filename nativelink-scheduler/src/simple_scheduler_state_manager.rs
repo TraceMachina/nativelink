@@ -16,6 +16,7 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
+use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
@@ -29,12 +30,14 @@ use nativelink_util::action_messages::{
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
+    record_awaited_action_orphan, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
     OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
+use nativelink_util::platform_properties::PlatformProperties;
 use opentelemetry::KeyValue;
 use tracing::{debug, info, trace, warn};
 
@@ -52,6 +55,90 @@ const BASE_RETRY_DELAY_MS: u64 = 10;
 
 /// Maximum jitter to add to retry delay (in ms).
 const MAX_RETRY_JITTER_MS: u64 = 20;
+
+/// How long to wait before the `retry_count`th attempt at an update that
+/// lost a version conflict: exponential in the attempt, plus jitter.
+fn version_conflict_backoff(retry_count: usize) -> Duration {
+    let base_delay = BASE_RETRY_DELAY_MS * (1 << retry_count.saturating_sub(2).min(4));
+    let jitter = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| {
+            u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS
+        });
+    Duration::from_millis(base_delay + jitter)
+}
+
+/// Records the execution metrics for an action whose new state was just
+/// stored. `is_retry` is set when a failed attempt re-queued the action.
+fn record_execution_metrics(awaited_action: &AwaitedAction, is_retry: bool) {
+    let action_state = awaited_action.state();
+    let instance_name = awaited_action
+        .action_info()
+        .unique_qualifier
+        .instance_name()
+        .as_str();
+    let worker_id = awaited_action
+        .worker_id()
+        .map(std::string::ToString::to_string);
+    let priority = Some(awaited_action.action_info().priority);
+
+    // Build base attributes for metrics
+    let mut attrs = nativelink_util::metrics::make_execution_attributes(
+        instance_name,
+        worker_id.as_deref(),
+        priority,
+    );
+
+    // Add stage attribute
+    let execution_stage: ExecutionStage = (&action_state.stage).into();
+    attrs.push(KeyValue::new(EXECUTION_STAGE, execution_stage));
+
+    // Record stage transition
+    EXECUTION_METRICS.execution_stage_transitions.add(1, &attrs);
+
+    // For completed actions, record the completion count with result
+    match &action_state.stage {
+        ActionStage::Completed(action_result) => {
+            let result = if action_result.exit_code == 0 {
+                ExecutionResult::Success
+            } else {
+                ExecutionResult::Failure
+            };
+            attrs.push(KeyValue::new(EXECUTION_RESULT, result));
+            EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
+            nativelink_util::metrics::record_completed_execution_metrics(
+                action_result,
+                instance_name,
+                worker_id.as_deref(),
+                priority,
+            );
+        }
+        ActionStage::CompletedFromCache(_) => {
+            attrs.push(KeyValue::new(EXECUTION_RESULT, ExecutionResult::CacheHit));
+            EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
+        }
+        _ => {}
+    }
+
+    // A failed attempt that re-queued the action counts as a retry.
+    if is_retry {
+        let retry_attrs = nativelink_util::metrics::make_execution_attributes(
+            instance_name,
+            worker_id.as_deref(),
+            priority,
+        );
+        EXECUTION_METRICS.execution_retry_count.add(1, &retry_attrs);
+    }
+}
+
+/// Whether an error reading a listed queue entry means the entry itself is
+/// lost: its record is gone from the store or cannot be decoded. Such an
+/// entry is skipped and counted. Any other error (the store unreachable, a
+/// listing page that failed to load) is about the store, not the entry, and
+/// is propagated so the caller retries instead of reporting a clean pass.
+pub(crate) const fn is_lost_record(err: &Error) -> bool {
+    matches!(err.code, Code::NotFound | Code::InvalidArgument)
+}
 
 /// Simple struct that implements the `ActionStateResult` trait and always returns an error.
 struct ErrorActionStateResult(Error);
@@ -124,6 +211,10 @@ where
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
         self.inner.as_action_info().await
     }
+
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        self.inner.client_last_seen().await
+    }
 }
 
 struct MatchingEngineActionStateResult<U, T, I, NowFn>
@@ -178,6 +269,15 @@ where
             awaited_action.state().clone(),
             awaited_action.maybe_origin_metadata().cloned(),
         ))
+    }
+
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        let awaited_action = self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::client_last_seen")?;
+        Ok(Some(awaited_action.last_client_keepalive_timestamp()))
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
@@ -264,10 +364,42 @@ where
     }
 }
 
+/// How often an action is queued again, by cause, before the scheduler
+/// completes it with `FailedPrecondition`. Each cause has its own budget:
+/// an action's own failures, the workers it lost through no fault of its
+/// own, and the memory escalations it was granted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryLimits {
+    /// Internal errors and timeouts the action produced.
+    pub max_job_retries: usize,
+    /// Workers lost while the action ran.
+    pub max_worker_loss_retries: usize,
+    /// Memory escalations; 0 leaves only the fleet's ceiling to bound them.
+    pub max_escalations: usize,
+}
+
+impl RetryLimits {
+    /// Lost workers allowed by default; the action did nothing wrong.
+    pub const DEFAULT_WORKER_LOSS_RETRIES: usize = 10;
+}
+
+/// Only the job budget stated: the other two take their defaults, which is
+/// what older callers meant.
+impl From<usize> for RetryLimits {
+    fn from(max_job_retries: usize) -> Self {
+        Self {
+            max_job_retries,
+            max_worker_loss_retries: Self::DEFAULT_WORKER_LOSS_RETRIES,
+            max_escalations: 0,
+        }
+    }
+}
+
 /// `SimpleSchedulerStateManager` is responsible for maintaining the state of the scheduler.
 /// Scheduler state includes the actions that are queued, active, and recently completed.
 /// It also includes the workers that are available to execute actions based on allocation
 /// strategy.
+
 #[derive(MetricsComponent, Debug)]
 pub struct SimpleSchedulerStateManager<T, I, NowFn>
 where
@@ -284,6 +416,14 @@ where
     // of always having it on every SimpleScheduler.
     #[metric(help = "Maximum number of times a job can be retried")]
     max_job_retries: usize,
+
+    #[metric(help = "Maximum number of times a job is queued again after losing its worker")]
+    max_worker_loss_retries: usize,
+
+    #[metric(
+        help = "Maximum number of memory escalations for a job; 0 leaves the ceiling to bound them"
+    )]
+    max_escalations: usize,
 
     /// Duration after which an action is considered to be timed out if
     /// no event is received.
@@ -325,7 +465,7 @@ where
     NowFn: Fn() -> I + Clone + Send + Unpin + Sync + 'static,
 {
     pub fn new(
-        max_job_retries: usize,
+        retry_limits: impl Into<RetryLimits>,
         no_event_action_timeout: Duration,
         client_action_timeout: Duration,
         max_executing_timeout: Duration,
@@ -333,9 +473,16 @@ where
         now_fn: NowFn,
         worker_registry: Option<SharedWorkerRegistry>,
     ) -> Arc<Self> {
+        let RetryLimits {
+            max_job_retries,
+            max_worker_loss_retries,
+            max_escalations,
+        } = retry_limits.into();
         Arc::new_cyclic(|weak_self| Self {
             action_db,
             max_job_retries,
+            max_worker_loss_retries,
+            max_escalations,
             no_event_action_timeout,
             client_action_timeout,
             max_executing_timeout,
@@ -356,10 +503,10 @@ where
     /// to visit.
     ///
     /// When it does not, they accumulate with no expiry and are handed to
-    /// the matcher again on every pass, ahead of live work because they are
-    /// the oldest. Enough of them starve dispatch entirely: workers sit
-    /// idle, nothing executes or completes, and clients eventually report a
-    /// remote execution failure.
+    /// the matcher again on every pass. Every pass reads the whole queued
+    /// set, so enough of them make each read slow and each pass cost more
+    /// than it places: workers sit idle, nothing executes or completes, and
+    /// clients eventually report a remote execution failure.
     ///
     /// Returns how many were retired.
     pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
@@ -378,11 +525,28 @@ where
 
         let mut retired = 0u64;
         while let Some(subscriber) = stream.next().await {
-            let subscriber = subscriber.err_tip(|| "In sweep_abandoned_queued_actions")?;
-            let awaited_action = subscriber
-                .borrow()
-                .await
-                .err_tip(|| "In sweep_abandoned_queued_actions")?;
+            // The queue listed it but the record is gone (evicted) or cannot
+            // be decoded. One such entry must not stop the sweep from
+            // retiring everything behind it, which is how a pile of
+            // abandoned actions becomes permanent. Anything else, such as
+            // the listing's next page failing to load, is a failed sweep:
+            // the entries it did not reach are still there.
+            let awaited_action = match subscriber {
+                Ok(subscriber) => subscriber.borrow().await,
+                Err(err) => Err(err),
+            };
+            let awaited_action = match awaited_action {
+                Ok(awaited_action) => awaited_action,
+                Err(err) if is_lost_record(&err) => {
+                    warn!(
+                        ?err,
+                        "Queued operation listed but its record cannot be read; skipping"
+                    );
+                    record_awaited_action_orphan("sweep");
+                    continue;
+                }
+                Err(err) => return Err(err).err_tip(|| "In sweep_abandoned_queued_actions"),
+            };
 
             // Only queued actions belong to this sweep, and only once the
             // client has been gone longer than it is allowed to be.
@@ -430,7 +594,89 @@ where
                 "Retired queued operations that had no clients listening"
             );
         }
+        record_queue_retired(retired);
         Ok(retired)
+    }
+
+    /// See `AwaitedActionDb::exchange_fleet_capabilities`.
+    pub async fn exchange_fleet_capabilities(
+        &self,
+        scheduler_id: &str,
+        local: Vec<PlatformProperties>,
+        ttl: Duration,
+    ) -> Result<Vec<PlatformProperties>, Error> {
+        self.action_db
+            .exchange_fleet_capabilities(scheduler_id, local, ttl)
+            .await
+    }
+
+    async fn inner_fail_queued_operation(
+        &self,
+        operation_id: &OperationId,
+        err: Error,
+    ) -> Result<bool, Error> {
+        let Some(subscriber) = self
+            .action_db
+            .get_by_operation_id(operation_id)
+            .await
+            .err_tip(|| "In SimpleSchedulerStateManager::fail_queued_operation")?
+        else {
+            return Ok(false);
+        };
+        // The action may be racing an assignment or a client update, so on
+        // a version conflict reload it and, if it is still queued, try again.
+        let mut last_err = None;
+        for attempt in 1..=MAX_UPDATE_RETRIES {
+            if attempt > 1 {
+                tokio::time::sleep(version_conflict_backoff(attempt)).await;
+            }
+            let awaited_action = match subscriber.borrow().await {
+                Ok(awaited_action) => awaited_action,
+                // Store-backed dbs hand out a subscriber for any id and only
+                // discover the operation is gone on read.
+                Err(err) if err.code == Code::NotFound => return Ok(false),
+                Err(err) => {
+                    return Err(err)
+                        .err_tip(|| "In SimpleSchedulerStateManager::fail_queued_operation");
+                }
+            };
+            if !matches!(awaited_action.state().stage, ActionStage::Queued) {
+                return Ok(false);
+            }
+
+            let now = (self.now_fn)().now();
+            let mut state = awaited_action.state().as_ref().clone();
+            state.stage = ActionStage::Completed(ActionResult {
+                error: Some(err.clone()),
+                ..ActionResult::default()
+            });
+            state.last_transition_timestamp = now;
+
+            let mut new_awaited_action = awaited_action;
+            new_awaited_action.worker_set_state(Arc::new(state), now);
+            match self
+                .action_db
+                .update_awaited_action(new_awaited_action.clone())
+                .await
+            {
+                Ok(()) => {
+                    info!(%operation_id, ?err, "Failed a queued action no worker can run");
+                    record_execution_metrics(&new_awaited_action, false);
+                    return Ok(true);
+                }
+                Err(err) if err.code == Code::Aborted => last_err = Some(err),
+                Err(err) => {
+                    return Err(err)
+                        .err_tip(|| "In SimpleSchedulerStateManager::fail_queued_operation");
+                }
+            }
+        }
+        warn!(
+            %operation_id,
+            ?last_err,
+            "Could not fail an unsatisfiable action after repeated version conflicts, will try again on the next matching pass"
+        );
+        Ok(false)
     }
 
     pub async fn should_timeout_operation(&self, awaited_action: &AwaitedAction) -> bool {
@@ -728,6 +974,8 @@ where
             UpdateOperationType::UpdateWithError(_) => "Error",
             UpdateOperationType::UpdateWithDisconnect => "Disconnect",
             UpdateOperationType::ExecutionComplete => "ExecutionComplete",
+            UpdateOperationType::UpdateWithDecline(_) => "Decline",
+            UpdateOperationType::UpdateWithEscalation(_) => "Escalation",
         };
 
         debug!(
@@ -742,13 +990,7 @@ where
         for _ in 0..MAX_UPDATE_RETRIES {
             retry_count += 1;
             if retry_count > 1 {
-                let base_delay = BASE_RETRY_DELAY_MS * (1 << (retry_count - 2).min(4));
-                let jitter = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| {
-                        u64::try_from(d.as_nanos()).expect("u64 error") % MAX_RETRY_JITTER_MS
-                    });
-                let delay = Duration::from_millis(base_delay + jitter);
+                let delay = version_conflict_backoff(retry_count);
 
                 warn!(
                     %operation_id,
@@ -861,18 +1103,23 @@ where
                     }
 
                     if awaited_action.attempts > self.max_job_retries {
+                        // FailedPrecondition, not Internal: Bazel resubmits an
+                        // Internal execute failure as a fresh operation with a
+                        // fresh attempt counter, so the cap never reached the
+                        // client and a crashing action cycled through the pool
+                        // for as long as the build ran.
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
                                 worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),
                                 ..ExecutionMetadata::default()
                             },
-                            error: Some(err.clone().merge(make_err!(
-                                Code::Internal,
+                            error: Some(make_err!(
+                                Code::FailedPrecondition,
                                 "Job cancelled because it attempted to execute too many times {} > {} times {}",
                                 awaited_action.attempts,
                                 self.max_job_retries,
                                 format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
-                            ))),
+                            ).merge(err.clone())),
                             ..ActionResult::default()
                         })
                     } else {
@@ -881,15 +1128,15 @@ where
                     }
                 }
                 UpdateOperationType::UpdateWithDisconnect => {
-                    // A worker disconnect (e.g. OOMKill, pod eviction, network
-                    // drop) used to requeue without counting as an attempt,
-                    // which let an action that always crashes its worker loop
-                    // forever until the Bazel client's --test_timeout fired.
-                    // Count disconnects as attempts so max_job_retries caps the
-                    // loop and the client sees a backend-attributable error.
-                    awaited_action.attempts += 1;
+                    // A lost worker (OOM-killed as a whole, pod evicted,
+                    // network drop, timed out) is usually not this action's
+                    // doing, so it has its own budget rather than spending
+                    // the action's `max_job_retries`. The budget is what
+                    // stops an action that takes a worker down every time
+                    // it runs from doing so forever.
+                    awaited_action.worker_losses += 1;
 
-                    if awaited_action.attempts > self.max_job_retries {
+                    if awaited_action.worker_losses > self.max_worker_loss_retries {
                         ActionStage::Completed(ActionResult {
                             execution_metadata: ExecutionMetadata {
                                 worker: maybe_worker_id
@@ -897,10 +1144,10 @@ where
                                 ..ExecutionMetadata::default()
                             },
                             error: Some(make_err!(
-                                Code::Internal,
-                                "Worker disconnected repeatedly while executing this action ({} > {} attempts); the runner likely OOMKilled or the pod was evicted. {}",
-                                awaited_action.attempts,
-                                self.max_job_retries,
+                                Code::FailedPrecondition,
+                                "The worker running this action was lost {} times, more than max_worker_loss_retries ({}); the action is likely what takes the worker down (OOM-killed pod, eviction). Give it a memory reservation or raise the pool's memory limit before retrying. {}",
+                                awaited_action.worker_losses,
+                                self.max_worker_loss_retries,
                                 format!(
                                     "for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"
                                 ),
@@ -912,7 +1159,62 @@ where
                         ActionStage::Queued
                     }
                 }
+                UpdateOperationType::UpdateWithEscalation(escalation) => {
+                    // The scheduler's own sizing decision, not a failure of
+                    // the action: it has its own budget and does not spend
+                    // `max_job_retries`. The fleet's ceiling bounds it
+                    // anyway; the budget catches a fleet whose ceiling is
+                    // far above where the action started.
+                    awaited_action.escalations += 1;
+                    if self.max_escalations > 0 && awaited_action.escalations > self.max_escalations
+                    {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id
+                                    .map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(
+                                make_err!(
+                                    Code::FailedPrecondition,
+                                    "Job cancelled after being killed for memory at every reservation tried ({} escalations, more than max_steps {}); the last reservation was {} {} {}",
+                                    awaited_action.escalations,
+                                    self.max_escalations,
+                                    escalation.value,
+                                    escalation.property,
+                                    format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
+                                )
+                                .merge(escalation.reason.clone()),
+                            ),
+                            ..ActionResult::default()
+                        })
+                    } else {
+                        // The same action, asking for more: the next
+                        // dispatch carries the raised reservation and the
+                        // worker holds it to that. The last step also asks
+                        // for the worker's whole CPU, so it runs alone.
+                        let mut action_info = (**awaited_action.action_info()).clone();
+                        action_info
+                            .platform_properties
+                            .insert(escalation.property.clone(), escalation.value.to_string());
+                        if let Some((cpu_property, cpu_value)) = &escalation.cpu {
+                            action_info
+                                .platform_properties
+                                .insert(cpu_property.clone(), cpu_value.to_string());
+                        }
+                        awaited_action.set_action_info(Arc::new(action_info));
+                        is_retry = true;
+                        ActionStage::Queued
+                    }
+                }
                 // We shouldn't get here, but we just ignore it if we do.
+                UpdateOperationType::UpdateWithDecline(decline) => {
+                    // Nothing ran, so nothing is charged against the retry
+                    // cap and the retry metric does not move; the action
+                    // goes back where it was.
+                    debug!(reason = %decline.reason, "Dispatch declined, requeuing untried");
+                    ActionStage::Queued
+                }
                 UpdateOperationType::ExecutionComplete => {
                     warn!("inner_update_operation got an ExecutionComplete, that's unexpected.");
                     return Ok(());
@@ -967,65 +1269,7 @@ where
                 return Err(err);
             }
 
-            // Record execution metrics after successful state update
-            let action_state = awaited_action.state();
-            let instance_name = awaited_action
-                .action_info()
-                .unique_qualifier
-                .instance_name()
-                .as_str();
-            let worker_id = awaited_action
-                .worker_id()
-                .map(std::string::ToString::to_string);
-            let priority = Some(awaited_action.action_info().priority);
-
-            // Build base attributes for metrics
-            let mut attrs = nativelink_util::metrics::make_execution_attributes(
-                instance_name,
-                worker_id.as_deref(),
-                priority,
-            );
-
-            // Add stage attribute
-            let execution_stage: ExecutionStage = (&action_state.stage).into();
-            attrs.push(KeyValue::new(EXECUTION_STAGE, execution_stage));
-
-            // Record stage transition
-            EXECUTION_METRICS.execution_stage_transitions.add(1, &attrs);
-
-            // For completed actions, record the completion count with result
-            match &action_state.stage {
-                ActionStage::Completed(action_result) => {
-                    let result = if action_result.exit_code == 0 {
-                        ExecutionResult::Success
-                    } else {
-                        ExecutionResult::Failure
-                    };
-                    attrs.push(KeyValue::new(EXECUTION_RESULT, result));
-                    EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
-                    nativelink_util::metrics::record_completed_execution_metrics(
-                        action_result,
-                        instance_name,
-                        worker_id.as_deref(),
-                        priority,
-                    );
-                }
-                ActionStage::CompletedFromCache(_) => {
-                    attrs.push(KeyValue::new(EXECUTION_RESULT, ExecutionResult::CacheHit));
-                    EXECUTION_METRICS.execution_completed_count.add(1, &attrs);
-                }
-                _ => {}
-            }
-
-            // A failed attempt that re-queued the action counts as a retry.
-            if is_retry {
-                let retry_attrs = nativelink_util::metrics::make_execution_attributes(
-                    instance_name,
-                    worker_id.as_deref(),
-                    priority,
-                );
-                EXECUTION_METRICS.execution_retry_count.add(1, &retry_attrs);
-            }
+            record_execution_metrics(&awaited_action, is_retry);
 
             debug!(
                 %operation_id,
@@ -1141,12 +1385,9 @@ where
                 .get_all_awaited_actions()
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
-                .and_then(|awaited_action_subscriber| async move {
-                    let awaited_action = awaited_action_subscriber
-                        .borrow()
-                        .await
-                        .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-                    Ok((awaited_action_subscriber, awaited_action))
+                .filter_map(|listed| async move { listed_or_lost(listed) })
+                .try_filter_map(|awaited_action_subscriber| async move {
+                    borrow_listed(awaited_action_subscriber).await
                 })
                 .try_filter_map(|(subscriber, awaited_action)| {
                     let filter = filter.clone();
@@ -1188,12 +1429,9 @@ where
             )
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
-            .and_then(|awaited_action_subscriber| async move {
-                let awaited_action = awaited_action_subscriber
-                    .borrow()
-                    .await
-                    .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?;
-                Ok((awaited_action_subscriber, awaited_action))
+            .filter_map(|listed| async move { listed_or_lost(listed) })
+            .try_filter_map(|awaited_action_subscriber| async move {
+                borrow_listed(awaited_action_subscriber).await
             })
             .try_filter_map(move |(subscriber, awaited_action)| {
                 let filter = filter.clone();
@@ -1211,6 +1449,49 @@ where
                 )
             });
         Ok(Box::pin(stream))
+    }
+}
+
+/// A listed entry the store could not even hand over: the row was gone
+/// (`NotFound`) or would not decode (`InvalidArgument`), which the Redis
+/// listing reports as an error item before any subscriber exists. Skipped
+/// and counted like a record that fails to read below. Anything else is the
+/// store failing and stays an error for the reader.
+fn listed_or_lost<S>(listed: Result<S, Error>) -> Option<Result<S, Error>> {
+    match listed {
+        Err(err) if is_lost_record(&err) => {
+            warn!(
+                ?err,
+                "Operation listed but its row cannot be read; skipping it in the listing"
+            );
+            record_awaited_action_orphan("listing");
+            None
+        }
+        listed => Some(listed),
+    }
+}
+
+/// Reads the record behind a listed subscriber. A record the index listed
+/// but the store no longer has (it expired between the search and the
+/// read, or eviction took it) is skipped and counted, not returned as an
+/// error: one such row must not end a listing that the provisioner and the
+/// admin API read every few seconds. Any other error is the store failing
+/// and is passed on. The sweep and the matcher skip the same way.
+async fn borrow_listed<S: AwaitedActionSubscriber>(
+    subscriber: S,
+) -> Result<Option<(S, AwaitedAction)>, Error> {
+    match subscriber.borrow().await {
+        Ok(awaited_action) => Ok(Some((subscriber, awaited_action))),
+        Err(err) if is_lost_record(&err) => {
+            warn!(
+                ?err,
+                "Operation listed but its record cannot be read; skipping it in the listing"
+            );
+            record_awaited_action_orphan("listing");
+            Ok(None)
+        }
+        // The store itself failed; that is the listing's error to report.
+        Err(err) => Err(err).err_tip(|| "In SimpleSchedulerStateManager::filter_operations"),
     }
 }
 
@@ -1337,5 +1618,13 @@ where
         };
         self.inner_update_operation(operation_id, maybe_worker_id, update)
             .await
+    }
+
+    async fn fail_queued_operation(
+        &self,
+        operation_id: &OperationId,
+        err: Error,
+    ) -> Result<bool, Error> {
+        self.inner_fail_queued_operation(operation_id, err).await
     }
 }

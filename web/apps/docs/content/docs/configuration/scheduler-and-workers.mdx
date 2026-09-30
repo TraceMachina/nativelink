@@ -150,9 +150,10 @@ is a service address. The config shape does not change.
 `SimpleSpec` has ten optional fields. Most can stay at their defaults
 forever. These four are the ones worth setting deliberately:
 
-**`worker_timeout_s`** (default 5 s): how long a silent worker stays in the
-pool. Five seconds is aggressive for a fleet on a congested network; a worker
-evicted mid-action has its action re-queued.
+**`worker_timeout_s`** (default 10 s): how long a silent worker stays in the
+pool. Any message from the worker counts, not only the heartbeat. Keep it at
+least twice the worker's `worker_api_endpoint.timeout`; a worker evicted
+mid-action has every action it held re-queued, each with an attempt spent.
 
 **`max_action_executing_timeout_s`** (default 0, disabled): caps how long an
 action can sit in `Executing` with no update, even from a worker that is
@@ -163,7 +164,13 @@ client gives up.
 **`max_job_retries`** (default 3): how many times an action that fails with
 an internal error is retried before the last error is returned to the client.
 It exists to stop one poisonous action from cycling through and destabilising
-your whole fleet.
+your whole fleet. A lost worker and a memory escalation do not spend it.
+
+**`max_worker_loss_retries`** (default 10): how many times an action whose
+worker was lost (disconnected, timed out, evicted, or OOM-killed as a whole)
+is queued again before the client gets a `FAILED_PRECONDITION`. Losing a
+worker is not the action's failure, so this budget is separate and larger;
+it only stops an action that takes a worker down every time it runs.
 
 **`retain_completed_for_s`** (default 60 s): how long a completed action's
 result stays available for a late `WaitExecution` call. Clients that
@@ -173,6 +180,119 @@ time.
 On the worker side, **`max_inflight_tasks`** (default 0, meaning unlimited) is
 the one to set on any real machine. Unlimited means the worker accepts every
 action the scheduler offers and lets the OS sort out the contention.
+
+**`drain_on_shutdown`** (off by default) makes a worker announce that it is
+draining the moment it gets `SIGTERM`, so the scheduler stops dispatching to
+it while it finishes what it holds. It needs a scheduler that understands the
+drain flag; an older one removes the worker on the spot and requeues its
+actions.
+
+Three bounds keep one action from taking the worker with it.
+**`max_captured_output_bytes`** (default 0, unbounded) caps how much of an
+action's stdout or stderr the worker holds in memory; past it the output
+spills to a file under the action directory and is uploaded from disk, so a
+tool that prints gigabytes costs disk, not RAM. **`precondition_timeout_ms`**
+(default 30000) ends a hanging precondition script and refuses the action as
+backpressure. **`orphan_sweep_interval_s`** (default 0, off) removes action
+directories under `work_directory` that no running action owns and that a
+failed cleanup left behind; the directory is always purged at startup.
+
+When the worker ends an action, for a timeout or a scheduler cancel, the
+process group gets SIGTERM first and **`kill_grace_ms`** (default 5000) to
+write its own cleanup before SIGKILL follows; the memory reservation kill
+skips the grace. A killed action keeps the stdout and stderr it produced.
+**`set_tmpdir`** (default true) gives every action its own `TMPDIR` under its
+action directory, so concurrent actions writing the same temporary file name
+no longer collide; a `TMPDIR` in the action's own environment still wins, and
+code that hard-codes `/tmp` is unaffected. A timeout above `max_action_timeout_s`
+is clamped to it rather than rejected.
+
+When the action's own process has exited, anything it left running in its
+process group (a background job, a helper that daemonized) is killed, since
+it would otherwise hold the action's output pipes open and the action would
+sit there until its timeout; the pipes then get five seconds to drain, and
+what was read by then is kept. The worker also makes itself the parent of
+every process an action leaves behind and reaps them on a timer, so a build
+whose actions fork and do not wait no longer leaves hundreds of zombies on
+the worker for the life of the pod. Under `use_namespaces` the stub does
+the reaping inside the action's PID namespace.
+
+Every executed action reports its resource usage to the scheduler with an
+`outcome`: `COMPLETED`, `KILLED_MEMORY` (the worker's reservation kill, or a
+SIGKILL from the kernel with the last memory sample within 10% of the limit),
+`KILLED_TIMEOUT` or `KILLED_EXTERNAL`, plus wall time and the reservation the
+action ran under. The scheduler logs every kill outcome with its mnemonic.
+
+**`resource_enforcement`** (off by default, Linux only) makes the worker hold an
+action to the memory reservation the scheduler placed it by. With
+`memory: soft` the worker kills the action's process group once two
+consecutive samples exceed `memory_kb` plus `memory_headroom_percent`
+(default 20), or one sample exceeds twice that, and fails it with
+`FAILED_PRECONDITION` naming the reservation and the observed peak. Samples
+are 250 ms apart, so an action that allocates faster than the pod's whole
+limit in half a second can still reach the cgroup limit first; the
+reservations admitted onto a worker must also sum to less than its limit
+with the headroom included. Without it the kill comes from the pod's cgroup limit,
+and on cgroup v2 that kill takes the worker and every action on it, not just
+the one that grew. The sample is the group's proportional set size, so a
+parent's pages shared with its forked children count once. Actions run
+through a persistent worker are not covered: that process outlives the action
+and serves others, so only the pod's limit bounds it. With enforcement on, the
+worker reads an action's properties from the scheduler's dispatch rather than
+the client's request, so a reservation the scheduler placed the action by is
+the one enforced and exported to the environment.
+
+`disk: guard` adds a check before any input is fetched: an action whose
+`disk_kb` reservation exceeds the free space under the work directory, less
+what the actions already admitted reserved, is refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
+counting an attempt and holds off this worker until its next keepalive,
+instead of running the fetch into a full disk.
+`disk: soft` is the guard plus a kill: every ten seconds the worker adds up
+the files the action has written under its own directory (those modified
+since its command started; inputs were materialized before that and are
+not counted), and an action past its `disk_kb` reservation by
+`disk_headroom_percent` is killed and fails with `FAILED_PRECONDITION`, its
+outcome `KILLED_DISK`. The walk runs on the blocking pool as its own task,
+so memory sampling carries on meanwhile. With either disk mode the action's
+usage report carries `peak_disk_kb`, what it wrote, from one walk of the
+action directory at completion, which is the only walk `guard` pays. The
+figure is reported and exported for now; the scheduler's sizing consumer
+comes with the size ladder.
+
+```json5
+"resource_enforcement": {
+  "memory": "soft",
+  "memory_property_name": "memory_kb",
+  "memory_headroom_percent": 20,
+  "disk": "soft",
+  "disk_property_name": "disk_kb",
+  "disk_headroom_percent": 20
+}
+```
+
+**`capacity`** makes the worker advertise CPU and memory from its own cgroup
+limits instead of from `platform_properties`: it reads `cpu.max` and
+`memory.max` at its cgroup v2 root, keeps back `overhead_cpu_millicores`
+(thousandths of a core) and `overhead_memory_kb` for itself, divides the
+memory by the enforcement headroom (`memory_headroom_percent`, which follows
+`resource_enforcement` unless set), and sets the two properties to the
+result at registration. The limit is the number the kernel enforces, so the
+number the scheduler packs against is derived from it rather than typed next
+to it. Where the cgroup cannot be read, hand-typed `cpu_count` and
+`memory_kb` stand with a warning; with neither typed the worker refuses to
+start, since it could take no action that asks for either. `cpu_unit` is the scale of the CPU
+property: `cores` by default, rounded down, the scale `cpu_count: {
+query_cmd: "nproc" }` and an action's `cpu_count=1` use; a fleet that
+advertises and requests thousandths of a core sets `millicores`. The
+overhead is always in thousandths of a core.
+
+```json5
+"capacity": {
+  "cpu_unit": "cores",
+  "overhead_cpu_millicores": 1000,
+  "overhead_memory_kb": 4194304
+}
+```
 
 <Callout type="info" title="Scheduler state is in memory by default">
   `experimental_backend` defaults to memory, so restarting the scheduler loses

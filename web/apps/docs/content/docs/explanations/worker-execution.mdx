@@ -30,10 +30,11 @@ worker gets an action is decided separately, by the LRU-ordered
 <Callout type="warn" title="The heartbeat and the eviction timeout are two separate knobs">
   The worker's heartbeat period is derived as **half** its configured
   `worker_api_endpoint.timeout`, 2.5 seconds by default. Eviction is
-  governed by the *scheduler's* `worker_timeout_s`, 5 seconds by default.
-  Nothing reconciles them. Raise the scheduler's timeout without raising the
-  worker's, or vice versa, and you get workers evicted mid-heartbeat and
-  reconnecting in a loop.
+  governed by the *scheduler's* `worker_timeout_s`, 10 seconds by default
+  (four heartbeats). Any message from the worker refreshes the clock, not
+  only the heartbeat. Nothing reconciles the two knobs. Raise the worker's
+  timeout without raising the scheduler's and you get workers evicted
+  mid-heartbeat and reconnecting in a loop.
 </Callout>
 
 ## The filesystem, and the hardlink that everything depends on [#the-filesystem-and-the-hardlink-that-everything-depends-on]
@@ -177,7 +178,8 @@ command finished slightly before the bytes exist.
     participant sched as Scheduler
     participant w as Worker
     participant cas as CAS + AC
-    sched->>w: assign action (over ConnectWorker)
+    sched->>w: StartExecute (over ConnectWorker)
+    w->>sched: ExecuteAccepted, or ExecuteDeclined and stop here
     w->>w: create work directory for the operation
     w->>cas: fetch missing blobs
     w->>w: hardlink inputs from filesystem CAS
@@ -188,6 +190,24 @@ command finished slightly before the bytes exist.
     w->>cas: write ActionResult to AC
     w->>sched: final result update
 `}</Mermaid>
+
+The first reply is the worker's admission decision. A dispatch is a
+proposal until the worker answers it: `ExecuteAccepted` confirms the ledger
+charge the scheduler made on the send, `ExecuteDeclined` hands it back. The
+worker declines when it already holds `max_inflight_tasks` actions, when the
+action's memory reservation is more than the worker currently has free, or
+when it is shutting down. A declined action returns to the queue without
+counting as an attempt, and the worker is paused until its next keepalive,
+or, for a decline for memory, until a keepalive reports that much free. The
+scheduler's channel to each worker is bounded at its concurrency plus a
+margin; a worker that has stopped reading has its dispatch requeued the same
+way rather than piling up work it will never see. A worker only sends these
+replies to a scheduler that announced support in its `ConnectionResult`, so
+an older scheduler sees the old behaviour: the worker runs whatever it is
+sent. `dispatch_ack_timeout_s` on the scheduler adds the converse: a dispatch
+no worker acknowledged within the timeout is taken back, which only makes
+sense once every connected worker acknowledges.
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="Refusal" />
 
 Four behaviours in the upload path:
 

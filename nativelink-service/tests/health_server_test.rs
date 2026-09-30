@@ -6,7 +6,7 @@ use axum::http::Request;
 use hyper::StatusCode;
 use nativelink_config::cas_server::HealthConfig;
 use nativelink_macro::nativelink_test;
-use nativelink_service::health_server::HealthServer;
+use nativelink_service::health_server::{HealthServer, health_paths};
 use nativelink_util::health_utils::{
     HealthRegistry, HealthRegistryBuilder, HealthStatus, HealthStatusIndicator,
 };
@@ -153,5 +153,85 @@ async fn health_test_with_sleep() -> Result<(), Box<dyn core::error::Error>> {
     assert!(logs_contain(
         "Timeout during health check struct_name=\"TestSleepIndicator\""
     ));
+    Ok(())
+}
+
+struct InitializingIndicator {}
+
+#[async_trait]
+impl HealthStatusIndicator for InitializingIndicator {
+    fn get_name(&self) -> &'static str {
+        "initializing_indicator"
+    }
+
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        HealthStatus::Initializing {
+            struct_name: "InitializingIndicator",
+            message: "not yet".into(),
+        }
+    }
+
+    fn struct_name(&self) -> &'static str {
+        "InitializingIndicator"
+    }
+}
+
+async fn status_of(server: HealthServer) -> Result<StatusCode, Box<dyn core::error::Error>> {
+    let tonic_services = Routes::builder().routes();
+    let mut svc = tonic_services
+        .into_axum_router()
+        .route_service("/probe", server);
+    let request = Request::builder()
+        .method("GET")
+        .uri("/probe")
+        .body(Body::empty())?;
+    let response: hyper::Response<axum::body::Body> =
+        svc.as_service().ready().await?.call(request).await?;
+    Ok(response.status())
+}
+
+/// A component still initializing is healthy enough for `/status` and not
+/// ready enough for `/ready`.
+#[nativelink_test]
+async fn readiness_is_unavailable_while_initializing() -> Result<(), Box<dyn core::error::Error>> {
+    let mut health_registry_builder = HealthRegistryBuilder::new("foo");
+    health_registry_builder.register_indicator(Arc::new(InitializingIndicator {}));
+    let health_registry = health_registry_builder.build();
+    let config = HealthConfig::default();
+
+    assert_eq!(
+        status_of(HealthServer::new(health_registry.clone(), &config)).await?,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status_of(HealthServer::readiness(health_registry, &config)).await?,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    Ok(())
+}
+
+/// Defaults fill the two paths; a configuration that gives both the same
+/// path is refused with a message rather than left to panic the router.
+#[nativelink_test]
+async fn health_paths_are_distinct_or_refused() -> Result<(), Box<dyn core::error::Error>> {
+    assert_eq!(
+        health_paths(&HealthConfig::default())?,
+        ("/status".to_string(), "/ready".to_string())
+    );
+    let custom = HealthConfig {
+        path: "/healthz".to_string(),
+        readiness_path: "/readyz".to_string(),
+        ..HealthConfig::default()
+    };
+    assert_eq!(
+        health_paths(&custom)?,
+        ("/healthz".to_string(), "/readyz".to_string())
+    );
+    let clash = HealthConfig {
+        path: "/ready".to_string(),
+        ..HealthConfig::default()
+    };
+    let err = health_paths(&clash).expect_err("the same path for both must be refused");
+    assert!(err.to_string().contains("both /ready"), "{err}");
     Ok(())
 }

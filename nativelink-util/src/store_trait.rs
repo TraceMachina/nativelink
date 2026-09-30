@@ -31,6 +31,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{Future, FutureExt, Stream, join, try_join};
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use nativelink_metric::MetricsComponent;
+use opentelemetry::KeyValue;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -864,6 +865,13 @@ pub trait StoreDriver:
     // Register health checks used to monitor the store.
     fn register_health(self: Arc<Self>, _registry: &mut HealthRegistryBuilder) {}
 
+    /// Starts reporting this store's size and entry count as `cache.size`
+    /// and `cache.entries` under `attrs`. Returns `false` for a store that
+    /// does not track its own size, which then reports nothing.
+    fn enable_cache_size_metrics(&self, _attrs: &[KeyValue]) -> bool {
+        false
+    }
+
     fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error>;
 }
 
@@ -939,6 +947,15 @@ pub trait SchedulerStore: Send + Sync + 'static {
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
         <K as SchedulerStoreDecodeTo>::DecodeOutput: Send;
 
+    /// Counts the keys in the store matching the given index prefix.
+    ///
+    /// Unlike `search_by_index_prefix` this never fetches the entries, so the
+    /// cost does not grow with the number of matches. Callers that only need
+    /// a total, such as reporting queue depth, should use this.
+    fn count_by_index_prefix<K>(&self, index: K) -> impl Future<Output = Result<u64, Error>> + Send
+    where
+        K: SchedulerIndexProvider + Send;
+
     /// Returns data for the provided key with the given version if
     /// `StoreKeyProvider::Versioned` is `TrueValue`.
     fn get_and_decode<K>(
@@ -960,6 +977,17 @@ pub trait SchedulerIndexProvider {
 
     /// The sort key for the index (if any).
     const MAYBE_SORT_KEY: Option<&'static str> = None;
+
+    /// Whether results sorted by `MAYBE_SORT_KEY` come back descending.
+    ///
+    /// A backend serves one direction per index, so the direction is a
+    /// property of the provider rather than of the call. The scheduler's
+    /// awaited-action index packs priority into the high bits and an
+    /// inverted insert timestamp into the low bits, so descending is
+    /// "highest priority first, then oldest first"; ascending is the exact
+    /// opposite, which is what the Redis backend served until this const
+    /// existed.
+    const SORT_DESCENDING: bool = false;
 
     /// If the data is versioned.
     type Versioned: BoolValue;

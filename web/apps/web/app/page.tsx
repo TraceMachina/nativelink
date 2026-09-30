@@ -225,7 +225,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <Section width="default" className="border-b border-border/60 py-28">
+      <Section id="mcp" width="default" className="scroll-mt-20 border-b border-border/60 py-28">
         <Reveal>
           <div className="mx-auto mb-12 max-w-[760px] text-center">
             <Eyebrow className="mb-4">Built for AI-assisted development</Eyebrow>
@@ -237,6 +237,17 @@ export default function HomePage() {
               your agent can configure remote caching, pull docs, and tune builds without leaving
               the editor.
             </p>
+            <p className="mx-auto mt-4 max-w-[640px] text-sm leading-relaxed text-muted">
+              The MCP server is part of NativeLink Enterprise and requires an Enterprise licence.
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-3">
+              <Button variant="link" asChild>
+                <a href="/agents">
+                  Everything we offer agents: llms.txt, skills, and how to contribute{" "}
+                  <span aria-hidden="true">→</span>
+                </a>
+              </Button>
+            </div>
           </div>
         </Reveal>
 

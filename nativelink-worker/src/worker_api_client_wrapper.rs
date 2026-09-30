@@ -19,7 +19,7 @@ use nativelink_error::{make_err, Error, ResultExt};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
+    ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
 };
 use tokio::sync::mpsc::Sender;
 use tonic::codec::Streaming;
@@ -47,6 +47,16 @@ pub trait WorkerApiClientTrait: Clone + Sync + Send + Sized + Unpin {
     fn execution_response(
         &mut self,
         request: ExecuteResult,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    fn execute_accepted(
+        &mut self,
+        request: ExecuteAccepted,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
+
+    fn execute_declined(
+        &mut self,
+        request: ExecuteDeclined,
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     fn execution_complete(
@@ -132,5 +142,13 @@ impl WorkerApiClientTrait for WorkerApiClientWrapper {
 
     async fn execution_complete(&mut self, request: ExecuteComplete) -> Result<(), Error> {
         self.send_update(Update::ExecuteComplete(request)).await
+    }
+
+    async fn execute_accepted(&mut self, request: ExecuteAccepted) -> Result<(), Error> {
+        self.send_update(Update::ExecuteAccepted(request)).await
+    }
+
+    async fn execute_declined(&mut self, request: ExecuteDeclined) -> Result<(), Error> {
+        self.send_update(Update::ExecuteDeclined(request)).await
     }
 }

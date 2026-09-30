@@ -415,7 +415,7 @@ where
 }
 
 async fn create_s3_client(spec: &ExperimentalOntapS3Spec) -> Result<Client, Error> {
-    let http_client = TlsClient::new(&spec.common);
+    let http_client = TlsClient::new(&spec.common)?;
     let credentials_provider = DefaultCredentialsChain::builder()
         .configure(
             ProviderConfig::without_region()

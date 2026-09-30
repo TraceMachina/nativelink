@@ -19,11 +19,12 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::metrics::{
     CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS, ExecutionMetricAttrs, ExecutionStage,
     WORKER_METRICS, WorkerDisconnectReason, execution_output_bytes, make_execution_attributes,
-    peak_memory_sample, pool_available_sample, record_completed_execution_metrics,
-    record_connection_acquired, record_connection_reconnect, record_execution_cpu_time,
-    record_execution_peak_memory, record_health_check, record_matching_pass, record_rpc_served,
-    record_store_tier_io, record_store_tier_read, record_worker_connected,
-    record_worker_disconnected, record_worker_keepalive, record_worker_state, split_grpc_path,
+    peak_memory_sample, pool_available_sample, record_cache_entries_delta,
+    record_completed_execution_metrics, record_connection_acquired, record_connection_reconnect,
+    record_execution_cpu_time, record_execution_peak_memory, record_health_check,
+    record_matching_pass, record_rpc_served, record_store_tier_io, record_store_tier_read,
+    record_worker_connected, record_worker_disconnected, record_worker_keepalive,
+    record_worker_state, saturating_i64, split_grpc_path,
 };
 use opentelemetry::KeyValue;
 
@@ -265,7 +266,8 @@ fn test_worker_disconnect_reason_labels() {
         WorkerDisconnectReason::Disconnected.as_str(),
         "disconnected"
     );
-    assert_eq!(WorkerDisconnectReason::Evicted.as_str(), "evicted");
+    assert_eq!(WorkerDisconnectReason::Timeout.as_str(), "timeout");
+    assert_eq!(WorkerDisconnectReason::Drained.as_str(), "drained");
 }
 
 #[test]
@@ -283,7 +285,7 @@ fn test_worker_metric_helpers_are_callable() {
     record_worker_connected();
     record_worker_state("draining", true);
     record_worker_state("paused", true);
-    record_worker_disconnected(WorkerDisconnectReason::Evicted, true, true);
+    record_worker_disconnected(WorkerDisconnectReason::Timeout, true, true);
 }
 
 #[test]
@@ -348,12 +350,24 @@ fn test_new_metric_helpers_are_callable() {
     record_store_tier_read("slow", "hit");
     record_store_tier_io("fast", "read", 4096);
     record_health_check("store", "ok");
-    record_execution_peak_memory(512 * 1024, "main", "CppCompile");
-    record_execution_cpu_time(90_000, "main", "CppCompile");
+    record_execution_peak_memory(512 * 1024, "main", "CppCompile", "COMPLETED");
+    record_execution_cpu_time(90_000, "main", "CppCompile", "COMPLETED");
     record_connection_acquired("grpc", Some(12), false);
     record_connection_acquired("redis", Some(0), true);
     record_connection_acquired("grpc", None, false);
     record_connection_reconnect("redis");
+}
+
+#[test]
+fn test_cache_size_helpers_are_callable() {
+    // Global instruments, so nothing to read back without a test exporter.
+    // Sizes past `i64::MAX` saturate rather than wrap to a negative delta.
+    let attrs = [KeyValue::new("cache.type", "test_cache")];
+    record_cache_entries_delta(4096, 1, &attrs);
+    record_cache_entries_delta(-4096, -1, &attrs);
+    record_cache_entries_delta(0, 0, &attrs);
+    record_cache_entries_delta(saturating_i64(u64::MAX), saturating_i64(u64::MAX), &attrs);
+    record_cache_entries_delta(-saturating_i64(u64::MAX), -saturating_i64(u64::MAX), &attrs);
 }
 
 /// An unlimited pool is a semaphore holding `Semaphore::MAX_PERMITS`, about

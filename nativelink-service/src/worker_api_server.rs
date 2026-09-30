@@ -28,7 +28,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     WorkerApi, WorkerApiServer as Server,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_result, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
+    execute_declined, execute_result, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, UpdateForWorker
 };
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -185,7 +185,9 @@ impl WorkerApiServer {
             ));
         };
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(nativelink_scheduler::worker::channel_capacity(
+            connect_worker_request.max_inflight_tasks,
+        ));
 
         // First convert our proto platform properties into one our scheduler understands.
         let platform_properties = {
@@ -324,7 +326,9 @@ impl WorkerConnection {
                         instance.inner_keep_alive(keep_alive_request).await
                     }
                     Update::GoingAwayRequest(going_away_request) => {
-                        had_going_away = true;
+                        // A drain keeps the worker until its stream closes,
+                        // so that close still has to remove it.
+                        had_going_away = !going_away_request.drain;
                         instance.inner_going_away(going_away_request).await
                     }
                     Update::ExecuteResult(execute_result) => {
@@ -333,6 +337,12 @@ impl WorkerConnection {
                     Update::ExecuteComplete(execute_complete) => {
                         instance.execution_complete(execute_complete).await
                     }
+                    Update::ExecuteAccepted(execute_accepted) => {
+                        instance.dispatch_accepted(execute_accepted).await
+                    }
+                    Update::ExecuteDeclined(execute_declined) => {
+                        instance.dispatch_declined(execute_declined).await
+                    }
                 };
                 if let Err(err) = result {
                     tracing::warn!(worker_id=?instance.worker_id, ?err, "Error processing worker message");
@@ -340,20 +350,36 @@ impl WorkerConnection {
             }
             tracing::debug!(worker_id=?instance.worker_id, "Update for scheduler dropped");
             if !had_going_away {
-                drop(instance.scheduler.remove_worker(&instance.worker_id).await);
+                drop(
+                    instance
+                        .scheduler
+                        .worker_disconnected(&instance.worker_id)
+                        .await,
+                );
             }
         });
     }
 
-    async fn inner_keep_alive(&self, _keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
+    async fn inner_keep_alive(&self, keep_alive_request: KeepAliveRequest) -> Result<(), Error> {
         self.scheduler
-            .worker_keep_alive_received(&self.worker_id, (self.now_fn)()?.as_secs())
+            .worker_keep_alive_received(
+                &self.worker_id,
+                (self.now_fn)()?.as_secs(),
+                keep_alive_request.load,
+            )
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
         Ok(())
     }
 
-    async fn inner_going_away(&self, _going_away_request: GoingAwayRequest) -> Result<(), Error> {
+    async fn inner_going_away(&self, going_away_request: GoingAwayRequest) -> Result<(), Error> {
+        if going_away_request.drain {
+            self.scheduler
+                .set_drain_worker(&self.worker_id, true)
+                .await
+                .err_tip(|| "While draining worker in WorkerApiServer::inner_going_away")?;
+            return Ok(());
+        }
         self.scheduler
             .remove_worker(&self.worker_id)
             .await
@@ -361,7 +387,19 @@ impl WorkerConnection {
         Ok(())
     }
 
+    /// Any message from the worker proves it is alive, not only keepalives.
+    /// Only a keepalive carries a load report and lifts a pause; this
+    /// refreshes the timestamp alone, so a decline cannot undo the pause
+    /// it just took.
+    async fn touch_liveness(&self) -> Result<(), Error> {
+        self.scheduler
+            .worker_liveness_refreshed(&self.worker_id, (self.now_fn)()?.as_secs())
+            .await
+            .err_tip(|| "Could not refresh worker liveness")
+    }
+
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
+        self.touch_liveness().await?;
         let operation_id = OperationId::from(execute_result.operation_id.clone());
 
         if let Some(resource_usage) = execute_result.resource_usage {
@@ -404,7 +442,38 @@ impl WorkerConnection {
         Ok(())
     }
 
+    /// The answer is recorded before the liveness refresh: the refresh runs
+    /// the unacknowledged sweep, which would otherwise requeue an
+    /// acknowledgement that arrives right at the timeout.
+    async fn dispatch_accepted(&self, execute_accepted: ExecuteAccepted) -> Result<(), Error> {
+        let operation_id = OperationId::from(execute_accepted.operation_id);
+        self.scheduler
+            .worker_dispatch_accepted(&self.worker_id, &operation_id)
+            .await
+            .err_tip(|| format!("Failed to record acceptance of operation {operation_id}"))?;
+        self.touch_liveness().await
+    }
+
+    async fn dispatch_declined(&self, execute_declined: ExecuteDeclined) -> Result<(), Error> {
+        let operation_id = OperationId::from(execute_declined.operation_id);
+        let reason = execute_declined::Reason::try_from(execute_declined.reason)
+            .unwrap_or(execute_declined::Reason::Unspecified);
+        let needs_kb = (reason == execute_declined::Reason::Load && execute_declined.needed_kb > 0)
+            .then_some(execute_declined.needed_kb);
+        let mut why = reason.as_str_name().to_ascii_lowercase();
+        if !execute_declined.detail.is_empty() {
+            why.push_str(": ");
+            why.push_str(&execute_declined.detail);
+        }
+        self.scheduler
+            .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb)
+            .await
+            .err_tip(|| format!("Failed to record decline of operation {operation_id}"))?;
+        self.touch_liveness().await
+    }
+
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
+        self.touch_liveness().await?;
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler
             .update_action(

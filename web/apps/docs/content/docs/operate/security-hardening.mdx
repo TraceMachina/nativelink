@@ -277,6 +277,26 @@ it means any publicly-trusted certificate for that hostname is accepted.
 
 ## The sandbox is not a security boundary [#the-sandbox-is-not-a-security-boundary]
 
+For isolation from state left by an earlier action, development builds offer
+the opt-in [`single_use` lifecycle](/reference/nativelink-config/main#localworkerconfig).
+It requires a launcher that replaces the container and its writable volumes
+after every action. This prevents reuse of local files, background processes,
+and worker caches. It does not create a new kernel boundary or make untrusted
+actions safe on a privileged container host. Continue applying the network
+and process restrictions described on this page.
+
+The development-only
+[`experimental_buck2_file_capture`](/reference/nativelink-config/main#buck2filecaptureconfig)
+option additionally runs an operator-supplied collector inside that dedicated
+Linux container. Configure it to exclude platform credentials and internal
+caches, and use narrowly scoped credentials for its ingest service. The hook
+does not isolate a token from action processes with the same user privileges.
+The collector and
+its ingest service must enforce authorization and filesystem boundaries.
+Invocation metadata identifies the client request; it does not authenticate its
+owner. Separate action mount namespaces and entrypoint wrappers are rejected so
+the collector cannot accidentally archive the outer worker's filesystem.
+
 Workers can be configured with `use_namespaces: true` and
 `use_mount_namespace: true`. Both are real, and neither makes an action safe to
 run on your behalf.
@@ -299,9 +319,14 @@ uid-remapping sandbox; it is a process-reaping and hermeticity mechanism. PID
 namespacing means orphaned children die with the action instead of leaking;
 IPC and UTS namespacing means actions cannot see each other's semaphores or
 hostname (the hostname is set to `nativelink`). With `use_mount_namespace`
-the flag list also gains `CLONE_NEWNS`, and the worker's own root action
-directory is masked so one action cannot see another's tree; the rest of the
-host filesystem stays visible.
+the flag list also gains `CLONE_NEWNS`, the worker's own root action
+directory is masked so one action cannot see another's tree, and `/tmp` is
+replaced with the action's own temporary directory, on the worker's disk and
+removed with the action, so actions cannot collide on, or leak state
+through, predictable paths there (`isolate_tmp: false` keeps the host's
+`/tmp` visible; the bound `/tmp` carries the work volume's mount options,
+`noexec` included, not the host `/tmp`'s); the rest of the host filesystem
+stays visible.
 
 Note what is absent from that flag list: **`CLONE_NEWNET`**. No network
 namespace is created. An action has the worker's full network access, including to port

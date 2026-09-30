@@ -98,7 +98,8 @@ impl FetchServer {
             );
 
             if let Ok(asset_response_raw) = asset_response_possible {
-                let asset_response = RemoteAssetArtifact::decode(asset_response_raw).unwrap();
+                let asset_response = RemoteAssetArtifact::decode(asset_response_raw)
+                    .err_tip(|| "Failed to decode stored RemoteAssetArtifact")?;
                 return Ok(Response::new(FetchBlobResponse {
                     status: Some(GoogleStatus {
                         code: Code::Ok.into(),

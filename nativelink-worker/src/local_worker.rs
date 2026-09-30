@@ -15,13 +15,14 @@
 use core::hash::BuildHasher;
 use core::pin::Pin;
 use core::str;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -32,27 +33,30 @@ use nativelink_metric::{MetricsComponent, RootMetricsComponent};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForWorker, execute_result,
+    ActionResourceUsage, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
+    GoingAwayRequest, KeepAliveRequest, StartExecute, UpdateForWorker, WorkerLoad,
+    execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
 use nativelink_util::common::fs;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
-use nativelink_util::{spawn, tls_utils};
+use nativelink_util::{background_spawn, spawn, spawn_blocking, tls_utils};
 use opentelemetry::context::Context;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{process, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tonic::Streaming;
+use tonic::{Streaming, async_trait};
 use tracing::{Level, debug, error, event, info, info_span, instrument, trace, warn};
 
 use crate::running_actions_manager::{
-    ExecutionConfiguration, Metrics as RunningActionManagerMetrics, RunningAction,
-    RunningActionsManager, RunningActionsManagerArgs, RunningActionsManagerImpl,
+    ExecutionConfiguration, MISSING_INPUT_ERROR_TIP, Metrics as RunningActionManagerMetrics,
+    ResourceEnforcement, RunningAction, RunningActionsManager, RunningActionsManagerArgs,
+    RunningActionsManagerImpl,
 };
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_connect_worker_request;
@@ -84,8 +88,23 @@ impl Drop for ActionsInTransitGuard {
 }
 
 /// If we lose connection to the worker api server we will wait this many seconds
-/// before trying to connect.
+/// before trying to connect, doubling on every failed attempt up to
+/// `CONNECTION_RETRY_MAX_DELAY_S`, with jitter so a fleet that lost its
+/// scheduler together does not redial together.
 const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
+const CONNECTION_RETRY_MAX_DELAY_S: f32 = 30.0;
+
+/// Delay before the `attempt`th consecutive reconnect (0 = first retry),
+/// between half and one and a half times the exponential figure.
+fn reconnect_delay(attempt: u32) -> Duration {
+    let exponent = i32::try_from(attempt.min(16)).unwrap_or(16);
+    let base = (CONNECTION_RETRY_DELAY_S * 2f32.powi(exponent)).min(CONNECTION_RETRY_MAX_DELAY_S);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let jitter = 0.5 + (nanos % 1_000) as f32 / 1_000.0;
+    Duration::from_secs_f32(base * jitter)
+}
 
 /// Default endpoint timeout. If this value gets modified the documentation in
 /// `cas_server.rs` must also be updated.
@@ -97,6 +116,10 @@ const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
 const DEFAULT_MAX_CLEANUP_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_CLEANUP_BACKOFF: Duration = Duration::from_millis(500);
+/// If this value gets modified the documentation in `cas_server.rs` must also be updated.
+const DEFAULT_PRECONDITION_TIMEOUT: Duration = Duration::from_secs(30);
+/// If this value gets modified the documentation in `cas_server.rs` must also be updated.
+const DEFAULT_KILL_GRACE: Duration = Duration::from_secs(5);
 
 struct FinishedActionResult {
     action_result: ActionResult,
@@ -114,12 +137,79 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     // always be zero if there are no actions running and no actions being waited
     // on by the scheduler.
     actions_in_transit: Arc<AtomicU64>,
+    accepted_action: AtomicBool,
+    /// The scheduler said it understands `ExecuteAccepted` and
+    /// `ExecuteDeclined`. Without it the worker runs whatever it is sent,
+    /// as every earlier release did.
+    dispatch_ack: bool,
+    /// The platform property the scheduler reads an action's memory
+    /// reservation from, as it told us on connection; empty when it does
+    /// not veto on memory. Read from the same property, a refusal for load
+    /// here agrees with what the scheduler would have vetoed.
+    memory_property: String,
     metrics: Arc<Metrics>,
+}
+
+/// Why this worker will not run an action it was just sent.
+enum Refusal {
+    AtCapacity { in_flight: u64, max: u64 },
+    Load { needed_kb: u64, free_kb: u64 },
+    ShuttingDown,
+}
+
+impl Refusal {
+    fn into_declined(self, operation_id: String) -> ExecuteDeclined {
+        let (reason, detail, needed_kb, free_kb) = match self {
+            Self::AtCapacity { in_flight, max } => (
+                execute_declined::Reason::AtCapacity,
+                format!("{in_flight} of {max} in flight"),
+                0,
+                0,
+            ),
+            Self::Load { needed_kb, free_kb } => (
+                execute_declined::Reason::Load,
+                format!("needs {needed_kb} KiB, {free_kb} KiB free"),
+                needed_kb,
+                free_kb,
+            ),
+            Self::ShuttingDown => (
+                execute_declined::Reason::ShuttingDown,
+                "worker shutting down".to_string(),
+                0,
+                0,
+            ),
+        };
+        ExecuteDeclined {
+            operation_id,
+            reason: reason as i32,
+            detail,
+            needed_kb,
+            free_kb,
+        }
+    }
+}
+
+/// The memory reservation an action carries under `property`, in KiB, if
+/// it declares one. An empty property name is a scheduler that does not
+/// veto on memory, so nothing is ever read.
+fn memory_reservation_kb(start_execute: &StartExecute, property: &str) -> Option<u64> {
+    if property.is_empty() {
+        return None;
+    }
+    start_execute
+        .platform
+        .as_ref()?
+        .properties
+        .iter()
+        .find(|p| p.name == property)
+        .and_then(|p| p.value.parse::<u64>().ok())
+        .filter(|kb| *kb > 0)
 }
 
 pub async fn preconditions_met<H: BuildHasher + Sync>(
     precondition_script: Option<String>,
     extra_envs: &HashMap<String, String, H>,
+    timeout: Duration,
 ) -> Result<(), Error> {
     let Some(precondition_script) = &precondition_script else {
         // No script means we are always ok to proceed.
@@ -153,7 +243,19 @@ pub async fn preconditions_met<H: BuildHasher + Sync>(
         .envs(extra_envs)
         .spawn()
         .err_tip(|| format!("Could not execute precondition command {precondition_script:?}"))?;
-    let output = precondition_process.wait_with_output().await?;
+    let _owned = crate::reaper::OwnedChild::new(precondition_process.id());
+    // Bounded: a script that hangs held the action forever, and
+    // `kill_on_drop` ends the script when the timeout drops it.
+    let output = match time::timeout(timeout, precondition_process.wait_with_output()).await {
+        Ok(output) => output?,
+        Err(_) => {
+            return Err(make_err!(
+                Code::ResourceExhausted,
+                "Preconditions script {precondition_script:?} did not finish within {} ms",
+                timeout.as_millis()
+            ));
+        }
+    };
     let stdout = str::from_utf8(&output.stdout).unwrap_or("");
     trace!(status = %output.status, %stdout, "Preconditions script returned");
     if output.status.code() == Some(0) {
@@ -173,6 +275,8 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         config: &'a LocalWorkerConfig,
         grpc_client: T,
         worker_id: String,
+        dispatch_ack: bool,
+        memory_property: String,
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -180,14 +284,46 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             config,
             grpc_client,
             worker_id,
+            dispatch_ack,
+            memory_property,
             running_actions_manager,
             // Number of actions that have been received in `Update::StartAction`, but
             // not yet processed by running_actions_manager's spawn. This number should
             // always be zero if there are no actions running and no actions being waited
             // on by the scheduler.
             actions_in_transit: Arc::new(AtomicU64::new(0)),
+            accepted_action: AtomicBool::new(false),
             metrics,
         }
+    }
+
+    /// Local admission: the worker's own word on whether it can take this
+    /// action now. The scheduler's ledger says what it believes the worker
+    /// has; this is what the worker has.
+    fn admission(&self, start_execute: &StartExecute, in_flight: u64) -> Option<Refusal> {
+        let max = self.config.max_inflight_tasks;
+        if max > 0 && in_flight >= max {
+            return Some(Refusal::AtCapacity { in_flight, max });
+        }
+        if let (Some(needed_kb), Some(free_kb)) = (
+            memory_reservation_kb(start_execute, &self.memory_property),
+            crate::capacity::free_memory_kb(),
+        ) && free_kb < needed_kb
+        {
+            return Some(Refusal::Load { needed_kb, free_kb });
+        }
+        None
+    }
+
+    /// Tells the scheduler the action is refused; only meaningful when it
+    /// understands the message.
+    async fn decline(&self, operation_id: String, refusal: Refusal) -> Result<(), Error> {
+        self.metrics.actions_declined.inc();
+        self.grpc_client
+            .clone()
+            .execute_declined(refusal.into_declined(operation_id))
+            .await
+            .err_tip(|| "Could not send ExecuteDeclined")
     }
 
     /// Starts a background spawn/thread that will send a message to the server every `timeout / 2`.
@@ -210,21 +346,29 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         // Skip the first interval as it happens immediately and we don't need a keep alive until timeout/2 has passed
         interval.tick().await;
 
-        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands
-        drop(
-            spawn!("keep alives", async move {
-                loop {
-                    interval.tick().await;
-                    if let Err(e) = grpc_client.keep_alive(KeepAliveRequest {}).await {
-                        error!(?e, "Failed to send KeepAlive in LocalWorker");
-                        return;
-                    }
-                    debug!("Sent KeepAlive");
+        // Explicitly spawn the keep alive loop so it goes onto a different thread from the execute commands.
+        // Its failure is this worker's failure: a worker whose keepalives
+        // stop reaching the scheduler is evicted `worker_timeout_s` later
+        // with every action it holds requeued, so ending the stream now and
+        // reconnecting is the cheaper outcome. Before, the task died quietly
+        // and the worker ran on without keepalives.
+        spawn!("keep alives", async move {
+            loop {
+                interval.tick().await;
+                // What the worker has to spare rides on the keepalive, so a
+                // scheduler with `live_memory_veto` can skip a worker whose
+                // actions declared less than they use.
+                let load = crate::capacity::free_memory_kb()
+                    .map(|free_memory_kb| WorkerLoad { free_memory_kb });
+                if let Err(e) = grpc_client.keep_alive(KeepAliveRequest { load }).await {
+                    error!(?e, "Failed to send KeepAlive in LocalWorker");
+                    return Err(e.append("KeepAlive failed; reconnecting to the scheduler"));
                 }
-            })
-            .await,
-        );
-        Ok(())
+                debug!("Sent KeepAlive");
+            }
+        })
+        .await
+        .map_err(|e| make_err!(Code::Internal, "KeepAlive task ended: {e:?}"))?
     }
 
     async fn run(
@@ -260,6 +404,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         let mut shutting_down = false;
 
         loop {
+            if self.config.single_use
+                && self.accepted_action.load(Ordering::Acquire)
+                && actions_in_flight.load(Ordering::Acquire) == 0
+            {
+                // The action, CAS/AC uploads, cleanup, and execution_response
+                // acknowledgment have all completed. This container is spent.
+                if let Err(err) = self
+                    .grpc_client
+                    .clone()
+                    .going_away(GoingAwayRequest { drain: false })
+                    .await
+                {
+                    warn!(?err, "Could not unregister completed single-use worker");
+                }
+                return Ok(());
+            }
             select! {
                 maybe_update = update_for_worker_stream.next() => if !shutting_down || maybe_update.is_some() {
                     match maybe_update
@@ -292,8 +452,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         }
                         Update::StartAction(start_execute) => {
                             // Don't accept any new requests if we're shutting down.
-                            if shutting_down {
-                                if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
+                            if shutting_down || (self.config.single_use
+                                && self.accepted_action.load(Ordering::Acquire)) {
+                                if self.dispatch_ack {
+                                    self.decline(start_execute.operation_id, Refusal::ShuttingDown).await?;
+                                } else if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
                                     self.grpc_client.clone().execution_response(
                                         ExecuteResult{
                                             instance_name,
@@ -304,6 +467,34 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     ).await?;
                                 }
                                 continue;
+                            }
+
+                            // Admission, then the acknowledgement: what the
+                            // scheduler charged on the send is confirmed or
+                            // handed back before anything runs. A scheduler
+                            // that does not speak the acknowledgement gets
+                            // the old behaviour, run whatever arrives.
+                            if self.dispatch_ack {
+                                if let Some(refusal) = self.admission(
+                                    &start_execute,
+                                    actions_in_flight.load(Ordering::Acquire),
+                                ) {
+                                    self.decline(start_execute.operation_id, refusal).await?;
+                                    continue;
+                                }
+                                self.grpc_client
+                                    .clone()
+                                    .execute_accepted(ExecuteAccepted {
+                                        operation_id: start_execute.operation_id.clone(),
+                                    })
+                                    .await
+                                    .err_tip(|| "Could not send ExecuteAccepted")?;
+                            }
+                            // Admitted: a single-use worker is spent from
+                            // here. A decline above must not spend it, or
+                            // every dispatch it turns away costs a pod.
+                            if self.config.single_use {
+                                self.accepted_action.store(true, Ordering::Release);
                             }
 
                             self.metrics.start_actions_received.inc();
@@ -320,6 +511,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let start_action_fut = {
                                 let precondition_script_cfg = self.config.experimental_precondition_script.clone();
+                                let precondition_timeout = if self.config.precondition_timeout_ms == 0 {
+                                    DEFAULT_PRECONDITION_TIMEOUT
+                                } else {
+                                    Duration::from_millis(self.config.precondition_timeout_ms)
+                                };
                                 let mut extra_envs: HashMap<String, String> = HashMap::new();
                                 if let Some(ref additional_environment) = self.config.additional_environment {
                                     for (name, source) in additional_environment {
@@ -345,8 +541,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 let complete = ExecuteComplete {
                                     operation_id: operation_id.clone(),
                                 };
+                                let single_use = self.config.single_use;
                                 self.metrics.clone().wrap(move |metrics| async move {
-                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs))
+                                    metrics.preconditions.wrap(preconditions_met(precondition_script_cfg, &extra_envs, precondition_timeout))
                                     .and_then(|()| running_actions_manager.create_and_add_action(worker_id, start_execute))
                                     .map(move |r| {
                                         // Now that we either failed or registered our action, we can
@@ -364,8 +561,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .prepare_action()
                                             .and_then(RunningAction::execute)
                                             .and_then(|result| async move {
-                                                // Notify that execution has completed so it can schedule a new action.
-                                                drop(grpc_client.execution_complete(complete).await);
+                                                // Reusable workers release their slot during upload.
+                                                // A single-use worker must never advertise another slot.
+                                                if !single_use {
+                                                    drop(grpc_client.execution_complete(complete).await);
+                                                }
                                                 Ok(result)
                                             })
                                             .and_then(RunningAction::upload_results)
@@ -425,8 +625,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                             .err_tip(|| "Error while calling execution_response")?;
                                         },
                                         Err(e) => {
+                                            // The manager tags a NotFound on anything the client
+                                            // referenced by digest; no store's wording involved.
                                             let is_cas_blob_missing = e.code == Code::NotFound
-                                                && e.message_string().contains("not found in either fast or slow store");
+                                                && e.messages.iter().any(|m| m == MISSING_INPUT_ERROR_TIP);
                                             if is_cas_blob_missing {
                                                 warn!(
                                                     ?e,
@@ -518,16 +720,42 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         Error::from_std_err(Code::Internal, &e).append("Failed to receive shutdown message"))?;
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
+                    let drain_on_shutdown = self.config.drain_on_shutdown;
+                    let drain_deadline = if self.config.max_action_timeout_s == 0 {
+                        DEFAULT_MAX_ACTION_TIMEOUT
+                    } else {
+                        Duration::from_secs(self.config.max_action_timeout_s as u64)
+                    };
                     let shutdown_future = async move {
-                        // Wait for in-flight operations to be fully completed.
-                        while actions_in_flight.load(Ordering::Acquire) > 0 {
-                            actions_notify.notified().await;
+                        if drain_on_shutdown {
+                            // Say so first, so nothing new is dispatched here
+                            // while the running actions finish; the scheduler
+                            // removes this worker when the stream closes.
+                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: true }).await {
+                                error!("Failed to send GoingAwayRequest: {e}",);
+                                return Err(e);
+                            }
                         }
-                        // Sending this message immediately evicts all jobs from
-                        // this worker, of which there should be none.
-                        if let Err(e) = grpc_client.going_away(GoingAwayRequest {}).await {
-                            error!("Failed to send GoingAwayRequest: {e}",);
-                            return Err(e);
+                        // Wait for in-flight operations to be fully completed,
+                        // for as long as one action is allowed to run.
+                        let wait = async {
+                            while actions_in_flight.load(Ordering::Acquire) > 0 {
+                                actions_notify.notified().await;
+                            }
+                        };
+                        if time::timeout(drain_deadline, wait).await.is_err() {
+                            error!(
+                                actions_in_flight = actions_in_flight.load(Ordering::Acquire),
+                                "Drain deadline passed with actions still in flight; shutting down anyway"
+                            );
+                        }
+                        if !drain_on_shutdown {
+                            // Sending this message immediately evicts all jobs from
+                            // this worker, of which there should be none.
+                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: false }).await {
+                                error!("Failed to send GoingAwayRequest: {e}",);
+                                return Err(e);
+                            }
                         }
                         // Allow shutdown to occur now.
                         drop(shutdown_guard);
@@ -550,6 +778,80 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     connection_factory: ConnectionFactory<T>,
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
     metrics: Arc<Metrics>,
+    registration: Arc<WorkerRegistration>,
+}
+
+/// Whether the worker currently holds a registration with its scheduler.
+/// A worker that has not registered, or lost its connection and is
+/// reconnecting, cannot take work; as a health indicator this is what a
+/// readiness probe reads.
+#[derive(Debug)]
+pub struct WorkerRegistration {
+    name: String,
+    registered: AtomicBool,
+    ever_registered: AtomicBool,
+}
+
+impl WorkerRegistration {
+    pub fn new(name: &str) -> Arc<Self> {
+        Arc::new(Self {
+            name: name.to_string(),
+            registered: AtomicBool::new(false),
+            ever_registered: AtomicBool::new(false),
+        })
+    }
+
+    pub fn is_registered(&self) -> bool {
+        self.registered.load(Ordering::Acquire)
+    }
+
+    fn set_registered(&self, registered: bool) {
+        self.registered.store(registered, Ordering::Release);
+        if registered {
+            self.ever_registered.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[async_trait]
+impl HealthStatusIndicator for WorkerRegistration {
+    fn get_name(&self) -> &'static str {
+        "WorkerRegistration"
+    }
+
+    async fn check_health(&self, _namespace: Cow<'static, str>) -> HealthStatus {
+        if self.is_registered() {
+            HealthStatus::Ok {
+                struct_name: "WorkerRegistration",
+                message: Cow::Owned(format!(
+                    "worker '{}' registered with the scheduler",
+                    self.name
+                )),
+            }
+        } else if self.ever_registered.load(Ordering::Acquire) {
+            // Lost after it was there: the worker is reconnecting, and until
+            // it does it holds no work. Initializing, not Failed: Failed
+            // turns the plain status check red too, and a liveness probe on
+            // it would restart every worker during a scheduler roll longer
+            // than its threshold, and redden a co-hosted CAS on one worker's
+            // blip. This belongs to readiness alone.
+            HealthStatus::Initializing {
+                struct_name: "WorkerRegistration",
+                message: Cow::Owned(format!(
+                    "worker '{}' lost its scheduler connection, reconnecting",
+                    self.name
+                )),
+            }
+        } else {
+            HealthStatus::Initializing {
+                struct_name: "WorkerRegistration",
+                message: Cow::Owned(format!(
+                    "worker '{}' not yet registered with the scheduler",
+                    self.name
+                )),
+            }
+        }
+    }
 }
 
 impl<
@@ -574,6 +876,12 @@ pub async fn new_local_worker(
     ac_store: Option<Store>,
     historical_store: Store,
 ) -> Result<LocalWorker<WorkerApiClientWrapper, RunningActionsManagerImpl>, Error> {
+    #[cfg(not(target_os = "linux"))]
+    if config.experimental_buck2_file_capture.is_some() {
+        return Err(make_input_err!(
+            "Buck2 container file capture requires a Linux execution container"
+        ));
+    }
     let fast_slow_store = cas_store
         .downcast_ref::<FastSlowStore>(None)
         .err_tip(|| "Expected store for LocalWorker's store to be a FastSlowStore")?
@@ -668,31 +976,50 @@ pub async fn new_local_worker(
     };
 
     #[cfg(target_os = "linux")]
-    let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
-        if *use_namespaces
-            && !crate::namespace_utils::namespaces_supported(
-                config.use_mount_namespace.unwrap_or_default(),
-            )
-        {
-            return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+    let use_namespaces = {
+        let use_mount_namespace = config.use_mount_namespace.unwrap_or_default();
+        // The mount namespace only exists when `use_namespaces` is on too;
+        // `isolate_tmp` is judged against that, not against the flag alone,
+        // or an explicit `true` would be dropped without a word.
+        let mount_namespace_on = config.use_namespaces == Some(true) && use_mount_namespace;
+        // A private /tmp is part of the mount isolation unless explicitly
+        // turned off. A worker without a /tmp, such as a minimal container
+        // image, has nothing for actions to collide on, so the default is
+        // off there instead of failing to start.
+        let isolate_tmp = config.isolate_tmp.unwrap_or_else(|| {
+            let has_tmp = std::path::Path::new("/tmp").is_dir();
+            if mount_namespace_on && !has_tmp {
+                warn!("/tmp does not exist on this worker, so actions will not get a private /tmp");
+            }
+            mount_namespace_on && has_tmp
+        });
+        if isolate_tmp && !mount_namespace_on {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "isolate_tmp requires use_namespaces and use_mount_namespace to be true"
+            ));
         }
-        if !*use_namespaces {
-            crate::running_actions_manager::UseNamespaces::No
-        } else if config.use_mount_namespace.unwrap_or_default() {
-            crate::running_actions_manager::UseNamespaces::YesAndMount
+        if let Some(use_namespaces) = &config.use_namespaces {
+            if *use_namespaces
+                && !crate::namespace_utils::namespaces_supported(use_mount_namespace, isolate_tmp)
+            {
+                return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+            }
+            if !*use_namespaces {
+                crate::running_actions_manager::UseNamespaces::No
+            } else if use_mount_namespace {
+                crate::running_actions_manager::UseNamespaces::YesAndMount { isolate_tmp }
+            } else {
+                crate::running_actions_manager::UseNamespaces::Yes
+            }
+        } else if use_mount_namespace {
+            return Err(make_err!(
+                Code::Unavailable,
+                "Mount namespaces not supported"
+            ));
         } else {
-            crate::running_actions_manager::UseNamespaces::Yes
+            crate::running_actions_manager::UseNamespaces::No
         }
-    } else if config
-        .use_mount_namespace
-        .is_some_and(core::convert::identity)
-    {
-        return Err(make_err!(
-            Code::Unavailable,
-            "Mount namespaces not supported"
-        ));
-    } else {
-        crate::running_actions_manager::UseNamespaces::No
     };
 
     #[cfg(not(target_os = "linux"))]
@@ -712,13 +1039,46 @@ pub async fn new_local_worker(
             "Mount namespaces not supported on non-Linux OSes"
         ));
     }
+    #[cfg(not(target_os = "linux"))]
+    if config.isolate_tmp.is_some_and(core::convert::identity) {
+        return Err(make_err!(
+            Code::Unavailable,
+            "isolate_tmp is not supported on non-Linux OSes"
+        ));
+    }
+
+    // A pooled worker process gets the same PID, user, UTS and IPC
+    // namespaces a one-shot action gets, never the mount namespace.
+    #[cfg(target_os = "linux")]
+    let persistent_workers_namespaced = !matches!(
+        use_namespaces,
+        crate::running_actions_manager::UseNamespaces::No
+    );
+    #[cfg(not(target_os = "linux"))]
+    let persistent_workers_namespaced = false;
 
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
             execution_configuration: ExecutionConfiguration {
+                max_captured_output_bytes: config.max_captured_output_bytes,
+                kill_grace: if config.kill_grace_ms == 0 {
+                    DEFAULT_KILL_GRACE
+                } else {
+                    Duration::from_millis(config.kill_grace_ms)
+                },
+                set_tmpdir: config.set_tmpdir,
+                persistent_workers: persistent_worker_settings(
+                    config.persistent_workers.as_ref(),
+                    persistent_workers_namespaced,
+                ),
+                buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
+                resource_enforcement: config
+                    .resource_enforcement
+                    .as_ref()
+                    .and_then(ResourceEnforcement::from_config),
             },
             cas_store: fast_slow_store,
             ac_store,
@@ -734,6 +1094,46 @@ pub async fn new_local_worker(
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
+    // What actions leave behind is reaped here; see `crate::reaper`.
+    if let Err(err) = crate::reaper::become_subreaper() {
+        warn!(
+            ?err,
+            "Could not become the subreaper; orphans of actions will not be reaped here"
+        );
+    }
+    drop(background_spawn!("orphan_reaper", async move {
+        let mut seen_last = std::collections::BTreeSet::new();
+        loop {
+            time::sleep(crate::reaper::REAP_INTERVAL).await;
+            // The sweep reads /proc for every process; off the runtime.
+            let (reaped, seen) = spawn_blocking!("orphan_reaper_sweep", move || {
+                crate::reaper::reap_orphaned_zombies(&seen_last)
+            })
+            .await
+            .unwrap_or_default();
+            seen_last = seen;
+            if reaped > 0 {
+                info!(reaped, "Reaped zombies that actions left behind");
+            }
+        }
+    }));
+    if config.orphan_sweep_interval_s > 0 {
+        let interval = Duration::from_secs(config.orphan_sweep_interval_s);
+        let manager = running_actions_manager.clone();
+        // Detached on purpose: the guarded spawn aborts its task when the
+        // handle drops, and this one runs for the worker's whole life.
+        drop(background_spawn!("orphan_sweep", async move {
+            info!(interval_s = interval.as_secs(), "Orphan sweep scheduled");
+            loop {
+                time::sleep(interval).await;
+                match manager.sweep_orphaned_directories().await {
+                    Ok(0) => debug!("Orphan sweep found nothing"),
+                    Ok(removed) => info!(removed, "Orphan sweep finished"),
+                    Err(err) => warn!(?err, "Orphan sweep failed"),
+                }
+            }
+        }));
+    }
     let local_worker = LocalWorker::new_with_connection_factory_and_actions_manager(
         config.clone(),
         running_actions_manager,
@@ -781,13 +1181,28 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         let metrics = Arc::new(Metrics::new(Arc::downgrade(
             running_actions_manager.metrics(),
         )));
+        let registration = WorkerRegistration::new(&config.name);
         Self {
             config,
             running_actions_manager,
             connection_factory,
             sleep_fn: Some(sleep_fn),
             metrics,
+            registration,
         }
+    }
+
+    /// The registration flag this worker flips, for a health registry.
+    pub fn registration(&self) -> Arc<WorkerRegistration> {
+        self.registration.clone()
+    }
+
+    /// Flip a flag that was registered with a health registry before the
+    /// worker existed, as the server binary has to.
+    #[must_use]
+    pub fn with_registration(mut self, registration: Arc<WorkerRegistration>) -> Self {
+        self.registration = registration;
+        self
     }
 
     #[allow(
@@ -801,7 +1216,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
     async fn register_worker(
         &self,
         client: &mut T,
-    ) -> Result<(String, Streaming<UpdateForWorker>), Error> {
+    ) -> Result<(String, bool, String, Streaming<UpdateForWorker>), Error> {
         let mut extra_envs: HashMap<String, String> = HashMap::new();
         if let Some(ref additional_environment) = self.config.additional_environment {
             for (name, source) in additional_environment {
@@ -822,11 +1237,24 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             }
         }
 
+        let mut platform_properties = self.config.platform_properties.clone();
+        if let Some(capacity) = &self.config.capacity {
+            let memory_headroom_percent = crate::capacity::memory_headroom_percent(
+                capacity,
+                self.config.resource_enforcement.as_ref(),
+            );
+            crate::capacity::apply(capacity, memory_headroom_percent, &mut platform_properties)
+                .err_tip(|| "Advertising capacity from the cgroup")?;
+        }
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
-            &self.config.platform_properties,
+            &platform_properties,
             &extra_envs,
-            self.config.max_inflight_tasks,
+            if self.config.single_use {
+                1
+            } else {
+                self.config.max_inflight_tasks
+            },
         )
         .await?;
         let mut update_for_worker_stream = client
@@ -842,8 +1270,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             .err_tip(|| "Got error when receiving UpdateForWorker")?
             .update;
 
-        let worker_id = match first_msg_update {
-            Some(Update::ConnectionResult(connection_result)) => connection_result.worker_id,
+        let (worker_id, dispatch_ack, memory_property) = match first_msg_update {
+            Some(Update::ConnectionResult(connection_result)) => (
+                connection_result.worker_id,
+                connection_result.dispatch_ack,
+                connection_result.memory_property,
+            ),
             other => {
                 return Err(make_input_err!(
                     "Expected first response from scheduler to be a ConnectionResult got : {:?}",
@@ -851,7 +1283,12 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                 ));
             }
         };
-        Ok((worker_id, update_for_worker_stream))
+        Ok((
+            worker_id,
+            dispatch_ack,
+            memory_property,
+            update_for_worker_stream,
+        ))
     }
 
     #[instrument(skip(self), level = Level::INFO)]
@@ -872,9 +1309,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             .take()
             .err_tip(|| "Could not unwrap sleep_fn in LocalWorker::run")?;
         let sleep_fn_pin = Pin::new(&sleep_fn);
+        let attempts = AtomicU32::new(0);
+        let attempts_ref = &attempts;
         let error_handler = Box::pin(move |err| async move {
-            error!(?err, "Error");
-            (sleep_fn_pin)(Duration::from_secs_f32(CONNECTION_RETRY_DELAY_S)).await;
+            let attempt = attempts_ref.fetch_add(1, Ordering::AcqRel);
+            let delay = reconnect_delay(attempt);
+            error!(?err, attempt, delay_ms = delay.as_millis(), "Error");
+            (sleep_fn_pin)(delay).await;
         });
 
         loop {
@@ -895,11 +1336,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     (error_handler)(e).await;
                     continue; // Try to connect again.
                 }
-                Ok((worker_id, update_for_worker_stream)) => (
+                Ok((worker_id, dispatch_ack, memory_property, update_for_worker_stream)) => (
                     LocalWorkerImpl::new(
                         &self.config,
                         client,
                         worker_id,
+                        dispatch_ack,
+                        memory_property,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
                     ),
@@ -910,9 +1353,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                 worker_id = %inner.worker_id,
                 "Worker registered with scheduler"
             );
+            attempts.store(0, Ordering::Release);
+            self.registration.set_registered(true);
 
             // Now listen for connections and run all other services.
-            if let Err(err) = inner.run(update_for_worker_stream, &mut shutdown_rx).await {
+            let run_result = inner.run(update_for_worker_stream, &mut shutdown_rx).await;
+            self.registration.set_registered(false);
+            if let Err(err) = run_result {
                 // Give in-transit actions a chance to settle before we kill
                 // them, so their results still reach the scheduler.
                 const ITERATIONS: usize = 1_000;
@@ -942,12 +1389,19 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     );
                 }
 
-                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 // Kill off any existing actions because if we re-connect, we'll
                 // get some more and it might resource lock us.
                 self.running_actions_manager.kill_all().await;
 
+                if self.config.single_use && inner.accepted_action.load(Ordering::Acquire) {
+                    return Err(
+                        err.append("Single-use worker disconnected after accepting its action")
+                    );
+                }
+                error!(?err, "Worker disconnected from scheduler, reconnecting");
                 (error_handler)(err).await; // Try to connect again.
+            } else if self.config.single_use {
+                return Ok(());
             }
         }
         // Unreachable.
@@ -962,6 +1416,10 @@ pub struct Metrics {
     start_actions_received: CounterWithTime,
     #[metric(help = "Total number of disconnects received from the scheduler.")]
     disconnects_received: CounterWithTime,
+    #[metric(
+        help = "Dispatches this worker declined: at capacity, short of memory, or shutting down."
+    )]
+    actions_declined: CounterWithTime,
     #[metric(help = "Total number of keep-alives received from the scheduler.")]
     keep_alives_received: CounterWithTime,
     #[metric(
@@ -983,6 +1441,7 @@ impl Metrics {
         Self {
             start_actions_received: CounterWithTime::default(),
             disconnects_received: CounterWithTime::default(),
+            actions_declined: CounterWithTime::default(),
             keep_alives_received: CounterWithTime::default(),
             preconditions: AsyncCounterWrapper::default(),
             running_actions_manager_metrics,
@@ -996,5 +1455,46 @@ impl Metrics {
         fut: F,
     ) -> U {
         fut(self).await
+    }
+}
+
+/// The pool settings from the worker config, defaults for what it leaves at
+/// zero or unset.
+fn persistent_worker_settings(
+    config: Option<&nativelink_config::cas_server::PersistentWorkersConfig>,
+    namespaced: bool,
+) -> crate::running_actions_manager::PersistentWorkersSettings {
+    use crate::persistent_worker::PoolConfig;
+    let defaults = PoolConfig::default();
+    let pool = config.map_or(defaults, |c| {
+        let or_default = |value: u64, default: u64| if value == 0 { default } else { value };
+        PoolConfig {
+            max_workers_per_key: if c.max_workers_per_key == 0 {
+                defaults.max_workers_per_key
+            } else {
+                c.max_workers_per_key
+            },
+            idle_timeout: Duration::from_secs(or_default(
+                c.idle_timeout_s,
+                defaults.idle_timeout.as_secs(),
+            )),
+            max_requests_per_worker: or_default(
+                c.max_requests_per_worker,
+                defaults.max_requests_per_worker,
+            ),
+            shutdown_grace: Duration::from_millis(or_default(
+                c.shutdown_grace_ms,
+                u64::try_from(defaults.shutdown_grace.as_millis()).unwrap_or(5000),
+            )),
+            acquire_timeout: Duration::from_secs(or_default(
+                c.acquire_timeout_s,
+                defaults.acquire_timeout.as_secs(),
+            )),
+            namespaced,
+        }
+    });
+    crate::running_actions_manager::PersistentWorkersSettings {
+        enabled: config.is_none_or(|c| c.enabled),
+        pool: PoolConfig { namespaced, ..pool },
     }
 }

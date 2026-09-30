@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_lock::Mutex;
 use bytes::Bytes;
@@ -21,14 +22,14 @@ use hyper::body::Frame;
 use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerProperty};
 use nativelink_error::{Error, make_err};
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ExecuteComplete, ExecuteResult, GoingAwayRequest, KeepAliveRequest,
-    UpdateForWorker,
+    ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
+    GoingAwayRequest, KeepAliveRequest, UpdateForWorker,
 };
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_worker::local_worker::LocalWorker;
+use nativelink_worker::local_worker::{LocalWorker, WorkerRegistration};
 use nativelink_worker::worker_api_client_wrapper::WorkerApiClientTrait;
 use tokio::sync::{broadcast, mpsc};
 use tonic::{Code, Status};
@@ -55,6 +56,8 @@ const BROADCAST_CAPACITY: usize = 1;
 enum WorkerClientApiCalls {
     ConnectWorker(ConnectWorkerRequest),
     ExecutionResponse(ExecuteResult),
+    ExecuteAccepted(ExecuteAccepted),
+    ExecuteDeclined(ExecuteDeclined),
 }
 
 #[derive(Debug)]
@@ -65,6 +68,8 @@ enum WorkerClientApiCalls {
 enum WorkerClientApiReturns {
     ConnectWorker(Result<Response<Streaming<UpdateForWorker>>, Status>),
     ExecutionResponse(Result<(), Error>),
+    ExecuteAccepted(Result<(), Error>),
+    ExecuteDeclined(Result<(), Error>),
 }
 
 #[derive(Clone)]
@@ -74,6 +79,9 @@ pub(crate) struct MockWorkerApiClient {
     rx_resp: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiReturns>>>,
     tx_resp: mpsc::UnboundedSender<WorkerClientApiReturns>,
     keep_alives_count: u8,
+    pub going_away_count: Arc<AtomicU64>,
+    pub going_away_drain: Arc<std::sync::atomic::AtomicBool>,
+    pub execution_complete_count: Arc<AtomicU64>,
 }
 
 impl MockWorkerApiClient {
@@ -86,6 +94,9 @@ impl MockWorkerApiClient {
             rx_resp: Arc::new(Mutex::new(rx_resp)),
             tx_resp,
             keep_alives_count: 0,
+            going_away_count: Arc::new(AtomicU64::new(0)),
+            going_away_drain: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            execution_complete_count: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -108,12 +119,50 @@ impl MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiCalls::ConnectWorker(req) => req,
-            req @ WorkerClientApiCalls::ExecutionResponse(_) => {
+            req => {
                 panic!("expect_connect_worker expected ConnectWorker, got : {req:?}")
             }
         };
         self.tx_resp
             .send(WorkerClientApiReturns::ConnectWorker(result))
+            .expect("Could not send request to mpsc");
+        req
+    }
+
+    pub(crate) async fn expect_execute_accepted(
+        &self,
+        result: Result<(), Error>,
+    ) -> ExecuteAccepted {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiCalls::ExecuteAccepted(req) => req,
+            req => panic!("expect_execute_accepted expected ExecuteAccepted, got : {req:?}"),
+        };
+        self.tx_resp
+            .send(WorkerClientApiReturns::ExecuteAccepted(result))
+            .expect("Could not send request to mpsc");
+        req
+    }
+
+    pub(crate) async fn expect_execute_declined(
+        &self,
+        result: Result<(), Error>,
+    ) -> ExecuteDeclined {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let req = match rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiCalls::ExecuteDeclined(req) => req,
+            req => panic!("expect_execute_declined expected ExecuteDeclined, got : {req:?}"),
+        };
+        self.tx_resp
+            .send(WorkerClientApiReturns::ExecuteDeclined(result))
             .expect("Could not send request to mpsc");
         req
     }
@@ -129,7 +178,7 @@ impl MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiCalls::ExecutionResponse(req) => req,
-            req @ WorkerClientApiCalls::ConnectWorker(_) => {
+            req => {
                 panic!("expect_execution_response expected ExecutionResponse, got : {req:?}")
             }
         };
@@ -155,7 +204,7 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiReturns::ConnectWorker(result) => result,
-            resp @ WorkerClientApiReturns::ExecutionResponse(_) => {
+            resp => {
                 panic!("connect_worker expected ConnectWorker response, received {resp:?}")
             }
         }
@@ -171,8 +220,11 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
         }
     }
 
-    async fn going_away(&mut self, _request: GoingAwayRequest) -> Result<(), Error> {
-        unreachable!();
+    async fn going_away(&mut self, request: GoingAwayRequest) -> Result<(), Error> {
+        self.going_away_count.fetch_add(1, Ordering::Relaxed);
+        self.going_away_drain
+            .store(request.drain, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn execution_response(&mut self, request: ExecuteResult) -> Result<(), Error> {
@@ -186,14 +238,46 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
             .expect("Could not receive msg in mpsc")
         {
             WorkerClientApiReturns::ExecutionResponse(result) => result,
-            resp @ WorkerClientApiReturns::ConnectWorker(_) => {
+            resp => {
                 panic!("execution_response expected ExecutionResponse response, received {resp:?}")
             }
         }
     }
 
     async fn execution_complete(&mut self, _request: ExecuteComplete) -> Result<(), Error> {
+        self.execution_complete_count
+            .fetch_add(1, Ordering::Relaxed);
         Ok(())
+    }
+
+    async fn execute_accepted(&mut self, request: ExecuteAccepted) -> Result<(), Error> {
+        self.tx_call
+            .send(WorkerClientApiCalls::ExecuteAccepted(request))
+            .expect("Could not send request to mpsc");
+        let mut rx_resp_lock = self.rx_resp.lock().await;
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiReturns::ExecuteAccepted(result) => result,
+            resp => panic!("execute_accepted expected ExecuteAccepted response, received {resp:?}"),
+        }
+    }
+
+    async fn execute_declined(&mut self, request: ExecuteDeclined) -> Result<(), Error> {
+        self.tx_call
+            .send(WorkerClientApiCalls::ExecuteDeclined(request))
+            .expect("Could not send request to mpsc");
+        let mut rx_resp_lock = self.rx_resp.lock().await;
+        match rx_resp_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        {
+            WorkerClientApiReturns::ExecuteDeclined(result) => result,
+            resp => panic!("execute_declined expected ExecuteDeclined response, received {resp:?}"),
+        }
     }
 }
 
@@ -228,6 +312,7 @@ pub(crate) async fn setup_local_worker_with_config(
     );
     let (shutdown_tx_test, _) = broadcast::channel::<ShutdownGuard>(BROADCAST_CAPACITY);
 
+    let registration = worker.registration();
     let drop_guard = spawn!("local_worker_spawn", async move {
         worker.run(shutdown_tx_test.subscribe()).await
     });
@@ -239,8 +324,9 @@ pub(crate) async fn setup_local_worker_with_config(
 
         maybe_streaming_response: Some(streaming_response),
         maybe_tx_stream: Some(tx_stream),
+        registration,
 
-        _drop_guard: drop_guard,
+        drop_guard,
     }
 }
 
@@ -265,6 +351,16 @@ pub(crate) struct TestContext {
 
     pub maybe_streaming_response: Option<Response<Streaming<UpdateForWorker>>>,
     pub maybe_tx_stream: Option<mpsc::Sender<Frame<Bytes>>>,
+    /// The flag the worker's readiness reads.
+    pub registration: Arc<WorkerRegistration>,
 
-    _drop_guard: JoinHandleDropGuard<Result<(), Error>>,
+    drop_guard: JoinHandleDropGuard<Result<(), Error>>,
+}
+
+impl TestContext {
+    pub(crate) async fn finish(self) -> Result<(), Error> {
+        self.drop_guard
+            .await
+            .map_err(|err| nativelink_error::make_input_err!("Worker task failed: {err}"))?
+    }
 }
