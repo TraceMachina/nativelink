@@ -9,13 +9,32 @@ cargo-fuzz = true
 
 [dependencies]
 nativelink-config = { path = "../../nativelink-config" }
+nativelink-error = { path = "../../nativelink-error" }
+nativelink-proto = { path = "../../nativelink-proto" }
+nativelink-scheduler = { path = "../../nativelink-scheduler" }
+nativelink-util = { path = "../../nativelink-util" }
 
+arbitrary = { version = "1", features = ["derive"] }
+futures = { version = "0.3", default-features = false }
 libfuzzer-sys = "0.4"
+mock_instant = "0.6"
 serde_json5 = { version = "0.2.1", default-features = false }
+tokio = { version = "1", features = ["rt", "sync", "time", "test-util"] }
+
+[lib]
+path = "src/lib.rs"
+
 
 [[bin]]
 bench = false
 doc = false
 name = "cas_config"
 path = "fuzz_targets/cas_config.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "scheduler_race"
+path = "fuzz_targets/scheduler_race.rs"
 test = false
