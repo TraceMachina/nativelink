@@ -21,10 +21,12 @@ use core::convert::Infallible;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context as TaskContext, Poll};
+use core::time::Duration;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use hyper::{Request, Response};
+use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_macro::nativelink_test;
 use nativelink_util::common::DigestInfo;
@@ -58,6 +60,36 @@ impl LenEntry for BytesWrapper {
 
 fn blob(len: usize) -> BytesWrapper {
     BytesWrapper(Bytes::from(vec![0u8; len]))
+}
+
+type TestMap = EvictingMap<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>;
+
+fn new_map(max_count: u64, max_seconds: u32) -> TestMap {
+    EvictingMap::new(
+        &EvictionPolicy {
+            max_count,
+            max_seconds,
+            max_bytes: 0,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    )
+}
+
+fn cache_type(name: &'static str) -> Vec<KeyValue> {
+    vec![KeyValue::new("cache.type", name)]
+}
+
+/// Total bytes and entries actually resident in `map`.
+fn resident_totals(map: &TestMap) -> (i64, i64) {
+    let mut bytes = 0;
+    let mut entries = 0;
+    map.range(.., |_, value| {
+        bytes += value.len();
+        entries += 1;
+        true
+    });
+    (i64::try_from(bytes).unwrap(), entries)
 }
 
 const HASH1: &str = "0123456789abcdef000000000000000000000000000000000123456789abcdef";
@@ -183,15 +215,7 @@ async fn cache_size_metrics_follow_inserts_replacements_evictions_and_removals()
         .build();
     global::set_meter_provider(meter_provider.clone());
 
-    let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(
-        &EvictionPolicy {
-            max_count: 3,
-            max_seconds: 0,
-            max_bytes: 0,
-            evict_bytes: 0,
-        },
-        MockInstantWrapped::default(),
-    );
+    let evicting_map = new_map(3, 0);
     let key1 = DigestInfo::try_new(HASH1, 0)?;
     let key2 = DigestInfo::try_new(HASH2, 0)?;
     let key3 = DigestInfo::try_new(HASH3, 0)?;
@@ -200,15 +224,60 @@ async fn cache_size_metrics_follow_inserts_replacements_evictions_and_removals()
     // Stored before metrics are enabled, so reported by the enable itself.
     evicting_map.insert(key1, blob(10)).await;
     evicting_map.insert(key2, blob(20)).await;
-    let attrs = vec![KeyValue::new("cache.type", "test_cache")];
-    evicting_map.enable_cache_size_metrics(attrs.clone());
+    evicting_map.enable_cache_size_metrics(cache_type("test_cache"));
     // A second enable must not count the same entries again.
-    evicting_map.enable_cache_size_metrics(attrs);
+    evicting_map.enable_cache_size_metrics(cache_type("test_cache"));
 
     evicting_map.insert(key3, blob(5)).await; // 35 bytes, 3 entries
     evicting_map.insert(key2, blob(7)).await; // replace 20 with 7: 22 bytes, 3 entries
     evicting_map.insert(key4, blob(1)).await; // over max_count, evicts key1: 13 bytes, 3 entries
     assert!(evicting_map.remove(&key3).await); // 8 bytes, 2 entries
+
+    // Writers racing with the enable must be counted exactly once: either
+    // in the initial totals or as a later change, never both or neither.
+    // The writers run on worker threads, whose mock clocks never advance.
+    let concurrent_map = Arc::new(new_map(50, 0));
+    let writers: Vec<_> = (0u8..8)
+        .map(|writer| {
+            let map = concurrent_map.clone();
+            nativelink_util::spawn!("cache_size_metrics_test_writer", async move {
+                for i in 0u8..64 {
+                    let mut hash = [0u8; 32];
+                    hash[0] = writer;
+                    hash[1] = i % 48;
+                    let key = DigestInfo::new(hash, 0);
+                    map.insert(key, blob(usize::from(i) + 1)).await;
+                    if i % 3 == 0 {
+                        map.remove(&key).await;
+                    }
+                    if i % 5 == 0 {
+                        map.get(&key).await;
+                    }
+                }
+            })
+        })
+        .collect();
+    tokio::task::yield_now().await;
+    concurrent_map.enable_cache_size_metrics(cache_type("concurrent_cache"));
+    for writer in writers {
+        writer.await?;
+    }
+    let (concurrent_bytes, concurrent_entries) = resident_totals(&concurrent_map);
+    assert_eq!(
+        usize::try_from(concurrent_entries)?,
+        concurrent_map.len_for_test()
+    );
+
+    // Reads that reap an expired entry report the removal too.
+    let ttl_map = new_map(0, 10);
+    ttl_map.insert(key1, blob(10)).await;
+    ttl_map.insert(key2, blob(20)).await;
+    ttl_map.insert(key3, blob(40)).await;
+    ttl_map.enable_cache_size_metrics(cache_type("ttl_cache"));
+    MockClock::advance(Duration::from_secs(11));
+    assert_eq!(ttl_map.get(&key1).await, None); // 60 bytes, 2 entries
+    assert_eq!(ttl_map.size_for_key(&key2).await, None); // 40 bytes, 1 entry
+    ttl_map.insert(key4, blob(5)).await; // evicts expired key3: 5 bytes, 1 entry
 
     meter_provider.force_flush()?;
     let requests = received.lock().unwrap().split_off(0);
@@ -221,6 +290,22 @@ async fn cache_size_metrics_follow_inserts_replacements_evictions_and_removals()
     assert_eq!(
         last_sum_value(&requests, "cache.entries", "test_cache"),
         Some(2)
+    );
+    assert_eq!(
+        last_sum_value(&requests, "cache.size", "ttl_cache"),
+        Some(5)
+    );
+    assert_eq!(
+        last_sum_value(&requests, "cache.entries", "ttl_cache"),
+        Some(1)
+    );
+    assert_eq!(
+        last_sum_value(&requests, "cache.size", "concurrent_cache"),
+        Some(concurrent_bytes)
+    );
+    assert_eq!(
+        last_sum_value(&requests, "cache.entries", "concurrent_cache"),
+        Some(concurrent_entries)
     );
     Ok(())
 }

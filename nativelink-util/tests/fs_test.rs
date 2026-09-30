@@ -139,6 +139,53 @@ async fn remove_files_with_bad_permissions() -> Result<(), Box<dyn core::error::
     Ok(())
 }
 
+/// Regression test: removing an action's work directory must not chmod the
+/// files in it. They are hardlinks of shared CAS blobs and executable
+/// variants, so a chmod changes that inode's mode for the store and every
+/// other action using it, the #2347 corruption class. A read-only directory
+/// the action created only needs its own write permission back for the
+/// hardlinks in it to be unlinked.
+#[nativelink_test]
+async fn remove_dir_all_does_not_chmod_hardlinked_files() -> Result<(), Box<dyn core::error::Error>>
+{
+    let dir = env::temp_dir().join("remove_dir_all_hardlinked_files_test");
+    drop(remove_dir_all(&dir).await);
+    fs::create_dir_all(&dir)?;
+
+    // Stand-ins for a CAS blob and an executable variant, outside the work
+    // directory, hardlinked into a directory the action made read-only.
+    let work_dir = dir.join("work");
+    let read_only_dir = work_dir.join("read_only");
+    fs::create_dir_all(&read_only_dir)?;
+    let shared_files = [(dir.join("blob"), 0o444), (dir.join("variant"), 0o555)];
+    for (shared_file, mode) in &shared_files {
+        fs::write(shared_file, "content")?;
+        fs::set_permissions(shared_file, Permissions::from_mode(*mode))?;
+        fs::hard_link(
+            shared_file,
+            read_only_dir.join(shared_file.file_name().unwrap()),
+        )?;
+    }
+    fs::set_permissions(&read_only_dir, Permissions::from_mode(0o555))?;
+
+    remove_dir_all(&work_dir).await?;
+
+    assert!(!fs::exists(&work_dir)?, "work directory must be removed");
+    for (shared_file, mode) in &shared_files {
+        let metadata = fs::metadata(shared_file)?;
+        assert_eq!(
+            metadata.permissions().mode() & 0o777,
+            *mode,
+            "cleanup changed the mode of shared inode {}",
+            shared_file.display()
+        );
+        assert_eq!(metadata.nlink(), 1, "the hardlink must be removed");
+    }
+
+    remove_dir_all(&dir).await?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[nativelink_test]
 async fn freebind_allows_binding_unassigned_address() -> Result<(), Box<dyn core::error::Error>> {

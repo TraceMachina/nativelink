@@ -944,6 +944,17 @@ impl ByteStreamServer {
                     return Err(make_input_err!("Received more bytes than expected"));
                 }
                 if write_request.finish_write {
+                    // The stream wrapper only notices a short upload if it is
+                    // polled again after `finish_write`, which never happens,
+                    // so check here. Sending EOF would commit the short data
+                    // under the full digest.
+                    if tx.get_bytes_written() != expected_size {
+                        return Err(make_input_err!(
+                            "Write finished after {} bytes, expected {}",
+                            tx.get_bytes_written(),
+                            expected_size
+                        ));
+                    }
                     // Gracefully close our stream.
                     tx.send_eof()
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
@@ -1058,6 +1069,14 @@ impl ByteStreamServer {
             }
 
             if write_request.finish_write {
+                // See `process_client_stream` in `inner_write`.
+                if bytes_received != expected_size {
+                    return Err(make_input_err!(
+                        "Write finished after {} bytes, expected {}",
+                        bytes_received,
+                        expected_size
+                    ));
+                }
                 break;
             }
         }
