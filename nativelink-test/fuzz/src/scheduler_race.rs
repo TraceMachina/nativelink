@@ -77,20 +77,48 @@ const MAX_JOB_RETRIES: u32 = 2;
 /// small so schedules revisit the same entities often — races need contact.
 #[derive(Debug, Arbitrary)]
 pub enum Op {
-    AddAction { key: u8, timeout_s: u8, skip_cache: bool },
-    ConnectWorker { w: u8, slots: u8 },
-    KeepAlive { w: u8 },
-    DispatchAccept { w: u8 },
-    DispatchDecline { w: u8 },
-    CompleteOk { w: u8 },
-    CompleteRetryableErr { w: u8 },
-    Disconnect { w: u8 },
-    RemoveWorker { w: u8 },
-    SetDrain { w: u8, draining: bool },
+    AddAction {
+        key: u8,
+        timeout_s: u8,
+        skip_cache: bool,
+    },
+    ConnectWorker {
+        w: u8,
+        slots: u8,
+    },
+    KeepAlive {
+        w: u8,
+    },
+    DispatchAccept {
+        w: u8,
+    },
+    DispatchDecline {
+        w: u8,
+    },
+    CompleteOk {
+        w: u8,
+    },
+    CompleteRetryableErr {
+        w: u8,
+    },
+    Disconnect {
+        w: u8,
+    },
+    RemoveWorker {
+        w: u8,
+    },
+    SetDrain {
+        w: u8,
+        draining: bool,
+    },
     RemoveTimedoutWorkers,
     TryMatch,
-    Advance { ms: u16 },
-    DropClient { key: u8 },
+    Advance {
+        ms: u16,
+    },
+    DropClient {
+        key: u8,
+    },
 }
 
 fn now() -> SystemTime {
@@ -242,7 +270,11 @@ impl Sim {
 
     async fn apply(&mut self, op: Op) {
         match op {
-            Op::AddAction { key, timeout_s, skip_cache } => {
+            Op::AddAction {
+                key,
+                timeout_s,
+                skip_cache,
+            } => {
                 self.next_client_id += 1;
                 let client_id = OperationId::from(format!("client-{}", self.next_client_id));
                 let info = Arc::new(action_info(key % 8, timeout_s, skip_cache));
@@ -286,7 +318,11 @@ impl Sim {
             Op::KeepAlive { w } => {
                 if let Some(idx) = self.live_worker(w) {
                     let id = self.workers[idx].id.clone();
-                    drop(self.worker_scheduler.worker_keep_alive_received(&id, now_ts(), None).await);
+                    drop(
+                        self.worker_scheduler
+                            .worker_keep_alive_received(&id, now_ts(), None)
+                            .await,
+                    );
                 }
             }
             Op::DispatchAccept { w } => {
@@ -325,7 +361,8 @@ impl Sim {
             }
             Op::CompleteOk { w } => self.complete(w, None).await,
             Op::CompleteRetryableErr { w } => {
-                self.complete(w, Some(nativelink_error::Code::Aborted)).await;
+                self.complete(w, Some(nativelink_error::Code::Aborted))
+                    .await;
             }
             Op::Disconnect { w } => {
                 if let Some(idx) = self.live_worker(w) {
@@ -354,7 +391,11 @@ impl Sim {
                 }
             }
             Op::RemoveTimedoutWorkers => {
-                drop(self.worker_scheduler.remove_timedout_workers(now_ts()).await);
+                drop(
+                    self.worker_scheduler
+                        .remove_timedout_workers(now_ts())
+                        .await,
+                );
             }
             Op::TryMatch => {
                 drop(self.scheduler.do_try_match_for_test().await);
@@ -441,13 +482,15 @@ impl Sim {
                 // design, so the contract is "heals once any client polls".
                 for info in self.infos.values() {
                     self.next_client_id += 1;
-                    let client_id =
-                        OperationId::from(format!("adopter-{}", self.next_client_id));
+                    let client_id = OperationId::from(format!("adopter-{}", self.next_client_id));
                     if let Ok(mut listener) =
                         self.scheduler.add_action(client_id, info.clone()).await
                     {
-                        if dbg { eprintln!("  adopter attached"); }
-                        self.listeners.insert(200 + (self.next_client_id % 50) as u8,
+                        if dbg {
+                            eprintln!("  adopter attached");
+                        }
+                        self.listeners.insert(
+                            200 + (self.next_client_id % 50) as u8,
                             tokio::task::spawn(async move {
                                 loop {
                                     match listener.changed().await {
@@ -456,7 +499,8 @@ impl Sim {
                                         Err(_) => break,
                                     }
                                 }
-                            }));
+                            }),
+                        );
                     }
                 }
             }
@@ -467,7 +511,11 @@ impl Sim {
                 for _ in 0..512 {
                     tokio::task::yield_now().await;
                 }
-                drop(self.worker_scheduler.remove_timedout_workers(now_ts()).await);
+                drop(
+                    self.worker_scheduler
+                        .remove_timedout_workers(now_ts())
+                        .await,
+                );
                 drop(self.scheduler.do_try_match_for_test().await);
                 self.pump_workers();
                 // The drain worker follows the full dispatch protocol:
@@ -570,13 +618,11 @@ pub fn run(data: &[u8]) {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
             let _ = tracing_subscriber::fmt()
-                .with_env_filter(
-                    if std::env::var("FUZZ_TRACE").as_deref() == Ok("trace") {
-                        "nativelink_scheduler=trace"
-                    } else {
-                        "nativelink_scheduler=debug,nativelink_util=warn"
-                    },
-                )
+                .with_env_filter(if std::env::var("FUZZ_TRACE").as_deref() == Ok("trace") {
+                    "nativelink_scheduler=trace"
+                } else {
+                    "nativelink_scheduler=debug,nativelink_util=warn"
+                })
                 .with_writer(std::io::stderr)
                 .without_time()
                 .try_init();
@@ -617,7 +663,10 @@ mod tests {
 
     #[test]
     fn dump_one_case() {
-        let Ok(case_target) = std::env::var("FUZZ_DUMP_CASE").map(|v| v.parse::<u64>().unwrap()) else { return; };
+        let Ok(case_target) = std::env::var("FUZZ_DUMP_CASE").map(|v| v.parse::<u64>().unwrap())
+        else {
+            return;
+        };
         let mut rng = Rng(0x5EED_CAFE_F00D_D00D);
         let mut data = Vec::new();
         for _case in 0..=case_target {
