@@ -1115,7 +1115,7 @@ pub struct UploadActionResultConfig {
 }
 
 /// The pool of persistent worker processes (Bazel `supports-workers`).
-#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct PersistentWorkersConfig {
@@ -1129,7 +1129,8 @@ pub struct PersistentWorkersConfig {
 
     /// Most worker processes kept per key (executable, startup arguments,
     /// environment, protocol). An action whose key is at the cap and has
-    /// no idle process runs one-shot. 0 takes the default.
+    /// no idle process waits `acquire_timeout_s` for one to come back, then
+    /// runs one-shot. 0 takes the default.
     /// Default: 4
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_workers_per_key: usize,
@@ -1159,6 +1160,20 @@ pub struct PersistentWorkersConfig {
     /// Default: 30
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub acquire_timeout_s: u64,
+}
+
+/// The same as an absent block: the pool on, every size at its default.
+impl Default for PersistentWorkersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_workers_per_key: 0,
+            idle_timeout_s: 0,
+            max_requests_per_worker: 0,
+            shutdown_grace_ms: 0,
+            acquire_timeout_s: 0,
+        }
+    }
 }
 
 /// Opt-in file capture for the actual container executing a Buck2 action.

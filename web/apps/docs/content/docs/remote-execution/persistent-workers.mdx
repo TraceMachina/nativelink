@@ -44,11 +44,12 @@ alive between them.
 
 ## Two things to know before you start [#two-things-to-know-before-you-start]
 
-**Little needs configuring in NativeLink.** No field turns this on or
-selects a protocol; the feature is driven by two platform properties on each
-action. The worker's `persistent_workers` block (v1.7.3 and later) only sizes
-the pool: how many processes per key, how long an idle one lives, how many
-requests one serves, and `enabled: false` to run every such action one-shot.
+**Little needs configuring in NativeLink.** The pool is on by default and
+the protocol is chosen by two platform properties on each action. The
+worker's `persistent_workers` block (v1.7.3 and later) sizes it: how many
+processes per key, how long an idle one lives, how many requests one serves,
+how long an action at the cap waits for a process to come back, and
+`enabled: false` to run every such action one-shot.
 The one thing NativeLink does need from you is on the scheduler: those two
 keys must be listed in `supported_platform_properties`, because a scheduler
 older than v1.6.6 rejects an action that carries a key it does not know.
@@ -347,10 +348,13 @@ invalidating.
 
 <Accordion title="Builds get slower under high parallelism" id="builds-get-slower-under-high-parallelism">
 
-More than four concurrent actions for one key fall back to one-shot execution,
-and one-shot execution of a worker-wrapped tool can be slower than the plain
-tool. The per-key cap is not configurable, so the levers are reducing
-concurrency for that mnemonic or splitting the work across more distinct keys.
+More than `max_workers_per_key` concurrent actions for one key (four by
+default) wait up to `acquire_timeout_s` for a process to come back and then
+fall back to one-shot execution, and one-shot execution of a worker-wrapped
+tool can be slower than the plain tool. Raise the cap, or reduce concurrency
+for that mnemonic. The CPU time reported for a pooled action is what the
+process spent on it; its peak memory is the whole process, including what
+earlier requests left resident.
 
 </Accordion>
 

@@ -429,6 +429,10 @@ async fn sample_action_resource_usage(
     // short-lived. Keep the last figure seen for each pid and total them at
     // the end instead.
     let mut cpu_ticks_by_pid = HashMap::new();
+    // What the group had already spent when sampling began. A one-shot
+    // process starts at nothing; a pooled process carries every request it
+    // served before, which is not this action's.
+    let mut baseline_ticks: Option<u64> = None;
 
     let sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
         let observed = sample_process_group(pgid, cpu_ticks_by_pid);
@@ -440,6 +444,9 @@ async fn sample_action_resource_usage(
 
     loop {
         let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        if baseline_ticks.is_none() {
+            baseline_ticks = Some(cpu_ticks_by_pid.values().sum());
+        }
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
         }
@@ -525,7 +532,12 @@ async fn sample_action_resource_usage(
 
     SampledResourceUsage {
         peak_memory_kb,
-        cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
+        cpu_time_ms: ticks_to_millis(
+            cpu_ticks_by_pid
+                .values()
+                .sum::<u64>()
+                .saturating_sub(baseline_ticks.unwrap_or(0)),
+        ),
         last_memory_kb,
         peak_disk_kb,
     }
@@ -2284,6 +2296,98 @@ impl RunningActionImpl {
         })
     }
 
+    /// The environment an action's process starts with: the worker's
+    /// `additional_environment`, then the action's own variables on top,
+    /// and on Windows the `SystemRoot` and `PATH` defaults without which
+    /// nothing runs. With `per_action` the sources that belong to one
+    /// action (its timeout, a side channel file, its directory) are in and
+    /// the side channel file is reported through it; without it they are
+    /// left out, for a pooled process that serves many actions.
+    fn action_environment(
+        &self,
+        command_proto: &ProtoCommand,
+        requested_timeout: Duration,
+        mut per_action: Option<&mut Option<Cow<'_, OsStr>>>,
+    ) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        if let Some(additional_environment) = &self
+            .running_actions_manager
+            .execution_configuration
+            .additional_environment
+        {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Property(property) => self
+                        .action_info
+                        .platform_properties
+                        .get(property)
+                        .cloned()
+                        .unwrap_or_default(),
+                    EnvironmentSource::Value(value) => value.clone(),
+                    EnvironmentSource::FromEnvironment => env::var(name).unwrap_or_default(),
+                    EnvironmentSource::TimeoutMillis => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        requested_timeout.as_millis().to_string()
+                    }
+                    EnvironmentSource::SideChannelFile => {
+                        let Some(side_channel_file) = per_action.as_mut() else {
+                            continue;
+                        };
+                        let file = format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
+                        **side_channel_file = Some(Cow::Owned(file.clone().into()));
+                        file
+                    }
+                    EnvironmentSource::ActionDirectory => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        self.action_directory.clone()
+                    }
+                };
+                env.insert(name.clone(), value);
+            }
+        }
+        for variable in &command_proto.environment_variables {
+            env.insert(variable.name.clone(), variable.value.clone());
+        }
+        // If SystemRoot is not set on windows we set it to default. Failing
+        // to do this causes all commands to fail.
+        #[cfg(target_family = "windows")]
+        {
+            if !env.keys().any(|name| name.to_uppercase() == "SYSTEMROOT") {
+                env.insert("SystemRoot".to_string(), "C:\\Windows".to_string());
+            }
+            if !env.keys().any(|name| name.to_uppercase() == "PATH") {
+                env.insert("PATH".to_string(), "C:\\Windows\\System32".to_string());
+            }
+        }
+        env
+    }
+
+    /// What the scheduler's kill leaves behind for a pooled action, whether
+    /// it came while waiting for a worker process or while one served it.
+    fn record_persistent_worker_kill(&self, command_proto: ProtoCommand, command: &str) {
+        let mut state = self.state.lock();
+        state.error = Error::merge_option(
+            state.error.take(),
+            Some(Error::new(
+                Code::Cancelled,
+                format!("Persistent worker command '{command}' was killed by scheduler"),
+            )),
+        );
+        state.command_proto = Some(command_proto);
+        state.execution_result = Some(RunningActionImplExecutionResult {
+            stdout: Bytes::new().into(),
+            stderr: Bytes::new().into(),
+            exit_code: EXIT_CODE_FOR_SIGNAL,
+            resource_usage: None,
+        });
+        state.execution_metadata.execution_completed_timestamp =
+            (self.running_actions_manager.callbacks.now_fn)();
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -2334,6 +2438,11 @@ impl RunningActionImpl {
         let program = self
             .canonicalise_path(args[0], &command_proto.working_directory)
             .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
+        let requested_timeout = if self.action_info.timeout.is_zero() {
+            self.running_actions_manager.max_action_timeout
+        } else {
+            self.action_info.timeout
+        };
         if self
             .running_actions_manager
             .execution_configuration
@@ -2344,40 +2453,11 @@ impl RunningActionImpl {
             match wire_format_result {
                 Ok(wire_format) => {
                     let command_argv = os_args_to_strings(&args)?;
-                    // The process gets what a one-shot action gets: the
-                    // worker's `additional_environment`, then the action's
-                    // own variables on top. Only the sources that are the
-                    // same for every action go in; a timeout, a side channel
-                    // file or an action directory belongs to one action, and
-                    // a process that serves many cannot carry them.
-                    let mut env: BTreeMap<String, String> = BTreeMap::new();
-                    if let Some(additional_environment) = &self
-                        .running_actions_manager
-                        .execution_configuration
-                        .additional_environment
-                    {
-                        for (name, source) in additional_environment {
-                            let value = match source {
-                                EnvironmentSource::Property(property) => self
-                                    .action_info
-                                    .platform_properties
-                                    .get(property)
-                                    .cloned()
-                                    .unwrap_or_default(),
-                                EnvironmentSource::Value(value) => value.clone(),
-                                EnvironmentSource::FromEnvironment => {
-                                    env::var(name).unwrap_or_default()
-                                }
-                                EnvironmentSource::TimeoutMillis
-                                | EnvironmentSource::SideChannelFile
-                                | EnvironmentSource::ActionDirectory => continue,
-                            };
-                            env.insert(name.clone(), value);
-                        }
-                    }
-                    for variable in &command_proto.environment_variables {
-                        env.insert(variable.name.clone(), variable.value.clone());
-                    }
+                    // What a one-shot action gets, but for the sources that
+                    // belong to one action: a process that serves many
+                    // cannot carry a timeout, a side channel file or an
+                    // action directory.
+                    let env = self.action_environment(&command_proto, requested_timeout, None);
                     let key = WorkerKey::from_argv(&command_argv, wire_format)?
                         .with_env(env.into_iter().collect());
                     let request = WorkRequest {
@@ -2391,12 +2471,37 @@ impl RunningActionImpl {
                     let worker_cwd =
                         PathBuf::from(&self.running_actions_manager.root_action_directory);
 
-                    match self
+                    // The wait for a process is bounded by the action's own
+                    // timeout as well as the pool's, and raced against the
+                    // kill: a cancelled action must not hold a slot, and a
+                    // short action cannot wait longer than it may run.
+                    let acquire_started = Instant::now();
+                    let acquire_bound = self
                         .running_actions_manager
                         .persistent_worker_pool
-                        .acquire(key.clone(), &program, &worker_cwd)
-                        .await
-                    {
+                        .acquire_timeout()
+                        .min(self.timeout);
+                    let acquired = {
+                        let acquire_fut = self
+                            .running_actions_manager
+                            .persistent_worker_pool
+                            .acquire(key.clone(), &program, &worker_cwd);
+                        tokio::pin!(acquire_fut);
+                        tokio::select! {
+                            result = &mut acquire_fut => Some(result),
+                            _ = &mut kill_channel_rx => None,
+                            () = tokio::time::sleep(acquire_bound) => Some(Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "No persistent worker came back within the action's remaining time ({acquire_bound:?})"
+                            ))),
+                        }
+                    };
+                    let Some(acquired) = acquired else {
+                        let command = args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                        self.record_persistent_worker_kill(command_proto, &command);
+                        return Ok(self);
+                    };
+                    match acquired {
                         Ok(mut lease) => {
                             self.metrics().persistent_worker_dispatches.inc();
                             let timer = self.metrics().child_process.begin_timer();
@@ -2406,6 +2511,9 @@ impl RunningActionImpl {
                             // shared, so nothing here is enforced against
                             // the action's reservation; it is measured so
                             // the sizing loop learns what the tool needs.
+                            // CPU is what the process spent from here on;
+                            // peak memory is the whole process, which holds
+                            // what earlier requests left in it.
                             #[cfg(target_os = "linux")]
                             let sampler = lease.worker().pid().map(|pgid| {
                                 start_action_resource_usage_sampler(
@@ -2419,8 +2527,10 @@ impl RunningActionImpl {
                                 )
                             });
                             let dispatch_result = {
+                                let remaining =
+                                    self.timeout.saturating_sub(acquire_started.elapsed());
                                 let dispatch_fut =
-                                    lease.worker().dispatch_with_timeout(&request, self.timeout);
+                                    lease.worker().dispatch_with_timeout(&request, remaining);
                                 tokio::pin!(dispatch_fut);
                                 tokio::select! {
                                     result = &mut dispatch_fut => Some(result),
@@ -2450,29 +2560,9 @@ impl RunningActionImpl {
                                 None => {
                                     drop(timer);
                                     lease.release(false).await;
-                                    {
-                                        let mut state = self.state.lock();
-                                        state.error = Error::merge_option(
-                                            state.error.take(),
-                                            Some(Error::new(
-                                                Code::Cancelled,
-                                                format!(
-                                                    "Persistent worker command '{}' was killed by scheduler",
-                                                    args.join(OsStr::new(" ")).to_string_lossy()
-                                                ),
-                                            )),
-                                        );
-                                        state.command_proto = Some(command_proto);
-                                        state.execution_result =
-                                            Some(RunningActionImplExecutionResult {
-                                                stdout: Bytes::new().into(),
-                                                stderr: Bytes::new().into(),
-                                                exit_code: EXIT_CODE_FOR_SIGNAL,
-                                                resource_usage: None,
-                                            });
-                                        state.execution_metadata.execution_completed_timestamp =
-                                            (self.running_actions_manager.callbacks.now_fn)();
-                                    }
+                                    let command =
+                                        args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                                    self.record_persistent_worker_kill(command_proto, &command);
                                     return Ok(self);
                                 }
                             };
@@ -2578,73 +2668,13 @@ impl RunningActionImpl {
             command_builder.env("TMPDIR", &tmp_directory);
         }
 
-        let requested_timeout = if self.action_info.timeout.is_zero() {
-            self.running_actions_manager.max_action_timeout
-        } else {
-            self.action_info.timeout
-        };
-
         let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
-        if let Some(additional_environment) = &self
-            .running_actions_manager
-            .execution_configuration
-            .additional_environment
-        {
-            for (name, source) in additional_environment {
-                let value = match source {
-                    EnvironmentSource::Property(property) => self
-                        .action_info
-                        .platform_properties
-                        .get(property)
-                        .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
-                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::FromEnvironment => {
-                        Cow::Owned(env::var(name).unwrap_or_default())
-                    }
-                    EnvironmentSource::TimeoutMillis => {
-                        Cow::Owned(requested_timeout.as_millis().to_string())
-                    }
-                    EnvironmentSource::SideChannelFile => {
-                        let file_cow =
-                            format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
-                        maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
-                        Cow::Owned(file_cow)
-                    }
-                    EnvironmentSource::ActionDirectory => {
-                        Cow::Borrowed(self.action_directory.as_str())
-                    }
-                };
-                command_builder.env(name, value.as_ref());
-            }
-        }
-
-        #[cfg(target_family = "unix")]
-        let envs = &command_proto.environment_variables;
-        // If SystemRoot is not set on windows we set it to default. Failing to do
-        // this causes all commands to fail.
-        #[cfg(target_family = "windows")]
-        let envs = {
-            let mut envs = command_proto.environment_variables.clone();
-            if !envs.iter().any(|v| v.name.to_uppercase() == "SYSTEMROOT") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "SystemRoot".to_string(),
-                        value: "C:\\Windows".to_string(),
-                    },
-                );
-            }
-            if !envs.iter().any(|v| v.name.to_uppercase() == "PATH") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "PATH".to_string(),
-                        value: "C:\\Windows\\System32".to_string(),
-                    },
-                );
-            }
-            envs
-        };
-        for environment_variable in envs {
-            command_builder.env(&environment_variable.name, &environment_variable.value);
+        for (name, value) in self.action_environment(
+            &command_proto,
+            requested_timeout,
+            Some(&mut maybe_side_channel_file),
+        ) {
+            command_builder.env(name, value);
         }
 
         // Sandboxing of the command if we are running on Linux, this resolves issues where

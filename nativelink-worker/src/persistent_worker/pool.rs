@@ -19,8 +19,8 @@
 //! executable + startup-flag prefix + wire format are identical share a worker
 //! process.
 
-use core::mem;
 use core::time::Duration;
+use core::{fmt, mem};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -52,7 +52,7 @@ pub const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Identity by which two persistent-worker actions are considered compatible.
 /// Same `WorkerKey` => same worker can serve both.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct WorkerKey {
     /// Resolved tool executable. Mirrors `Action.arguments[0]`.
     pub executable: PathBuf,
@@ -66,6 +66,23 @@ pub struct WorkerKey {
     /// started with exactly this environment, the way a one-shot action is,
     /// so two actions that differ in it do not share a process.
     pub env: Vec<(String, String)>,
+}
+
+/// The key is logged on every spawn and completion and quoted in errors the
+/// client sees, so the environment shows as its variable names only: an
+/// action's environment can carry a token.
+impl fmt::Debug for WorkerKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerKey")
+            .field("executable", &self.executable)
+            .field("startup_args", &self.startup_args)
+            .field("wire_format", &self.wire_format)
+            .field(
+                "env",
+                &self.env.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
 }
 
 impl WorkerKey {
@@ -313,6 +330,11 @@ impl Default for PersistentWorkerPool {
 }
 
 impl PersistentWorkerPool {
+    /// How long `acquire` waits at the cap before giving up.
+    pub fn acquire_timeout(&self) -> Duration {
+        self.inner.config.acquire_timeout
+    }
+
     pub fn new(config: PoolConfig) -> Self {
         Self {
             inner: Arc::new(PoolInner {
