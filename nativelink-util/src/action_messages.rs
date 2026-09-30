@@ -66,8 +66,34 @@ impl OperationId {
     }
 }
 
+/// Test-only override of `OperationId::default()` for deterministic
+/// simulation: a thread-local counter replaces `Uuid::new_v4()` so identical
+/// inputs replay to identical operation ids (id tie-breaks in dispatch
+/// ordering become stable). Off unless a harness opts in on its thread.
+#[cfg(feature = "mock_operation_id")]
+mod mock_operation_id {
+    use core::cell::Cell;
+
+    std::thread_local! {
+        pub(super) static COUNTER: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    /// Enables (`Some(start)`) or disables (`None`) deterministic operation
+    /// id generation on the calling thread.
+    pub fn set_deterministic_operation_ids(start: Option<u64>) {
+        COUNTER.with(|counter| counter.set(start));
+    }
+}
+#[cfg(feature = "mock_operation_id")]
+pub use mock_operation_id::set_deterministic_operation_ids;
+
 impl Default for OperationId {
     fn default() -> Self {
+        #[cfg(feature = "mock_operation_id")]
+        if let Some(next) = mock_operation_id::COUNTER.with(core::cell::Cell::get) {
+            mock_operation_id::COUNTER.with(|counter| counter.set(Some(next + 1)));
+            return Self::String(format!("det-op-{next:08}"));
+        }
         Self::Uuid(Uuid::new_v4())
     }
 }

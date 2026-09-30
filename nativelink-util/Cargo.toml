@@ -6,6 +6,12 @@ edition = "2024"
 name = "nativelink-util"
 version = "1.7.2"
 
+[features]
+# Test-only hook: lets a deterministic-simulation harness replace the random
+# UUIDs from `OperationId::default()` with a thread-local counter so replays
+# of the same input are byte-identical. Never enable in production builds.
+mock_operation_id = []
+
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }

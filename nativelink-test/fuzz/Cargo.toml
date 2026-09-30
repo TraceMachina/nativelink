@@ -17,6 +17,7 @@ scheduler_race = [
     "dep:nativelink-proto",
     "dep:nativelink-scheduler",
     "dep:nativelink-util",
+    "nativelink-util/mock_operation_id",
     "dep:arbitrary",
     "dep:futures",
     "dep:mock_instant",
