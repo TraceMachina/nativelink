@@ -677,3 +677,177 @@ async fn get_part_races_inner_eviction_and_resurrects_zombie_entry() -> Result<(
 
     Ok(())
 }
+
+/// Inner store whose `update` parks at a real await point until released, so a
+/// test can drop the outer `update` future while the pause is held. `evict`
+/// fires the registered remove callbacks like `EvictingMap` does.
+#[derive(Debug)]
+struct BlockingUpdateStore {
+    present: AtomicBool,
+    update_started: Notify,
+    allow_update_finish: Notify,
+    remove_callbacks: Mutex<Vec<RemoveCallback>>,
+    len: u64,
+}
+
+impl BlockingUpdateStore {
+    fn new(len: u64) -> Arc<Self> {
+        Arc::new(Self {
+            present: AtomicBool::new(true),
+            update_started: Notify::new(),
+            allow_update_finish: Notify::new(),
+            remove_callbacks: Mutex::new(vec![]),
+            len,
+        })
+    }
+
+    async fn evict(&self, key: StoreKey<'static>) {
+        self.present.store(false, Ordering::SeqCst);
+        let callbacks: Vec<RemoveCallback> = self.remove_callbacks.lock().clone();
+        for callback in callbacks {
+            callback.callback(key.borrow()).await;
+        }
+    }
+}
+
+impl MetricsComponent for BlockingUpdateStore {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::Component)
+    }
+}
+
+#[async_trait]
+impl StoreDriver for BlockingUpdateStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        let value = if self.present.load(Ordering::SeqCst) {
+            Some(self.len)
+        } else {
+            None
+        };
+        for result in results.iter_mut() {
+            *result = value;
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Park at a genuine await point with the pause held, then wait for
+        // the test. The test drops the future before ever releasing this.
+        self.update_started.notify_one();
+        self.allow_update_finish.notified().await;
+        let size = reader.drain().await?;
+        self.present.store(true, Ordering::SeqCst);
+        Ok(size)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        Err(make_err!(Code::NotFound, "not exercised"))
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, callback: RemoveCallback) -> Result<(), Error> {
+        self.remove_callbacks.lock().push(callback);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl HealthStatusIndicator for BlockingUpdateStore {
+    fn get_name(&self) -> &'static str {
+        "BlockingUpdateStore"
+    }
+
+    async fn check_health(&self, namespace: Cow<'static, str>) -> HealthStatus {
+        StoreDriver::check_health(Pin::new(self), namespace).await
+    }
+}
+
+/// Regression for N6: a cancelled `update` must not leave remove callbacks
+/// paused forever. Start an `update` that parks with the pause held, drop its
+/// future (as a timeout would), then evict a cached key through the inner
+/// store. With the RAII pause guard the drop releases the hold, so the
+/// eviction callback runs immediately and the existence cache stops reporting
+/// the key. Without the guard the pause count stays elevated and the cache
+/// keeps claiming the evicted key exists.
+#[nativelink_test]
+async fn cancelled_update_does_not_leave_callbacks_paused() -> Result<(), Error> {
+    const LEN: u64 = 2;
+    let inner = BlockingUpdateStore::new(LEN);
+    let store = ExistenceCacheStore::new_with_time(
+        &ExistenceCacheSpec {
+            backend: StoreSpec::Noop(NoopSpec::default()),
+            eviction_policy: Option::default(),
+        },
+        Store::new(inner.clone()),
+        MockInstantWrapped::default(),
+    );
+
+    let digest_a = DigestInfo::try_new(VALID_HASH1, LEN)?;
+    let digest_b = DigestInfo::try_new(VALID_HASH2, LEN)?;
+
+    // Populate A's existence entry via a has() that the inner store answers
+    // positively (present == true).
+    assert_eq!(store.has(digest_a).await?, Some(LEN));
+    assert!(store.exists_in_cache(&digest_a).await);
+
+    // Start an update of B that parks inside the inner store holding the pause.
+    let store_b = store.clone();
+    let mut update_b = Box::pin(async move {
+        store_b
+            .update_oneshot(digest_b, vec![0u8; LEN as usize].into())
+            .await
+    });
+    // Drive it until it parks at the inner update await, then cancel it by
+    // dropping the future.
+    tokio::select! {
+        _ = &mut update_b => panic!("update should be parked, not complete"),
+        () = inner.update_started.notified() => {}
+    }
+    drop(update_b);
+
+    // Evict A through the inner store; the remove callback must take effect
+    // now that the cancelled update released its pause.
+    inner.evict(digest_a.into()).await;
+
+    assert!(
+        !store.exists_in_cache(&digest_a).await,
+        "existence cache still claims A exists: a cancelled update left \
+         remove callbacks permanently paused (N6)"
+    );
+
+    Ok(())
+}
