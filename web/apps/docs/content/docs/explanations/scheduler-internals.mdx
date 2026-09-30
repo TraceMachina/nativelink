@@ -197,7 +197,8 @@ and do not spend `max_job_retries`. The execution histograms carry an
 completed ones.
 
 The `historical_resource` scheduler that fills reservations reads hints by a
-key ladder: `(target_id, action_mnemonic)`, then `target_id`, then the
+key ladder, each step probed only when the action carries that key:
+`(target_id, action_mnemonic)`, then `target_id`, then the
 action's `action_digest`, then its `command_digest` (each `hash-size` or
 `hash/size`), then the mnemonic alone. The digest keys reach every client,
 whether or not it sends Bazel request metadata; the action digest is what

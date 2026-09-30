@@ -546,6 +546,10 @@ pub struct ColdStartSpec {
     /// Value for `memory_property_name`, in KiB. 0 leaves the property alone.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub memory_kb: u64,
+
+    /// Value for `disk_property_name`, in KiB. 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub disk_kb: u64,
 }
 
 fn default_disk_property_name_for_hints() -> String {
@@ -615,7 +619,10 @@ pub struct HistoricalResourceSpec {
     )]
     pub refresh_interval_s: u64,
 
-    /// Platform property name used for CPU minimums.
+    /// Platform property name used for CPU minimums. The nested scheduler
+    /// must declare it as a `minimum` property (as it must the memory and
+    /// disk names): an undeclared property is matched as an exact string,
+    /// and an action carrying a number would then match no worker.
     /// Default: `cpu_count`
     #[serde(
         default = "default_historical_resource_cpu_property_name",
@@ -624,6 +631,7 @@ pub struct HistoricalResourceSpec {
     pub cpu_property_name: String,
 
     /// Platform property name used for memory minimums, expressed in KiB.
+    /// Declared as `minimum` on the nested scheduler, like the CPU name.
     /// Default: `memory_kb`
     #[serde(
         default = "default_historical_resource_memory_property_name",
@@ -632,6 +640,7 @@ pub struct HistoricalResourceSpec {
     pub memory_property_name: String,
 
     /// Platform property name used for disk minimums, expressed in KiB.
+    /// Declared as `minimum` on the nested scheduler, like the CPU name.
     /// Default: `disk_kb`
     #[serde(
         default = "default_disk_property_name_for_hints",

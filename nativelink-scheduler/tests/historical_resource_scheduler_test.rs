@@ -272,6 +272,7 @@ async fn cold_start_fills_only_absent_properties() -> Result<(), Error> {
         Some(ColdStartSpec {
             cpu_count: 1000,
             memory_kb: 4_000_000,
+            disk_kb: 0,
         }),
     );
     let client_operation_id = OperationId::default();
@@ -369,6 +370,104 @@ async fn add_action_applies_historical_resource_hint() -> Result<(), Error> {
             ("memory_kb".to_string(), "12000000".to_string()),
         ]),
         passed_action_info.platform_properties
+    );
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A record naming a target and a digest is reachable by either key; a
+/// single composite key was reachable by neither.
+#[nativelink_test]
+async fn a_hint_naming_a_target_and_a_digest_is_found_by_either() -> Result<(), Error> {
+    let digest = DigestInfo::new([3; 32], 12);
+    let hints_file = write_hints_file(&format!(
+        r#"[ {{ "target_id": "//pkg:t", "action_digest": "{digest}", "memory_kb": 5000000 }} ]"#
+    ));
+    let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
+    let by_digest = make_base_action_info(UNIX_EPOCH, digest);
+    let properties = properties_after_add(&scheduler, &mock_scheduler, by_digest, None).await?;
+    assert_eq!(properties["memory_kb"], "5000000", "found by the digest");
+    let by_target = make_base_action_info(UNIX_EPOCH, DigestInfo::new([4; 32], 12));
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        by_target,
+        Some(("//pkg:t", "Other")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "5000000", "found by the target");
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// The ladder holds: an action with a mnemonic and no target takes the
+/// digest hint before the mnemonic one.
+#[nativelink_test]
+async fn a_mnemonic_alone_does_not_outrank_a_digest_hint() -> Result<(), Error> {
+    let digest = DigestInfo::new([5; 32], 12);
+    let hints_file = write_hints_file(&format!(
+        r#"[ {{ "action_mnemonic": "Link", "memory_kb": 1000000 }},
+             {{ "action_digest": "{digest}", "memory_kb": 9000000 }} ]"#
+    ));
+    let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
+    let action = make_base_action_info(UNIX_EPOCH, digest);
+    let properties =
+        properties_after_add(&scheduler, &mock_scheduler, action, Some(("", "Link"))).await?;
+    assert_eq!(properties["memory_kb"], "9000000");
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A hint that reserves nothing is no hint: the cold start applies.
+#[nativelink_test]
+async fn an_all_zero_hint_falls_through_to_the_cold_start() -> Result<(), Error> {
+    let digest = DigestInfo::new([6; 32], 12);
+    let hints_file = write_hints_file(&format!(
+        r#"[ {{ "action_digest": "{digest}", "samples": 3, "last_seen_s": 1 }} ]"#
+    ));
+    let (mock_scheduler, scheduler) = make_scheduler_with_cold_start(
+        hints_file.clone(),
+        Some(ColdStartSpec {
+            cpu_count: 1500,
+            memory_kb: 0,
+            disk_kb: 250_000,
+        }),
+    );
+    let action = make_base_action_info(UNIX_EPOCH, digest);
+    let properties = properties_after_add(&scheduler, &mock_scheduler, action, None).await?;
+    assert_eq!(properties["cpu_count"], "1500");
+    assert_eq!(
+        properties["disk_kb"], "250000",
+        "the cold start reserves disk too"
+    );
+    assert!(!properties.contains_key("memory_kb"));
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A rule naming a class the ladder lacks is refused at load; at run time
+/// the next candidate that exists is taken, never the raw numbers.
+#[nativelink_test]
+async fn a_rule_naming_no_class_is_refused_and_the_default_class_stands_in() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![class("s", 1000, 4_000_000, 0)];
+    spec.default_class = Some("s".to_string());
+    spec.class_by_mnemonic = HashMap::from([("Link".to_string(), "xl".to_string())]);
+    let err = HistoricalResourceScheduler::validate(&spec).expect_err("xl is not on the ladder");
+    assert!(err.to_string().contains("class_by_mnemonic[Link]"), "{err}");
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let action = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        action,
+        Some(("//pkg:x", "Link")),
+    )
+    .await?;
+    assert_eq!(
+        properties["memory_kb"], "4000000",
+        "the default class, not nothing"
     );
     drop(fs::remove_file(hints_file));
     Ok(())

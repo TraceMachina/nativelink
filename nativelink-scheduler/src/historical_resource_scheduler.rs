@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use nativelink_config::schedulers::{HistoricalResourceSpec, SizeClassSpec, TimeoutClassSpec};
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
@@ -38,7 +38,7 @@ use tracing::{debug, warn};
 
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Clone, Default, Hash, Eq, PartialEq)]
 struct HintKey {
     target_id: Option<String>,
     action_mnemonic: Option<String>,
@@ -89,30 +89,40 @@ fn normalize_digest_key(digest: &str) -> String {
 }
 
 impl HistoricalResourceHint {
-    fn key(&self) -> Option<HintKey> {
-        let command_digest = self
-            .command_digest
-            .as_deref()
-            .map(normalize_digest_key)
-            .filter(|d| !d.is_empty());
-        let action_digest = self
-            .action_digest
-            .as_deref()
-            .map(normalize_digest_key)
-            .filter(|d| !d.is_empty());
-        if self.target_id.is_none()
-            && self.action_mnemonic.is_none()
-            && command_digest.is_none()
-            && action_digest.is_none()
-        {
-            return None;
+    /// Every key the lookup ladder could reach this hint by, one per
+    /// family it names: the target (with the mnemonic when it has one),
+    /// the action digest, the command digest, and the mnemonic alone when
+    /// there is no target. A record naming a target and a digest is found
+    /// by either; a single composite key would be found by neither.
+    fn keys(&self) -> Vec<HintKey> {
+        let digest =
+            |value: Option<&str>| value.map(normalize_digest_key).filter(|d| !d.is_empty());
+        let mut keys = Vec::new();
+        if self.target_id.is_some() {
+            keys.push(HintKey {
+                target_id: self.target_id.clone(),
+                action_mnemonic: self.action_mnemonic.clone(),
+                ..HintKey::default()
+            });
+        } else if self.action_mnemonic.is_some() {
+            keys.push(HintKey {
+                action_mnemonic: self.action_mnemonic.clone(),
+                ..HintKey::default()
+            });
         }
-        Some(HintKey {
-            target_id: self.target_id.clone(),
-            action_mnemonic: self.action_mnemonic.clone(),
-            command_digest,
-            action_digest,
-        })
+        if let Some(action_digest) = digest(self.action_digest.as_deref()) {
+            keys.push(HintKey {
+                action_digest: Some(action_digest),
+                ..HintKey::default()
+            });
+        }
+        if let Some(command_digest) = digest(self.command_digest.as_deref()) {
+            keys.push(HintKey {
+                command_digest: Some(command_digest),
+                ..HintKey::default()
+            });
+        }
+        keys
     }
 
     fn memory_kb(&self) -> Option<u64> {
@@ -169,8 +179,7 @@ pub struct HistoricalResourceScheduler {
     cpu_property_name: String,
     memory_property_name: String,
     disk_property_name: String,
-    cold_start_cpu_count: u64,
-    cold_start_memory_kb: u64,
+    cold_start: Numbers,
     classes: Vec<SizeClassSpec>,
     default_class: Option<String>,
     class_by_mnemonic: HashMap<String, String>,
@@ -187,8 +196,7 @@ impl core::fmt::Debug for HistoricalResourceScheduler {
             .field("refresh_interval", &self.refresh_interval)
             .field("cpu_property_name", &self.cpu_property_name)
             .field("memory_property_name", &self.memory_property_name)
-            .field("cold_start_cpu_count", &self.cold_start_cpu_count)
-            .field("cold_start_memory_kb", &self.cold_start_memory_kb)
+            .field("cold_start", &self.cold_start)
             .field("classes", &self.classes)
             .field("default_class", &self.default_class)
             .field("known_properties", &self.known_properties)
@@ -208,8 +216,14 @@ impl HistoricalResourceScheduler {
             cpu_property_name: spec.cpu_property_name.clone(),
             memory_property_name: spec.memory_property_name.clone(),
             disk_property_name: spec.disk_property_name.clone(),
-            cold_start_cpu_count: spec.cold_start.as_ref().map_or(0, |c| c.cpu_count),
-            cold_start_memory_kb: spec.cold_start.as_ref().map_or(0, |c| c.memory_kb),
+            cold_start: spec
+                .cold_start
+                .as_ref()
+                .map_or_else(Numbers::default, |c| Numbers {
+                    cpu_count: c.cpu_count,
+                    memory_kb: c.memory_kb,
+                    disk_kb: c.disk_kb,
+                }),
             classes: spec.classes.clone(),
             default_class: spec.default_class.clone(),
             class_by_mnemonic: spec.class_by_mnemonic.clone(),
@@ -248,9 +262,34 @@ impl HistoricalResourceScheduler {
                 return;
             }
         };
+        // A class the ladder does not have is dropped here, once per name
+        // per load, so the hot path never logs it; the hint keeps whatever
+        // numbers it states.
+        let mut unknown_classes = HashSet::new();
+        let mut hints: Vec<HistoricalResourceHint> = hints
+            .into_iter()
+            .map(|mut hint| {
+                if let Some(name) = &hint.class
+                    && self.class(name).is_none()
+                {
+                    if unknown_classes.insert(name.clone()) {
+                        warn!(
+                            class = %name,
+                            hints_file = %self.hints_file,
+                            "Hints name a size class the ladder does not have; the class is ignored"
+                        );
+                    }
+                    hint.class = None;
+                }
+                hint
+            })
+            .collect();
+        // A record naming fewer families is the more general one, so it
+        // owns a shared key: sort so those are inserted last.
+        hints.sort_by_key(|hint| core::cmp::Reverse(hint.keys().len()));
         let hints = hints
             .into_iter()
-            .filter_map(|hint| hint.key().map(|key| (key, hint)))
+            .flat_map(|hint| hint.keys().into_iter().map(move |key| (key, hint.clone())))
             .collect::<HashMap<_, _>>();
         debug!(hints_file = %self.hints_file, hints = hints.len(), "Loaded historical resource hints");
         let mut hint_state = self.hint_state.lock();
@@ -302,7 +341,8 @@ impl HistoricalResourceScheduler {
                 action_digest,
             })
         };
-        if (target_id.is_some() || action_mnemonic.is_some())
+        if target_id.is_some()
+            && action_mnemonic.is_some()
             && let Some(hint) = by(target_id, action_mnemonic, None, None)
         {
             return Some((hint.clone(), "target"));
@@ -336,22 +376,12 @@ impl HistoricalResourceScheduler {
     }
 
     /// A hint's numbers: what it states, with its class filling anything
-    /// it leaves out. A class the ladder does not know is logged and
-    /// contributes nothing.
+    /// it leaves out. An unknown class was dropped at load.
     fn numbers_from_hint(&self, hint: &HistoricalResourceHint) -> Numbers {
         let from_class = hint
             .class
             .as_deref()
-            .and_then(|name| {
-                let class = self.class(name);
-                if class.is_none() {
-                    warn!(
-                        class = name,
-                        "Hint names a size class the ladder does not have"
-                    );
-                }
-                class
-            })
+            .and_then(|name| self.class(name))
             .map(Numbers::from)
             .unwrap_or_default();
         Numbers {
@@ -399,18 +429,40 @@ impl HistoricalResourceScheduler {
                 .max_by_key(|rule| rule.min_timeout_s)
                 .map(|rule| &rule.class)
         };
-        let class_name = by_mnemonic.or(by_timeout).or(self.default_class.as_ref());
-        if let Some(name) = class_name {
-            if let Some(class) = self.class(name) {
-                return Numbers::from(class);
-            }
-            warn!(class = %name, "Cold-start policy names a size class the ladder does not have");
+        // The rules were checked against the ladder at load; the first
+        // candidate that names a class on it wins.
+        [by_mnemonic, by_timeout, self.default_class.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|name| self.class(name))
+            .map_or(self.cold_start, Numbers::from)
+    }
+
+    /// The cold-start rules and the default class must name classes on the
+    /// ladder, or the action they were written for gets nothing.
+    pub fn validate(spec: &HistoricalResourceSpec) -> Result<(), Error> {
+        let known = |name: &str| spec.classes.iter().any(|class| class.name == name);
+        let mut rules = spec
+            .class_by_mnemonic
+            .iter()
+            .map(|(mnemonic, class)| (format!("class_by_mnemonic[{mnemonic}]"), class.as_str()))
+            .chain(spec.class_by_timeout.iter().map(|rule| {
+                (
+                    format!("class_by_timeout[{}]", rule.min_timeout_s),
+                    rule.class.as_str(),
+                )
+            }))
+            .chain(
+                spec.default_class
+                    .iter()
+                    .map(|class| ("default_class".to_string(), class.as_str())),
+            );
+        if let Some((rule, class)) = rules.find(|(_, class)| !known(class)) {
+            return Err(make_input_err!(
+                "historical_resource.{rule} names size class {class:?}, which classes does not define"
+            ));
         }
-        Numbers {
-            cpu_count: self.cold_start_cpu_count,
-            memory_kb: self.cold_start_memory_kb,
-            disk_kb: 0,
-        }
+        Ok(())
     }
 
     fn apply_defaults(&self, action_info: &mut ActionInfo, numbers: Numbers) {
@@ -505,10 +557,14 @@ impl ClientStateManager for HistoricalResourceScheduler {
         mut action_info: Arc<ActionInfo>,
     ) -> Result<Box<dyn ActionStateResult>, Error> {
         let (target_id, action_mnemonic) = Self::current_metadata();
-        if let Some((hint, source)) =
-            self.hint_for_action(&action_info, target_id.as_ref(), action_mnemonic.as_ref())
-        {
-            let numbers = self.numbers_from_hint(&hint);
+        // A hint that comes out all zero (bookkeeping fields only, or a
+        // class that was dropped at load) reserves nothing, so it is no
+        // hint: the cold-start policy applies and the metric says so.
+        let hint = self
+            .hint_for_action(&action_info, target_id.as_ref(), action_mnemonic.as_ref())
+            .map(|(hint, source)| (self.numbers_from_hint(&hint), source))
+            .filter(|(numbers, _)| *numbers != Numbers::default());
+        if let Some((numbers, source)) = hint {
             self.apply_minimums(Arc::make_mut(&mut action_info), numbers);
             record_hint_resolution(source);
         } else {
