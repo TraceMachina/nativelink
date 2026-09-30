@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use nativelink_config::cas_server::{
     CapacityConfig, CpuUnit, DiskEnforcement, MemoryEnforcement, ResourceEnforcementConfig,
@@ -22,7 +23,7 @@ use nativelink_error::Code;
 use nativelink_worker::capacity::{
     ObservedCapacity, advertised, free_memory_kb_from, memory_headroom_percent, parse_cpu_max,
     parse_meminfo_available_kb, parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
-    without_cgroup,
+    parse_self_cgroup, resolve_cgroup_dir, without_cgroup,
 };
 use pretty_assertions::assert_eq;
 
@@ -206,4 +207,52 @@ fn free_memory_is_limit_less_current_or_the_host_available() {
     assert_eq!(free_memory_kb_from(Some(100), Some(200), Some(1)), Some(0));
     assert_eq!(free_memory_kb_from(None, Some(200), Some(777)), Some(777));
     assert_eq!(free_memory_kb_from(None, None, None), None);
+}
+
+#[test]
+fn self_cgroup_is_the_v2_line() {
+    assert_eq!(parse_self_cgroup("0::/\n"), Some("/"));
+    assert_eq!(
+        parse_self_cgroup(
+            "0::/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod5ed6.slice/cri-containerd-e0fd.scope\n"
+        ),
+        Some(
+            "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod5ed6.slice/cri-containerd-e0fd.scope"
+        )
+    );
+    // cgroup v1 lines carry a controller name and no `0::` line.
+    assert_eq!(
+        parse_self_cgroup("12:memory:/docker/abc\n1:name=systemd:/docker/abc\n"),
+        None
+    );
+    assert_eq!(parse_self_cgroup(""), None);
+    assert_eq!(parse_self_cgroup("0::relative\n"), None);
+}
+
+#[test]
+fn cgroup_dir_is_the_own_path_under_the_mount_when_it_exists() {
+    let root = Path::new("/sys/fs/cgroup");
+    let scope = "/kubepods.slice/kubepods-burstable-pod5ed6.slice/cri-containerd-e0fd.scope";
+    let own = PathBuf::from(
+        "/sys/fs/cgroup/kubepods.slice/kubepods-burstable-pod5ed6.slice/cri-containerd-e0fd.scope",
+    );
+    // A privileged container sees the host's tree: its own scope is a
+    // directory below the root.
+    assert_eq!(
+        resolve_cgroup_dir(root, Some(&format!("0::{scope}\n")), |dir| dir == own),
+        own
+    );
+    // A container with its own cgroup namespace is at the root.
+    assert_eq!(
+        resolve_cgroup_dir(root, Some("0::/\n"), |dir| dir == root),
+        root
+    );
+    // The path is not under the mount (a cgroup namespace whose root is
+    // deeper than the mount shows): the root stands.
+    assert_eq!(
+        resolve_cgroup_dir(root, Some(&format!("0::{scope}\n")), |_| false),
+        root
+    );
+    // Nothing readable at all: the root, as before.
+    assert_eq!(resolve_cgroup_dir(root, None, |_| true), root);
 }

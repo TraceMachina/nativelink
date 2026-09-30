@@ -22,6 +22,7 @@
 
 use core::hash::BuildHasher;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use nativelink_config::cas_server::{
     CapacityConfig, CpuUnit, MemoryEnforcement, ResourceEnforcementConfig, WorkerProperty,
@@ -136,7 +137,48 @@ pub fn without_cgroup<S: BuildHasher>(
     ))
 }
 
-/// Reads the worker's own cgroup v2 root. `None` where there is no such
+/// The cgroup v2 path of this process from `/proc/self/cgroup`: the `0::`
+/// line, which is `/` inside a container with its own cgroup namespace and
+/// the full `/kubepods.slice/.../cri-containerd-<id>.scope` path in one that
+/// shares the host's, as a privileged container does.
+pub fn parse_self_cgroup(self_cgroup: &str) -> Option<&str> {
+    self_cgroup
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(str::trim)
+        .filter(|path| path.starts_with('/'))
+}
+
+/// Where this process's own `cpu.max`, `memory.max` and `memory.current`
+/// live: the mount root joined with the path from `/proc/self/cgroup` when
+/// that directory exists under the mount, the mount root otherwise. A
+/// container with a private cgroup namespace sees itself at the root, so its
+/// path is `/` and both agree. A privileged container sees the host's tree,
+/// where the root's files are the host's (or absent, as on a systemd host),
+/// and its own numbers sit further down.
+pub fn resolve_cgroup_dir(
+    mount_root: &Path,
+    self_cgroup: Option<&str>,
+    is_dir: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    if let Some(path) = self_cgroup.and_then(parse_self_cgroup) {
+        let own = mount_root.join(path.trim_start_matches('/'));
+        if is_dir(&own) {
+            return own;
+        }
+    }
+    mount_root.to_path_buf()
+}
+
+/// This process's cgroup directory on the live system.
+fn cgroup_dir() -> PathBuf {
+    let self_cgroup = std::fs::read_to_string("/proc/self/cgroup").ok();
+    resolve_cgroup_dir(Path::new("/sys/fs/cgroup"), self_cgroup.as_deref(), |dir| {
+        dir.join("memory.max").is_file()
+    })
+}
+
+/// Reads the worker's own cgroup v2 limits. `None` where there is no such
 /// cgroup to read (not Linux, cgroup v1, or no permission).
 pub fn observe_cgroup() -> Option<ObservedCapacity> {
     let host_cpus = std::thread::available_parallelism().map_or(1, |n| n.get() as u64);
@@ -144,8 +186,9 @@ pub fn observe_cgroup() -> Option<ObservedCapacity> {
         .ok()
         .and_then(|meminfo| parse_meminfo_total_kb(&meminfo))
         .unwrap_or(0);
-    let cpu_max = std::fs::read_to_string("/sys/fs/cgroup/cpu.max").ok()?;
-    let memory_max = std::fs::read_to_string("/sys/fs/cgroup/memory.max").ok()?;
+    let dir = cgroup_dir();
+    let cpu_max = std::fs::read_to_string(dir.join("cpu.max")).ok()?;
+    let memory_max = std::fs::read_to_string(dir.join("memory.max")).ok()?;
     Some(ObservedCapacity {
         cpu_millicores: parse_cpu_max(&cpu_max, host_cpus)?,
         memory_kb: parse_memory_max(&memory_max, host_memory_kb)?,
@@ -220,7 +263,8 @@ pub const fn free_memory_kb_from(
 /// worker reports nothing and is never vetoed.
 #[cfg(target_os = "linux")]
 pub fn free_memory_kb() -> Option<u64> {
-    let limit_kb = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+    let dir = cgroup_dir();
+    let limit_kb = std::fs::read_to_string(dir.join("memory.max"))
         .ok()
         .and_then(|max| {
             let max = max.trim();
@@ -228,7 +272,7 @@ pub fn free_memory_kb() -> Option<u64> {
                 .then(|| parse_memory_current_kb(max))
                 .flatten()
         });
-    let current_kb = std::fs::read_to_string("/sys/fs/cgroup/memory.current")
+    let current_kb = std::fs::read_to_string(dir.join("memory.current"))
         .ok()
         .and_then(|current| parse_memory_current_kb(&current));
     let available_kb = std::fs::read_to_string("/proc/meminfo")

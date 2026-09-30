@@ -769,8 +769,10 @@ pub enum CpuUnit {
 }
 
 /// Advertise CPU and memory from what the worker can actually see. The
-/// worker reads `cpu.max` and `memory.max` at its own cgroup v2 root (the
-/// pod's limits on Kubernetes), takes off what it needs for itself, divides
+/// worker reads `cpu.max` and `memory.max` in its own cgroup v2 directory,
+/// found through `/proc/self/cgroup` so a privileged container that sees
+/// the host's tree still reads its own limits (the pod's limits on
+/// Kubernetes), takes off what it needs for itself, divides
 /// the memory by the enforcement headroom, and sets the two properties to
 /// the result at registration. What the scheduler packs against is then
 /// derived from the one number that is enforced, instead of typed in twice.
