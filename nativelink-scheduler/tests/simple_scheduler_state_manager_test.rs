@@ -1049,6 +1049,160 @@ async fn fail_queued_operation_ignores_an_unknown_action() -> Result<(), Error> 
     Ok(())
 }
 
+/// A database wrapper that shares the inner db so the test can act as a
+/// concurrent updater (e.g. a worker-event task) racing the state manager.
+struct SharedDb<T: AwaitedActionDb>(Arc<T>);
+
+impl<T: AwaitedActionDb> MetricsComponent for SharedDb<T> {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        self.0.publish(kind, field_metadata)
+    }
+}
+
+impl<T: AwaitedActionDb> AwaitedActionDb for SharedDb<T> {
+    type Subscriber = T::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.0.get_awaited_action_by_id(client_operation_id).await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.0.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.0.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.0.get_range_of_actions(state, start, end, desc).await
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.0.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.0
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+fn cacheable_action_info(started: SystemTime) -> ActionInfo {
+    let mut info = action_info(started);
+    let ActionUniqueQualifier::Uncacheable(key) = info.unique_qualifier.clone() else {
+        unreachable!();
+    };
+    info.unique_qualifier = ActionUniqueQualifier::Cacheable(key);
+    info
+}
+
+/// Repro for: `try_subscribe`'s initial keep-alive stamp can be reverted by an
+/// in-flight versioned update, letting the client-timeout sweep kill an
+/// operation right after a new client subscribed.
+///
+/// `try_subscribe` stamps the keep-alive with `send_if_modified` without
+/// bumping the version, so an updater holding a pre-stamp `borrow()` snapshot
+/// at the same version passes the version check in `update_awaited_action`
+/// and `send_replace` wholesale-reverts the keep-alive timestamp. The sweep
+/// then retires the operation even though a client just attached.
+#[nativelink_test]
+async fn a_fresh_subscribers_keepalive_survives_an_in_flight_update() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let task_change_notify = Arc::new(Notify::new());
+    let db = Arc::new(memory_awaited_action_db_factory(
+        0,
+        &task_change_notify,
+        MockInstantWrapped::default,
+    ));
+    let state_mgr = SimpleSchedulerStateManager::new(
+        5,
+        WORKER_TIMEOUT,
+        Duration::from_mins(5), // client_action_timeout
+        MAX_EXECUTING,
+        SharedDb(db.clone()),
+        MockInstantWrapped::default,
+        Some(Arc::new(WorkerRegistry::new())),
+    );
+
+    // Client 1 queues a cacheable action at t0, then goes idle: its
+    // stored client keep-alive stays at t0.
+    let client1_id = OperationId::default();
+    let _client1 = state_mgr
+        .add_action(
+            client1_id.clone(),
+            Arc::new(cacheable_action_info(make_system_time(0))),
+        )
+        .await?;
+
+    // A concurrent task (e.g. a worker-event handler) snapshots the
+    // action -- version N, keep-alive t0.
+    let subscriber = db
+        .get_awaited_action_by_id(&client1_id)
+        .await?
+        .expect("operation exists");
+    let in_flight_snapshot = subscriber.borrow().await?;
+
+    // t0+4min (within the 5min client timeout).
+    MockClock::advance(Duration::from_mins(4));
+
+    // A new client subscribes to the same cacheable action: try_subscribe
+    // stamps the keep-alive to now (t0+4min) so it is not swept before its
+    // first poll.
+    let client2_id = OperationId::default();
+    let client2 = state_mgr
+        .add_action(
+            client2_id.clone(),
+            Arc::new(cacheable_action_info(make_system_time(0))),
+        )
+        .await?;
+
+    // The in-flight updater resumes and writes its snapshot back. The
+    // keep-alive stamp never bumped the version, so this passes the
+    // version check -- and reverts the keep-alive to t0.
+    db.update_awaited_action(in_flight_snapshot).await?;
+
+    // t0+6min: client 1's keep-alive (t0) is expired, but client 2
+    // attached only 2 minutes ago, so the operation must not be retired.
+    MockClock::advance(Duration::from_mins(2));
+    let retired = state_mgr.sweep_abandoned_queued_actions().await?;
+    assert_eq!(
+        retired, 0,
+        "an operation a client subscribed to 2 minutes ago must not be swept"
+    );
+    let (state, _origin_metadata) = client2.as_state().await?;
+    assert_eq!(
+        state.stage,
+        ActionStage::Queued,
+        "the freshly-subscribed client's operation must still be alive"
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 async fn fail_queued_operation_ignores_a_completed_action() -> Result<(), Error> {
     MockClock::set_time(Duration::from_secs(NOW_TIME));

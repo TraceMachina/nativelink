@@ -53,6 +53,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+mock_instant = { version = "0.5.3", default-features = false }
 nativelink-macro = { path = "../nativelink-macro" }
 nativelink-redis-tester = { path = "../nativelink-redis-tester" }
 

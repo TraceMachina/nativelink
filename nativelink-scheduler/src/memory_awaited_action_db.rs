@@ -637,6 +637,20 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             }
             new_awaited_action.increment_version();
 
+            // Client keep-alive stamps are written in place (see
+            // `handle_action_events` and `try_subscribe`) without bumping the
+            // version, so a read-modify-write cycle that snapshotted before
+            // the stamp still passes the version check above. Merge the stamp
+            // forward so such a write can never move the keep-alive backwards
+            // and cause the client-timeout sweep to kill an operation whose
+            // client is alive and polling.
+            if old_awaited_action.last_client_keepalive_timestamp()
+                > new_awaited_action.last_client_keepalive_timestamp()
+            {
+                new_awaited_action
+                    .update_client_keep_alive(old_awaited_action.last_client_keepalive_timestamp());
+            }
+
             error_if!(
                 old_awaited_action.action_info().unique_qualifier
                     != new_awaited_action.action_info().unique_qualifier,
