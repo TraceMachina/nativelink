@@ -885,17 +885,20 @@ where
                 // Re-resolve the master and retry on a transient failover so a
                 // topology change doesn't fail the existence check.
                 //
-                // The pipeline must be atomic (MULTI/EXEC): without it a key
-                // created (or RENAMEd into place) between STRLEN and EXISTS is
-                // observed as (len 0, exists) and reported as present with
-                // size 0 -- a state that never existed. Both commands target
-                // the same key (same slot), so this is safe in cluster mode.
+                // The two commands are issued back-to-back on the same
+                // connection to the same key, so they are observed without an
+                // intervening client round-trip. We deliberately do NOT wrap
+                // them in MULTI/EXEC (`.atomic()`): the cluster async client in
+                // redis-rs misreads transaction replies and panics
+                // (`index out of bounds`) when a pipeline is marked atomic, so
+                // an atomic pipeline is unusable in cluster mode. `EXISTS` is
+                // the authoritative presence signal; `STRLEN` only supplies the
+                // size once presence is established.
                 let (blob_len, exists) = {
                     let mut attempt: u32 = 0;
                     loop {
                         attempt += 1;
                         match pipe()
-                            .atomic()
                             .strlen(encoded_key.as_ref())
                             .exists(encoded_key.as_ref())
                             .query_async::<(u64, bool)>(&mut client.connection_manager)
