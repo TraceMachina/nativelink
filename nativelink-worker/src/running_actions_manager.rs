@@ -2378,10 +2378,17 @@ impl RunningActionImpl {
                             // the action's reservation; it is measured so
                             // the sizing loop learns what the tool needs.
                             #[cfg(target_os = "linux")]
-                            let sampler = lease
-                                .worker()
-                                .pid()
-                                .map(|pgid| start_action_resource_usage_sampler(pgid, None));
+                            let sampler = lease.worker().pid().map(|pgid| {
+                                start_action_resource_usage_sampler(
+                                    pgid,
+                                    Ceilings {
+                                        memory_limit_kb: None,
+                                        disk_limit_kb: None,
+                                        over_limit_tx: None,
+                                    },
+                                    None,
+                                )
+                            });
                             let dispatch_result = {
                                 let dispatch_fut =
                                     lease.worker().dispatch_with_timeout(&request, self.timeout);
