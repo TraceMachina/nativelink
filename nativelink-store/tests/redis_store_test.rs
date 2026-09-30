@@ -187,11 +187,15 @@ async fn upload_and_get_data() -> Result<(), Error> {
         // Check that the key exists.
         MockCmd::with_values(
             redis::pipe()
+                .atomic()
                 .cmd("STRLEN")
                 .arg(&real_key)
                 .cmd("EXISTS")
                 .arg(&real_key),
-            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+            Ok(vec![Value::Array(vec![
+                Value::Int(2),
+                Value::Boolean(true),
+            ])]),
         ),
         // Retrieve the data from the real key.
         MockCmd::new(
@@ -308,6 +312,7 @@ async fn has_retries_after_transient_error() -> Result<(), Error> {
         // First existence pipeline fails with a retryable connection error.
         MockCmd::with_values(
             redis::pipe()
+                .atomic()
                 .cmd("STRLEN")
                 .arg(key.clone())
                 .cmd("EXISTS")
@@ -320,11 +325,15 @@ async fn has_retries_after_transient_error() -> Result<(), Error> {
         // The retry (after re-resolving the master) succeeds.
         MockCmd::with_values(
             redis::pipe()
+                .atomic()
                 .cmd("STRLEN")
                 .arg(key.clone())
                 .cmd("EXISTS")
                 .arg(key.clone()),
-            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+            Ok(vec![Value::Array(vec![
+                Value::Int(2),
+                Value::Boolean(true),
+            ])]),
         ),
     ];
 
@@ -417,11 +426,15 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
         ),
         MockCmd::with_values(
             redis::pipe()
+                .atomic()
                 .cmd("STRLEN")
                 .arg(real_key.clone())
                 .cmd("EXISTS")
                 .arg(real_key.clone()),
-            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+            Ok(vec![Value::Array(vec![
+                Value::Int(2),
+                Value::Boolean(true),
+            ])]),
         ),
         MockCmd::new(
             redis::cmd("GETRANGE").arg(real_key).arg(0).arg(1),
@@ -515,14 +528,15 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
         ),
         MockCmd::with_values(
             redis::pipe()
+                .atomic()
                 .cmd("STRLEN")
                 .arg(real_key.clone())
                 .cmd("EXISTS")
                 .arg(real_key.clone()),
-            Ok(vec![
+            Ok(vec![Value::Array(vec![
                 Value::Int(data.len().try_into().unwrap()),
                 Value::Int(1),
-            ]),
+            ])]),
         ),
         MockCmd::new(
             // We expect to be asked for data from `0..READ_CHUNK_SIZE`, but since GETRANGE is inclusive
@@ -608,11 +622,12 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
         ),
         MockCmd::with_values(
             redis::pipe()
+                .atomic()
                 .cmd("STRLEN")
                 .arg(real_key.clone())
                 .cmd("EXISTS")
                 .arg(real_key.clone()),
-            Ok(vec![Value::Int(2), Value::Int(1)]),
+            Ok(vec![Value::Array(vec![Value::Int(2), Value::Int(1)])]),
         ),
         MockCmd::new(
             redis::cmd("GETRANGE")
@@ -2741,11 +2756,15 @@ where
         ),
         MockCmd::with_values(
             redis::pipe()
+                .atomic()
                 .cmd("STRLEN")
                 .arg(&real_key)
                 .cmd("EXISTS")
                 .arg(&real_key),
-            Ok(vec![Value::Int(2), Value::Boolean(true)]),
+            Ok(vec![Value::Array(vec![
+                Value::Int(2),
+                Value::Boolean(true),
+            ])]),
         ),
         MockCmd::new(
             redis::cmd("SETRANGE")
@@ -2898,11 +2917,15 @@ async fn update_sets_a_ttl_when_configured() -> Result<(), Error> {
             // without something after it a skipped EXPIRE would pass silently.
             MockCmd::with_values(
                 redis::pipe()
+                    .atomic()
                     .cmd("STRLEN")
                     .arg(&real_key)
                     .cmd("EXISTS")
                     .arg(&real_key),
-                Ok(vec![Value::Int(2), Value::Boolean(true)]),
+                Ok(vec![Value::Array(vec![
+                    Value::Int(2),
+                    Value::Boolean(true),
+                ])]),
             ),
         ],
         Duration::from_secs(TTL_SECONDS),
@@ -3076,5 +3099,126 @@ async fn test_count_by_index_prefix_reads_a_resp3_reply() -> Result<(), Error> {
         .err_tip(|| "Failed to count by index")?;
 
     assert_eq!(count, 7);
+    Ok(())
+}
+
+/// Reproduces a race in `RedisStore::get_part`: the value is read in
+/// `read_chunk_size` slices via independent GETRANGE round-trips, and
+/// end-of-data is inferred purely from `chunk.len() < read_chunk_size`.
+/// GETRANGE on a missing key returns an empty string (not an error), so if
+/// the key's TTL fires (or a concurrent `update()` RENAMEs over it) between
+/// two chunk round-trips, the next GETRANGE returns empty, the loop breaks,
+/// and — because `bytes_written > 0` skips the NotFound/exists guard —
+/// `send_eof()` reports a *successful* read of a truncated blob.
+///
+/// The mock deterministically scripts that interleaving: chunk 0 returns a
+/// full `READ_CHUNK_SIZE` slice; the key then expires server-side; chunk 1's
+/// GETRANGE returns the empty string. A correct implementation must either
+/// return an error or the full 2048 bytes; current code returns Ok with
+/// 1024 bytes.
+#[nativelink_test]
+async fn test_get_part_key_expiry_between_chunks_silently_truncates() -> Result<(), Error> {
+    const READ_CHUNK_SIZE: usize = 1024; // == DEFAULT_READ_CHUNK_SIZE
+    let data = Bytes::from(vec![0xABu8; READ_CHUNK_SIZE * 2]);
+
+    let digest = DigestInfo::try_new(VALID_HASH1, data.len() as u64)?;
+    let real_key = format!("{digest}");
+
+    let commands = vec![
+        // Chunk 0: reader gets a full chunk of the (still-live) 2048-byte value.
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(i64::try_from(READ_CHUNK_SIZE).unwrap() - 1),
+            Ok(Value::BulkString(data.slice(..READ_CHUNK_SIZE).into())),
+        ),
+        // <-- Between these two round-trips the key's TTL fires (or a
+        //     concurrent update() RENAMEs the value away). GETRANGE on a
+        //     missing key returns the empty string, not an error.
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key)
+                .arg(i64::try_from(READ_CHUNK_SIZE).unwrap())
+                .arg(i64::try_from(data.len()).unwrap() - 1),
+            Ok(Value::BulkString(Vec::new())),
+        ),
+    ];
+
+    let store = make_mock_store(commands).await;
+
+    let result = store
+        .get_part_unchunked(digest, 0, Some(data.len() as u64))
+        .await;
+
+    // A correct store must not silently deliver a truncated blob as success:
+    // either it errors, or it delivers all the bytes.
+    match result {
+        Err(_) => Ok(()),
+        Ok(bytes) => {
+            assert_eq!(
+                bytes.len(),
+                data.len(),
+                "get_part reported success but delivered a truncated blob \
+                 ({} of {} bytes) after mid-read key expiry",
+                bytes.len(),
+                data.len(),
+            );
+            Ok(())
+        }
+    }
+}
+
+// Reproduces the STRLEN/EXISTS atomicity race in has_with_results.
+//
+// has_with_results issues `pipe().strlen(key).exists(key)` WITHOUT `.atomic()`,
+// so Redis executes the two commands as independent server-side commands with
+// no MULTI/EXEC guard. A concurrent writer's RENAME (update()'s commit, another
+// connection) may land between them, producing the server-legal observation
+// (STRLEN=0, EXISTS=true) for a blob whose committed value is non-empty.
+// Line ~914 then fabricates `Some(0)`: "exists and is empty".
+//
+// With the fix, the pipeline is atomic (MULTI/EXEC), so the fabricated
+// (STRLEN=0, EXISTS=true) interleaving is no longer expressible by the server:
+// the concurrent RENAME lands either before the transaction (both commands see
+// the committed 2-byte blob) or after it (both see the key absent). The mock
+// below matches the literal atomic pipeline bytes and scripts the
+// "RENAME landed first" snapshot; unfixed code sends the non-atomic wire
+// format, mismatches the mock, and fails (and, when raced against a real
+// server, deterministically fabricates `Some(0)`).
+#[nativelink_test]
+async fn has_strlen_exists_pipeline_race_fabricates_empty_blob() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?; // real size is 2, non-empty.
+    let real_key = format!("{digest}");
+
+    let commands = vec![
+        // Atomic (MULTI/EXEC) pipeline: STRLEN and EXISTS observe a single
+        // snapshot in which the concurrent RENAME already committed the
+        // 2-byte blob. The mismatched-wire-format error this produces on
+        // unfixed (non-atomic) code is the regression signal.
+        MockCmd::with_values(
+            redis::pipe()
+                .atomic()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Array(vec![
+                Value::Int(2),
+                Value::Boolean(true),
+            ])]),
+        ),
+    ];
+    let store = make_mock_store(commands).await;
+
+    let result = store.has(digest).await?;
+    // The blob is either not yet visible (None) or fully committed with its
+    // real size (Some(2)). `Some(0)` is a state that never existed in Redis.
+    assert_ne!(
+        result,
+        Some(0),
+        "has_with_results fabricated 'exists with length 0' for a non-empty \
+         blob: STRLEN/EXISTS pipeline is not atomic"
+    );
     Ok(())
 }

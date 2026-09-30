@@ -884,11 +884,18 @@ where
                 // and do it in a pipeline for efficiency
                 // Re-resolve the master and retry on a transient failover so a
                 // topology change doesn't fail the existence check.
+                //
+                // The pipeline must be atomic (MULTI/EXEC): without it a key
+                // created (or RENAMEd into place) between STRLEN and EXISTS is
+                // observed as (len 0, exists) and reported as present with
+                // size 0 -- a state that never existed. Both commands target
+                // the same key (same slot), so this is safe in cluster mode.
                 let (blob_len, exists) = {
                     let mut attempt: u32 = 0;
                     loop {
                         attempt += 1;
                         match pipe()
+                            .atomic()
                             .strlen(encoded_key.as_ref())
                             .exists(encoded_key.as_ref())
                             .query_async::<(u64, bool)>(&mut client.connection_manager)
@@ -1275,6 +1282,8 @@ where
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        let requested_offset = offset;
+        let requested_length = length;
         let offset = isize::try_from(offset).err_tip(|| "Could not convert offset to isize")?;
         let length = length
             .map(|v| usize::try_from(v).err_tip(|| "Could not convert length to usize"))
@@ -1308,6 +1317,7 @@ where
         );
 
         let mut client = self.get_client().await?;
+        let mut last_chunk_was_empty = false;
         loop {
             // getrange is position-based and idempotent, so re-resolve the
             // master and retry on a transient failover without re-sending
@@ -1342,7 +1352,9 @@ where
             let reached_end_of_data = chunk_end == data_end;
 
             if didnt_receive_full_chunk || reached_end_of_data {
-                if !chunk.is_empty() {
+                if chunk.is_empty() {
+                    last_chunk_was_empty = true;
+                } else {
                     writer
                         .send(chunk)
                         .await
@@ -1367,9 +1379,70 @@ where
             );
         }
 
+        // Silent-truncation guard. GETRANGE on a key that expired or was
+        // RENAMEd away mid-read returns an empty string rather than an error,
+        // so the loop above infers a clean end-of-data from an empty chunk and
+        // — because bytes_written > 0 skips the NotFound/exists guard below —
+        // would report a truncated (or torn) blob as a successful read. Never
+        // let a short read past this point.
+        //
+        // The stored value's true length is not encoded by the digest (callers
+        // legitimately store blobs whose length differs from the digest's
+        // declared size and read them back with length=None), so completeness
+        // is verified two ways:
+        //   1. An explicit `length` request must be fully satisfied; a short
+        //      delivery against a caller-specified length is truncation. The
+        //      sender may emit *more* than requested — it writes whole
+        //      read-chunks and the receiving channel trims to `length` — so
+        //      the guard is under-delivery, not inequality.
+        //   2. When the read stopped on an empty chunk (the ambiguous EOF
+        //      signal: either a value ending on a chunk boundary or a key that
+        //      vanished mid-read), probe the server's current STRLEN and
+        //      confirm it still covers everything we handed back. A concurrent
+        //      RENAME that shrank or replaced the value is caught here.
+        let bytes_written = writer.get_bytes_written();
+        if let Some(requested_length) = requested_length
+            && bytes_written < requested_length
+        {
+            return Err(make_err!(
+                Code::DataLoss,
+                "RedisStore::get_part delivered only {bytes_written} of {requested_length} requested bytes for {key:?}; the key likely expired or was replaced mid-read",
+            ));
+        }
+        if last_chunk_was_empty && bytes_written > 0 {
+            let current_len: u64 = {
+                let mut attempt: u32 = 0;
+                loop {
+                    attempt += 1;
+                    match client.connection_manager.strlen(encoded_key).await {
+                        Ok(v) => break v,
+                        Err(err)
+                            if attempt < MAX_REDIS_RETRY_ATTEMPTS
+                                && is_retryable_redis_error(&err) =>
+                        {
+                            client.reconnect(&self.connection_manager).await?;
+                            sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                        }
+                        Err(err) => {
+                            return Err(
+                                Error::from(err).append("In RedisStore::get_part::strlen_verify")
+                            );
+                        }
+                    }
+                }
+            };
+            let end_delivered = requested_offset.saturating_add(bytes_written);
+            if current_len < end_delivered {
+                return Err(make_err!(
+                    Code::DataLoss,
+                    "RedisStore::get_part delivered {bytes_written} bytes ending at offset {end_delivered} for {key:?}, but the key now holds only {current_len} bytes; the key expired or was replaced mid-read",
+                ));
+            }
+        }
+
         // If we didn't write any data, check if the key exists, if not return a NotFound error.
         // This is required by spec.
-        if writer.get_bytes_written() == 0 {
+        if bytes_written == 0 {
             // We're supposed to read 0 bytes, so just check if the key exists.
             let exists: bool = {
                 let mut attempt: u32 = 0;
