@@ -9,7 +9,7 @@ fuzz_dir="$SRC/nativelink/nativelink-test/fuzz"
 cargo fuzz build --fuzz-dir "$fuzz_dir" cas_config
 cp "$fuzz_dir/target/x86_64-unknown-linux-gnu/release/cas_config" "$OUT/cas_config"
 if cargo fuzz build --fuzz-dir "$fuzz_dir" scheduler_race; then
-	cp "$fuzz_dir/target/x86_64-unknown-linux-gnu/release/scheduler_race" "$OUT/scheduler_race"
+    cp "$fuzz_dir/target/x86_64-unknown-linux-gnu/release/scheduler_race" "$OUT/scheduler_race"
 else
-	echo "scheduler_race skipped: toolchain too old for workspace rust-version pin"
+    echo "scheduler_race skipped: toolchain too old for workspace rust-version pin"
 fi
