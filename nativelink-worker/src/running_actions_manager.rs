@@ -3635,12 +3635,76 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        let res = self
-            .metrics()
-            .clone()
-            .prepare_action
-            .wrap(Self::inner_prepare_action(self))
-            .await;
+        let download_timeout = self.running_actions_manager.max_download_timeout;
+        let operation_id = self.operation_id.clone();
+        let metrics = self.metrics().clone();
+        let this = self.clone();
+        // The kill channel is watched here too, and handed back for
+        // `execute` when the fetch completes: a kill that arrives while the
+        // inputs are still fetching used to wait for a fetch that might never
+        // end, and the scheduler evicts a worker that does not acknowledge.
+        let mut kill_channel_rx = this.state.lock().kill_channel_rx.take();
+        // Boxed: the prepare state machine is large, and pinning it on the
+        // stack next to the select below overflowed a test thread.
+        let mut prepare_fut = Box::pin(
+            metrics
+                .prepare_action
+                .wrap(Self::inner_prepare_action(self)),
+        );
+        // A fetch that never answers would otherwise hold the slot for good
+        // while the worker's keepalives say it is fine: name it every minute
+        // and give up at the timeout, so the scheduler can retry elsewhere.
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = download_timeout.as_secs(),
+                    "prepare_action: still fetching inputs, possible stall",
+                );
+            }
+        };
+        let killed_fut = async {
+            match kill_channel_rx.as_mut() {
+                Some(rx) => {
+                    let _ = rx.await;
+                }
+                None => core::future::pending::<()>().await,
+            }
+        };
+        let res = tokio::time::timeout(download_timeout, async {
+            tokio::pin!(stall_warn_fut);
+            tokio::pin!(killed_fut);
+            tokio::select! {
+                result = &mut prepare_fut => result,
+                () = &mut killed_fut => {
+                    warn!(%operation_id, "prepare_action: killed while fetching inputs");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while fetching its inputs"
+                    ))
+                }
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|_| {
+            warn!(
+                %operation_id,
+                timeout_s = download_timeout.as_secs(),
+                "prepare_action: input fetch timed out"
+            );
+            make_err!(
+                Code::DeadlineExceeded,
+                "Fetching the inputs of operation {operation_id} took longer than max_download_timeout ({}s)",
+                download_timeout.as_secs(),
+            )
+        })
+        .and_then(|res| res);
+        this.state.lock().kill_channel_rx = kill_channel_rx;
         if let Err(ref e) = res {
             warn!(?e, "Error during prepare_action");
         }
@@ -4198,6 +4262,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
+    pub max_download_timeout: Duration,
     pub max_cleanup_wait: Duration,
     pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
@@ -4238,6 +4303,7 @@ pub struct RunningActionsManagerImpl {
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
+    max_download_timeout: Duration,
     timeout_handled_externally: bool,
     /// The container's memory limit, the yardstick for calling a SIGKILL
     /// nobody here sent an OOM kill.
@@ -4309,6 +4375,7 @@ impl RunningActionsManagerImpl {
             max_action_timeout: args.max_action_timeout,
             pod_memory_limit_kb: pod_memory_limit_kb(),
             max_upload_timeout: args.max_upload_timeout,
+            max_download_timeout: args.max_download_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
