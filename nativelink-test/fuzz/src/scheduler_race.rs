@@ -58,9 +58,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::operation_state_manager::{
-    ClientStateManager, OperationFilter,
-};
+use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilter};
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::{Notify, mpsc};
 
@@ -406,8 +404,8 @@ impl Sim {
     /// double execution.
     fn check_revoked_assignments_resolved(&self) {
         for (idx, operation_id) in &self.revoked {
-            let still_running = self.workers[*idx].connected
-                && self.workers[*idx].running.contains(operation_id);
+            let still_running =
+                self.workers[*idx].connected && self.workers[*idx].running.contains(operation_id);
             assert!(
                 !still_running,
                 "INVARIANT: REVOKE-KILL: operation {operation_id} was reassigned away from \
@@ -475,7 +473,8 @@ impl Sim {
         // operation only falls to the client backstop at roughly
         // 2 * CLIENT_ACTION_TIMEOUT_S. A ghost is only a violation once
         // every one of those ceilings has elapsed since the death.
-        let ghost_grace_s = WORKER_TIMEOUT_S + MAX_EXECUTING_TIMEOUT_S + 2 * CLIENT_ACTION_TIMEOUT_S;
+        let ghost_grace_s =
+            WORKER_TIMEOUT_S + MAX_EXECUTING_TIMEOUT_S + 2 * CLIENT_ACTION_TIMEOUT_S;
         let dead: HashSet<WorkerId> = self
             .workers
             .iter()
@@ -623,8 +622,8 @@ impl Sim {
                     let id = self.workers[idx].id.clone();
                     drop(self.worker_scheduler.worker_disconnected(&id).await);
                     self.workers[idx].connected = false;
-                        let died = now_ts();
-                        self.workers[idx].died_at.get_or_insert(died);
+                    let died = now_ts();
+                    self.workers[idx].died_at.get_or_insert(died);
                     for operation_id in self.workers[idx].running.drain(..) {
                         self.executing_on.remove(&operation_id);
                     }
@@ -635,8 +634,8 @@ impl Sim {
                     let id = self.workers[idx].id.clone();
                     drop(self.worker_scheduler.remove_worker(&id).await);
                     self.workers[idx].connected = false;
-                        let died = now_ts();
-                        self.workers[idx].died_at.get_or_insert(died);
+                    let died = now_ts();
+                    self.workers[idx].died_at.get_or_insert(died);
                     for operation_id in self.workers[idx].running.drain(..) {
                         self.executing_on.remove(&operation_id);
                     }
@@ -995,7 +994,9 @@ mod tests {
             }
             let ops = super::decode(&data).expect("decodes");
             total_ops += ops.len();
-            let has_action = ops.iter().any(|op| matches!(op, super::Op::AddAction { .. }));
+            let has_action = ops
+                .iter()
+                .any(|op| matches!(op, super::Op::AddAction { .. }));
             let has_worker = ops
                 .iter()
                 .any(|op| matches!(op, super::Op::ConnectWorker { .. }));
@@ -1053,12 +1054,18 @@ mod tests {
             // Just before the deadline: both must say alive.
             super::advance_clocks(timeout - Duration::from_secs(1)).await;
             let (registry_alive, sweep_alive) = verdicts(worker_last_seen_ts);
-            assert!(registry_alive && sweep_alive, "before deadline: registry={registry_alive} sweep={sweep_alive}");
+            assert!(
+                registry_alive && sweep_alive,
+                "before deadline: registry={registry_alive} sweep={sweep_alive}"
+            );
 
             // Just after: both must say dead.
             super::advance_clocks(Duration::from_secs(2)).await;
             let (registry_alive, sweep_alive) = verdicts(worker_last_seen_ts);
-            assert!(!registry_alive && !sweep_alive, "after deadline: registry={registry_alive} sweep={sweep_alive}");
+            assert!(
+                !registry_alive && !sweep_alive,
+                "after deadline: registry={registry_alive} sweep={sweep_alive}"
+            );
 
             // Tokio-driven sweep coupling: a timer on tokio's clock fires
             // once advance_clocks pushes virtual time past its interval.
