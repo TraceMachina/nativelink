@@ -2055,6 +2055,10 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         Ok(())
     }
 
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(self.evicting_map.remove(&key.into_owned()).await)
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

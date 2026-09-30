@@ -93,10 +93,10 @@ mod tests {
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::free_disk_kb;
     use nativelink_worker::running_actions_manager::{
-        Callbacks, ExecutionConfiguration, KillReason, ResourceEnforcement, RunningAction,
-        RunningActionImpl, RunningActionsManager, RunningActionsManagerArgs,
-        RunningActionsManagerImpl, classify_outcome, download_to_directory, log_excerpt,
-        parse_kb_field,
+        Callbacks, ExecutionConfiguration, KillReason, PersistentWorkersSettings,
+        ResourceEnforcement, RunningAction, RunningActionImpl, RunningActionsManager,
+        RunningActionsManagerArgs, RunningActionsManagerImpl, classify_outcome,
+        download_to_directory, log_excerpt, parse_kb_field,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -106,14 +106,20 @@ mod tests {
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
+    const DEFAULT_MAX_DOWNLOAD_TIMEOUT: u64 = 600;
     const DEFAULT_MAX_CLEANUP_WAIT: u64 = 30;
     const DEFAULT_MAX_CLEANUP_BACKOFF: u64 = 500;
 
     #[cfg(target_os = "linux")]
     fn use_namespaces() -> nativelink_worker::running_actions_manager::UseNamespaces {
-        if namespace_utils::namespaces_supported(true) {
-            nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount
-        } else if namespace_utils::namespaces_supported(false) {
+        // Keep the host's /tmp visible here: several tests stage wrappers and
+        // payloads under the temp dir, which is /tmp outside of Bazel. The
+        // private /tmp has its own dedicated test below.
+        if namespace_utils::namespaces_supported(true, false) {
+            nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
+                isolate_tmp: false,
+            }
+        } else if namespace_utils::namespaces_supported(false, false) {
             nativelink_worker::running_actions_manager::UseNamespaces::Yes
         } else {
             nativelink_worker::running_actions_manager::UseNamespaces::No
@@ -372,6 +378,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::from_mins(10),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -532,6 +539,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::from_mins(10),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1119,6 +1127,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1248,6 +1257,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1379,6 +1389,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1565,6 +1576,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1753,6 +1765,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2010,6 +2023,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2165,6 +2179,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2311,6 +2326,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2452,6 +2468,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2542,7 +2559,18 @@ mod tests {
             )
             .await?;
 
-        let run_action_fut = run_action(running_action_impl);
+        // The inputs first: a kill that lands while they are still fetching
+        // ends the action there, and this test is about killing the command.
+        let running_action_impl = running_action_impl.prepare_action().await?;
+        let run_action_fut = running_action_impl
+            .clone()
+            .execute()
+            .and_then(RunningAction::upload_results)
+            .and_then(RunningAction::get_finished_result)
+            .then(|result| async move {
+                running_action_impl.cleanup().await?;
+                result
+            });
         tokio::pin!(run_action_fut);
 
         #[cfg(target_family = "unix")]
@@ -2649,6 +2677,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -2666,6 +2695,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2819,6 +2849,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -2853,6 +2884,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2969,6 +3001,7 @@ exit 0
             disk_property_name: "disk_kb".to_string(),
             memory_property_name: "memory_kb".to_string(),
             memory_headroom_percent: 20,
+            disk_headroom_percent: 20,
         };
         assert!(
             ResourceEnforcement::from_config(&config(
@@ -3028,6 +3061,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3116,6 +3150,8 @@ exit 0
                 resource_enforcement: Some(ResourceEnforcement {
                     memory: None,
                     disk_property_name: Some("disk_kb".to_string()),
+                    disk_soft: false,
+                    disk_headroom_percent: 20,
                 }),
                 ..Default::default()
             },
@@ -3136,9 +3172,10 @@ exit 0
             dispatch_with_properties(action_digest, &[("disk_kb", reserved_kb.to_string())])
         };
 
-        // Nearly everything, admitted and held.
+        // Most of it, admitted and held; the rest is slack for whatever else
+        // the machine writes while the test runs.
         let first = running_actions_manager
-            .create_and_add_action(WORKER_ID.to_string(), dispatch(free_kb - 1024))
+            .create_and_add_action(WORKER_ID.to_string(), dispatch(free_kb / 4 * 3))
             .await?
             .prepare_action()
             .await?;
@@ -3207,6 +3244,8 @@ exit 0
             Some(ResourceEnforcement {
                 memory: None,
                 disk_property_name: Some("disk_kb".to_string()),
+                disk_soft: false,
+                disk_headroom_percent: 20,
             }),
             None,
         ] {
@@ -3253,10 +3292,13 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     // The guard alone: the memory axis is off.
                     resource_enforcement: Some(ResourceEnforcement {
                         memory: None,
                         disk_property_name: Some("disk_kb".to_string()),
+                        disk_soft: false,
+                        disk_headroom_percent: 20,
                     }),
                     ..Default::default()
                 },
@@ -3269,6 +3311,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3365,6 +3408,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3580,6 +3624,355 @@ exit 0
     #[cfg(target_family = "unix")]
     default_health_status_indicator!(GatedStore);
 
+    /// A store that answers `has` and uploads normally but can be told to
+    /// never finish a read of one digest, or any write: what a wedged tier
+    /// looks like to the worker.
+    #[cfg(target_family = "unix")]
+    #[derive(Debug)]
+    struct HangingStore {
+        inner: Store,
+        hang_on: DigestInfo,
+        hang_reads: AtomicBool,
+        hang_updates: AtomicBool,
+    }
+
+    #[cfg(target_family = "unix")]
+    impl HangingStore {
+        fn new(inner: Arc<MemoryStore>, hang_on: DigestInfo) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Store::new(inner),
+                hang_on,
+                hang_reads: AtomicBool::new(true),
+                hang_updates: AtomicBool::new(false),
+            })
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MetricsComponent for HangingStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    #[async_trait]
+    impl StoreDriver for HangingStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            if self.hang_updates.load(Ordering::Acquire) {
+                future::pending::<()>().await;
+            }
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            if self.hang_reads.load(Ordering::Acquire) && key == StoreKey::Digest(self.hang_on) {
+                future::pending::<()>().await;
+            }
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    default_health_status_indicator!(HangingStore);
+
+    /// A manager whose CAS never finishes reading one input of the action it
+    /// returns the digest of; the store comes back too, so a test can lift
+    /// that or make writes hang instead.
+    #[cfg(target_family = "unix")]
+    async fn hung_fetch_setup(
+        max_download_timeout: Duration,
+    ) -> Result<
+        (
+            Arc<RunningActionsManagerImpl>,
+            DigestInfo,
+            Arc<HangingStore>,
+        ),
+        Box<dyn core::error::Error>,
+    > {
+        const FILE_CONTENT: &[u8] = b"never arrives";
+        let inner = MemoryStore::new(&MemorySpec::default());
+        let file_digest = DigestInfo::new([9u8; 32], FILE_CONTENT.len() as u64);
+        inner
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        let slow_store = HangingStore::new(inner.clone(), file_digest);
+        let fast_config = FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_config).await?;
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(fast_store),
+            Store::new(slow_store.clone()),
+        );
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![FileNode {
+                    name: "input.txt".to_string(),
+                    digest: Some(file_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            inner.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let command_digest = serialize_and_upload_message(
+            &Command {
+                arguments: vec!["sh".to_string(), "-c".to_string(), "echo hi".to_string()],
+                ..Default::default()
+            },
+            inner.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            inner.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout,
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        Ok((running_actions_manager, action_digest, slow_store))
+    }
+
+    #[cfg(target_family = "unix")]
+    fn start_execute_for(action_digest: DigestInfo, operation_id: &str) -> StartExecute {
+        StartExecute {
+            request_metadata: None,
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: operation_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// An input whose fetch never completes fails the action at
+    /// `max_download_timeout` with `DeadlineExceeded` instead of holding its
+    /// slot for good, and the action then cleans up like any other.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn prepare_action_times_out_on_a_hung_fetch() -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, _store) =
+            hung_fetch_setup(Duration::from_secs(1)).await?;
+        let operation_id = OperationId::default();
+        let started = std::time::Instant::now();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let result = action.clone().prepare_action().await;
+        let err = result.expect_err("the fetch never completes, prepare must fail");
+        assert_eq!(err.code, Code::DeadlineExceeded, "{err:?}");
+        assert!(err.to_string().contains("max_download_timeout"), "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "took {:?}",
+            started.elapsed()
+        );
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A kill that arrives while the inputs are still fetching ends the
+    /// action at once with `Aborted`; it does not wait for the fetch, a
+    /// later `execute` fails instead of panicking, and cleanup runs.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn prepare_action_stops_on_a_kill() -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, _store) =
+            hung_fetch_setup(Duration::from_mins(1)).await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let started = std::time::Instant::now();
+        let killer = {
+            let manager = running_actions_manager.clone();
+            let operation_id = operation_id.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                manager.kill_operation(&operation_id).await
+            }
+        };
+        let (kill_res, prepare_res) = tokio::join!(killer, action.clone().prepare_action());
+        kill_res?;
+        let err = prepare_res.expect_err("a killed fetch must not complete");
+        assert_eq!(err.code, Code::Aborted, "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "took {:?}",
+            started.elapsed()
+        );
+        let err = action
+            .clone()
+            .execute()
+            .await
+            .expect_err("execute after a killed prepare must fail");
+        assert_ne!(err.code, Code::Ok, "{err:?}");
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        Ok(())
+    }
+
+    /// A kill that arrives while the results upload ends it at once with
+    /// `Aborted`: a kill is acknowledged in every phase, not only while the
+    /// command runs.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn upload_results_stops_on_a_kill() -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            hung_fetch_setup(Duration::from_mins(1)).await?;
+        // The fetch completes; the write of the results never does.
+        store.hang_reads.store(false, Ordering::Release);
+        store.hang_updates.store(true, Ordering::Release);
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let started = std::time::Instant::now();
+        let killer = {
+            let manager = running_actions_manager.clone();
+            let operation_id = operation_id.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                manager.kill_operation(&operation_id).await
+            }
+        };
+        let (kill_res, upload_res) = tokio::join!(killer, async {
+            action
+                .clone()
+                .prepare_action()
+                .await?
+                .execute()
+                .await?
+                .upload_results()
+                .await
+        });
+        kill_res?;
+        let err = upload_res.expect_err("a killed upload must not complete");
+        assert_eq!(err.code, Code::Aborted, "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "took {:?}",
+            started.elapsed()
+        );
+        action.cleanup().await?;
+        assert!(!Path::new(&action_directory).exists());
+        Ok(())
+    }
+
     /// The bound on open output files holds across the whole tree, not per
     /// directory: eight directories of thirty-two files each are uploaded
     /// through one gate, and never more than the bound (plus stdout and
@@ -3628,6 +4021,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3735,6 +4129,189 @@ exit 0
         );
         Ok(())
     }
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn action_writing_past_its_disk_reservation_is_killed()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
+                    resource_enforcement: Some(ResourceEnforcement {
+                        memory: None,
+                        disk_property_name: Some("disk_kb".to_string()),
+                        disk_soft: true,
+                        disk_headroom_percent: 20,
+                    }),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                // Thirty MiB of its own under the action directory, then a
+                // long sleep: a disk sample sees it past the reservation.
+                "dd if=/dev/zero of=fill.bin bs=1M count=30 status=none; sleep 60".to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        // The client tagged nothing; the reservation arrives the way a hint or
+        // cold start does, on the scheduler's StartExecute, not on the Action.
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    // 1 MiB of disk reserved: thirty MiB written is far past
+                    // it with 20% headroom.
+                    platform: Some(Platform {
+                        properties: vec![Property {
+                            name: "disk_kb".into(),
+                            value: "1024".into(),
+                        }],
+                    }),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let started = std::time::Instant::now();
+        let result = run_action(running_action_impl.clone()).await?;
+        let err = result
+            .error
+            .expect("an action over its reservation must fail with an error");
+        assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+        assert!(
+            err.to_string().contains("disk reservation"),
+            "error should name the reservation: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the worker should have killed the action at a disk sample, long before its sleep ended"
+        );
+        // The measurement says what happened and what it was measured against.
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledDisk as i32,
+            "{usage:?}"
+        );
+        assert!(usage.enforced, "the worker's own limit ended it: {usage:?}");
+        // The sample that ended it caught the write in progress, so the
+        // figure is whatever had landed by then: past the reservation, not
+        // necessarily the whole thirty MiB.
+        assert!(
+            usage.peak_disk_kb > 1024,
+            "the measurement should carry what the action had written: {usage:?}"
+        );
+        Ok(())
+    }
+
+    /// Only what the action wrote counts: files modified at or after the
+    /// directory's stamp, taken from the filesystem's own clock, which on
+    /// Linux lags the wall clock by a tick. An input materialized before it, hard-linked or copied and
+    /// whatever its link count now, keeps its earlier time and is not
+    /// counted; nor are a symlink or the directories' own blocks.
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn directory_private_kb_counts_only_files_newer_than_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = SystemTime::now() - Duration::from_secs(90);
+        // An input with one link, as after the store evicted its blob, and
+        // one with two: both older than the action, both left out.
+        let input = dir.path().join("input.bin");
+        std::fs::write(&input, vec![0u8; 64 * 1024]).unwrap();
+        std::fs::File::open(&input)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        let linked = dir.path().join("linked.bin");
+        std::fs::write(&linked, vec![0u8; 64 * 1024]).unwrap();
+        std::fs::File::open(&linked)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+        std::fs::hard_link(&linked, dir.path().join("linked-2.bin")).unwrap();
+        let since =
+            nativelink_worker::running_actions_manager::directory_stamp(dir.path()).unwrap();
+        let own = dir.path().join("own.bin");
+        std::fs::write(&own, vec![0u8; 64 * 1024]).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(
+            dir.path().join("sub").join("deep.bin"),
+            vec![0u8; 32 * 1024],
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&own, dir.path().join("own-symlink")).unwrap();
+        let kb =
+            nativelink_worker::running_actions_manager::directory_private_kb(dir.path(), since);
+        assert!(
+            (90..=100).contains(&kb),
+            "own 64 KiB plus deep 32 KiB, not the inputs: {kb} KiB"
+        );
+    }
 
     /// A timed-out action gets SIGTERM first and keeps what it printed;
     /// SIGKILL follows only when it ignores the grace period. Linux only:
@@ -3751,6 +4328,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     kill_grace: Duration::from_secs(5),
                     ..Default::default()
                 },
@@ -3763,6 +4341,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3906,6 +4485,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4002,6 +4582,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     set_tmpdir: true,
                     ..Default::default()
                 },
@@ -4014,6 +4595,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4158,6 +4740,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 1_000_000,
                     ..Default::default()
                 },
@@ -4170,6 +4753,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4268,6 +4852,243 @@ exit 0
     }
 
     /// A directory under the action root that no running action owns and
+    /// The sweep visits a directory whose operation is already marked as
+    /// cleaning (its own cleanup is running). Taking the mark a second time
+    /// must hand back `None`, not a guard built under the lock and dropped
+    /// there, which deadlocked the runtime thread on its own mutex.
+    #[nativelink_test]
+    async fn orphan_sweep_skips_a_directory_already_being_cleaned_without_deadlocking()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::ZERO,
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let operation_id = OperationId::from("mid-cleanup");
+        fs::create_dir_all(format!("{root_action_directory}/{operation_id}")).await?;
+        let held = running_actions_manager
+            .perform_cleanup(operation_id.clone())
+            .expect("first mark is granted");
+        // The second mark and the sweep on their own thread: a deadlock
+        // blocks that thread, not this one, and the wait turns it into a
+        // failure instead of a hung test.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let manager = running_actions_manager.clone();
+        let marked_operation_id = operation_id.clone();
+        std::thread::spawn(move || {
+            let second_mark = manager.perform_cleanup(marked_operation_id).is_some();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            let swept = runtime.block_on(manager.sweep_orphaned_directories());
+            drop(tx.send((second_mark, swept.map_err(|e| e.to_string()))));
+        });
+        let (second_mark, swept) = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the second cleanup mark deadlocked on its own lock");
+        assert!(!second_mark, "a mark already held is not granted again");
+        assert_eq!(
+            swept,
+            Ok(0),
+            "a directory being cleaned is left to its cleanup"
+        );
+        assert!(
+            Path::new(&format!("{root_action_directory}/{operation_id}")).exists(),
+            "the sweep must not remove a directory being cleaned"
+        );
+        drop(held);
+        assert_eq!(
+            running_actions_manager.sweep_orphaned_directories().await?,
+            1,
+            "once the mark is released the settled directory is an orphan"
+        );
+        Ok(())
+    }
+
+    /// A manager with a root directory, a cleanup wait of two seconds and no
+    /// directory cache.
+    async fn manager_for_cleanup_tests(
+        root_action_directory: &str,
+    ) -> Result<(Arc<RunningActionsManagerImpl>, Arc<MemoryStore>), Box<dyn core::error::Error>>
+    {
+        let (_, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.to_string(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(2),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        Ok((running_actions_manager, slow_store))
+    }
+
+    async fn empty_action_digest(
+        store: &Arc<MemoryStore>,
+    ) -> Result<DigestInfo, Box<dyn core::error::Error>> {
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        Ok(serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?)
+    }
+
+    fn start_execute_with(action_digest: DigestInfo, operation_id: &OperationId) -> StartExecute {
+        StartExecute {
+            request_metadata: None,
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: operation_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// An action's cleanup waits for a held mark (the sweep's, a retry's)
+    /// and then cleans; it does not step aside and leave its entries behind.
+    #[nativelink_test]
+    async fn cleanup_waits_for_a_held_mark_then_cleans() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let (running_actions_manager, store) =
+            manager_for_cleanup_tests(&root_action_directory).await?;
+        let action_digest = empty_action_digest(&store).await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_with(action_digest, &operation_id),
+            )
+            .await?;
+        let action_directory = format!("{root_action_directory}/{operation_id}");
+        assert!(Path::new(&action_directory).exists());
+        let held = running_actions_manager
+            .perform_cleanup(operation_id.clone())
+            .expect("the mark is free");
+        let mut cleanup = tokio::spawn(action.cleanup());
+        tokio::select! {
+            _ = &mut cleanup => panic!("cleanup ran while the mark was held"),
+            () = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        assert!(
+            Path::new(&action_directory).exists(),
+            "nothing is removed while the mark is held"
+        );
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(5), cleanup)
+            .await
+            .expect("cleanup did not resume when the mark was released")??;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the directory goes once cleanup runs"
+        );
+        // The manager entry went with it: nothing for kill_all to wait on.
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A retry removes the stale directory of its earlier attempt only with
+    /// the mark held, so it waits while the sweep (or anyone) holds it and
+    /// never races a removal of the same tree.
+    #[nativelink_test]
+    async fn retry_waits_for_the_mark_before_removing_a_stale_directory()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let (running_actions_manager, store) =
+            manager_for_cleanup_tests(&root_action_directory).await?;
+        let action_digest = empty_action_digest(&store).await?;
+        let operation_id = OperationId::default();
+        let stale = format!("{root_action_directory}/{operation_id}");
+        fs::create_dir_all(&stale).await?;
+        tokio::fs::write(format!("{stale}/left-behind"), b"x").await?;
+        let held = running_actions_manager
+            .perform_cleanup(operation_id.clone())
+            .expect("the mark is free");
+        let manager = running_actions_manager.clone();
+        let start_execute = start_execute_with(action_digest, &operation_id);
+        let mut retry = tokio::spawn(async move {
+            manager
+                .create_and_add_action("w".to_string(), start_execute)
+                .await
+        });
+        tokio::select! {
+            _ = &mut retry => panic!("the retry proceeded while the mark was held"),
+            () = tokio::time::sleep(Duration::from_millis(300)) => {}
+        }
+        assert!(
+            Path::new(&format!("{stale}/left-behind")).exists(),
+            "the stale tree is untouched while the mark is held"
+        );
+        drop(held);
+        let action = tokio::time::timeout(Duration::from_secs(5), retry)
+            .await
+            .expect("the retry did not proceed once the mark was released")??;
+        assert!(
+            !Path::new(&format!("{stale}/left-behind")).exists(),
+            "the stale tree was replaced by the retry's fresh directory"
+        );
+        action.cleanup().await?;
+        Ok(())
+    }
+
     /// that has settled is removed by the sweep; a running action's is kept.
     #[nativelink_test]
     async fn orphan_sweep_removes_settled_unowned_directories()
@@ -4288,6 +5109,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 // Zero: anything unowned counts as settled at once.
                 max_cleanup_wait: Duration::ZERO,
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
@@ -4339,6 +5161,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::ZERO,
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4392,6 +5215,8 @@ exit 0
                             headroom_percent: 20,
                         }),
                         disk_property_name: None,
+                        disk_soft: false,
+                        disk_headroom_percent: 20,
                     }),
                     ..Default::default()
                 },
@@ -4404,11 +5229,13 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
                 directory_cache: None,
+                #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
             })?);
         // A shell holding 60 MB in a variable, then a child that would keep
@@ -4567,6 +5394,7 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -4587,6 +5415,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4680,6 +5509,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4759,6 +5589,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4845,6 +5676,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4952,6 +5784,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5003,6 +5836,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5075,6 +5909,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5198,6 +6033,7 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                    max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
@@ -5291,6 +6127,7 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                    max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
@@ -5384,6 +6221,7 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                    max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
@@ -5478,6 +6316,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5639,6 +6478,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5765,17 +6605,17 @@ exit 1
         let result = execute_results_fut.await;
         kill_all_fut.await;
         {
-            // Ensure our results are correct.
-            let action_result = result?;
-            let err = action_result
-                .error
-                .as_ref()
-                .err_tip(|| format!("No error exists in result : {action_result:?}"))?;
-            assert_eq!(
-                err.code,
-                Code::Aborted,
-                "Expected Aborted : {action_result:?}"
-            );
+            // Ensure our results are correct. The kill lands on the command
+            // or, when the fetch has not finished yet, on the fetch; either
+            // way the action ends as aborted.
+            let err = match result {
+                Ok(action_result) => action_result
+                    .error
+                    .clone()
+                    .err_tip(|| format!("No error exists in result : {action_result:?}"))?,
+                Err(err) => err,
+            };
+            assert_eq!(err.code, Code::Aborted, "Expected Aborted : {err:?}");
         }
 
         Ok(())
@@ -5815,6 +6655,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5928,6 +6769,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6043,6 +6885,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6136,6 +6979,136 @@ exit 1
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn isolate_tmp_gives_action_a_private_tmp() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        if !namespace_utils::namespaces_supported(true, true) {
+            return Ok(());
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                execution_configuration: ExecutionConfiguration::default(),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                use_namespaces:
+                    nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
+                        isolate_tmp: true,
+                    },
+            })?);
+
+        // A file in the host's /tmp must be invisible to the action, and the
+        // action's own scratch file in /tmp must never reach the host, while
+        // outputs in the work directory still get uploaded.
+        let unique = format!(
+            "{}_{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+        );
+        let host_tmp_file = format!("/tmp/nativelink_test_host_{unique}");
+        let scratch_file = format!("/tmp/nativelink_test_scratch_{unique}");
+        tokio::fs::write(&host_tmp_file, "host").await?;
+
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                format!(
+                    "test ! -e {host_tmp_file} && echo scratch > {scratch_file} && test -f {scratch_file} && echo ok > out.txt"
+                ),
+            ],
+            output_paths: vec!["out.txt".to_string()],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
+            ..Default::default()
+        };
+        let operation_id = OperationId::default().to_string();
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let action_result = run_action(running_action_impl.clone()).await;
+        tokio::fs::remove_file(&host_tmp_file).await?;
+        let action_result = action_result?;
+        assert_eq!(
+            action_result.exit_code, 0,
+            "action should neither see the host's /tmp nor fail to write its own"
+        );
+        assert_eq!(
+            action_result.output_files.len(),
+            1,
+            "out.txt should have been uploaded from the work directory"
+        );
+        assert_eq!(
+            action_result.output_files[0].name_or_path,
+            NameOrPath::Path("out.txt".to_string())
+        );
+        assert!(
+            tokio::fs::metadata(&scratch_file).await.is_err(),
+            "the action's /tmp scratch file leaked to the host"
+        );
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn action_directory_contents_are_cleaned() -> Result<(), Box<dyn core::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
@@ -6159,6 +7132,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6300,6 +7274,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
             let manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: actions.to_string_lossy().into_owned(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     resource_enforcement: None,
                     buck2_file_capture: Some(Buck2FileCaptureConfig {
                         executable: helper.to_string_lossy().into_owned(),
@@ -6322,6 +7297,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 },
                 max_action_timeout: Duration::from_mins(1),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6453,6 +7429,12 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
         ) -> Result<(Action, DigestInfo), Error> {
             let command = Command {
                 arguments: vec![format!("./{WORKER_SCRIPT_NAME}"), "@args.txt".to_string()],
+                // The worker process gets the action's environment and no
+                // more, as Bazel sends it; the script needs PATH for sed.
+                environment_variables: vec![EnvironmentVariable {
+                    name: "PATH".to_string(),
+                    value: env::var("PATH").unwrap_or_default(),
+                }],
                 output_paths: vec!["count.txt".to_string()],
                 platform: Some(Platform {
                     properties: vec![
@@ -6567,6 +7549,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 },
                 max_action_timeout: Duration::from_secs(30),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6667,6 +7650,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6853,6 +7837,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6967,6 +7952,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -6984,6 +7970,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7119,6 +8106,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
                     kill_grace: Duration::ZERO,
@@ -7136,6 +8124,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7251,6 +8240,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7396,6 +8386,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7572,6 +8563,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::MAX,
+                max_download_timeout: Duration::MAX,
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7732,6 +8724,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,

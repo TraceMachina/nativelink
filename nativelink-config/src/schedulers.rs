@@ -274,15 +274,27 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub no_worker_action_timeout_s: u64,
 
-    /// If a job returns an internal error, times out, or loses its worker
-    /// this many times the scheduler completes it with `FailedPrecondition`
-    /// carrying the last error, a code clients do not retry. This is to help
-    /// prevent one rogue job from infinitely retrying and taking up a lot of
-    /// resources when the task itself is the one causing the server to go
-    /// into a bad state.
+    /// If a job returns an internal error or times out this many times the
+    /// scheduler completes it with `FailedPrecondition` carrying the last
+    /// error, a code clients do not retry. This is to help prevent one rogue
+    /// job from infinitely retrying and taking up a lot of resources when the
+    /// task itself is the one causing the server to go into a bad state.
+    /// A lost worker and a memory escalation are not the action's failures
+    /// and have their own budgets: `max_worker_loss_retries` and
+    /// `memory_escalation.max_steps`.
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_job_retries: usize,
+
+    /// How many times an action whose worker was lost (disconnected, timed
+    /// out, evicted, or OOM-killed as a whole) is queued again before the
+    /// scheduler completes it with `FailedPrecondition`. A lost worker is
+    /// usually not the action's fault, so these do not spend
+    /// `max_job_retries`; the cap only stops an action that takes a worker
+    /// down every time it runs.
+    /// Default: 10
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_worker_loss_retries: usize,
 
     /// The strategy used to assign workers jobs.
     #[serde(default)]
@@ -298,6 +310,18 @@ pub struct SimpleSpec {
     /// Default: unset (off)
     #[serde(default)]
     pub live_memory_veto: Option<String>,
+
+    /// When a worker reports an action killed for memory (`KILLED_MEMORY`,
+    /// by its own reservation enforcement or by the kernel), requeue the
+    /// action with a larger reservation instead of failing it. Escalations
+    /// have their own budget (`max_steps`) and do not spend
+    /// `max_job_retries`. The reservation grows to the largest memory any
+    /// connected worker advertises (or `max_kb`); the last step reserves
+    /// that worker whole, memory and CPU, so the action runs alone, and only
+    /// a kill there fails the action: nothing in the fleet could run it.
+    /// Default: unset (a memory kill fails the action)
+    #[serde(default)]
+    pub memory_escalation: Option<MemoryEscalationSpec>,
 
     /// The storage backend to use for the scheduler.
     /// Default: memory
@@ -453,6 +477,120 @@ fn default_historical_resource_memory_property_name() -> String {
     "memory_kb".to_string()
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct MemoryEscalationSpec {
+    /// The `minimum` platform property carrying the memory reservation.
+    /// Default: `memory_kb`
+    #[serde(default = "default_historical_resource_memory_property_name")]
+    pub property: String,
+
+    /// Each kill scales the reservation by this factor, in hundredths:
+    /// 200 doubles it, 150 adds half.
+    /// Default: 200
+    #[serde(default = "default_memory_escalation_percent")]
+    pub percent: u64,
+
+    /// Never reserve more than this many KiB; 0 takes the largest memory
+    /// any connected worker advertises.
+    /// Default: 0
+    #[serde(default)]
+    pub max_kb: u64,
+
+    /// The memory values of the fleet's size classes, ascending, in KiB.
+    /// When set, a kill steps the reservation to the next class above it
+    /// instead of scaling by `percent`; past the top class the last step
+    /// reserves the largest worker whole. The chart fills this from the
+    /// same classes the `historical_resource` scheduler uses.
+    /// Default: empty (scale by `percent`)
+    #[serde(default)]
+    pub ladder_kb: Vec<u64>,
+
+    /// The `minimum` platform property carrying the CPU reservation. The
+    /// last escalation reserves the largest worker's whole memory and,
+    /// through this property, its whole CPU, so nothing shares the worker
+    /// with the action. Empty leaves CPU alone.
+    /// Default: `cpu_count`
+    #[serde(default = "default_memory_escalation_cpu_property")]
+    pub cpu_property: String,
+
+    /// The most escalations one action gets before the scheduler completes
+    /// it with `FailedPrecondition`; 0 lets the ceiling alone bound them.
+    /// Default: 8
+    #[serde(default = "default_memory_escalation_max_steps")]
+    pub max_steps: u64,
+}
+
+fn default_memory_escalation_cpu_property() -> String {
+    "cpu_count".to_string()
+}
+
+const fn default_memory_escalation_max_steps() -> u64 {
+    8
+}
+
+const fn default_memory_escalation_percent() -> u64 {
+    200
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ColdStartSpec {
+    /// Value for `cpu_property_name`, on the scale the workers advertise.
+    /// 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub cpu_count: u64,
+
+    /// Value for `memory_property_name`, in KiB. 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_kb: u64,
+
+    /// Value for `disk_property_name`, in KiB. 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub disk_kb: u64,
+}
+
+fn default_disk_property_name_for_hints() -> String {
+    "disk_kb".to_string()
+}
+
+/// A named point on the fleet's size ladder. List them ascending; each
+/// should dominate the one before on every dimension it names. A zero
+/// leaves that dimension alone.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct SizeClassSpec {
+    /// Free text, referenced by hints and by the cold-start policy.
+    pub name: String,
+
+    /// Value for `cpu_property_name`, on the scale the workers advertise.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub cpu_count: u64,
+
+    /// Value for `memory_property_name`, in KiB.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_kb: u64,
+
+    /// Value for `disk_property_name`, in KiB.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub disk_kb: u64,
+}
+
+/// A class for actions whose timeout is at least `min_timeout_s`. Bazel's
+/// test sizes arrive as timeouts (short 60 s, moderate 300 s, long 900 s,
+/// eternal 3600 s), so this maps them to classes without a CAS fetch.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct TimeoutClassSpec {
+    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    pub min_timeout_s: u64,
+    pub class: String,
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -481,7 +619,10 @@ pub struct HistoricalResourceSpec {
     )]
     pub refresh_interval_s: u64,
 
-    /// Platform property name used for CPU minimums.
+    /// Platform property name used for CPU minimums. The nested scheduler
+    /// must declare it as a `minimum` property (as it must the memory and
+    /// disk names): an undeclared property is matched as an exact string,
+    /// and an action carrying a number would then match no worker.
     /// Default: `cpu_count`
     #[serde(
         default = "default_historical_resource_cpu_property_name",
@@ -490,12 +631,52 @@ pub struct HistoricalResourceSpec {
     pub cpu_property_name: String,
 
     /// Platform property name used for memory minimums, expressed in KiB.
+    /// Declared as `minimum` on the nested scheduler, like the CPU name.
     /// Default: `memory_kb`
     #[serde(
         default = "default_historical_resource_memory_property_name",
         deserialize_with = "convert_string_with_shellexpand"
     )]
     pub memory_property_name: String,
+
+    /// Platform property name used for disk minimums, expressed in KiB.
+    /// Declared as `minimum` on the nested scheduler, like the CPU name.
+    /// Default: `disk_kb`
+    #[serde(
+        default = "default_disk_property_name_for_hints",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub disk_property_name: String,
+
+    /// The fleet's size ladder. A hint may name a `class` instead of
+    /// numbers, and the cold-start policy below picks one for actions no
+    /// hint matches. Empty means raw numbers only.
+    #[serde(default)]
+    pub classes: Vec<SizeClassSpec>,
+
+    /// The class an untagged action gets when no hint and no rule below
+    /// matches. Takes precedence over `cold_start` when both are set.
+    #[serde(default)]
+    pub default_class: Option<String>,
+
+    /// Class by Bazel `action_mnemonic` for untagged actions; a known heavy
+    /// mnemonic (`TestRunner`, `Link`) starts in the right class.
+    #[serde(default)]
+    pub class_by_mnemonic: HashMap<String, String>,
+
+    /// Class by the action's timeout, the largest `min_timeout_s` at or
+    /// below the timeout wins. Checked before `default_class`, after the
+    /// mnemonic rule.
+    #[serde(default)]
+    pub class_by_timeout: Vec<TimeoutClassSpec>,
+
+    /// Reservation given to an action that no hint matches and the client
+    /// left untagged. Only a property that is absent is filled; a value the
+    /// client sent is kept. Without this an untagged action costs the
+    /// scheduler's ledger nothing, so any number of them can land on one
+    /// worker.
+    #[serde(default)]
+    pub cold_start: Option<ColdStartSpec>,
 
     /// The nested scheduler to use after applying resource hints.
     pub scheduler: Box<SchedulerSpec>,

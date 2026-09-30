@@ -114,6 +114,8 @@ const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
 const DEFAULT_MAX_UPLOAD_TIMEOUT: Duration = Duration::from_mins(10);
+/// Default for `max_download_timeout_s`: an input fetch is quick or wedged.
+const DEFAULT_MAX_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(10);
 const DEFAULT_MAX_CLEANUP_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_MAX_CLEANUP_BACKOFF: Duration = Duration::from_millis(500);
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
@@ -924,6 +926,11 @@ pub async fn new_local_worker(
     } else {
         Duration::from_secs(config.max_upload_timeout_s as u64)
     };
+    let max_download_timeout = if config.max_download_timeout_s == 0 {
+        DEFAULT_MAX_DOWNLOAD_TIMEOUT
+    } else {
+        Duration::from_secs(config.max_download_timeout_s as u64)
+    };
     let max_cleanup_wait = if config.max_cleanup_wait_s == 0 {
         DEFAULT_MAX_CLEANUP_WAIT
     } else {
@@ -976,31 +983,50 @@ pub async fn new_local_worker(
     };
 
     #[cfg(target_os = "linux")]
-    let use_namespaces = if let Some(use_namespaces) = &config.use_namespaces {
-        if *use_namespaces
-            && !crate::namespace_utils::namespaces_supported(
-                config.use_mount_namespace.unwrap_or_default(),
-            )
-        {
-            return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+    let use_namespaces = {
+        let use_mount_namespace = config.use_mount_namespace.unwrap_or_default();
+        // The mount namespace only exists when `use_namespaces` is on too;
+        // `isolate_tmp` is judged against that, not against the flag alone,
+        // or an explicit `true` would be dropped without a word.
+        let mount_namespace_on = config.use_namespaces == Some(true) && use_mount_namespace;
+        // A private /tmp is part of the mount isolation unless explicitly
+        // turned off. A worker without a /tmp, such as a minimal container
+        // image, has nothing for actions to collide on, so the default is
+        // off there instead of failing to start.
+        let isolate_tmp = config.isolate_tmp.unwrap_or_else(|| {
+            let has_tmp = std::path::Path::new("/tmp").is_dir();
+            if mount_namespace_on && !has_tmp {
+                warn!("/tmp does not exist on this worker, so actions will not get a private /tmp");
+            }
+            mount_namespace_on && has_tmp
+        });
+        if isolate_tmp && !mount_namespace_on {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "isolate_tmp requires use_namespaces and use_mount_namespace to be true"
+            ));
         }
-        if !*use_namespaces {
-            crate::running_actions_manager::UseNamespaces::No
-        } else if config.use_mount_namespace.unwrap_or_default() {
-            crate::running_actions_manager::UseNamespaces::YesAndMount
+        if let Some(use_namespaces) = &config.use_namespaces {
+            if *use_namespaces
+                && !crate::namespace_utils::namespaces_supported(use_mount_namespace, isolate_tmp)
+            {
+                return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
+            }
+            if !*use_namespaces {
+                crate::running_actions_manager::UseNamespaces::No
+            } else if use_mount_namespace {
+                crate::running_actions_manager::UseNamespaces::YesAndMount { isolate_tmp }
+            } else {
+                crate::running_actions_manager::UseNamespaces::Yes
+            }
+        } else if use_mount_namespace {
+            return Err(make_err!(
+                Code::Unavailable,
+                "Mount namespaces not supported"
+            ));
         } else {
-            crate::running_actions_manager::UseNamespaces::Yes
+            crate::running_actions_manager::UseNamespaces::No
         }
-    } else if config
-        .use_mount_namespace
-        .is_some_and(core::convert::identity)
-    {
-        return Err(make_err!(
-            Code::Unavailable,
-            "Mount namespaces not supported"
-        ));
-    } else {
-        crate::running_actions_manager::UseNamespaces::No
     };
 
     #[cfg(not(target_os = "linux"))]
@@ -1020,6 +1046,23 @@ pub async fn new_local_worker(
             "Mount namespaces not supported on non-Linux OSes"
         ));
     }
+    #[cfg(not(target_os = "linux"))]
+    if config.isolate_tmp.is_some_and(core::convert::identity) {
+        return Err(make_err!(
+            Code::Unavailable,
+            "isolate_tmp is not supported on non-Linux OSes"
+        ));
+    }
+
+    // A pooled worker process gets the same PID, user, UTS and IPC
+    // namespaces a one-shot action gets, never the mount namespace.
+    #[cfg(target_os = "linux")]
+    let persistent_workers_namespaced = !matches!(
+        use_namespaces,
+        crate::running_actions_manager::UseNamespaces::No
+    );
+    #[cfg(not(target_os = "linux"))]
+    let persistent_workers_namespaced = false;
 
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
@@ -1032,6 +1075,10 @@ pub async fn new_local_worker(
                     Duration::from_millis(config.kill_grace_ms)
                 },
                 set_tmpdir: config.set_tmpdir,
+                persistent_workers: persistent_worker_settings(
+                    config.persistent_workers.as_ref(),
+                    persistent_workers_namespaced,
+                ),
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
@@ -1046,6 +1093,7 @@ pub async fn new_local_worker(
             upload_action_result_config: &config.upload_action_result,
             max_action_timeout,
             max_upload_timeout,
+            max_download_timeout,
             max_cleanup_wait,
             max_cleanup_backoff,
             timeout_handled_externally: config.timeout_handled_externally,
@@ -1415,5 +1463,46 @@ impl Metrics {
         fut: F,
     ) -> U {
         fut(self).await
+    }
+}
+
+/// The pool settings from the worker config, defaults for what it leaves at
+/// zero or unset.
+fn persistent_worker_settings(
+    config: Option<&nativelink_config::cas_server::PersistentWorkersConfig>,
+    namespaced: bool,
+) -> crate::running_actions_manager::PersistentWorkersSettings {
+    use crate::persistent_worker::PoolConfig;
+    let defaults = PoolConfig::default();
+    let pool = config.map_or(defaults, |c| {
+        let or_default = |value: u64, default: u64| if value == 0 { default } else { value };
+        PoolConfig {
+            max_workers_per_key: if c.max_workers_per_key == 0 {
+                defaults.max_workers_per_key
+            } else {
+                c.max_workers_per_key
+            },
+            idle_timeout: Duration::from_secs(or_default(
+                c.idle_timeout_s,
+                defaults.idle_timeout.as_secs(),
+            )),
+            max_requests_per_worker: or_default(
+                c.max_requests_per_worker,
+                defaults.max_requests_per_worker,
+            ),
+            shutdown_grace: Duration::from_millis(or_default(
+                c.shutdown_grace_ms,
+                u64::try_from(defaults.shutdown_grace.as_millis()).unwrap_or(5000),
+            )),
+            acquire_timeout: Duration::from_secs(or_default(
+                c.acquire_timeout_s,
+                defaults.acquire_timeout.as_secs(),
+            )),
+            namespaced,
+        }
+    });
+    crate::running_actions_manager::PersistentWorkersSettings {
+        enabled: config.is_none_or(|c| c.enabled),
+        pool: PoolConfig { namespaced, ..pool },
     }
 }

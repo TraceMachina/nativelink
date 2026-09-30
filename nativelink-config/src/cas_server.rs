@@ -769,8 +769,11 @@ pub enum CpuUnit {
 }
 
 /// Advertise CPU and memory from what the worker can actually see. The
-/// worker reads `cpu.max` and `memory.max` at its own cgroup v2 root (the
-/// pod's limits on Kubernetes), takes off what it needs for itself, divides
+/// worker reads `cpu.max` and `memory.max` from its own cgroup v2 directory
+/// (found through `/proc/self/cgroup`, so a privileged container that sees
+/// the host's tree still finds its own) up to the nearest limited ancestor,
+/// the pod's limits on Kubernetes; with no limit at any level the configured
+/// properties stand. It takes off what it needs for itself, divides
 /// the memory by the enforcement headroom, and sets the two properties to
 /// the result at registration. What the scheduler packs against is then
 /// derived from the one number that is enforced, instead of typed in twice.
@@ -939,6 +942,15 @@ pub struct ResourceEnforcementConfig {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub memory_headroom_percent: u64,
+
+    /// Percent above its disk reservation an action's own files may reach
+    /// before it is killed, with `disk: soft`.
+    /// Default: 20
+    #[serde(
+        default = "default_memory_headroom_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub disk_headroom_percent: u64,
 }
 
 fn default_memory_property_name() -> String {
@@ -963,6 +975,12 @@ pub enum DiskEnforcement {
     /// Refuse the action when the free space under the work directory is
     /// below its reservation.
     Guard,
+    /// `guard`, and kill an action whose files under its own directory
+    /// grow past its reservation plus `disk_headroom_percent`. Sampled
+    /// every ten seconds by walking the action directory, counting only
+    /// files the action itself wrote (inputs are hard links into the CAS
+    /// and are not counted).
+    Soft,
 }
 
 const fn default_memory_headroom_percent() -> u64 {
@@ -1099,6 +1117,68 @@ pub struct UploadActionResultConfig {
     pub failure_message_template: String,
 }
 
+/// The pool of persistent worker processes (Bazel `supports-workers`).
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct PersistentWorkersConfig {
+    /// Run an action whose platform properties carry `supports-workers=1`
+    /// in a pooled worker process that outlives it and serves the next
+    /// action with the same executable, startup arguments and environment.
+    /// Off, every such action runs as a one-shot process like any other.
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Most worker processes kept per key (executable, startup arguments,
+    /// environment, protocol). An action whose key is at the cap and has
+    /// no idle process waits `acquire_timeout_s` for one to come back, then
+    /// runs one-shot. 0 takes the default.
+    /// Default: 4
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_workers_per_key: usize,
+
+    /// Seconds an idle worker process is kept before the sweeper shuts it
+    /// down. 0 takes the default.
+    /// Default: 300
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub idle_timeout_s: u64,
+
+    /// Requests a worker process serves before it is retired and replaced,
+    /// which bounds what a long-lived process accumulates. 0 takes the
+    /// default.
+    /// Default: 200
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_requests_per_worker: u64,
+
+    /// Milliseconds a worker process being shut down gets to exit on its
+    /// own (its stdin is closed) before SIGKILL. 0 takes the default.
+    /// Default: 5000
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub shutdown_grace_ms: u64,
+
+    /// Seconds an action waits for a worker process to come back when its
+    /// key is at `max_workers_per_key` with none idle, before it runs
+    /// one-shot instead. 0 takes the default.
+    /// Default: 30
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub acquire_timeout_s: u64,
+}
+
+/// The same as an absent block: the pool on, every size at its default.
+impl Default for PersistentWorkersConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_workers_per_key: 0,
+            idle_timeout_s: 0,
+            max_requests_per_worker: 0,
+            shutdown_grace_ms: 0,
+            acquire_timeout_s: 0,
+        }
+    }
+}
+
 /// Opt-in file capture for the actual container executing a Buck2 action.
 /// Requires a fresh single-use container with no outer execution wrapper or
 /// separate action mount namespace. For nested runtimes, run `NativeLink` and the
@@ -1186,6 +1266,21 @@ pub struct LocalWorkerConfig {
         alias = "max_upload_timeout"
     )]
     pub max_upload_timeout_s: usize,
+
+    /// Maximum time allowed for fetching an action's inputs into the worker's
+    /// store and its directory before the command runs. A fetch that hangs
+    /// (a store that never answers) otherwise holds the action's slot for
+    /// good while the worker looks healthy; past this the action fails with
+    /// `DeadlineExceeded` and may be retried by the scheduler, and a warning
+    /// names the action every minute before that. Value in seconds.
+    ///
+    /// Default: 10 minutes
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        alias = "max_download_timeout"
+    )]
+    pub max_download_timeout_s: usize,
 
     /// Maximum time to wait for action directory cleanup before timing out.
     /// Value in seconds.
@@ -1327,6 +1422,12 @@ pub struct LocalWorkerConfig {
     #[serde(default = "default_true")]
     pub set_tmpdir: bool,
 
+    /// Bazel persistent workers: how an action whose platform properties
+    /// carry `supports-workers=1` is run and how the pool of worker
+    /// processes is sized. Unset takes every default below.
+    #[serde(default)]
+    pub persistent_workers: Option<PersistentWorkersConfig>,
+
     /// Underlying CAS store that the worker will use to download CAS artifacts.
     /// This store must be a `FastSlowStore`. The `fast` store must be a
     /// `FileSystemStore` because it will use hardlinks when building out the files
@@ -1411,6 +1512,34 @@ pub struct LocalWorkerConfig {
     /// error.
     /// Default: False.
     pub use_mount_namespace: Option<bool>,
+
+    /// Whether to give each action a private `/tmp` inside its mount
+    /// namespace: the action's own `tmp` directory (the one `TMPDIR` points
+    /// at) is bound over `/tmp`, so tools that hardcode `/tmp` write there
+    /// too. Concurrent actions no longer collide on predictable paths under
+    /// `/tmp`, nothing leaks between actions through it, and what an action
+    /// writes there is removed with the action.
+    ///
+    /// This is only available on Linux and requires `use_namespaces` and
+    /// `use_mount_namespace` to be true. If explicitly set to true without
+    /// both the worker will exit with an error. Set it to false to keep the
+    /// host's `/tmp` visible to actions, for example when a tool they need
+    /// lives there. The bound `/tmp` carries the work volume's mount options
+    /// (`noexec`, `nodev`, `nosuid` if the volume has them), not the host
+    /// `/tmp`'s.
+    ///
+    /// The private `/tmp` lives on the worker's disk under the work
+    /// directory, not in memory, so it is bounded by the volume that holds
+    /// the work directory and seen by the disk guard, and a tool filling it
+    /// cannot take the worker's memory with it.
+    ///
+    /// If `/tmp` does not exist on the worker, for example in a minimal
+    /// container image, there is nothing for actions to collide on, so the
+    /// default is False there and a warning is logged at startup.
+    ///
+    /// Default: True when `use_mount_namespace` is true and `/tmp` exists,
+    /// otherwise False.
+    pub isolate_tmp: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

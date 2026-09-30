@@ -29,7 +29,7 @@ use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
 use opentelemetry::Context;
 use regex::Regex;
@@ -99,6 +99,8 @@ struct FakeStreamServer {
     /// Record every `WriteRequest`, not just the first, so a test can assert
     /// on how the client chunked the stream.
     drain_all: bool,
+    committed_size_override: Option<i64>,
+    fail_after_commit: Arc<Mutex<bool>>,
 }
 
 impl FakeStreamServer {
@@ -107,6 +109,8 @@ impl FakeStreamServer {
             write_requests: Arc::new(Mutex::new(vec![])),
             read_requests: Arc::new(Mutex::new(vec![])),
             drain_all: false,
+            committed_size_override: None,
+            fail_after_commit: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -177,7 +181,14 @@ impl ByteStream for FakeStreamServer {
                 committed_size += i64::try_from(req.data.len()).unwrap();
                 self.write_requests.lock().await.push(req);
             }
-            return Ok(Response::new(WriteResponse { committed_size }));
+            if core::mem::take(&mut *self.fail_after_commit.lock().await) {
+                return Err(Status::unavailable(
+                    "simulated lost acknowledgement after commit",
+                ));
+            }
+            return Ok(Response::new(WriteResponse {
+                committed_size: self.committed_size_override.unwrap_or(committed_size),
+            }));
         }
         let write_request = match stream.next().await {
             None => {
@@ -274,6 +285,112 @@ async fn write_update_works() -> Result<(), Error> {
 async fn write_update_works_with_legacy_resource_names() -> Result<(), Error> {
     let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
     write_update_works_core(true, upload_pattern).await
+}
+
+#[nativelink_test]
+async fn event_sink_uses_payload_size_and_rejects_cache_operations() -> Result<(), Error> {
+    let (server, port) = make_fake_bytestream_server_draining().await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.store_type = StoreType::EventSink;
+    spec.instance_name = "bep".into();
+    let store = GrpcStore::new(&spec)?;
+    let key = StoreKey::from("BepEvent:be:test:1");
+    let payload = b"event payload with a length different from its storage key";
+    store
+        .update_oneshot(key.borrow(), payload.as_slice().into())
+        .await?;
+    let writes = server.write_requests.lock().await;
+    assert!(writes[0].resource_name.starts_with("bep/uploads/"));
+    assert!(writes[0].resource_name.ends_with(&format!(
+        "/{}/{}",
+        key.borrow().into_digest().packed_hash(),
+        payload.len()
+    )));
+    assert_eq!(
+        writes
+            .iter()
+            .flat_map(|request| request.data.iter().copied())
+            .collect::<Vec<_>>(),
+        payload
+    );
+    assert!(writes.last().unwrap().finish_write);
+    drop(writes);
+    assert_eq!(
+        store.has(key.borrow()).await.unwrap_err().code,
+        tonic::Code::Unimplemented
+    );
+    let (tx, _rx) = make_buf_channel_pair();
+    assert_eq!(
+        store
+            .get_part(key.borrow(), tx, 0, None)
+            .await
+            .unwrap_err()
+            .code,
+        tonic::Code::Unimplemented
+    );
+    let digest = DigestInfo::try_new(VALID_HASH, payload.len())?;
+    assert_eq!(
+        store
+            .update_oneshot(digest, payload.as_slice().into())
+            .await
+            .unwrap_err()
+            .code,
+        tonic::Code::InvalidArgument
+    );
+    let (_tx, rx) = make_buf_channel_pair();
+    assert_eq!(
+        store
+            .update(key, rx, UploadSizeInfo::MaxSize(100))
+            .await
+            .unwrap_err()
+            .code,
+        tonic::Code::InvalidArgument
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn event_sink_rejects_incomplete_acknowledgement() -> Result<(), Error> {
+    let server = FakeStreamServer {
+        committed_size_override: Some(0),
+        ..FakeStreamServer::new_draining()
+    };
+    let (_, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.store_type = StoreType::EventSink;
+    let store = GrpcStore::new(&spec)?;
+    let err = store
+        .update_oneshot(StoreKey::from("event-ack"), "event payload".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, tonic::Code::DataLoss);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn event_sink_retry_preserves_upload_identity_after_lost_ack() -> Result<(), Error> {
+    let server = FakeStreamServer::new_draining();
+    *server.fail_after_commit.lock().await = true;
+    let (server, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.store_type = StoreType::EventSink;
+    spec.retry.max_retries = 1;
+    let store = GrpcStore::new(&spec)?;
+    let payload = b"event delivered before the acknowledgement was lost";
+    store
+        .update_oneshot(StoreKey::from("event-retry"), payload.as_slice().into())
+        .await?;
+    let requests = server.write_requests.lock().await;
+    let writes: Vec<_> = requests
+        .iter()
+        .filter(|request| !request.data.is_empty())
+        .collect();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[0].resource_name, writes[1].resource_name);
+    assert_eq!(writes[0].write_offset, writes[1].write_offset);
+    assert_eq!(writes[0].data, payload.as_slice());
+    assert_eq!(writes[1].data, payload.as_slice());
+    Ok(())
 }
 
 async fn read_works_core<F>(

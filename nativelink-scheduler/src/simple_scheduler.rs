@@ -59,7 +59,9 @@ use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::simple_scheduler_state_manager::{SimpleSchedulerStateManager, is_lost_record};
+use crate::simple_scheduler_state_manager::{
+    RetryLimits, SimpleSchedulerStateManager, is_lost_record,
+};
 use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
 use crate::worker_registry::WorkerRegistry;
@@ -1174,8 +1176,19 @@ impl SimpleScheduler {
         let record_ttl = fleet_exchange_interval * FLEET_RECORD_TTL_INTERVALS;
 
         let has_peers = awaited_action_db.shares_state();
-        let state_manager = SimpleSchedulerStateManager::new(
+        let retry_limits = RetryLimits {
             max_job_retries,
+            max_worker_loss_retries: if spec.max_worker_loss_retries == 0 {
+                RetryLimits::DEFAULT_WORKER_LOSS_RETRIES
+            } else {
+                spec.max_worker_loss_retries
+            },
+            max_escalations: spec.memory_escalation.as_ref().map_or(0, |policy| {
+                usize::try_from(policy.max_steps).unwrap_or(usize::MAX)
+            }),
+        };
+        let state_manager = SimpleSchedulerStateManager::new(
+            retry_limits,
             Duration::from_secs(worker_timeout_s),
             Duration::from_secs(client_action_timeout_s),
             Duration::from_secs(spec.max_action_executing_timeout_s),
@@ -1189,6 +1202,7 @@ impl SimpleScheduler {
             platform_property_manager.clone(),
             spec.allocation_strategy,
             spec.live_memory_veto.clone(),
+            spec.memory_escalation.clone(),
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,

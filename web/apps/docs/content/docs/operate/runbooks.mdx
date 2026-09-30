@@ -69,15 +69,16 @@ signal deaths, so the log line is what you alert on.
 
 **The worker process itself was killed.** The scheduler notices after
 `worker_timeout_s` (default 10 seconds, checked once a second), evicts it, and
-re-queues its in-flight actions. In this tree a disconnect *counts as an
-attempt*, so after `max_job_retries` the client finally sees, as a
+re-queues its in-flight actions. A lost worker does not spend the action's
+`max_job_retries`; it has its own budget, `max_worker_loss_retries` (default
+10), so after that many losses the client finally sees, as a
 `FAILED_PRECONDITION` that Bazel does not resubmit:
 
 ```text
-Worker disconnected repeatedly while executing this action (4 > 3 attempts);
-the worker was likely OOM-killed or its pod evicted. Give the action a memory
-reservation or raise the pool's memory limit before retrying. for operation_id: ...,
-maybe_worker_id: ...
+The worker running this action was lost 11 times, more than
+max_worker_loss_retries (10); the action is likely what takes the worker down
+(OOM-killed pod, eviction). Give it a memory reservation or raise the pool's
+memory limit before retrying. for operation_id: ..., maybe_worker_id: ...
 ```
 
 That string is the single best diagnostic for a memory-pressured worker fleet.

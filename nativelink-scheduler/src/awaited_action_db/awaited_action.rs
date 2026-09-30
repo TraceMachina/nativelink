@@ -93,6 +93,19 @@ pub struct AwaitedAction {
     /// Number of attempts the job has been tried.
     #[metric(help = "The number of attempts the AwaitedAction has been tried")]
     pub attempts: usize,
+
+    /// Requeues after the worker running the action was lost. Not an
+    /// attempt: the action did nothing wrong. Absent in records written
+    /// before the field existed.
+    #[serde(default)]
+    #[metric(help = "How many times the AwaitedAction lost its worker")]
+    pub worker_losses: usize,
+
+    /// Requeues with a larger memory reservation after a memory kill. Not
+    /// an attempt either. Absent in older records.
+    #[serde(default)]
+    #[metric(help = "How many times the AwaitedAction was escalated")]
+    pub escalations: usize,
 }
 
 impl AwaitedAction {
@@ -134,6 +147,8 @@ impl AwaitedAction {
             operation_id,
             sort_key,
             attempts: 0,
+            worker_losses: 0,
+            escalations: 0,
             last_worker_updated_timestamp: now,
             last_client_keepalive_timestamp: now,
             maybe_origin_metadata,
@@ -208,6 +223,12 @@ impl AwaitedAction {
 
     pub(crate) const fn update_client_keep_alive(&mut self, now: SystemTime) {
         self.last_client_keepalive_timestamp = now;
+    }
+
+    /// Replaces the action's info, for an escalated reservation. The sort
+    /// key and identity stay: the action is the same one, asking for more.
+    pub(crate) fn set_action_info(&mut self, action_info: Arc<ActionInfo>) {
+        self.action_info = action_info;
     }
 
     pub(crate) fn set_client_operation_id(&mut self, client_operation_id: OperationId) {

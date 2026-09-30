@@ -2449,13 +2449,14 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
 /// hiding the cluster-side root cause behind a TIMEOUT/NO STATUS surface.
 /// After the fix, disconnects count as attempts and exceed the cap.
 #[nativelink_test]
-async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Error> {
+async fn worker_disconnect_loop_caps_at_max_worker_loss_retries_test() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
 
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec {
             max_job_retries: 1,
+            max_worker_loss_retries: 1,
             ..Default::default()
         },
         memory_awaited_action_db_factory(
@@ -2488,7 +2489,7 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
         OperationId::from(operation_id.as_str())
     };
 
-    // First disconnect: should requeue (attempts=1, not yet > max_job_retries=1).
+    // First loss: should requeue (worker_losses=1, not yet > max_worker_loss_retries=1).
     drop(
         scheduler
             .update_action(
@@ -2522,9 +2523,9 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
         );
     }
 
-    // Second disconnect: now attempts=2 > max_job_retries=1, so the action
-    // must transition to Completed with an error mentioning the disconnect
-    // loop, not silently requeue.
+    // Second loss: now worker_losses=2 > max_worker_loss_retries=1, so the
+    // action must transition to Completed with an error saying the worker
+    // keeps being lost, not silently requeue. max_job_retries is untouched.
     drop(
         scheduler
             .update_action(
@@ -2548,7 +2549,7 @@ async fn worker_disconnect_loop_caps_at_max_job_retries_test() -> Result<(), Err
             .expect("Completed action from disconnect cap must carry an error");
         assert!(
             err.to_string()
-                .contains("Worker disconnected repeatedly while executing this action"),
+                .contains("was lost 2 times, more than max_worker_loss_retries (1)"),
             "Error message did not mention disconnect loop: {err}",
         );
         assert_eq!(

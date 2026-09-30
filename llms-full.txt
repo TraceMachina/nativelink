@@ -6306,16 +6306,15 @@ alive between them.
 
 ## Two things to know before you start [#two-things-to-know-before-you-start]
 
-**Almost nothing needs configuring in NativeLink.** No field anywhere in
-[the configuration model](/configuration) turns this on, tunes the pool, or
-selects a protocol; `LocalWorkerConfig` has no persistent-worker section at
-all, and every pool parameter is a compiled-in constant. The feature is
-driven by two platform properties on each action. The one thing NativeLink
-does need from you is on the scheduler: those two keys must be listed in
-`supported_platform_properties`, because the scheduler rejects an action that
-carries a key it does not know. If you have seen a `persistent_workers`
-config block in older documentation, it did not correspond to anything in the
-binary.
+**Little needs configuring in NativeLink.** The pool is on by default and
+the protocol is chosen by two platform properties on each action. The
+worker's `persistent_workers` block (v1.7.3 and later) sizes it: how many
+processes per key, how long an idle one lives, how many requests one serves,
+how long an action at the cap waits for a process to come back, and
+`enabled: false` to run every such action one-shot.
+The one thing NativeLink does need from you is on the scheduler: those two
+keys must be listed in `supported_platform_properties`, because a scheduler
+older than v1.6.6 rejects an action that carries a key it does not know.
 
 **The module is licensed separately.** Most of the repository is
 `FSL-1.1-Apache-2.0`. Every file under `nativelink-worker/src/persistent_worker/`
@@ -6435,19 +6434,23 @@ while everything still appears to work.
 
 ## The isolation you give up [#the-isolation-you-give-up]
 
-This is the part to read twice. NativeLink applies real isolation to ordinary
-actions and **applies none of it to persistent workers**. The persistent path
-returns before any of it runs.
+This is the part to read twice. A persistent worker process outlives the
+actions it serves, so some of the isolation an ordinary action gets cannot
+apply to it, and some of it did not apply until v1.7.3.
 
-**No namespace sandboxing.** The PID, user, IPC, UTS and mount namespaces that
-ordinary actions get are not applied. `use_namespaces` and `use_mount_namespace`
-have no effect on a persistent worker.
+**Process namespaces, but not the mount namespace.** With `use_namespaces`
+the worker process gets its own PID, user, IPC and UTS namespaces, as an
+ordinary action does, so its children are reaped with it. It never gets a
+mount namespace or the private `/tmp` (`isolate_tmp`): both are per action,
+and the process is not. Persistent workers see the host's `/tmp` and the
+whole of the worker's filesystem, whatever `use_mount_namespace` says.
 
-**No environment control.** Ordinary actions get a cleared environment plus
-exactly what the action and config specify. A persistent worker process
-inherits the NativeLink worker process's own environment, and
-`environment_variables` on the command, `additional_environment` on the config,
-and the side-channel environment sources are all ignored.
+**The action's environment, and only that.** The process is started with a
+cleared environment plus the command's `environment_variables`, the way an
+ordinary action is, and that environment is part of the worker's key, so two
+actions that differ in it never share a process. `additional_environment` on
+the config, the side-channel sources and the per-action `TMPDIR` are not
+applied: they are per action, and the process is not.
 
 **A shared, long-lived working directory.** The process's own working directory
 is the worker's root action directory, not the per-action one; it has to be,
@@ -6461,6 +6464,12 @@ ever serves.
 use it to validate or invalidate its own cached state. Anything the tool caches
 across requests, it caches on trust.
 
+**Measured, not enforced.** What the process and its children use while they
+serve a request is sampled and reported as the action's resource usage, so the
+sizing loop learns what the tool needs. `resource_enforcement` never kills a
+persistent worker for one request's reservation: the process is shared, and a
+kill would take every action queued behind it.
+
 The consequence is a real correctness requirement, not a footnote: **a
 persistent worker must be hermetic by construction, because nothing is enforcing
 it.** State that leaks between requests produces wrong outputs that are then
@@ -6472,31 +6481,47 @@ it.
 
 ## The pool's actual behaviour [#the-pools-actual-behaviour]
 
-Every parameter below is a compiled-in constant. None is configurable.
+The pool is configured under `persistent_workers` on the worker; every value
+below is its default.
 
-**Four workers per key.** A fifth concurrent action for the same key does not
-queue; it falls back to normal one-shot execution and logs that it did. Your
-build stays correct and quietly gets slower, which is worth knowing when you are
-measuring.
+```json5
+persistent_workers: {
+  enabled: true,
+  max_workers_per_key: 4,
+  idle_timeout_s: 300,
+  max_requests_per_worker: 200,
+  shutdown_grace_ms: 5000,
+  acquire_timeout_s: 30,
+}
+```
+
+**Four workers per key.** A fifth concurrent action for the same key waits
+up to `acquire_timeout_s` for one of the four to come back, as Bazel's own
+`worker_max_instances` queue does; only if none does in that time does it
+fall back to normal one-shot execution, and it logs that it did. Your build
+stays correct and gets slower by a tool startup per fallback; the worker's
+`persistent_worker_fallbacks` counter says how often.
 
 **Two hundred requests per worker.** After that the process is retired and the
 next action starts a fresh one. This is deliberate recycling of accumulated JVM
 state, and it means a long build will restart workers periodically by design.
 
-**No idle timeout, in practice.** The sweeper that would retire an idle worker
-exists in the code but nothing calls it. A worker lives until the request cap
-retires it, until it dies on its own, or until the NativeLink worker process
-exits.
+**Five minutes idle.** A sweeper runs on a timer and shuts down a worker
+that has served nothing for `idle_timeout_s`, so a pool of JVMs left over from
+one build does not hold the worker's memory through the next.
 
 **Dead workers are noticed on the next acquire**, not proactively. A JVM that
 OOMs while idle is discovered when the next action asks for it, and that action
 starts a replacement.
 
-**Shutdown is not graceful.** Stdin is closed, giving the tool five seconds to
-exit on EOF, and then it is killed outright. No `SIGTERM` is sent.
+**Shutdown is not graceful.** Stdin is closed, giving the tool `shutdown_grace_ms`
+to exit on EOF, and then it is killed outright. No `SIGTERM` is sent.
 
 **One request at a time per process.** Multiplexed workers are not supported; a
 request carrying a non-zero request ID is rejected.
+
+**`enabled: false` turns it off.** Every action then runs one-shot, whatever it
+asks for.
 
 ## Steps [#steps]
 
@@ -6585,10 +6610,13 @@ invalidating.
 
 <Accordion title="Builds get slower under high parallelism" id="builds-get-slower-under-high-parallelism">
 
-More than four concurrent actions for one key fall back to one-shot execution,
-and one-shot execution of a worker-wrapped tool can be slower than the plain
-tool. The per-key cap is not configurable, so the levers are reducing
-concurrency for that mnemonic or splitting the work across more distinct keys.
+More than `max_workers_per_key` concurrent actions for one key (four by
+default) wait up to `acquire_timeout_s` for a process to come back and then
+fall back to one-shot execution, and one-shot execution of a worker-wrapped
+tool can be slower than the plain tool. Raise the cap, or reduce concurrency
+for that mnemonic. The CPU time reported for a pooled action is what the
+process spent on it; its peak memory is the whole process, including what
+earlier requests left resident.
 
 </Accordion>
 
@@ -8381,7 +8409,13 @@ client gives up.
 **`max_job_retries`** (default 3): how many times an action that fails with
 an internal error is retried before the last error is returned to the client.
 It exists to stop one poisonous action from cycling through and destabilising
-your whole fleet.
+your whole fleet. A lost worker and a memory escalation do not spend it.
+
+**`max_worker_loss_retries`** (default 10): how many times an action whose
+worker was lost (disconnected, timed out, evicted, or OOM-killed as a whole)
+is queued again before the client gets a `FAILED_PRECONDITION`. Losing a
+worker is not the action's failure, so this budget is separate and larger;
+it only stops an action that takes a worker down every time it runs.
 
 **`retain_completed_for_s`** (default 60 s): how long a completed action's
 result stays available for a late `WaitExecution` call. Clients that
@@ -8418,6 +8452,16 @@ no longer collide; a `TMPDIR` in the action's own environment still wins, and
 code that hard-codes `/tmp` is unaffected. A timeout above `max_action_timeout_s`
 is clamped to it rather than rejected.
 
+When the action's own process has exited, anything it left running in its
+process group (a background job, a helper that daemonized) is killed, since
+it would otherwise hold the action's output pipes open and the action would
+sit there until its timeout; the pipes then get five seconds to drain, and
+what was read by then is kept. The worker also makes itself the parent of
+every process an action leaves behind and reaps them on a timer, so a build
+whose actions fork and do not wait no longer leaves hundreds of zombies on
+the worker for the life of the pod. Under `use_namespaces` the stub does
+the reaping inside the action's PID namespace.
+
 Every executed action reports its resource usage to the scheduler with an
 `outcome`: `COMPLETED`, `KILLED_MEMORY` (the worker's reservation kill, or a
 SIGKILL from the kernel with the last memory sample within 10% of the limit),
@@ -8448,14 +8492,26 @@ the one enforced and exported to the environment.
 what the actions already admitted reserved, is refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
 counting an attempt and holds off this worker until its next keepalive,
 instead of running the fetch into a full disk.
+`disk: soft` is the guard plus a kill: every ten seconds the worker adds up
+the files the action has written under its own directory (those modified
+since its command started; inputs were materialized before that and are
+not counted), and an action past its `disk_kb` reservation by
+`disk_headroom_percent` is killed and fails with `FAILED_PRECONDITION`, its
+outcome `KILLED_DISK`. The walk runs on the blocking pool as its own task,
+so memory sampling carries on meanwhile. With either disk mode the action's
+usage report carries `peak_disk_kb`, what it wrote, from one walk of the
+action directory at completion, which is the only walk `guard` pays. The
+figure is reported and exported for now; the scheduler's sizing consumer
+comes with the size ladder.
 
 ```json5
 "resource_enforcement": {
   "memory": "soft",
   "memory_property_name": "memory_kb",
   "memory_headroom_percent": 20,
-  "disk": "guard",
-  "disk_property_name": "disk_kb"
+  "disk": "soft",
+  "disk_property_name": "disk_kb",
+  "disk_headroom_percent": 20
 }
 ```
 
@@ -13860,8 +13916,11 @@ workers: [{
 
 `use_namespaces` puts each action in its own process namespace;
 `use_mount_namespace` additionally isolates the worker root in a new mount
-namespace, and only works when `use_namespaces` is on. Both are off by default
-and both are recommended in production. The container
+namespace and gives each action a private `/tmp` (its own temporary directory,
+bound over `/tmp` and removed with the action), and only works when
+`use_namespaces` is on. Both are off by default and both are recommended in
+production. Set `isolate_tmp: false` if actions must see the host's `/tmp`,
+for example because a tool they run lives there. The container
 running the worker needs the privileges to create namespaces; the reference
 Compose stack marks the executor service `privileged: true` for exactly this.
 
@@ -14346,8 +14405,9 @@ nativelink_executor:
 which need `CLONE_NEWUSER`/`CLONE_NEWNS`, hence the flag. Note what this buys
 and what it does not: namespaces here are a hermeticity and process-reaping
 mechanism, not a security boundary. Actions still run as the worker's own uid
-through an identity uid map, still see the host filesystem, and still have
-network access to every NativeLink port. A privileged container running
+through an identity uid map, still see the host filesystem apart from a
+private `/tmp`, and still have network access to every NativeLink port. A
+privileged container running
 arbitrary build actions is a lateral-movement primitive.
 [Security hardening](/operate/security-hardening#the-sandbox-is-not-a-security-boundary)
 covers what the sandbox actually does.
@@ -15045,6 +15105,7 @@ each one decides where you have to point the collector:
 | Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
 | Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
 | Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes, whether it succeeded, and how many waiting actions took room that opened mid-pass ahead of newer ones |
+| Sizing | `nativelink_scheduler_hints_resolutions_total` | The scheduler, with `historical_resource` configured | Actions sized, by source: a hint (`target`, `action_digest`, `command_digest`, `mnemonic`), `cold_start`, or `none`; the `cold_start` share is what a hint feed is meant to drive down |
 | gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
 | Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
 | Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |
@@ -15095,6 +15156,16 @@ Success rate:
 ```text
 sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
 sum(rate(nativelink_execution_completed_count_total[5m]))
+```
+
+Actions the worker killed for memory, as a share of the sampled ones. The
+per-action resource histograms carry `execution_outcome` (`completed`,
+`killed_memory`, `killed_disk`), so a kill can be told from a completion and
+the memory escalation rate read against it:
+
+```text
+sum(rate(nativelink_execution_peak_memory_count{execution_outcome="killed_memory"}[5m])) /
+sum(rate(nativelink_execution_peak_memory_count[5m]))
 ```
 
 Workers connected to each scheduler instance, and how many of them are paused
@@ -15224,10 +15295,10 @@ not your pipeline.
   <Accordion title="Which metric should drive worker autoscaling?" id="which-metric-should-drive-worker-autoscaling">
     Queue time, not queue depth. `nativelink_execution_queue_time` is a real
     histogram emitted by the scheduler; a p95 above your tolerance means add
-    workers. No `nativelink_scheduler_queue_depth` series exists; the
-    closest thing is `nativelink_execution_active_count{execution_stage="queued"}`,
-    a gauge, and `nativelink_worker_connected_count` tells you how many workers
-    that queue is waiting on. Before you build an HPA on either, read the
+    workers. `nativelink_scheduler_queue_depth` is a gauge of what the last
+    matching pass read, `nativelink_execution_active_count{execution_stage="queued"}`
+    counts the same thing from the other side, and `nativelink_worker_connected_count`
+    tells you how many workers that queue is waiting on. Before you build an HPA on either, read the
     [autoscaling reference](/operate/autoscaling-reference#the-reaction-time-budget):
     the default one-minute export interval alone puts your reaction time in
     minutes, and CPU-based scaling is worse because workers are mostly I/O-bound.
@@ -15576,9 +15647,14 @@ uid-remapping sandbox; it is a process-reaping and hermeticity mechanism. PID
 namespacing means orphaned children die with the action instead of leaking;
 IPC and UTS namespacing means actions cannot see each other's semaphores or
 hostname (the hostname is set to `nativelink`). With `use_mount_namespace`
-the flag list also gains `CLONE_NEWNS`, and the worker's own root action
-directory is masked so one action cannot see another's tree; the rest of the
-host filesystem stays visible.
+the flag list also gains `CLONE_NEWNS`, the worker's own root action
+directory is masked so one action cannot see another's tree, and `/tmp` is
+replaced with the action's own temporary directory, on the worker's disk and
+removed with the action, so actions cannot collide on, or leak state
+through, predictable paths there (`isolate_tmp: false` keeps the host's
+`/tmp` visible; the bound `/tmp` carries the work volume's mount options,
+`noexec` included, not the host `/tmp`'s); the rest of the host filesystem
+stays visible.
 
 Note what is absent from that flag list: **`CLONE_NEWNET`**. No network
 namespace is created. An action has the worker's full network access, including to port
@@ -17438,15 +17514,16 @@ signal deaths, so the log line is what you alert on.
 
 **The worker process itself was killed.** The scheduler notices after
 `worker_timeout_s` (default 10 seconds, checked once a second), evicts it, and
-re-queues its in-flight actions. In this tree a disconnect *counts as an
-attempt*, so after `max_job_retries` the client finally sees, as a
+re-queues its in-flight actions. A lost worker does not spend the action's
+`max_job_retries`; it has its own budget, `max_worker_loss_retries` (default
+10), so after that many losses the client finally sees, as a
 `FAILED_PRECONDITION` that Bazel does not resubmit:
 
 ```text
-Worker disconnected repeatedly while executing this action (4 > 3 attempts);
-the worker was likely OOM-killed or its pod evicted. Give the action a memory
-reservation or raise the pool's memory limit before retrying. for operation_id: ...,
-maybe_worker_id: ...
+The worker running this action was lost 11 times, more than
+max_worker_loss_retries (10); the action is likely what takes the worker down
+(OOM-killed pod, eviction). Give it a memory reservation or raise the pool's
+memory limit before retrying. for operation_id: ..., maybe_worker_id: ...
 ```
 
 That string is the single best diagnostic for a memory-pressured worker fleet.
@@ -19232,6 +19309,38 @@ the parked actions a worker was actually told to run that way; a non-zero
 rate is normal on a busy fleet and means the head of the queue is being
 served.
 
+When a worker reports an action killed for memory, by its own reservation
+enforcement or by the kernel near the limit, **`memory_escalation`** requeues
+the action with the reservation multiplied by `percent` (default 200) instead
+of failing it. With `ladder_kb` set to the memory values of the fleet's size
+classes, a kill steps the reservation to the next class up instead of
+scaling it. The next dispatch carries the raised value, so the worker holds
+the action to that. The reservation grows to the largest memory any connected
+worker advertises (or `max_kb`); the last step reserves that worker whole,
+its memory and, through `cpu_property`, its CPU, so the action runs alone.
+Only a kill there fails the action, with a message saying no worker in the
+fleet can run it. Escalations have their own budget (`max_steps`, default 8)
+and do not spend `max_job_retries`. The execution histograms carry an
+`execution.outcome` attribute so the killed samples can be told from the
+completed ones.
+
+The `historical_resource` scheduler that fills reservations reads hints by a
+key ladder, each step probed only when the action carries that key:
+`(target_id, action_mnemonic)`, then `target_id`, then the
+action's `action_digest`, then its `command_digest` (each `hash-size` or
+`hash/size`), then the mnemonic alone. The digest keys reach every client,
+whether or not it sends Bazel request metadata; the action digest is what
+origin events carry, so it is what a producer fed by them writes. A hint may name a `class` instead of numbers, and
+**`classes`** on the same scheduler defines the fleet's size ladder: named
+points with `cpu_count`, `memory_kb` and `disk_kb`, listed ascending. An
+action no hint matches takes the class picked by `class_by_mnemonic`, then
+`class_by_timeout` (Bazel test sizes arrive as timeouts), then
+`default_class`; without classes the raw `cold_start` numbers apply. With
+`memory_escalation.ladder_kb` set to the classes' memory values, a memory
+kill steps the reservation to the next class instead of scaling it, and a
+kill at the top class fails the action. Older hint files still load: every
+new field is optional.
+
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
 Every property key a worker advertises has a declared type:
@@ -19267,17 +19376,25 @@ the configuration side.
 
 ## Retries, and what "failed" means [#retries-and-what-failed-means]
 
-The attempt counter is incremented by two different events, with different
-rules.
+The attempt counter is incremented by one event, and two other events that
+used to spend it now have budgets of their own.
 
 **`UpdateWithError` increments the attempt count, unless the error is
 `ResourceExhausted`.** Backpressure is free. A worker saying "I am too busy"
 does not spend one of the action's lives, which is what makes it safe for a
 worker to shed load.
 
-**`UpdateWithDisconnect` always increments.** A worker that vanishes mid-action
-always costs an attempt. Without this, an action that reliably OOM-kills its
-worker would retry forever, taking a worker down each time.
+**`UpdateWithDisconnect` counts against `max_worker_loss_retries`** (default
+10), not `max_job_retries`. A worker that vanishes mid-action is usually not
+the action's doing, so the action goes back to the queue without spending one
+of its lives; the separate budget is what stops an action that reliably
+OOM-kills its worker from taking one down forever. Past it the client sees a
+`FAILED_PRECONDITION` saying the worker was lost that many times.
+
+**`UpdateWithEscalation` counts against `memory_escalation.max_steps`**
+(default 8), not `max_job_retries` either: the scheduler chose to run the
+action again with more memory, and the fleet's ceiling bounds how far that
+goes.
 
 The limit is checked as `attempts > max_job_retries`, strictly, so the
 default of `3` permits **four** total executions. That off-by-one is in the
@@ -19780,8 +19897,11 @@ is the toolchain half of the answer.
 ### Actions can run more than once [#actions-can-run-more-than-once]
 
 The default `max_job_retries` of 3 is checked strictly, so an action may
-execute **four** times. A worker disconnect always costs an attempt; a
-`ResourceExhausted` never does.
+execute **four** times on its own failures. A lost worker has its own budget,
+`max_worker_loss_retries` (default 10), and a memory escalation its own
+(`memory_escalation.max_steps`, default 8), so an action can run more often
+than four times when workers die under it or it keeps outgrowing its
+reservation; a `ResourceExhausted` never costs anything.
 
 For a pure function this is invisible. For an action with side effects (one
 that publishes, deploys, increments, or writes anywhere outside its declared

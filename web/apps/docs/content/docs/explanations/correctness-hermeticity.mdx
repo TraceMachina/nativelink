@@ -99,8 +99,11 @@ is the toolchain half of the answer.
 ### Actions can run more than once [#actions-can-run-more-than-once]
 
 The default `max_job_retries` of 3 is checked strictly, so an action may
-execute **four** times. A worker disconnect always costs an attempt; a
-`ResourceExhausted` never does.
+execute **four** times on its own failures. A lost worker has its own budget,
+`max_worker_loss_retries` (default 10), and a memory escalation its own
+(`memory_escalation.max_steps`, default 8), so an action can run more often
+than four times when workers die under it or it keeps outgrowing its
+reservation; a `ResourceExhausted` never costs anything.
 
 For a pure function this is invisible. For an action with side effects (one
 that publishes, deploys, increments, or writes anywhere outside its declared

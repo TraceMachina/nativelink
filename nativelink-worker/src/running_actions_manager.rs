@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
@@ -70,6 +70,7 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -87,7 +88,8 @@ use uuid::Uuid;
 
 use crate::buck2_file_capture::Buck2FileCapture;
 use crate::persistent_worker::{
-    Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
+    Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
+    WorkerKey,
 };
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -121,6 +123,9 @@ struct SampledResourceUsage {
     /// The last reading before the group was gone, which is what a kernel
     /// kill is judged against.
     last_memory_kb: u64,
+    /// The most the action's own files under its directory came to, when
+    /// disk was measured; 0 otherwise.
+    peak_disk_kb: u64,
 }
 
 /// Why the worker ended an action before the action ended itself.
@@ -128,6 +133,7 @@ struct SampledResourceUsage {
 pub enum KillReason {
     Timeout,
     Memory,
+    Disk,
     External,
 }
 
@@ -166,6 +172,7 @@ pub fn classify_outcome(
 ) -> (ResourceOutcome, bool) {
     match (kill_reason, signal) {
         (Some(KillReason::Memory), _) => (ResourceOutcome::KilledMemory, true),
+        (Some(KillReason::Disk), _) => (ResourceOutcome::KilledDisk, true),
         (Some(KillReason::Timeout), _) => (ResourceOutcome::KilledTimeout, false),
         (None, None) => (ResourceOutcome::Completed, false),
         (None, Some(SIGKILL_NUMBER)) => {
@@ -253,26 +260,130 @@ struct ActionResourceUsageSampler {
     handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
-/// A memory ceiling the sampler enforces: once two consecutive samples
-/// exceed `limit_kb`, the observed figure is sent on `over_limit_tx` and the
-/// caller kills the action.
-#[cfg(target_os = "linux")]
-struct MemoryCeiling {
-    limit_kb: u64,
-    over_limit_tx: oneshot::Sender<u64>,
+/// What the sampler found over a ceiling, with the figure it saw. Only the
+/// Linux sampler sends one; the arm that receives it is built everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum OverLimit {
+    Memory(u64),
+    Disk(u64),
 }
+
+/// The ceilings the sampler enforces. Memory: two consecutive samples over
+/// `memory_limit_kb`, or one at twice it. Disk: one sample of the action's
+/// own files over `disk_limit_kb`. The first breach is sent on
+/// `over_limit_tx` and the caller kills the action; nothing is sent when no
+/// ceiling is set, and the caller keeps the sender alive so the receiver
+/// stays pending.
+#[cfg(target_os = "linux")]
+struct Ceilings {
+    memory_limit_kb: Option<u64>,
+    disk_limit_kb: Option<u64>,
+    over_limit_tx: Option<oneshot::Sender<OverLimit>>,
+}
+
+/// One disk sample every this many memory samples: a walk of the action
+/// directory is a stat per file, so it runs every ten seconds, not four
+/// times a second.
+#[cfg(target_os = "linux")]
+const DISK_SAMPLE_EVERY: u32 = 40;
 
 #[cfg(target_os = "linux")]
 fn start_action_resource_usage_sampler(
     pgid: u32,
-    ceiling: Option<MemoryCeiling>,
+    ceilings: Ceilings,
+    disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx, ceiling)
+        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory)
     );
     ActionResourceUsageSampler { stop_tx, handle }
+}
+
+/// KiB on disk of the files under `directory` that the action wrote: regular
+/// files modified at or after `since`, the directory's stamp from just
+/// before its command started (see [`directory_stamp`]). Its
+/// inputs were materialized before that, as hard links into the CAS store
+/// or private copies, and keep their earlier times, so they are told apart
+/// by time rather than by link count: a hard link drops to one link the
+/// moment the store evicts the blob, and would then pass for the action's
+/// own. Symlinks and the directories' own blocks are not counted. Blocking;
+/// run it on the blocking pool.
+#[cfg(target_family = "unix")]
+pub fn directory_private_kb(directory: &Path, since: SystemTime) -> u64 {
+    let mut total_blocks: u64 = 0;
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let file_type = metadata.file_type();
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file()
+                && metadata.modified().is_ok_and(|modified| modified >= since)
+            {
+                total_blocks = total_blocks.saturating_add(metadata.blocks());
+            }
+        }
+    }
+    // st_blocks are 512-byte units whatever the filesystem's block size.
+    total_blocks / 2
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn directory_private_kb(_directory: &Path, _since: SystemTime) -> u64 {
+    0
+}
+
+/// Touches `directory` and returns the time the filesystem recorded for it.
+/// File mtimes come from the kernel's coarse clock, which on Linux can lag
+/// the wall clock by a tick, so a file written right after
+/// `SystemTime::now()` can look older than that moment. The walk compares
+/// mtimes against this stamp, taken from the same clock, so a file the
+/// action writes afterwards is never older than it.
+#[cfg(target_family = "unix")]
+pub fn directory_stamp(directory: &Path) -> Result<SystemTime, Error> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::fs::File::open(directory)
+        .err_tip(|| format!("Opening {} to stamp it", directory.display()))?;
+    // SAFETY: a zeroed timespec is valid; only tv_nsec is set.
+    let mut now: libc::timespec = unsafe { core::mem::zeroed() };
+    now.tv_nsec = libc::UTIME_NOW;
+    let times = [now, now];
+    // SAFETY: futimens takes an open fd and a pointer to two timespecs that
+    // outlive the call.
+    if unsafe { libc::futimens(dir.as_raw_fd(), times.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .err_tip(|| format!("Stamping {}", directory.display()));
+    }
+    dir.metadata()
+        .and_then(|metadata| metadata.modified())
+        .err_tip(|| format!("Reading the stamp on {}", directory.display()))
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn directory_stamp(_directory: &Path) -> Result<SystemTime, Error> {
+    Ok(SystemTime::now())
+}
+
+/// Starts a disk sample: the action's own files, walked on the blocking
+/// pool as a task of its own, so the memory samples carry on while a large
+/// tree is being walked. `None` when there is no directory to measure.
+#[cfg(target_os = "linux")]
+fn start_disk_sample(
+    directory: Option<&(PathBuf, SystemTime)>,
+) -> Option<JoinHandleDropGuard<u64>> {
+    let (directory, since) = directory?.clone();
+    Some(spawn_blocking!("action_disk_sample", move || {
+        directory_private_kb(&directory, since)
+    }))
 }
 
 /// A signal to every process in the action's group. The action is its own
@@ -303,16 +414,25 @@ async fn finish_action_resource_usage_sampler(
 async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
-    mut ceiling: Option<MemoryCeiling>,
+    mut ceilings: Ceilings,
+    disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
     let mut last_memory_kb = 0;
+    let mut peak_disk_kb = 0;
     let mut samples_over_limit = 0u32;
+    let mut samples_since_disk = DISK_SAMPLE_EVERY;
+    // The walk in flight, if one is; polled, never awaited, from the loop.
+    let mut disk_sample: Option<JoinHandleDropGuard<u64>> = None;
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
     // short-lived. Keep the last figure seen for each pid and total them at
     // the end instead.
     let mut cpu_ticks_by_pid = HashMap::new();
+    // What the group had already spent when sampling began. A one-shot
+    // process starts at nothing; a pooled process carries every request it
+    // served before, which is not this action's.
+    let mut baseline_ticks: Option<u64> = None;
 
     let sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
         let observed = sample_process_group(pgid, cpu_ticks_by_pid);
@@ -324,6 +444,9 @@ async fn sample_action_resource_usage(
 
     loop {
         let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        if baseline_ticks.is_none() {
+            baseline_ticks = Some(cpu_ticks_by_pid.values().sum());
+        }
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
         }
@@ -337,20 +460,48 @@ async fn sample_action_resource_usage(
         // an allocation that fast reaches the pod's limit before the next
         // read (observed: twelve 20 GiB allocators filled a 52 GiB pod in
         // under a second).
-        if let (Some(observed_kb), Some(limit)) = (observed, ceiling.as_ref()) {
-            if observed_kb > limit.limit_kb {
+        if let (Some(observed_kb), Some(limit_kb)) = (observed, ceilings.memory_limit_kb) {
+            if observed_kb > limit_kb {
                 samples_over_limit += 1;
             } else {
                 samples_over_limit = 0;
             }
-            let gross = observed_kb >= limit.limit_kb.saturating_mul(2);
+            let gross = observed_kb >= limit_kb.saturating_mul(2);
             if (samples_over_limit >= 2 || gross)
-                && let Some(limit) = ceiling.take()
-                && limit.over_limit_tx.send(observed_kb).is_err()
+                && let Some(over_limit_tx) = ceilings.over_limit_tx.take()
+                && over_limit_tx.send(OverLimit::Memory(observed_kb)).is_err()
             {
                 // The receiver is gone only when the action already ended.
                 debug!(observed_kb, "Memory ceiling breached, action already ended");
             }
+        }
+
+        // A walk that finished since the last sample; the memory samples
+        // above never waited for it.
+        if let Some(handle) = disk_sample.as_mut()
+            && let core::task::Poll::Ready(finished) = futures::poll!(handle)
+        {
+            disk_sample = None;
+            if let Ok(disk_kb) = finished {
+                peak_disk_kb = peak_disk_kb.max(disk_kb);
+                if let Some(limit_kb) = ceilings.disk_limit_kb
+                    && disk_kb > limit_kb
+                    && let Some(over_limit_tx) = ceilings.over_limit_tx.take()
+                    && over_limit_tx.send(OverLimit::Disk(disk_kb)).is_err()
+                {
+                    debug!(disk_kb, "Disk ceiling breached, action already ended");
+                }
+            }
+        }
+        // The periodic walk belongs to the soft limit; the guard alone
+        // measures once, at the end, and pays no walk while running.
+        samples_since_disk += 1;
+        if ceilings.disk_limit_kb.is_some()
+            && samples_since_disk >= DISK_SAMPLE_EVERY
+            && disk_sample.is_none()
+        {
+            samples_since_disk = 0;
+            disk_sample = start_disk_sample(disk_directory.as_ref());
         }
 
         if *stop_rx.borrow() {
@@ -369,11 +520,26 @@ async fn sample_action_resource_usage(
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
     }
+    // What the action left on disk at the end is the figure that matters
+    // for sizing; this walk, one stat per entry under the action directory,
+    // is the only one the guard mode pays.
+    drop(disk_sample.take());
+    if let Some(handle) = start_disk_sample(disk_directory.as_ref())
+        && let Ok(disk_kb) = handle.await
+    {
+        peak_disk_kb = peak_disk_kb.max(disk_kb);
+    }
 
     SampledResourceUsage {
         peak_memory_kb,
-        cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
+        cpu_time_ms: ticks_to_millis(
+            cpu_ticks_by_pid
+                .values()
+                .sum::<u64>()
+                .saturating_sub(baseline_ticks.unwrap_or(0)),
+        ),
         last_memory_kb,
+        peak_disk_kb,
     }
 }
 
@@ -1630,12 +1796,14 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    // Mark this operation as being cleaned up
-    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
-    else {
-        // Cleanup is already happening elsewhere.
-        return Ok(());
-    };
+    // Mark this operation as being cleaned up. The other holders of the
+    // mark are the orphan sweep and a retry's stale-directory removal, both
+    // brief; waiting on them is what keeps this cleanup from being skipped,
+    // which would leave the action's entries and reservations in place for
+    // good.
+    let _cleaning_guard = running_actions_manager
+        .take_cleanup_mark(operation_id.clone())
+        .await;
 
     let capture = running_actions_manager
         .buck2_captures
@@ -1659,9 +1827,23 @@ async fn do_cleanup(
 
     debug!(%action_directory, "Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = fs::remove_dir_all(action_directory)
-        .await
-        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    // A fetch or an upload ended by a kill or a timeout can leave a blocking
+    // copy or a stamp finishing inside the tree for a moment; the removal is
+    // retried through that instead of failing on the first try.
+    let remove_deadline = Instant::now() + running_actions_manager.max_cleanup_wait;
+    let remove_dir_result = loop {
+        match fs::remove_dir_all(action_directory).await {
+            Ok(()) => break Ok(()),
+            Err(err) if Instant::now() < remove_deadline => {
+                debug!(%operation_id, ?err, "Removing the working directory again");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => {
+                break Err(err)
+                    .err_tip(|| format!("Could not remove working directory {action_directory}"));
+            }
+        }
+    };
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
@@ -1910,6 +2092,9 @@ pub struct RunningActionImpl {
     input_lease: Option<Arc<ActionInputLease>>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
+    /// Set on a kill; every phase that can wait watches it, so a kill ends
+    /// a fetch or an upload as surely as it ends the command.
+    kill_token: watch::Sender<bool>,
     state: Mutex<RunningActionImplState>,
     has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
@@ -1933,7 +2118,9 @@ impl RunningActionImpl {
             )
         });
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
+        let (kill_token, _) = watch::channel(false);
         Self {
+            kill_token,
             operation_id,
             action_directory,
             work_directory,
@@ -2130,6 +2317,98 @@ impl RunningActionImpl {
         })
     }
 
+    /// The environment an action's process starts with: the worker's
+    /// `additional_environment`, then the action's own variables on top,
+    /// and on Windows the `SystemRoot` and `PATH` defaults without which
+    /// nothing runs. With `per_action` the sources that belong to one
+    /// action (its timeout, a side channel file, its directory) are in and
+    /// the side channel file is reported through it; without it they are
+    /// left out, for a pooled process that serves many actions.
+    fn action_environment(
+        &self,
+        command_proto: &ProtoCommand,
+        requested_timeout: Duration,
+        mut per_action: Option<&mut Option<Cow<'_, OsStr>>>,
+    ) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        if let Some(additional_environment) = &self
+            .running_actions_manager
+            .execution_configuration
+            .additional_environment
+        {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Property(property) => self
+                        .action_info
+                        .platform_properties
+                        .get(property)
+                        .cloned()
+                        .unwrap_or_default(),
+                    EnvironmentSource::Value(value) => value.clone(),
+                    EnvironmentSource::FromEnvironment => env::var(name).unwrap_or_default(),
+                    EnvironmentSource::TimeoutMillis => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        requested_timeout.as_millis().to_string()
+                    }
+                    EnvironmentSource::SideChannelFile => {
+                        let Some(side_channel_file) = per_action.as_mut() else {
+                            continue;
+                        };
+                        let file = format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
+                        **side_channel_file = Some(Cow::Owned(file.clone().into()));
+                        file
+                    }
+                    EnvironmentSource::ActionDirectory => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        self.action_directory.clone()
+                    }
+                };
+                env.insert(name.clone(), value);
+            }
+        }
+        for variable in &command_proto.environment_variables {
+            env.insert(variable.name.clone(), variable.value.clone());
+        }
+        // If SystemRoot is not set on windows we set it to default. Failing
+        // to do this causes all commands to fail.
+        #[cfg(target_family = "windows")]
+        {
+            if !env.keys().any(|name| name.to_uppercase() == "SYSTEMROOT") {
+                env.insert("SystemRoot".to_string(), "C:\\Windows".to_string());
+            }
+            if !env.keys().any(|name| name.to_uppercase() == "PATH") {
+                env.insert("PATH".to_string(), "C:\\Windows\\System32".to_string());
+            }
+        }
+        env
+    }
+
+    /// What the scheduler's kill leaves behind for a pooled action, whether
+    /// it came while waiting for a worker process or while one served it.
+    fn record_persistent_worker_kill(&self, command_proto: ProtoCommand, command: &str) {
+        let mut state = self.state.lock();
+        state.error = Error::merge_option(
+            state.error.take(),
+            Some(Error::new(
+                Code::Cancelled,
+                format!("Persistent worker command '{command}' was killed by scheduler"),
+            )),
+        );
+        state.command_proto = Some(command_proto);
+        state.execution_result = Some(RunningActionImplExecutionResult {
+            stdout: Bytes::new().into(),
+            stderr: Bytes::new().into(),
+            exit_code: EXIT_CODE_FOR_SIGNAL,
+            resource_usage: None,
+        });
+        state.execution_metadata.execution_completed_timestamp =
+            (self.running_actions_manager.callbacks.now_fn)();
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -2180,11 +2459,28 @@ impl RunningActionImpl {
         let program = self
             .canonicalise_path(args[0], &command_proto.working_directory)
             .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
-        if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
+        let requested_timeout = if self.action_info.timeout.is_zero() {
+            self.running_actions_manager.max_action_timeout
+        } else {
+            self.action_info.timeout
+        };
+        if self
+            .running_actions_manager
+            .execution_configuration
+            .persistent_workers
+            .enabled
+            && let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info)
+        {
             match wire_format_result {
                 Ok(wire_format) => {
                     let command_argv = os_args_to_strings(&args)?;
-                    let key = WorkerKey::from_argv(&command_argv, wire_format)?;
+                    // What a one-shot action gets, but for the sources that
+                    // belong to one action: a process that serves many
+                    // cannot carry a timeout, a side channel file or an
+                    // action directory.
+                    let env = self.action_environment(&command_proto, requested_timeout, None);
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?
+                        .with_env(env.into_iter().collect());
                     let request = WorkRequest {
                         arguments: persistent_worker_request_arguments(&command_argv),
                         inputs: Vec::<PersistentWorkerInput>::new(),
@@ -2196,23 +2492,81 @@ impl RunningActionImpl {
                     let worker_cwd =
                         PathBuf::from(&self.running_actions_manager.root_action_directory);
 
-                    match self
+                    // The wait for a process is bounded by the action's own
+                    // timeout as well as the pool's, and raced against the
+                    // kill: a cancelled action must not hold a slot, and a
+                    // short action cannot wait longer than it may run.
+                    let acquire_started = Instant::now();
+                    let acquire_bound = self
                         .running_actions_manager
                         .persistent_worker_pool
-                        .acquire(key.clone(), &program, &worker_cwd)
-                        .await
-                    {
+                        .acquire_timeout()
+                        .min(self.timeout);
+                    let acquired = {
+                        let acquire_fut = self
+                            .running_actions_manager
+                            .persistent_worker_pool
+                            .acquire(key.clone(), &program, &worker_cwd);
+                        tokio::pin!(acquire_fut);
+                        tokio::select! {
+                            result = &mut acquire_fut => Some(result),
+                            _ = &mut kill_channel_rx => None,
+                            () = tokio::time::sleep(acquire_bound) => Some(Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "No persistent worker came back within the action's remaining time ({acquire_bound:?})"
+                            ))),
+                        }
+                    };
+                    let Some(acquired) = acquired else {
+                        let command = args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                        self.record_persistent_worker_kill(command_proto, &command);
+                        return Ok(self);
+                    };
+                    match acquired {
                         Ok(mut lease) => {
+                            self.metrics().persistent_worker_dispatches.inc();
                             let timer = self.metrics().child_process.begin_timer();
+                            let execution_started = Instant::now();
+                            // What the pooled process and its children use
+                            // while they serve this request. The process is
+                            // shared, so nothing here is enforced against
+                            // the action's reservation; it is measured so
+                            // the sizing loop learns what the tool needs.
+                            // CPU is what the process spent from here on;
+                            // peak memory is the whole process, which holds
+                            // what earlier requests left in it.
+                            #[cfg(target_os = "linux")]
+                            let sampler = lease.worker().pid().map(|pgid| {
+                                start_action_resource_usage_sampler(
+                                    pgid,
+                                    Ceilings {
+                                        memory_limit_kb: None,
+                                        disk_limit_kb: None,
+                                        over_limit_tx: None,
+                                    },
+                                    None,
+                                )
+                            });
                             let dispatch_result = {
+                                let remaining =
+                                    self.timeout.saturating_sub(acquire_started.elapsed());
                                 let dispatch_fut =
-                                    lease.worker().dispatch_with_timeout(&request, self.timeout);
+                                    lease.worker().dispatch_with_timeout(&request, remaining);
                                 tokio::pin!(dispatch_fut);
                                 tokio::select! {
                                     result = &mut dispatch_fut => Some(result),
                                     _ = &mut kill_channel_rx => None,
                                 }
                             };
+                            #[cfg(target_os = "linux")]
+                            let sampled_usage = match sampler {
+                                Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                                    .await
+                                    .unwrap_or_default(),
+                                None => SampledResourceUsage::default(),
+                            };
+                            #[cfg(not(target_os = "linux"))]
+                            let sampled_usage = SampledResourceUsage::default();
                             let response = match dispatch_result {
                                 Some(Ok(response)) => {
                                     lease.release(true).await;
@@ -2227,29 +2581,9 @@ impl RunningActionImpl {
                                 None => {
                                     drop(timer);
                                     lease.release(false).await;
-                                    {
-                                        let mut state = self.state.lock();
-                                        state.error = Error::merge_option(
-                                            state.error.take(),
-                                            Some(Error::new(
-                                                Code::Cancelled,
-                                                format!(
-                                                    "Persistent worker command '{}' was killed by scheduler",
-                                                    args.join(OsStr::new(" ")).to_string_lossy()
-                                                ),
-                                            )),
-                                        );
-                                        state.command_proto = Some(command_proto);
-                                        state.execution_result =
-                                            Some(RunningActionImplExecutionResult {
-                                                stdout: Bytes::new().into(),
-                                                stderr: Bytes::new().into(),
-                                                exit_code: EXIT_CODE_FOR_SIGNAL,
-                                                resource_usage: None,
-                                            });
-                                        state.execution_metadata.execution_completed_timestamp =
-                                            (self.running_actions_manager.callbacks.now_fn)();
-                                    }
+                                    let command =
+                                        args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                                    self.record_persistent_worker_kill(command_proto, &command);
                                     return Ok(self);
                                 }
                             };
@@ -2261,6 +2595,39 @@ impl RunningActionImpl {
                                 self.metrics().child_process_failure_error_code.inc();
                             }
                             info!(?args, ?key, "Persistent worker command complete");
+                            let (memory_property, disk_property) = self
+                                .running_actions_manager
+                                .execution_configuration
+                                .resource_enforcement
+                                .as_ref()
+                                .map_or((None, None), |e| {
+                                    (
+                                        e.memory.as_ref().map(|m| m.property_name.as_str()),
+                                        e.disk_property_name.as_deref(),
+                                    )
+                                });
+                            let (outcome, enforced) =
+                                classify_outcome(None, None, sampled_usage.last_memory_kb, None);
+                            let resource_usage = Some(ActionResourceUsage {
+                                peak_memory_kb: sampled_usage.peak_memory_kb,
+                                cpu_time_ms: sampled_usage.cpu_time_ms,
+                                sampled: sampled_usage.peak_memory_kb > 0
+                                    || sampled_usage.cpu_time_ms > 0,
+                                operation_id: String::new(),
+                                worker_id: String::new(),
+                                wall_time_ms: u64::try_from(
+                                    execution_started.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX),
+                                peak_disk_kb: 0,
+                                outcome: outcome.into(),
+                                enforced,
+                                reserved: reservation_of(
+                                    &self.action_info.platform_properties,
+                                    memory_property,
+                                    disk_property,
+                                ),
+                            });
                             {
                                 let mut state = self.state.lock();
                                 state.command_proto = Some(command_proto);
@@ -2268,7 +2635,7 @@ impl RunningActionImpl {
                                     stdout: Bytes::new().into(),
                                     stderr: Bytes::from(response.output).into(),
                                     exit_code: response.exit_code,
-                                    resource_usage: None,
+                                    resource_usage,
                                 });
                                 state.execution_metadata.execution_completed_timestamp =
                                     (self.running_actions_manager.callbacks.now_fn)();
@@ -2276,6 +2643,7 @@ impl RunningActionImpl {
                             return Ok(self);
                         }
                         Err(err) => {
+                            self.metrics().persistent_worker_fallbacks.inc();
                             info!(
                                 ?err,
                                 ?key,
@@ -2285,6 +2653,7 @@ impl RunningActionImpl {
                     }
                 }
                 Err(err) => {
+                    self.metrics().persistent_worker_fallbacks.inc();
                     info!(
                         ?err,
                         "Falling back to one-shot execution; unsupported persistent worker protocol"
@@ -2320,73 +2689,13 @@ impl RunningActionImpl {
             command_builder.env("TMPDIR", &tmp_directory);
         }
 
-        let requested_timeout = if self.action_info.timeout.is_zero() {
-            self.running_actions_manager.max_action_timeout
-        } else {
-            self.action_info.timeout
-        };
-
         let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
-        if let Some(additional_environment) = &self
-            .running_actions_manager
-            .execution_configuration
-            .additional_environment
-        {
-            for (name, source) in additional_environment {
-                let value = match source {
-                    EnvironmentSource::Property(property) => self
-                        .action_info
-                        .platform_properties
-                        .get(property)
-                        .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
-                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::FromEnvironment => {
-                        Cow::Owned(env::var(name).unwrap_or_default())
-                    }
-                    EnvironmentSource::TimeoutMillis => {
-                        Cow::Owned(requested_timeout.as_millis().to_string())
-                    }
-                    EnvironmentSource::SideChannelFile => {
-                        let file_cow =
-                            format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
-                        maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
-                        Cow::Owned(file_cow)
-                    }
-                    EnvironmentSource::ActionDirectory => {
-                        Cow::Borrowed(self.action_directory.as_str())
-                    }
-                };
-                command_builder.env(name, value.as_ref());
-            }
-        }
-
-        #[cfg(target_family = "unix")]
-        let envs = &command_proto.environment_variables;
-        // If SystemRoot is not set on windows we set it to default. Failing to do
-        // this causes all commands to fail.
-        #[cfg(target_family = "windows")]
-        let envs = {
-            let mut envs = command_proto.environment_variables.clone();
-            if !envs.iter().any(|v| v.name.to_uppercase() == "SYSTEMROOT") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "SystemRoot".to_string(),
-                        value: "C:\\Windows".to_string(),
-                    },
-                );
-            }
-            if !envs.iter().any(|v| v.name.to_uppercase() == "PATH") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "PATH".to_string(),
-                        value: "C:\\Windows\\System32".to_string(),
-                    },
-                );
-            }
-            envs
-        };
-        for environment_variable in envs {
-            command_builder.env(&environment_variable.name, &environment_variable.value);
+        for (name, value) in self.action_environment(
+            &command_proto,
+            requested_timeout,
+            Some(&mut maybe_side_channel_file),
+        ) {
+            command_builder.env(name, value);
         }
 
         // Sandboxing of the command if we are running on Linux, this resolves issues where
@@ -2396,19 +2705,38 @@ impl RunningActionImpl {
             let use_namespaces = self.running_actions_manager.use_namespaces;
 
             if !matches!(use_namespaces, UseNamespaces::No) {
+                let (mount, isolate_tmp) = match use_namespaces {
+                    UseNamespaces::YesAndMount { isolate_tmp } => (true, isolate_tmp),
+                    UseNamespaces::No | UseNamespaces::Yes => (false, false),
+                };
                 let root_action_directory = std::ffi::CString::new(
                     self.running_actions_manager.root_action_directory.clone(),
                 )
                 .err_tip(|| "In RunningActionImpl::inner_execute()")?;
                 let action_directory = std::ffi::CString::new(self.action_directory.clone())
                     .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+                // The action's private /tmp is its own tmp directory, the
+                // same one TMPDIR points at, bound over /tmp in the child.
+                let tmp_directory = if isolate_tmp {
+                    let tmp_directory = format!("{}/tmp", self.action_directory);
+                    fs::create_dir_all(&tmp_directory)
+                        .await
+                        .err_tip(|| format!("Creating {tmp_directory} for the private /tmp"))?;
+                    Some(
+                        std::ffi::CString::new(tmp_directory)
+                            .err_tip(|| "In RunningActionImpl::inner_execute()")?,
+                    )
+                } else {
+                    None
+                };
 
                 // SAFETY: This function is specifically designed to operate in a async-signal-safe
                 // environment.
                 unsafe {
                     command_builder.pre_exec(move || {
                         crate::namespace_utils::configure_namespace(
-                            matches!(use_namespaces, UseNamespaces::YesAndMount),
+                            mount,
+                            tmp_directory.as_deref(),
                             &root_action_directory,
                             &action_directory,
                         )
@@ -2470,22 +2798,57 @@ impl RunningActionImpl {
                     (reserved_kb, limit_kb)
                 })
             });
-        let (over_limit_tx, over_limit_rx) = oneshot::channel::<u64>();
+        // The disk reservation, held to only with `disk: soft`; disk is
+        // measured whenever the enforcement names a disk property.
+        let disk_enforcement = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| {
+                let property = enforcement.disk_property_name.as_deref()?;
+                let reserved_kb = self
+                    .action_info
+                    .platform_properties
+                    .get(property)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let limit_kb = (enforcement.disk_soft && reserved_kb > 0).then(|| {
+                    reserved_kb.saturating_mul(100 + enforcement.disk_headroom_percent) / 100
+                });
+                Some((reserved_kb, limit_kb))
+            });
+        let (over_limit_tx, over_limit_rx) = oneshot::channel::<OverLimit>();
         // Holds the sender when no ceiling is enforced, so the receiver
         // below stays pending instead of resolving closed.
         let mut over_limit_keepalive = Some(over_limit_tx);
         #[cfg(target_os = "linux")]
         let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
-            let ceiling = memory_reservation.and_then(|(_, limit_kb)| {
-                over_limit_keepalive
-                    .take()
-                    .map(|over_limit_tx| MemoryCeiling {
-                        limit_kb,
-                        over_limit_tx,
-                    })
+            let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
+            let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
+            let over_limit_tx = (memory_limit_kb.is_some() || disk_limit_kb.is_some())
+                .then(|| over_limit_keepalive.take())
+                .flatten();
+            let disk_directory = disk_enforcement.map(|_| {
+                let directory = PathBuf::from(&self.action_directory);
+                let since = directory_stamp(&directory).unwrap_or_else(|err| {
+                    warn!(?err, "Timing the disk walk by the wall clock instead");
+                    SystemTime::now()
+                });
+                (directory, since)
             });
-            start_action_resource_usage_sampler(pgid, ceiling)
+            start_action_resource_usage_sampler(
+                pgid,
+                Ceilings {
+                    memory_limit_kb,
+                    disk_limit_kb,
+                    over_limit_tx,
+                },
+                disk_directory,
+            )
         });
+        #[cfg(not(target_os = "linux"))]
+        let _ = &disk_enforcement;
         let mut over_limit_fut = over_limit_rx.fuse();
 
         // The group to end when the action's own process has exited; taken
@@ -2587,35 +2950,71 @@ impl RunningActionImpl {
                     );
                     hard_kill(&mut child_process_guard, "grace period expired").await;
                 },
-                Ok(observed_kb) = &mut over_limit_fut => {
-                    self.running_actions_manager.metrics.memory_reservation_kills.inc();
-                    kill_reason = Some(KillReason::Memory);
-                    // Memory is still growing; no grace here.
-                    hard_kill(&mut child_process_guard, "memory reservation").await;
-                    let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
-                    let (property, headroom) = self
-                        .running_actions_manager
-                        .execution_configuration
-                        .resource_enforcement
-                        .as_ref()
-                        .and_then(|e| e.memory.as_ref())
-                        .map_or(("", 0), |m| (m.property_name.as_str(), m.headroom_percent));
-                    warn!(
-                        operation_id = ?self.operation_id,
-                        reserved_kb,
-                        limit_kb,
-                        observed_kb,
-                        "Action exceeded its memory reservation, killed"
-                    );
-                    let mut state = self.state.lock();
-                    state.error = Error::merge_option(state.error.take(), Some(Error::new(
-                        Code::FailedPrecondition,
-                        format!(
-                            "Action exceeded its memory reservation: reserved {reserved_kb} KiB ({property}), \
-                             limit {limit_kb} KiB with {headroom}% headroom, observed {observed_kb} KiB. \
-                             Raise the reservation or shrink the action."
-                        ),
-                    )));
+                Ok(over_limit) = &mut over_limit_fut => match over_limit {
+                    OverLimit::Disk(observed_kb) => {
+                        self.running_actions_manager.metrics.disk_reservation_kills.inc();
+                        kill_reason = Some(KillReason::Disk);
+                        // The files are still being written; no grace here.
+                        hard_kill(&mut child_process_guard, "disk reservation").await;
+                        let (reserved_kb, limit_kb) = disk_enforcement
+                            .map_or((0, 0), |(reserved_kb, limit_kb)| {
+                                (reserved_kb, limit_kb.unwrap_or(0))
+                            });
+                        let (property, headroom) = self
+                            .running_actions_manager
+                            .execution_configuration
+                            .resource_enforcement
+                            .as_ref()
+                            .map_or(("", 0), |e| (e.disk_property_name.as_deref().unwrap_or(""), e.disk_headroom_percent));
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            reserved_kb,
+                            limit_kb,
+                            observed_kb,
+                            "Action exceeded its disk reservation, killed"
+                        );
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action exceeded its disk reservation: reserved {reserved_kb} KiB ({property}), \
+                                 limit {limit_kb} KiB with {headroom}% headroom, its own files came to {observed_kb} KiB. \
+                                 Raise the reservation or write less."
+                            ),
+                        )));
+
+                    }
+                    OverLimit::Memory(observed_kb) => {
+                        self.running_actions_manager.metrics.memory_reservation_kills.inc();
+                        kill_reason = Some(KillReason::Memory);
+                        // Memory is still growing; no grace here.
+                        hard_kill(&mut child_process_guard, "memory reservation").await;
+                        let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
+                        let (property, headroom) = self
+                            .running_actions_manager
+                            .execution_configuration
+                            .resource_enforcement
+                            .as_ref()
+                            .and_then(|e| e.memory.as_ref())
+                            .map_or(("", 0), |m| (m.property_name.as_str(), m.headroom_percent));
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            reserved_kb,
+                            limit_kb,
+                            observed_kb,
+                            "Action exceeded its memory reservation, killed"
+                        );
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action exceeded its memory reservation: reserved {reserved_kb} KiB ({property}), \
+                                 limit {limit_kb} KiB with {headroom}% headroom, observed {observed_kb} KiB. \
+                                 Raise the reservation or shrink the action."
+                            ),
+                        )));
+
+                    }
                 },
                 maybe_exit_status = child_process_guard.wait() => {
                     // Defuse our guard so it does not try to cleanup and make senseless logs.
@@ -2749,11 +3148,13 @@ impl RunningActionImpl {
                         cpu_time_ms: sampled_usage.cpu_time_ms,
                         // An action too short to catch a sample leaves both at
                         // zero; say so rather than report a misleading zero.
-                        sampled: sampled_usage.peak_memory_kb > 0 || sampled_usage.cpu_time_ms > 0,
+                        sampled: sampled_usage.peak_memory_kb > 0
+                            || sampled_usage.cpu_time_ms > 0
+                            || sampled_usage.peak_disk_kb > 0,
                         operation_id: String::new(),
                         worker_id: String::new(),
                         wall_time_ms: u64::try_from(execution_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                        peak_disk_kb: 0,
+                        peak_disk_kb: sampled_usage.peak_disk_kb,
                         outcome: outcome.into(),
                         enforced,
                         reserved: reservation_of(
@@ -3255,12 +3656,61 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        let res = self
-            .metrics()
-            .clone()
-            .prepare_action
-            .wrap(Self::inner_prepare_action(self))
-            .await;
+        let download_timeout = self.running_actions_manager.max_download_timeout;
+        let operation_id = self.operation_id.clone();
+        let metrics = self.metrics().clone();
+        let mut kill_rx = self.kill_token.subscribe();
+        // Boxed: the prepare state machine is large, and pinning it on the
+        // stack next to the select below overflowed a test thread.
+        let mut prepare_fut = Box::pin(
+            metrics
+                .prepare_action
+                .wrap(Self::inner_prepare_action(self)),
+        );
+        // A fetch that never answers would otherwise hold the slot for good
+        // while the worker's keepalives say it is fine: name it every minute
+        // and give up at the timeout, so the scheduler can retry elsewhere.
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = download_timeout.as_secs(),
+                    "prepare_action: still fetching inputs, possible stall",
+                );
+            }
+        };
+        let res = tokio::time::timeout(download_timeout, async {
+            tokio::pin!(stall_warn_fut);
+            tokio::select! {
+                result = &mut prepare_fut => result,
+                _ = kill_rx.wait_for(|killed| *killed) => {
+                    warn!(%operation_id, "prepare_action: killed while fetching inputs");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while fetching its inputs"
+                    ))
+                }
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|_| {
+            warn!(
+                %operation_id,
+                timeout_s = download_timeout.as_secs(),
+                "prepare_action: input fetch timed out"
+            );
+            make_err!(
+                Code::DeadlineExceeded,
+                "Fetching the inputs of operation {operation_id} took longer than max_download_timeout ({}s)",
+                download_timeout.as_secs(),
+            )
+        })
+        .and_then(|res| res);
         if let Err(ref e) = res {
             warn!(?e, "Error during prepare_action");
         }
@@ -3289,6 +3739,7 @@ impl RunningAction for RunningActionImpl {
             "upload_results: starting with timeout",
         );
         let metrics = self.metrics().clone();
+        let kill_token = self.kill_token.clone();
         let upload_fut = metrics
             .upload_results
             .wrap(Self::inner_upload_results(self));
@@ -3307,11 +3758,24 @@ impl RunningAction for RunningActionImpl {
             }
         };
 
+        // Only a kill that arrives during the upload ends it: a kill that
+        // already ended the command leaves a killed result that still has to
+        // reach the scheduler, so the token's current state is taken as seen
+        // and only a change from here on aborts.
+        let mut kill_rx = kill_token.subscribe();
+        kill_rx.borrow_and_update();
         let res = tokio::time::timeout(upload_timeout, async {
             tokio::pin!(upload_fut);
             tokio::pin!(stall_warn_fut);
             tokio::select! {
                 result = &mut upload_fut => result,
+                Ok(()) = kill_rx.changed() => {
+                    warn!(%operation_id, "upload_results: killed while uploading");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while uploading its results"
+                    ))
+                }
                 () = &mut stall_warn_fut => unreachable!(),
             }
         })
@@ -3442,8 +3906,13 @@ pub struct ResourceEnforcement {
     pub memory: Option<MemoryLimit>,
     /// Refuse an action whose disk reservation, under this property, is
     /// more than the free space under the work directory less what the
-    /// actions already admitted reserved.
+    /// actions already admitted reserved, and measure what the action
+    /// writes.
     pub disk_property_name: Option<String>,
+    /// Kill an action whose own files pass the disk reservation plus
+    /// `disk_headroom_percent`.
+    pub disk_soft: bool,
+    pub disk_headroom_percent: u64,
 }
 
 /// The reservation a memory ceiling is built from.
@@ -3467,10 +3936,12 @@ impl ResourceEnforcement {
             }),
         };
         let disk_property_name =
-            (config.disk == DiskEnforcement::Guard).then(|| config.disk_property_name.clone());
+            (config.disk != DiskEnforcement::None).then(|| config.disk_property_name.clone());
         (memory.is_some() || disk_property_name.is_some()).then_some(Self {
             memory,
             disk_property_name,
+            disk_soft: config.disk == DiskEnforcement::Soft,
+            disk_headroom_percent: config.disk_headroom_percent,
         })
     }
 }
@@ -3524,6 +3995,25 @@ pub struct ExecutionConfiguration {
     /// executes other than those in the `ActionInfo`.  On Windows, `SystemRoot`
     /// and PATH are also assigned (see `inner_execute`).
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+    /// Bazel persistent workers: whether an action that supports them runs
+    /// in a pooled process, and how the pool is sized.
+    pub persistent_workers: PersistentWorkersSettings,
+}
+
+/// See `ExecutionConfiguration::persistent_workers`.
+#[derive(Debug, Clone, Copy)]
+pub struct PersistentWorkersSettings {
+    pub enabled: bool,
+    pub pool: PoolConfig,
+}
+
+impl Default for PersistentWorkersSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pool: PoolConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -3774,7 +4264,12 @@ impl UploadActionResults {
 pub enum UseNamespaces {
     No,
     Yes,
-    YesAndMount,
+    /// Also unshare the mount namespace. With `isolate_tmp` each action gets
+    /// a private `/tmp`, its own tmp directory bound over `/tmp`, on top of
+    /// the masked root action directory.
+    YesAndMount {
+        isolate_tmp: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -3787,6 +4282,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
+    pub max_download_timeout: Duration,
     pub max_cleanup_wait: Duration,
     pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
@@ -3800,7 +4296,10 @@ pub struct RunningActionsManagerArgs<'a> {
     pub use_namespaces: UseNamespaces,
 }
 
-struct CleanupGuard {
+/// The mark that an operation's directory is being cleaned; dropping it
+/// clears the mark and wakes whoever waits for it.
+#[derive(Debug)]
+pub struct CleanupGuard {
     manager: Weak<RunningActionsManagerImpl>,
     operation_id: OperationId,
 }
@@ -3827,6 +4326,7 @@ pub struct RunningActionsManagerImpl {
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
+    max_download_timeout: Duration,
     timeout_handled_externally: bool,
     /// The container's memory limit, the yardstick for calling a SIGKILL
     /// nobody here sent an OOM kill.
@@ -3860,6 +4360,8 @@ pub struct RunningActionsManagerImpl {
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
     persistent_worker_pool: PersistentWorkerPool,
+    /// Retires idle persistent workers; ends with the manager.
+    _persistent_worker_sweeper: JoinHandleDropGuard<()>,
     buck2_captures: Mutex<HashMap<OperationId, Buck2FileCapture>>,
 }
 
@@ -3879,6 +4381,9 @@ impl RunningActionsManagerImpl {
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());
+        let persistent_worker_pool =
+            PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
+        let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
@@ -3893,6 +4398,7 @@ impl RunningActionsManagerImpl {
             max_action_timeout: args.max_action_timeout,
             pod_memory_limit_kb: pod_memory_limit_kb(),
             max_upload_timeout: args.max_upload_timeout,
+            max_download_timeout: args.max_download_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
@@ -3908,7 +4414,8 @@ impl RunningActionsManagerImpl {
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             active_input_leases: args.active_input_leases,
-            persistent_worker_pool: PersistentWorkerPool::default(),
+            persistent_worker_pool,
+            _persistent_worker_sweeper: persistent_worker_sweeper,
             buck2_captures: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
@@ -3928,18 +4435,20 @@ impl RunningActionsManagerImpl {
     /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
     /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
     /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
-    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
+    async fn wait_for_cleanup_if_needed(
+        self: &Arc<Self>,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
         let start = Instant::now();
         let mut backoff = Duration::from_millis(10);
         let mut has_waited = false;
 
         loop {
-            let should_wait = {
-                let cleaning = self.cleaning_up_operations.lock();
-                cleaning.contains(operation_id)
-            };
-
-            if !should_wait {
+            // The mark is held for the removal below, so it cannot race the
+            // orphan sweep's removal of the same tree; while someone else
+            // holds it, this waits.
+            let mark = self.perform_cleanup(operation_id.clone());
+            if let Some(_cleaning_guard) = mark {
                 let action_is_running = self
                     .running_actions
                     .lock()
@@ -4127,16 +4636,25 @@ impl RunningActionsManagerImpl {
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
                 continue;
             };
+            // A running action's directory is not the sweep's to touch, and
+            // its cleanup waits on the mark, so the mark is taken only for
+            // an unowned directory and given back at once if the directory
+            // became owned in between: an action that starts and ends
+            // inside that window then cleans up as usual, not later.
+            let is_owned = || {
+                self.running_actions
+                    .lock()
+                    .keys()
+                    .any(|operation_id| operation_id.to_string() == name)
+            };
+            if is_owned() {
+                continue;
+            }
             let Some(_cleaning_guard) = self.perform_cleanup(OperationId::from(name.as_str()))
             else {
                 continue;
             };
-            let owned = self
-                .running_actions
-                .lock()
-                .keys()
-                .any(|operation_id| operation_id.to_string() == name);
-            if owned {
+            if is_owned() {
                 continue;
             }
             let path = entry.path();
@@ -4201,6 +4719,9 @@ impl RunningActionsManagerImpl {
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
+        // The token first: a phase waiting on it (a fetch, an upload) ends
+        // now, whether or not the command ever started.
+        action.kill_token.send_replace(true);
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
@@ -4215,14 +4736,41 @@ impl RunningActionsManagerImpl {
         }
     }
 
-    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
-        let mut cleaning = self.cleaning_up_operations.lock();
-        cleaning
-            .insert(operation_id.clone())
-            .then_some(CleanupGuard {
-                manager: Arc::downgrade(self),
-                operation_id,
-            })
+    /// Marks the operation as being cleaned and returns the guard that
+    /// clears the mark, or `None` when another cleanup already holds it.
+    ///
+    /// The guard is built only after the lock is released: its `Drop` takes
+    /// the same lock, so a guard made under it and thrown away (as
+    /// `then_some` did, whatever the insert said) deadlocked the thread on
+    /// its own mutex and, one by one, every runtime thread that then came to
+    /// clean up or start an action, while the worker's keepalives kept it
+    /// looking alive. The orphan sweep made the double mark routine: it marks
+    /// every directory it visits, and a directory whose action is mid-cleanup
+    /// is already marked.
+    pub fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
+        let inserted = self
+            .cleaning_up_operations
+            .lock()
+            .insert(operation_id.clone());
+        inserted.then(|| CleanupGuard {
+            manager: Arc::downgrade(self),
+            operation_id,
+        })
+    }
+
+    /// Takes the cleanup mark, waiting for whoever holds it to let go. The
+    /// wait is armed before the mark is tried, so a release in between is
+    /// not missed.
+    pub async fn take_cleanup_mark(self: &Arc<Self>, operation_id: OperationId) -> CleanupGuard {
+        loop {
+            let notified = self.cleanup_complete_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(guard) = self.perform_cleanup(operation_id.clone()) {
+                return guard;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -4462,6 +5010,14 @@ pub struct Metrics {
     memory_reservation_kills: CounterWithTime,
     #[metric(help = "Actions refused because their disk reservation exceeded the free space.")]
     disk_guard_refusals: CounterWithTime,
+    #[metric(help = "Actions killed for writing past their disk reservation.")]
+    disk_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions served by a pooled persistent worker process.")]
+    persistent_worker_dispatches: CounterWithTime,
+    #[metric(
+        help = "Actions that asked for a persistent worker and ran one-shot instead: pool at capacity, spawn failure or an unsupported protocol."
+    )]
+    persistent_worker_fallbacks: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]
