@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::pin::Pin;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -202,10 +203,19 @@ pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
     ) -> Result<ActionStateResultStream<'a>, Error>;
 
     /// Assign an operation to a worker or unassign it.
+    ///
+    /// `expected_platform_properties`, when assigning, is the untyped
+    /// requirement snapshot the matcher chose this worker for. The accept
+    /// rejects (with `Aborted`) if the action's current requirements no
+    /// longer match it — an escalation or other requeue changed the
+    /// reservation after the worker was picked, so the placement is stale
+    /// and must be rematched against the current requirements rather than
+    /// dispatched at the old reservation. `None` skips the check.
     async fn assign_operation(
         &self,
         operation_id: &OperationId,
         worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
+        expected_platform_properties: Option<&HashMap<String, String>>,
     ) -> Result<(), Error>;
 
     /// Completes a queued operation with `err`, without retrying it. Does

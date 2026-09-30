@@ -14,6 +14,7 @@
 
 use core::ops::Bound;
 use core::time::Duration;
+use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
@@ -951,6 +952,7 @@ where
                 "Operation timed out after {} seconds",
                 self.no_event_action_timeout.as_secs_f32(),
             )),
+            None,
         )
         .await
     }
@@ -960,6 +962,7 @@ where
         operation_id: &OperationId,
         maybe_worker_id: Option<&WorkerId>,
         update: UpdateOperationType,
+        expected_platform_properties: Option<&HashMap<String, String>>,
     ) -> Result<(), Error> {
         let update_type_str = match &update {
             UpdateOperationType::KeepAlive => "KeepAlive",
@@ -1092,6 +1095,31 @@ where
                     {
                         warn!(state = ?awaited_action.state(), "Action already assigned");
                         return Err(make_err!(Code::Aborted, "Action already assigned"));
+                    }
+                    // Placement validation: the matcher chose this worker for a
+                    // snapshot of the action's requirements. If the action's
+                    // current requirements no longer match that snapshot — an
+                    // escalation or other requeue raised the reservation after
+                    // the worker was picked — the placement is stale. Accepting
+                    // it would flip the action to Executing while the matcher
+                    // dispatches the old, smaller reservation to the worker,
+                    // silently bypassing the escalation. Reject with Aborted so
+                    // the matcher treats it as a lost race and the action is
+                    // rematched against its current requirements.
+                    if stage == &ActionStage::Executing
+                        && let Some(expected) = expected_platform_properties
+                        && &awaited_action.action_info().platform_properties != expected
+                    {
+                        warn!(
+                            %operation_id,
+                            expected = ?expected,
+                            current = ?awaited_action.action_info().platform_properties,
+                            "Rejecting stale placement: requirements changed since the worker was chosen"
+                        );
+                        return Err(make_err!(
+                            Code::Aborted,
+                            "Stale placement for {operation_id}: action requirements changed since the worker was chosen; rematch required"
+                        ));
                     }
                     stage.clone()
                 }
@@ -1548,7 +1576,7 @@ where
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
-        self.inner_update_operation(operation_id, Some(worker_id), update)
+        self.inner_update_operation(operation_id, Some(worker_id), update, None)
             .await
     }
 
@@ -1608,6 +1636,7 @@ where
         &self,
         operation_id: &OperationId,
         worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
+        expected_platform_properties: Option<&HashMap<String, String>>,
     ) -> Result<(), Error> {
         let (maybe_worker_id, update) = match worker_id_or_reason_for_unassign {
             Ok(worker_id) => (
@@ -1616,8 +1645,13 @@ where
             ),
             Err(err) => (None, UpdateOperationType::UpdateWithError(err)),
         };
-        self.inner_update_operation(operation_id, maybe_worker_id, update)
-            .await
+        self.inner_update_operation(
+            operation_id,
+            maybe_worker_id,
+            update,
+            expected_platform_properties,
+        )
+        .await
     }
 
     async fn fail_queued_operation(

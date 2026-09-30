@@ -651,15 +651,28 @@ impl SimpleScheduler {
                     action_state.client_operation_id.clone()
                 };
 
-                // Tell the matching engine that the operation is being assigned to a worker.
+                // Tell the matching engine that the operation is being assigned
+                // to a worker, validating that the requirements this worker was
+                // chosen for still hold. A peer that requeued the action with a
+                // raised reservation (memory escalation) between our read and
+                // now must not have our stale, smaller placement dispatched at
+                // it; the accept rejects such a placement with Aborted.
                 let assign_result = matching_engine_state_manager
-                    .assign_operation(&operation_id, Ok(&worker_id))
+                    .assign_operation(
+                        &operation_id,
+                        Ok(&worker_id),
+                        Some(&action_info.inner.platform_properties),
+                    )
                     .await
                     .err_tip(|| "Failed to assign operation in do_try_match");
                 if let Err(err) = assign_result {
                     if err.code == Code::Aborted {
-                        // If the operation was aborted, it means that the operation was
-                        // cancelled due to another operation being assigned to the worker.
+                        // Aborted here means either another operation was
+                        // assigned to the worker first, or our placement is
+                        // stale because the action's requirements changed after
+                        // we chose the worker. Either way nothing was sent; the
+                        // action stays queued and is rematched next pass against
+                        // its current requirements.
                         return Ok(Dispatch::LostRace);
                     }
                     // Any other error is a real error.
