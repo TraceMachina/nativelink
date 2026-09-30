@@ -106,6 +106,7 @@ mod tests {
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
+    const DEFAULT_MAX_DOWNLOAD_TIMEOUT: u64 = 600;
     const DEFAULT_MAX_CLEANUP_WAIT: u64 = 30;
     const DEFAULT_MAX_CLEANUP_BACKOFF: u64 = 500;
 
@@ -377,6 +378,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::from_mins(10),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -537,6 +539,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::from_mins(10),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1124,6 +1127,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1253,6 +1257,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1384,6 +1389,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1570,6 +1576,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -1758,6 +1765,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2015,6 +2023,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2170,6 +2179,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2316,6 +2326,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2457,6 +2468,7 @@ mod tests {
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2672,6 +2684,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -2860,6 +2873,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3036,6 +3050,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3285,6 +3300,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3381,6 +3397,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3596,6 +3613,254 @@ exit 0
     #[cfg(target_family = "unix")]
     default_health_status_indicator!(GatedStore);
 
+    /// A store that answers `has` and uploads normally but never finishes a
+    /// read of one digest: what a wedged tier looks like to the worker.
+    #[derive(Debug)]
+    struct HangingStore {
+        inner: Store,
+        hang_on: DigestInfo,
+    }
+
+    impl HangingStore {
+        fn new(inner: Arc<MemoryStore>, hang_on: DigestInfo) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Store::new(inner),
+                hang_on,
+            })
+        }
+    }
+
+    impl MetricsComponent for HangingStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for HangingStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            if key == StoreKey::Digest(self.hang_on) {
+                future::pending::<()>().await;
+            }
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(HangingStore);
+
+    /// A manager whose CAS never finishes reading one input of the action it
+    /// returns the digest of.
+    async fn hung_fetch_setup(
+        max_download_timeout: Duration,
+    ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo), Box<dyn core::error::Error>> {
+        const FILE_CONTENT: &[u8] = b"never arrives";
+        let inner = MemoryStore::new(&MemorySpec::default());
+        let file_digest = DigestInfo::new([9u8; 32], FILE_CONTENT.len() as u64);
+        inner
+            .as_ref()
+            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .await?;
+        let slow_store = HangingStore::new(inner.clone(), file_digest);
+        let fast_config = FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_config).await?;
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(fast_store),
+            Store::new(slow_store),
+        );
+        let input_root_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![FileNode {
+                    name: "input.txt".to_string(),
+                    digest: Some(file_digest.into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            inner.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let command_digest = serialize_and_upload_message(
+            &Command::default(),
+            inner.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action_digest = serialize_and_upload_message(
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(input_root_digest.into()),
+                ..Default::default()
+            },
+            inner.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout,
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        Ok((running_actions_manager, action_digest))
+    }
+
+    fn start_execute_for(action_digest: DigestInfo, operation_id: &str) -> StartExecute {
+        StartExecute {
+            request_metadata: None,
+            execute_request: Some(ExecuteRequest {
+                action_digest: Some(action_digest.into()),
+                digest_function: ProtoDigestFunction::Sha256.into(),
+                ..Default::default()
+            }),
+            operation_id: operation_id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// An input whose fetch never completes fails the action at
+    /// `max_download_timeout` with `DeadlineExceeded` instead of holding its
+    /// slot for good.
+    #[nativelink_test]
+    async fn prepare_action_times_out_on_a_hung_fetch() -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest) =
+            hung_fetch_setup(Duration::from_secs(1)).await?;
+        let started = std::time::Instant::now();
+        let result = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &OperationId::default().to_string()),
+            )
+            .await?
+            .prepare_action()
+            .await;
+        let err = result.expect_err("the fetch never completes, prepare must fail");
+        assert_eq!(err.code, Code::DeadlineExceeded, "{err:?}");
+        assert!(err.to_string().contains("max_download_timeout"), "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "took {:?}",
+            started.elapsed()
+        );
+        Ok(())
+    }
+
+    /// A kill that arrives while the inputs are still fetching ends the
+    /// action at once with `Aborted`; it does not wait for the fetch.
+    #[nativelink_test]
+    async fn prepare_action_stops_on_a_kill() -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest) =
+            hung_fetch_setup(Duration::from_secs(60)).await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let started = std::time::Instant::now();
+        let killer = {
+            let manager = running_actions_manager.clone();
+            let operation_id = operation_id.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                manager.kill_operation(&operation_id).await
+            }
+        };
+        let (kill_res, prepare_res) = tokio::join!(killer, action.prepare_action());
+        kill_res?;
+        let err = prepare_res.expect_err("a killed fetch must not complete");
+        assert_eq!(err.code, Code::Aborted, "{err:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "took {:?}",
+            started.elapsed()
+        );
+        Ok(())
+    }
+
     /// The bound on open output files holds across the whole tree, not per
     /// directory: eight directories of thirty-two files each are uploaded
     /// through one gate, and never more than the bound (plus stdout and
@@ -3644,6 +3909,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3782,6 +4048,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -3962,6 +4229,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4105,6 +4373,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4214,6 +4483,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4371,6 +4641,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4724,6 +4995,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 // Zero: anything unowned counts as settled at once.
                 max_cleanup_wait: Duration::ZERO,
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
@@ -4775,6 +5047,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::ZERO,
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -4842,6 +5115,7 @@ exit 0
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5027,6 +5301,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5120,6 +5395,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5199,6 +5475,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5285,6 +5562,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5392,6 +5670,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5443,6 +5722,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5515,6 +5795,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -5638,6 +5919,7 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                    max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
@@ -5731,6 +6013,7 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                    max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
@@ -5824,6 +6107,7 @@ exit 1
                     },
                     max_action_timeout: MAX_TIMEOUT_DURATION,
                     max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                    max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                     max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
@@ -5918,6 +6202,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6079,6 +6364,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6255,6 +6541,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6368,6 +6655,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6483,6 +6771,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6602,6 +6891,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6728,6 +7018,7 @@ exit 1
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -6892,6 +7183,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 },
                 max_action_timeout: Duration::from_mins(1),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7143,6 +7435,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 },
                 max_action_timeout: Duration::from_secs(30),
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7243,6 +7536,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7429,6 +7723,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7561,6 +7856,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7714,6 +8010,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7829,6 +8126,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -7974,6 +8272,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -8150,6 +8449,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::MAX,
+                max_download_timeout: Duration::MAX,
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
@@ -8310,6 +8610,7 @@ done
                 },
                 max_action_timeout: Duration::MAX,
                 max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
                 max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
