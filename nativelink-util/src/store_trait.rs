@@ -625,6 +625,14 @@ pub trait StoreDriver:
     // for ref stores
     async fn post_init(self: Arc<Self>) -> Result<(), Error>;
 
+    /// Drops this store's own copy of `key`, so the next read repopulates it
+    /// from below; a store that holds the durable copy keeps it and answers
+    /// `false`. Used when a read proves a cached copy is bad. Returns whether
+    /// anything was dropped.
+    async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(false)
+    }
+
     /// See: [`StoreLike::has`] for details.
     #[inline]
     async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {

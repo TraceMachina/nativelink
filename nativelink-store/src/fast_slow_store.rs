@@ -467,6 +467,18 @@ impl StoreDriver for FastSlowStore {
         Ok(())
     }
 
+    /// Both tiers drop their copy: the fast one is the cache this store
+    /// keeps, the slow one may be a cache of its own.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let fast = self
+            .fast_store
+            .as_store_driver_pin()
+            .remove(key.borrow())
+            .await?;
+        let slow = self.slow_store.as_store_driver_pin().remove(key).await?;
+        Ok(fast || slow)
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         key: &[StoreKey<'_>],

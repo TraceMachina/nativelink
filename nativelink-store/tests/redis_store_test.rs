@@ -713,6 +713,79 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     Ok(())
 }
 
+// The key was evicted between two GETRANGEs: the second comes back empty,
+// which is also what the end of a value on a chunk boundary looks like. The
+// store asks STRLEN, sees the key is gone, and fails the read instead of
+// ending it early.
+#[nativelink_test]
+async fn get_part_key_removed_between_chunks_is_not_found() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, DEFAULT_READ_CHUNK_SIZE * 2)?;
+    let real_key = format!("{digest}");
+    let chunk_end = i64::try_from(DEFAULT_READ_CHUNK_SIZE).unwrap() - 1;
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(chunk_end),
+            Ok(Value::BulkString(vec![b'a'; DEFAULT_READ_CHUNK_SIZE])),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(chunk_end + 1)
+                .arg(chunk_end * 2 + 1),
+            Ok(Value::BulkString(vec![])),
+        ),
+        MockCmd::new(redis::cmd("STRLEN").arg(real_key), Ok(Value::Int(0))),
+    ];
+    let store = make_mock_store(commands).await;
+
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(
+        result.as_ref().unwrap_err().code,
+        Code::NotFound,
+        "{result:?}"
+    );
+    Ok(())
+}
+
+// A value that ends exactly on a chunk boundary: the empty GETRANGE is the
+// real end, STRLEN agrees, and the read completes with every byte.
+#[nativelink_test]
+async fn get_part_value_ending_on_a_chunk_boundary_reads_whole() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, DEFAULT_READ_CHUNK_SIZE)?;
+    let real_key = format!("{digest}");
+    let chunk_end = i64::try_from(DEFAULT_READ_CHUNK_SIZE).unwrap() - 1;
+
+    let commands = vec![
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(chunk_end),
+            Ok(Value::BulkString(vec![b'a'; DEFAULT_READ_CHUNK_SIZE])),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(chunk_end + 1)
+                .arg(chunk_end * 2 + 1),
+            Ok(Value::BulkString(vec![])),
+        ),
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(real_key),
+            Ok(Value::Int(i64::try_from(DEFAULT_READ_CHUNK_SIZE).unwrap())),
+        ),
+    ];
+    let store = make_mock_store(commands).await;
+
+    let result = store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(result.len(), DEFAULT_READ_CHUNK_SIZE);
+    Ok(())
+}
+
 #[nativelink_test]
 async fn list_test() -> Result<(), Error> {
     async fn get_list(
