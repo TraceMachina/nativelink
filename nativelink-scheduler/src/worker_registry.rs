@@ -126,6 +126,15 @@ impl WorkerRegistry {
         self.check_liveness(worker_id, timeout, now).await == WorkerLiveness::Alive
     }
 
+    /// Test-only: hold the internal write lock so that concurrent liveness
+    /// reads park at a deterministic await point.
+    #[cfg(test)]
+    pub(crate) async fn write_lock_for_test(
+        &self,
+    ) -> async_lock::RwLockWriteGuard<'_, HashMap<WorkerId, SystemTime>> {
+        self.workers.write().await
+    }
+
     pub async fn get_worker_last_seen(&self, worker_id: &WorkerId) -> Option<SystemTime> {
         let workers = self.workers.read().await;
         workers.get(worker_id).copied()
