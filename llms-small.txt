@@ -1653,11 +1653,12 @@ reusing a warm process, and a clear-eyed view of the isolation you trade for it.
 
 ## Two things to know before you start
 
-**Almost nothing needs configuring in NativeLink.** No field anywhere in
-[the configuration model](/configuration) turns this on, tunes the pool, or
-selects a protocol; `LocalWorkerConfig` has no persistent-worker section at
-all, and every pool parameter is a compiled-in constant. The feature is
-driven by two platform properties on each action.
+**Little needs configuring in NativeLink.** The pool is on by default and
+the protocol is chosen by two platform properties on each action. The
+worker's `persistent_workers` block (v1.7.3 and later) sizes it: how many
+processes per key, how long an idle one lives, how many requests one serves,
+how long an action at the cap waits for a process to come back, and
+`enabled: false` to run every such action one-shot.
 
 ## Opt an action in
 
@@ -1672,13 +1673,14 @@ Actions are pooled by a key derived from the command line:
 
 ## The isolation you give up
 
-This is the part to read twice. NativeLink applies real isolation to ordinary
-actions and **applies none of it to persistent workers**. The persistent path
-returns before any of it runs.
+This is the part to read twice. A persistent worker process outlives the
+actions it serves, so some of the isolation an ordinary action gets cannot
+apply to it, and some of it did not apply until v1.7.3.
 
 ## The pool's actual behaviour
 
-Every parameter below is a compiled-in constant. None is configurable.
+The pool is configured under `persistent_workers` on the worker; every value
+below is its default.
 
 ## Steps
 
@@ -3983,8 +3985,8 @@ Every property key a worker advertises has a declared type:
 
 ## Retries, and what "failed" means
 
-The attempt counter is incremented by two different events, with different
-rules.
+The attempt counter is incremented by one event, and two other events that
+used to spend it now have budgets of their own.
 
 ### Two timeouts with very different defaults
 
@@ -4125,8 +4127,11 @@ result computed with a different value of it.
 ### Actions can run more than once
 
 The default `max_job_retries` of 3 is checked strictly, so an action may
-execute **four** times. A worker disconnect always costs an attempt; a
-`ResourceExhausted` never does.
+execute **four** times on its own failures. A lost worker has its own budget,
+`max_worker_loss_retries` (default 10), and a memory escalation its own
+(`memory_escalation.max_steps`, default 8), so an action can run more often
+than four times when workers die under it or it keeps outgrowing its
+reservation; a `ResourceExhausted` never costs anyth…
 
 ### Some output metadata is discarded
 
