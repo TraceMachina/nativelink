@@ -19,7 +19,9 @@ use nativelink_scheduler::awaited_action_db::{
 };
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
-use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+use nativelink_scheduler::simple_scheduler_state_manager::{
+    SimpleSchedulerStateManager, TimeoutCause,
+};
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_registry::WorkerRegistry;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
@@ -258,6 +260,231 @@ async fn does_not_time_out_a_live_worker_mid_action() -> Result<(), Error> {
     assert!(
         !state_mgr.should_timeout_operation(&action).await,
         "a heartbeating worker's action must survive past worker_timeout_s"
+    );
+    Ok(())
+}
+
+/// `Action.timeout` for the deadline tests below. The grace is
+/// `WORKER_TIMEOUT`, the state managers' `no_event_action_timeout`.
+const ACTION_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// An action with `ACTION_TIMEOUT`, assigned to `worker_id` and executing
+/// since `started`.
+fn action_with_timeout(worker_id: &WorkerId, started: SystemTime) -> AwaitedAction {
+    let mut info = action_info(started);
+    info.timeout = ACTION_TIMEOUT;
+    let action_digest = info.digest();
+    let operation_id = OperationId::default();
+    let mut action = AwaitedAction::new(operation_id.clone(), Arc::new(info), started);
+    action.worker_set_state(
+        Arc::new(ActionState {
+            stage: ActionStage::Executing,
+            client_operation_id: operation_id,
+            action_digest,
+            last_transition_timestamp: started,
+        }),
+        started,
+    );
+    action.set_worker_id(Some(worker_id.clone()), started);
+    action
+}
+
+const fn action_timeout_cause() -> TimeoutCause {
+    TimeoutCause::ActionTimeout {
+        timeout: ACTION_TIMEOUT,
+        grace: WORKER_TIMEOUT,
+    }
+}
+
+/// Just short of `Action.timeout` plus the grace.
+const WITHIN_GRACE: Duration =
+    Duration::from_secs(ACTION_TIMEOUT.as_secs() + WORKER_TIMEOUT.as_secs() - 1);
+
+/// Just past `Action.timeout` plus the grace.
+const PAST_GRACE: Duration =
+    Duration::from_secs(ACTION_TIMEOUT.as_secs() + WORKER_TIMEOUT.as_secs() + 1);
+
+/// A heartbeating worker enforces `Action.timeout` itself, from when the
+/// command starts, and reports a completed `DEADLINE_EXCEEDED` result. The
+/// scheduler's clock starts at assignment, earlier, so ending the action at
+/// `Action.timeout` would requeue every action that runs to its timeout onto
+/// the worker still running it, and the worker's own result would then evict
+/// it. The grace lets the live worker report first.
+#[nativelink_test]
+async fn gives_a_live_worker_the_grace_to_report_its_own_timeout() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("enforces-its-own-timeout"));
+    let action = action_with_timeout(&worker_id, make_system_time(0));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(&worker_id, make_system_time(WITHIN_GRACE.as_secs()))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(WITHIN_GRACE);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a live worker's action past Action.timeout but within the grace is the worker's to end"
+    );
+    Ok(())
+}
+
+/// A heartbeating worker that never reports (a hung input fetch, an
+/// unkillable child, a broken `timeout_handled_externally` wrapper) is timed
+/// out by `Action.timeout` once the grace has passed, even with
+/// `max_action_executing_timeout_s` disabled.
+#[nativelink_test]
+async fn times_out_a_live_but_wedged_worker_past_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("heartbeats-but-never-reports"));
+    let action = action_with_timeout(&worker_id, make_system_time(0));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(&worker_id, make_system_time(PAST_GRACE.as_secs()))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(PAST_GRACE);
+    let cause = state_mgr.timeout_cause(&action).await;
+    assert_eq!(
+        cause,
+        Some(action_timeout_cause()),
+        "a live worker's action past Action.timeout plus the grace must time out"
+    );
+    assert!(
+        cause
+            .unwrap()
+            .to_string()
+            .contains("Action.timeout of 60 seconds"),
+        "the client's error must name the deadline that fired"
+    );
+    Ok(())
+}
+
+/// The grace runs from the worker's last update when that is later than the
+/// assignment, so it only has to cover the time since the worker last showed
+/// signs of life.
+#[nativelink_test]
+async fn measures_the_grace_from_the_workers_last_update() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("updated-after-assignment"));
+    let mut action = action_with_timeout(&worker_id, make_system_time(0));
+    let updated = Duration::from_secs(30);
+    let state = action.state().clone();
+    action.worker_set_state(state, make_system_time(updated.as_secs()));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(
+            &worker_id,
+            make_system_time((PAST_GRACE + updated).as_secs()),
+        )
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(PAST_GRACE);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "the grace must run from the last worker update, not the assignment"
+    );
+
+    MockClock::advance(updated);
+    assert_eq!(
+        state_mgr.timeout_cause(&action).await,
+        Some(action_timeout_cause()),
+        "past Action.timeout plus the grace from the last update, the action must time out"
+    );
+    Ok(())
+}
+
+/// A peer instance's live worker enforces `Action.timeout` itself too, so it
+/// gets the same grace here.
+#[nativelink_test]
+async fn gives_a_peer_instances_worker_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    // Deliberately not registered here: it belongs to another instance.
+    let action = action_with_timeout(
+        &WorkerId::from(String::from("owned-by-another-scheduler")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager_no_executing_ceiling(Arc::new(WorkerRegistry::new()));
+
+    MockClock::advance(WITHIN_GRACE);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a peer's worker's action within the grace is the worker's to end"
+    );
+    Ok(())
+}
+
+/// An orphan nobody reaps, or a peer's worker that never reports, is timed
+/// out by `Action.timeout` past the grace rather than waiting for the orphan
+/// ceiling.
+#[nativelink_test]
+async fn times_out_an_orphan_on_action_timeout_past_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let action = action_with_timeout(
+        &WorkerId::from(String::from("owner-was-scaled-down")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager_no_executing_ceiling(Arc::new(WorkerRegistry::new()));
+
+    MockClock::advance(PAST_GRACE);
+    assert_eq!(
+        state_mgr.timeout_cause(&action).await,
+        Some(action_timeout_cause()),
+        "an orphan past Action.timeout plus the grace must time out, not wait an hour"
+    );
+    Ok(())
+}
+
+/// Registry heartbeats refresh only on keepalives, so a worker whose
+/// keepalives lag reads Stale while its action is still running and still
+/// updating. `Action.timeout` must not pre-empt it there either.
+#[nativelink_test]
+async fn gives_a_stale_worker_with_a_recent_update_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("keepalives-lag"));
+    let assigned = WORKER_TIMEOUT + Duration::from_secs(30);
+    let action = action_with_timeout(&worker_id, make_system_time(assigned.as_secs()));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .register_worker(&worker_id, make_system_time(0))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    // Past Action.timeout, and less than worker_timeout_s since the action's
+    // last update, so only Action.timeout could fire.
+    MockClock::advance(assigned + ACTION_TIMEOUT + Duration::from_secs(1));
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a stale worker's recently updated action must get the grace too"
+    );
+    Ok(())
+}
+
+/// A Stale worker's action past `Action.timeout` plus the grace is timed out
+/// for that reason, which is what the client is told.
+#[nativelink_test]
+async fn times_out_a_stale_worker_on_action_timeout_past_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("connected-to-us"));
+    let action = action_with_timeout(&worker_id, make_system_time(0));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .register_worker(&worker_id, make_system_time(0))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(PAST_GRACE);
+    assert_eq!(
+        state_mgr.timeout_cause(&action).await,
+        Some(action_timeout_cause()),
+        "a stale worker's action past Action.timeout plus the grace must name Action.timeout"
     );
     Ok(())
 }
