@@ -45,14 +45,6 @@ All notable changes to this project will be documented in this file.
 - Scheduler skips and counts a queue entry it cannot read ([#2795](https://github.com/TraceMachina/nativelink/issues/2795)) - ([4001f52](https://github.com/TraceMachina/nativelink/commit/4001f5256eccfbfa1f09b849a7f03e4092c4f9bc))
 - Sorted index reads return the whole set, not ten rows ([#2794](https://github.com/TraceMachina/nativelink/issues/2794)) - ([7b2c02d](https://github.com/TraceMachina/nativelink/commit/7b2c02db4993bffb6073d408d7955d34e7882e1f))
 
-### 📚 Documentation
-
-- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2828](https://github.com/TraceMachina/nativelink/issues/2828)) - ([938c56f](https://github.com/TraceMachina/nativelink/commit/938c56f11f7377f5a716164d15507cad1f972cac))
-- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2819](https://github.com/TraceMachina/nativelink/issues/2819)) - ([5aa89ad](https://github.com/TraceMachina/nativelink/commit/5aa89ad293e738cdf30e6856485144af65804528))
-- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2802](https://github.com/TraceMachina/nativelink/issues/2802)) - ([74688d6](https://github.com/TraceMachina/nativelink/commit/74688d6385fd5c59833031ca0373390599e3b7a7))
-- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2800](https://github.com/TraceMachina/nativelink/issues/2800)) - ([9d65134](https://github.com/TraceMachina/nativelink/commit/9d651347ecd2ed93831a6c318d4db3a700c68c43))
-- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2792](https://github.com/TraceMachina/nativelink/issues/2792)) - ([b2b8178](https://github.com/TraceMachina/nativelink/commit/b2b8178c54e8fa7c6fbb8ca358193e0631991c26))
-
 ### 🧪 Testing & CI
 
 - Give the oversized-upload store tests the 30 s deadline the third already has ([#2818](https://github.com/TraceMachina/nativelink/issues/2818)) - ([3ff63f1](https://github.com/TraceMachina/nativelink/commit/3ff63f17f52372c7ee7459d4f5f7690713fa6e5c))
