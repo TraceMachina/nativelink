@@ -1,2 +1,2 @@
 out/
-book/
+!src/**/bazel-*.md
