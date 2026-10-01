@@ -716,12 +716,19 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                     ?e,
                                                     "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
                                                 );
+                                                // The context names the digest; the
+                                                // execute response turns it into the
+                                                // PreconditionFailure detail Bazel
+                                                // re-uploads and retries on.
                                                 let action_result = ActionResult {
-                                                    error: Some(make_err!(
-                                                        Code::FailedPrecondition,
-                                                        "{}",
-                                                        e.message_string()
-                                                    )),
+                                                    error: Some(
+                                                        make_err!(
+                                                            Code::FailedPrecondition,
+                                                            "{}",
+                                                            e.message_string()
+                                                        )
+                                                        .with_context(e.context.clone()),
+                                                    ),
                                                     ..ActionResult::default()
                                                 };
                                                 let action_stage = ActionStage::Completed(action_result);

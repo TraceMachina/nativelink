@@ -35,7 +35,7 @@ use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerPro
 use nativelink_config::stores::{
     FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
 };
-use nativelink_error::{Code, Error, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
@@ -999,7 +999,11 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
     // input: NotFound tagged with the missing-input tip, whatever the store
     // itself said.
     let missing_input = make_err!(Code::NotFound, "Hash 0123456789abcdef not found")
-        .append(MISSING_INPUT_ERROR_TIP);
+        .append(MISSING_INPUT_ERROR_TIP)
+        .with_context(ErrorContext::MissingDigest {
+            hash: "0123456789abcdef".to_string(),
+            size: 42,
+        });
     running_action
         .expect_prepare_action(Err(missing_input.clone()))
         .await?;
@@ -1011,12 +1015,17 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
     // NOT an InternalError. This allows Bazel to re-upload the missing artifacts.
     let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
+    // The digest rides along as context, which the execute response turns
+    // into the PreconditionFailure detail Bazel re-uploads on.
     let expected_action_result = ActionResult {
-        error: Some(make_err!(
-            Code::FailedPrecondition,
-            "{}",
-            missing_input.message_string()
-        )),
+        error: Some(
+            make_err!(
+                Code::FailedPrecondition,
+                "{}",
+                missing_input.message_string()
+            )
+            .with_context(missing_input.context.clone()),
+        ),
         ..ActionResult::default()
     };
     assert_eq!(

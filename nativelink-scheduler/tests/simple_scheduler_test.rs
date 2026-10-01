@@ -2571,7 +2571,9 @@ async fn worker_disconnect_loop_caps_at_max_worker_loss_retries_test() -> Result
 #[nativelink_test]
 async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
     use nativelink_scheduler::awaited_action_db::AwaitedAction;
-    use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+    use nativelink_scheduler::simple_scheduler_state_manager::{
+        SimpleSchedulerStateManager, TimeoutCause,
+    };
 
     // Anchor MockClock so MockInstantWrapped::now() == make_system_time(0).
     MockClock::set_time(Duration::from_secs(NOW_TIME));
@@ -2614,12 +2616,25 @@ async fn action_timeout_is_enforced_backend_side_test() -> Result<(), Error> {
         "Should not time out before Action.timeout elapses",
     );
 
-    // Advance past the 2s per-action deadline.
+    // Past the 2s per-action deadline, but within the grace a live worker
+    // has to report its own DEADLINE_EXCEEDED result.
     MockClock::advance(Duration::from_secs(5));
 
     assert!(
-        state_mgr.should_timeout_operation(&awaited_action).await,
-        "Scheduler must mark Executing action timed out once Action.timeout has elapsed",
+        !state_mgr.should_timeout_operation(&awaited_action).await,
+        "Should not time out within the grace after Action.timeout",
+    );
+
+    // Past Action.timeout plus the grace (no_event_action_timeout).
+    MockClock::advance(Duration::from_mins(1));
+
+    assert_eq!(
+        state_mgr.timeout_cause(&awaited_action).await,
+        Some(TimeoutCause::ActionTimeout {
+            timeout: Duration::from_secs(2),
+            grace: Duration::from_mins(1),
+        }),
+        "Scheduler must time out an Executing action once Action.timeout plus the grace has elapsed",
     );
 
     Ok(())
