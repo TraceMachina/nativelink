@@ -79,9 +79,10 @@ pub(crate) struct MockWorkerApiClient {
     rx_resp: Arc<Mutex<mpsc::UnboundedReceiver<WorkerClientApiReturns>>>,
     tx_resp: mpsc::UnboundedSender<WorkerClientApiReturns>,
     keep_alives_count: u8,
-    /// A keepalive that never completes: the stalled client of
-    /// `keep_alive_that_never_completes_ends_the_connection`.
+    /// A keepalive that never completes: a send waiting its turn on a
+    /// stalled connection. `keep_alives_hanging` counts the ones held.
     pub keep_alive_hangs: Arc<std::sync::atomic::AtomicBool>,
+    pub keep_alives_hanging: Arc<AtomicU64>,
     pub going_away_count: Arc<AtomicU64>,
     pub going_away_drain: Arc<std::sync::atomic::AtomicBool>,
     pub execution_complete_count: Arc<AtomicU64>,
@@ -98,6 +99,7 @@ impl MockWorkerApiClient {
             tx_resp,
             keep_alives_count: 0,
             keep_alive_hangs: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            keep_alives_hanging: Arc::new(AtomicU64::new(0)),
             going_away_count: Arc::new(AtomicU64::new(0)),
             going_away_drain: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             execution_complete_count: Arc::new(AtomicU64::new(0)),
@@ -217,6 +219,7 @@ impl WorkerApiClientTrait for MockWorkerApiClient {
     async fn keep_alive(&mut self, _request: KeepAliveRequest) -> Result<(), Error> {
         debug!("Got KeepAlive");
         if self.keep_alive_hangs.load(Ordering::Acquire) {
+            self.keep_alives_hanging.fetch_add(1, Ordering::AcqRel);
             core::future::pending::<()>().await;
         }
         if self.keep_alives_count == 0 {

@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_error::{Error, ResultExt, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -1174,5 +1174,72 @@ pub async fn a_full_channel_defers_the_kill_instead_of_evicting_test()
         Some(revoked.to_string()),
         "the deferred kill was never sent"
     );
+    Ok(())
+}
+
+/// A message the scheduler is slow to process must not stop it reading the
+/// worker's stream: the keepalives behind it still come off the wire (here,
+/// a one-slot channel the test could not fill otherwise), and are taken in,
+/// in order, once the slow one is done. Reading inline, the stream's
+/// flow-control window filled behind a slow result and the worker's
+/// keepalives never left it, so this scheduler evicted a worker that was
+/// only waiting for it.
+#[nativelink_test]
+pub async fn a_slow_result_does_not_stop_the_stream_reads_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let mut test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let operation_id = dispatch(&test_context, 1).await?;
+    let update_for_worker = test_context
+        .connection_worker_stream
+        .next()
+        .await
+        .expect("Worker stream ended early")?
+        .update
+        .expect("Expected update field to be populated");
+    let update_for_worker::Update::StartAction(start_execute) = update_for_worker else {
+        panic!("Expected StartAction message");
+    };
+    assert_eq!(operation_id.to_string(), start_execute.operation_id);
+
+    // The result's store write is not answered yet: processing it blocks.
+    test_context
+        .worker_stream
+        .send(Update::ExecuteResult(ExecuteResult {
+            instance_name: "instance_name".to_string(),
+            operation_id: operation_id.to_string(),
+            result: Some(execute_result::Result::InternalError(
+                make_err!(Code::Internal, "the action failed").into(),
+            )),
+            resource_usage: None,
+        }))
+        .await?;
+
+    // The keepalives behind it are still read off the stream.
+    for free_memory_kb in 1..=8u64 {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            test_context
+                .worker_stream
+                .send(Update::KeepAliveRequest(KeepAliveRequest {
+                    load: Some(WorkerLoad { free_memory_kb }),
+                })),
+        )
+        .await
+        .map_err(|_| {
+            make_err!(
+                Code::DeadlineExceeded,
+                "the stream read stalled behind the result"
+            )
+        })??;
+    }
+
+    // Once the result is through, the keepalives are taken in after it.
+    let (operation_id_seen, worker_id, _) = test_context
+        .state_manager
+        .expect_update_operation(Ok(()))
+        .await;
+    assert_eq!(operation_id_seen, operation_id);
+    assert_eq!(worker_id, test_context.worker_id);
+    summary_after_report(&test_context, 8).await;
     Ok(())
 }
