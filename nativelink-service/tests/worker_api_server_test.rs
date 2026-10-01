@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::cas_server::WorkerApiConfig;
 use nativelink_config::schedulers::WorkerAllocationStrategy;
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_error::{Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -1208,7 +1208,7 @@ pub async fn a_slow_result_does_not_stop_the_stream_reads_test()
             instance_name: "instance_name".to_string(),
             operation_id: operation_id.to_string(),
             result: Some(execute_result::Result::InternalError(
-                make_err!(Code::Internal, "the action failed").into(),
+                make_err!(tonic::Code::Internal, "the action failed").into(),
             )),
             resource_usage: None,
         }))
@@ -1227,7 +1227,7 @@ pub async fn a_slow_result_does_not_stop_the_stream_reads_test()
         .await
         .map_err(|_| {
             make_err!(
-                Code::DeadlineExceeded,
+                tonic::Code::DeadlineExceeded,
                 "the stream read stalled behind the result"
             )
         })??;
