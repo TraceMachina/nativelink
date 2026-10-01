@@ -766,6 +766,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let add_future_channel = add_future_channel.clone();
 
+                            // Boxed so the launch closure captures one
+                            // erased type, not the whole action future, and
+                            // the compiler's Send check does not overflow.
+                            let start_action_fut: BoxFuture<'static, Result<FinishedActionResult, Error>> =
+                                start_action_fut.boxed();
                             let launch = {
                                 let span = info_span!(
                                     "worker_start_action_ctx",
