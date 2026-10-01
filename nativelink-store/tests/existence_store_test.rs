@@ -855,3 +855,88 @@ async fn cancelled_update_does_not_leave_callbacks_paused() -> Result<(), Error>
 
     Ok(())
 }
+
+/// Regression for the C20/N6 drop residual: a removal queued *before* the last
+/// pause holder is cancelled must still be applied. This is the
+/// evict-*before*-cancel ordering, which the N6 test above does not cover (it
+/// evicts after the drop, so there is nothing queued to lose).
+///
+/// Schedule:
+///   1. Populate A's positive existence entry via `has()`.
+///   2. Start an `update` of B that parks in the inner store holding the sole
+///      pause guard.
+///   3. Evict A through the inner store *while the pause is held*: the remove
+///      callback is queued in `pending` instead of applied, so the outer cache
+///      still reports A.
+///   4. Drop (cancel) B's future. The last holder releases the pause.
+///
+/// With the buggy `Drop` that discards the vector returned by `release()`, the
+/// queued removal of A is lost and the cache keeps claiming A exists forever.
+/// A correct `Drop` must drain those queued removals, so A disappears from the
+/// cache after cancellation.
+#[nativelink_test]
+async fn cancelled_update_drains_removals_queued_before_cancel() -> Result<(), Error> {
+    const LEN: u64 = 2;
+    let digest_a = DigestInfo::try_new(VALID_HASH1, LEN)?;
+    let digest_b = DigestInfo::try_new(VALID_HASH2, LEN)?;
+
+    // Only A is present in the inner store; B is absent so its update proceeds
+    // to the parking inner `update` (rather than short-circuiting on `has`).
+    let inner = BlockingUpdateStore::new(LEN, &[digest_a.into()]);
+    let store = ExistenceCacheStore::new_with_time(
+        &ExistenceCacheSpec {
+            backend: StoreSpec::Noop(NoopSpec::default()),
+            eviction_policy: Option::default(),
+        },
+        Store::new(inner.clone()),
+        MockInstantWrapped::default(),
+    );
+
+    // Populate A's existence entry via a has() the inner store answers
+    // positively (A is present).
+    assert_eq!(store.has(digest_a).await?, Some(LEN));
+    assert!(store.exists_in_cache(&digest_a).await);
+
+    // Start an update of B that parks inside the inner store holding the pause.
+    let store_b = store.clone();
+    let mut update_b = Box::pin(async move {
+        store_b
+            .update_oneshot(digest_b, vec![0u8; usize::try_from(LEN).unwrap()].into())
+            .await
+    });
+    tokio::select! {
+        _ = &mut update_b => panic!("update should be parked, not complete"),
+        () = inner.update_started.notified() => {}
+    }
+
+    // Evict A through the inner store *while the pause is held*. The removal is
+    // queued in `pending`; the outer cache still reports A for now.
+    inner.evict(digest_a.into()).await;
+    assert!(
+        store.exists_in_cache(&digest_a).await,
+        "removal should be queued (not applied) while the pause is held"
+    );
+
+    // Cancel B by dropping its future. The last holder releases the pause; the
+    // queued removal of A must still be drained. `Drop` cannot await, so the
+    // drain is spawned; give it a bounded number of scheduler turns to run.
+    drop(update_b);
+
+    let mut drained = false;
+    for _ in 0..1000 {
+        if !store.exists_in_cache(&digest_a).await {
+            drained = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert!(
+        drained,
+        "existence cache still claims A exists: a removal queued before the \
+         last pause holder was cancelled was discarded instead of drained \
+         (C20/N6 drop residual)"
+    );
+
+    Ok(())
+}
