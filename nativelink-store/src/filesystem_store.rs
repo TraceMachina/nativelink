@@ -1518,7 +1518,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     fn get_and_update_generation(&self) -> Result<Generation, Error> {
         self.next_generation
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
                 generation.checked_add(1)
             })
             .map(Generation::new)
