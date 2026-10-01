@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// The worker's action future is a long chain of combinators; proving it
+// Send for the spawn walks the whole chain, and the default limit of 128 is
+// a few steps short of it on the sanitizer toolchain.
+#![recursion_limit = "256"]
+
 use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};

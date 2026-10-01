@@ -303,19 +303,38 @@ impl WorkerConnection {
         };
 
         background_spawn!("worker_api", async move {
-            let mut had_going_away = false;
-            while let Some(maybe_update) = connection.next().await {
-                let update = match maybe_update.map(|u| u.update) {
-                    Ok(Some(update)) => update,
-                    Ok(None) => {
-                        tracing::warn!(worker_id=?instance.worker_id, "Empty update");
-                        continue;
-                    }
-                    Err(err) => {
-                        tracing::warn!(worker_id=?instance.worker_id, ?err, "Error from worker");
+            // The stream is read by a task of its own that only hands each
+            // message on; they are processed here, in order. Processing one
+            // inline in the reader (a result's store write, say) stopped the
+            // reads for its duration, and a worker that filled the stream's
+            // flow-control window in the meantime had nothing it was allowed
+            // to put on the wire: its keepalives waited behind the stall
+            // until this scheduler evicted it. The queue is unbounded on
+            // purpose: a worker's messages are bounded by its in-flight
+            // actions and its keepalive interval, and backpressure here is
+            // exactly the stall.
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let reader_worker_id = instance.worker_id.clone();
+            background_spawn!("worker_api_reader", async move {
+                while let Some(maybe_update) = connection.next().await {
+                    let update = match maybe_update.map(|u| u.update) {
+                        Ok(Some(update)) => update,
+                        Ok(None) => {
+                            tracing::warn!(worker_id=?reader_worker_id, "Empty update");
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(worker_id=?reader_worker_id, ?err, "Error from worker");
+                            break;
+                        }
+                    };
+                    if tx.send(update).is_err() {
                         break;
                     }
-                };
+                }
+            });
+            let mut had_going_away = false;
+            while let Some(update) = rx.recv().await {
                 let result = match update {
                     Update::ConnectWorkerRequest(_connect_worker_request) => Err(make_err!(
                         Code::Internal,
