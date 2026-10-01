@@ -473,10 +473,13 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             {
                 // The action, CAS/AC uploads, cleanup, and execution_response
                 // acknowledgment have all completed. This container is spent.
+                // Bounded like every other call here: a stalled connection
+                // must not keep a spent container from exiting.
+                let mut grpc_client = self.grpc_client.clone();
                 if let Err(err) = self
-                    .grpc_client
-                    .clone()
-                    .going_away(GoingAwayRequest { drain: false })
+                    .bounded_scheduler_call("GoingAway", async move {
+                        grpc_client.going_away(GoingAwayRequest { drain: false }).await
+                    })
                     .await
                 {
                     warn!(?err, "Could not unregister completed single-use worker");
@@ -794,6 +797,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
                     let drain_on_shutdown = self.config.drain_on_shutdown;
+                    // The GoingAway calls below are bounded too: a stalled
+                    // connection must not hold the pod past its grace period.
+                    let call_deadline = self.scheduler_call_deadline();
                     let drain_deadline = if self.config.max_action_timeout_s == 0 {
                         DEFAULT_MAX_ACTION_TIMEOUT
                     } else {
@@ -804,9 +810,16 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             // Say so first, so nothing new is dispatched here
                             // while the running actions finish; the scheduler
                             // removes this worker when the stream closes.
-                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: true }).await {
-                                error!("Failed to send GoingAwayRequest: {e}",);
-                                return Err(e);
+                            match time::timeout(call_deadline, grpc_client.going_away(GoingAwayRequest { drain: true })).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    error!("Failed to send GoingAwayRequest: {e}",);
+                                    return Err(e);
+                                }
+                                Err(_) => {
+                                    error!("GoingAwayRequest did not complete; the scheduler connection is stalled");
+                                    return Err(make_err!(Code::DeadlineExceeded, "GoingAwayRequest did not complete within {}s", call_deadline.as_secs_f32()));
+                                }
                             }
                         }
                         // Wait for in-flight operations to be fully completed,
@@ -825,9 +838,16 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         if !drain_on_shutdown {
                             // Sending this message immediately evicts all jobs from
                             // this worker, of which there should be none.
-                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: false }).await {
-                                error!("Failed to send GoingAwayRequest: {e}",);
-                                return Err(e);
+                            match time::timeout(call_deadline, grpc_client.going_away(GoingAwayRequest { drain: false })).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    error!("Failed to send GoingAwayRequest: {e}",);
+                                    return Err(e);
+                                }
+                                Err(_) => {
+                                    error!("GoingAwayRequest did not complete; the scheduler connection is stalled");
+                                    return Err(make_err!(Code::DeadlineExceeded, "GoingAwayRequest did not complete within {}s", call_deadline.as_secs_f32()));
+                                }
                             }
                         }
                         // Allow shutdown to occur now.
