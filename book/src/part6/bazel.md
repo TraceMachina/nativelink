@@ -234,7 +234,7 @@ listener: {
 
 `TlsConfig` is `deny_unknown_fields` and has exactly four keys — `cert_file`,
 `key_file`, `client_ca_file`, and `client_crl_file` (`cas_server.rs:778-796`).
-There is **no** `client_auth_optional` toggle: mTLS is on whenever `client_ca_file`
+No `client_auth_optional` toggle exists: mTLS is on whenever `client_ca_file`
 is set and off otherwise, and `client_crl_file` names an optional certificate
 revocation list. Any other key is a hard startup error — `client_auth_optional:
 false` aborts loading — so the process fails fast on a bad `tls` block rather than

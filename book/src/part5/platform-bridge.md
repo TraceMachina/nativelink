@@ -65,7 +65,7 @@ exec_properties = {
 
 **Why it works:** the tag *is* the Nix closure hash (`imageTag`). Change any toolchain derivation and the closure hash changes, the tag changes, the `container-image` value changes, and the action hash changes. Identity is structural, not conventional — the same guarantee as Pattern 1, sourced from a Nix closure instead of a registry digest. See [Nix and LRE](./nix-lre.md) for how the tag is generated.
 
-**What `lre-cc` / `lre-rs` actually are:** they are Nix package and worker-image names, and — separately — optional scheduler *pool markers*. A scheduler may declare `"lre-rs": "priority"` and workers advertise the key with an empty value to route Rust actions to Rust-capable workers (`deployment-examples/docker-compose/scheduler-multi-worker.json5:40`; `integration_tests/buildstream/buildstream_cas.json5:59,107`). They carry **no** toolchain identity; the toolchain digest lives in `container-image`. There is no `lre-cc = /nix/store/…clang` platform property anywhere in the codebase.
+**What `lre-cc` / `lre-rs` actually are:** they are Nix package and worker-image names, and — separately — optional scheduler *pool markers*. A scheduler may declare `"lre-rs": "priority"` and workers advertise the key with an empty value to route Rust actions to Rust-capable workers (`deployment-examples/docker-compose/scheduler-multi-worker.json5:40`; `integration_tests/buildstream/buildstream_cas.json5:59,107`). They carry **no** toolchain identity; the toolchain digest lives in `container-image`. No `lre-cc = /nix/store/…clang` platform property exists anywhere in the codebase.
 
 ### Pattern 3: Version String (Hermetic Downloads)
 
@@ -152,7 +152,7 @@ Read the `replace` fields carefully — they are not what the names suggest (`sc
 - `new_name` — **required.** The key to insert. To keep the same key, repeat it here.
 - `new_value` — optional. The value to insert; if omitted, the existing value carries over.
 
-So `replace` is a *rename-and-optionally-rewrite* operation gated on an optional value match (`property_modifier_scheduler.rs:111-131`). A bare `{ replace: { name, value } }` — a replacement without `new_name` — does not parse: config load rejects it with a missing-field error naming `new_name`.
+In short, `replace` is a *rename-and-optionally-rewrite* operation gated on an optional value match (`property_modifier_scheduler.rs:111-131`). A bare `{ replace: { name, value } }` — a replacement without `new_name` — does not parse: config load rejects it with a missing-field error naming `new_name`.
 
 Use cases:
 - **Default injection:** Clients that don't set `ISA` get it added automatically.

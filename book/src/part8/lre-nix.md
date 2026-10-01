@@ -162,7 +162,7 @@ nix run .#nativelink-worker-lre-cc.copyTo \
 
 The image tag is the Nix derivation hash. Change the toolchain (new Clang version, different flags) and the hash changes, the tag changes, and — because the generated platform config embeds the same hash — the `container-image` platform property changes with it.
 
-**One subtlety that trips people up.** The `container-image` *platform property* the scheduler matches on is **not** the name of the image you deployed. `rbe_configs_gen` writes the generator container name into `generated-cc/config/BUILD`, then a `sed` rewrites it to `lre-cc:<tag>` (`local-remote-execution/overlays/lre-cc.nix:41`). So the property value is `docker://lre-cc:<tag>` even though the container you actually run is `nativelink-worker-lre-cc:<tag>` — a separate extension of the `lre-cc` base image. The property is an opaque string the scheduler matches; the deployed image is chosen independently (`kubernetes/workers/lre-cc/worker-lre-cc.yaml:17-28`).
+**One subtlety that trips people up.** The `container-image` *platform property* the scheduler matches on is **not** the name of the image you deployed. `rbe_configs_gen` writes the generator container name into `generated-cc/config/BUILD`, then a `sed` rewrites it to `lre-cc:<tag>` (`local-remote-execution/overlays/lre-cc.nix:41`). As a result, the property value is `docker://lre-cc:<tag>` even though the container you actually run is `nativelink-worker-lre-cc:<tag>` — a separate extension of the `lre-cc` base image. The property is an opaque string the scheduler matches; the deployed image is chosen independently (`kubernetes/workers/lre-cc/worker-lre-cc.yaml:17-28`).
 
 ## Step 5: Configure NativeLink Workers
 
@@ -258,7 +258,7 @@ exit && nix develop
 
 LRE ships two toolchains, and they do **not** cover the same platforms:
 
-- **C/C++ — `lre-cc`** (Clang from Nix). **`x86_64-linux` only** (`local-remote-execution/flake-module.nix:164`). There is one `lre-cc` image and one `generated-cc` platform.
+- **C/C++ — `lre-cc`** (Clang from Nix). **`x86_64-linux` only** (`local-remote-execution/flake-module.nix:164`). Only one `lre-cc` image and one `generated-cc` platform exist.
 - **Rust — `lre-rs`** (rustc from Nix). **Multi-platform**: `aarch64`/`x86_64` × `linux-gnu`/`linux-musl`, plus `aarch64`/`x86_64` Darwin (`local-remote-execution/overlays/lre-rs.nix:150-206`). The Darwin targets have *no* container image — they map to a theoretical worker-image tag so bare-metal macOS workers can still advertise exact `exec_properties` (`lre-rs.nix:145-148`).
 
 Because C++ has no Darwin toolchain yet, the flake's `lre.Env` uses only `lre-rs` on Darwin and both toolchains on Linux (`flake.nix:568-571`). A macOS developer gets Rust LRE; C++ actions need a Linux worker.

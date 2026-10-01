@@ -8,7 +8,7 @@ Once the server config is sound ([Step 0](#step-0-rule-out-a-broken-config)), ca
 
 ## Step 0: Rule Out a Broken Config
 
-Before you diff action digests across machines, confirm the server config itself is not the cause. A dangling store reference, a stale field name, or an unintended digest-function default can degrade or silently disable caching without any obvious error at the client. The server validates the config at startup, so boot the binary against it (in CI, say) and watch for a non-zero exit:
+Before you diff action digests across machines, confirm the server config itself is not the cause. A dangling store reference, a stale field name, or an unintended digest-function default can degrade or silently disable caching without any visible error at the client. The server validates the config at startup, so boot the binary against it (in CI, say) and watch for a non-zero exit:
 
 ```console
 $ nativelink nativelink.json5
@@ -98,7 +98,7 @@ The `Platform` in the action includes `exec_properties` / platform properties. I
 
 **Diagnosis:** The two clients hash with different digest functions. An action's cache identity is not just its content — it is `(instance_name, digest_function, action_digest)`. The `action_digest` is the hash of the `Action` proto, and BLAKE3 and SHA256 produce completely different hashes of the same bytes. REAPI even namespaces blob addresses by function (`.../blobs/{digest_function}/{hash}/{size}`), so a BLAKE3 client and a SHA256 client occupy disjoint address spaces. Same action, different function, different key, guaranteed miss. This is orthogonal to the three content axes in Step 2: nothing in the command, the inputs, or the platform changed — only the hash function did.
 
-The insidious variant is a client that omits `digest_function` entirely (sends the proto default `0` / `UNKNOWN`). The server substitutes `global.default_digest_hash_function` (`SHA256` unless you changed it) for such requests (`default_digest_hasher_func`, `nativelink-util/src/digest_hasher.rs:52-61`). So a BLAKE3 client that forgets to set the field has its outputs hashed as SHA256, its `Directory` trees addressed under the wrong function, and cache entries no correctly-configured BLAKE3 client will ever match.
+The insidious variant is a client that omits `digest_function` entirely (sends the proto default `0` / `UNKNOWN`). The server substitutes `global.default_digest_hash_function` (`SHA256` unless you changed it) for such requests (`default_digest_hasher_func`, `nativelink-util/src/digest_hasher.rs:52-61`). As a result, a BLAKE3 client that forgets to set the field has its outputs hashed as SHA256, its `Directory` trees addressed under the wrong function, and cache entries no correctly-configured BLAKE3 client will ever match.
 
 **Fix:** Standardize on one digest function across every client and the execution service, and set it explicitly on every request. Set `global.default_digest_hash_function` to that same function so the server's fallback for a request that omits the field matches your fleet rather than silently diverging:
 

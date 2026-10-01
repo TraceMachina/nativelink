@@ -38,7 +38,7 @@ The crates fall into three tiers: **foundations** (no NativeLink dependencies, o
 
 ### `nativelink-test` is not a crate
 
-`nativelink-test/` holds exactly one thing: a `fuzz/` subdirectory (`nativelink-test/fuzz`), which is a standalone `cargo-fuzz` package named `nativelink-fuzz` and is *excluded* from the workspace (`Cargo.toml:3-7`). There is no `nativelink-test` library. **Unit and integration tests live inside each crate**, under `<crate>/tests/` and in `#[cfg(test)]` modules — e.g. `nativelink-store/tests/`. The fuzzer is covered in Chapter 2.
+`nativelink-test/` holds exactly one thing: a `fuzz/` subdirectory (`nativelink-test/fuzz`), which is a standalone `cargo-fuzz` package named `nativelink-fuzz` and is *excluded* from the workspace (`Cargo.toml:3-7`). No `nativelink-test` library exists. **Unit and integration tests live inside each crate**, under `<crate>/tests/` and in `#[cfg(test)]` modules — e.g. `nativelink-store/tests/`. The fuzzer is covered in Chapter 2.
 
 > One caveat on this checkout: the branch (`pr/keeper-ffi`) adds `nativelink-keeper` and `nativelink-redis-tester` directories that are not part of upstream `main`. Ignore them — nothing in this chapter depends on them, and the eight crates above are the ones that match upstream.
 
@@ -78,7 +78,7 @@ The entrypoint is `src/bin/nativelink.rs`. The flow is short and worth tracing o
 
 6. **Build the workers.** If the config names local workers, `new_local_worker(...)` is spawned to connect back to a worker-scheduler and start executing.
 
-The whole binary is a factory driven by data. There is no hardcoded topology: the store graph, the scheduler, and the service set are all assembled from the config at startup. That is the design the rest of this book keeps returning to.
+The whole binary is a factory driven by data. No topology is hardcoded: the store graph, the scheduler, and the service set are all assembled from the config at startup. That is the design the rest of this book keeps returning to.
 
 ## The Repo's Own Orientation Docs
 
@@ -91,7 +91,7 @@ Before you go deep, read these — they are maintained by the project and will o
 
 ## Where Do I Go to Change X
 
-| You want to change… | Go to | Likely file(s) |
+| You want to change… | Go to | Likely files |
 |---|---|---|
 | How a storage backend behaves (S3, filesystem, Redis…) | `nativelink-store` | `nativelink-store/src/<backend>_store.rs` |
 | How stores compose (tiering, compression, sharding, dedup) | `nativelink-store` | `fast_slow_store.rs`, `compression_store.rs`, `shard_store.rs`, `dedup_store.rs` |

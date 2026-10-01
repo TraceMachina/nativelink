@@ -71,7 +71,7 @@ test --output_groups=+rustfmt_checks
 test --output_groups=+clippy_checks
 ```
 
-So `bazel test //...` is what actually enforces clippy, via the `rust_clippy_aspect` from `rules_rust`. "cargo test passes" is **not** "CI passes." The lint set is strict — the root manifest denies `clippy::all`, `clippy::nursery`, and `clippy::pedantic` wholesale (`Cargo.toml:146-148`) — and several specific denies will bite:
+Enforcing clippy is the job of `bazel test //...`, via the `rust_clippy_aspect` from `rules_rust`. "cargo test passes" is **not** "CI passes." The lint set is strict — the root manifest denies `clippy::all`, `clippy::nursery`, and `clippy::pedantic` wholesale (`Cargo.toml:146-148`) — and several specific denies will bite:
 
 - **`disallowed-methods`** (`Cargo.toml:157`) — configured in `clippy.toml:1-16`. **`tokio::spawn` and `tokio::task::spawn` are banned**, as are the runtime builders and `block_on`. Use `nativelink-util`'s wrappers instead: `nativelink_util::task::spawn` or `background_spawn!` for fire-and-forget tasks, `spawn_blocking` for blocking work (`clippy.toml:11,13-14`). This is enforced, not advisory.
 - **`doc-markdown`** (`Cargo.toml:158`) — identifiers in doc comments must be in backticks (`` `StoreKey` ``, not `StoreKey`), or clippy fails. The allow-list of bare identifiers lives in `clippy.toml:18-95` (things like `GitHub`, `macOS`); anything not on it needs backticks.
@@ -83,7 +83,7 @@ Run clippy locally before you push. The fast approximation is:
 cargo clippy --all-targets -- -D warnings
 ```
 
-This runs the workspace lint config from `Cargo.toml` and catches the vast majority — the `disallowed_methods` and `doc-markdown` denies included, since those come from `clippy.toml` + the manifest lints that Cargo also reads. The authoritative gate is still `bazel test //...` (it runs the aspect in the exact CI configuration), but cargo-clippy is the quick feedback loop that stops you from pushing an obvious `tokio::spawn`.
+This runs the workspace lint config from `Cargo.toml` and catches the vast majority — the `disallowed_methods` and `doc-markdown` denies included, since those come from `clippy.toml` + the manifest lints that Cargo also reads. The authoritative gate is still `bazel test //...` (it runs the aspect in the exact CI configuration), but cargo-clippy is the quick feedback loop that stops you from pushing a stray `tokio::spawn`.
 
 ## The Bazel Path
 

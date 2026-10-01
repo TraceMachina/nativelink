@@ -128,7 +128,7 @@ executor_config = CommandExecutorConfig(
 )
 ```
 
-For actions that are fast locally (simple file copies, small compilations), hybrid mode avoids the network round-trip. For slow actions (linking, testing), it uses remote execution.
+For actions that are fast locally (small file copies, small compilations), hybrid mode avoids the network round-trip. For slow actions (linking, testing), it uses remote execution.
 
 ## NativeLink Server Config for Buck2
 

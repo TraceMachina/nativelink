@@ -139,11 +139,11 @@ client submission flows `inner_add_action` → `ClientStateManager::add_action`
 **The awaited-action DB** is the state store under the manager. The trait
 `AwaitedActionDb` (`awaited_action_db/mod.rs:147`) exposes `add_action` (`:188`),
 `update_awaited_action` (`:181`), and `get_range_of_actions` (`:170`), which the
-matching engine uses to pull queued work in priority order. There are two
-backends and the choice is a correctness/durability tradeoff, not a
+matching engine uses to pull queued work in priority order. Two
+backends exist, and the choice is a correctness/durability tradeoff, not a
 micro-optimization: `MemoryAwaitedActionDb`
 (`memory_awaited_action_db.rs:917`) keeps everything in `BTreeMap`/`BTreeSet`
-structures in process, which is fast and simple but single-node; and
+structures in process, which is fast and minimal but single-node; and
 `StoreAwaitedActionDb` (`store_awaited_action_db.rs:836`) persists versioned
 records through a `SchedulerStore` with key prefixes `aa_`, `cid_`, and `ck_`
 (`store_awaited_action_db.rs:482-489`), which is what lets multiple scheduler

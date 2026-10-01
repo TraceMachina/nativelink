@@ -93,7 +93,7 @@ let action_listener = instance_info
 
 `add_action` returns an `action_listener` — a subscription handle. `inner_execute`
 wraps it in `to_execute_stream` (`:470`, defined `:327-351`) and returns that
-stream to the client. From here the client simply reads `Operation` messages off
+stream to the client. From here the client reads `Operation` messages off
 the stream until one is `is_finished()`; the stream is driven by
 `action_listener.changed()` (`:336`). Hold onto this handle: it is the wire the
 result comes back on in step 5.
@@ -119,7 +119,7 @@ Two outcomes:
 - **Miss.** The task forwards to the inner scheduler's `add_action`. For a
   cacheable action that returns no result, we proceed into real scheduling.
 
-So the AC-hit short-circuit lives *here*, one layer below the service — not in
+The AC-hit short-circuit therefore lives *here*, one layer below the service — not in
 `execution_server`, which always calls `add_action` unconditionally. This
 indirection is a composition seam: cache lookup is a scheduler decorator, the
 same way compression is a store decorator.

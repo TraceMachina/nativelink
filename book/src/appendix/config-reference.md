@@ -208,7 +208,7 @@ Field-name cautions:
 
 - The action-timeout field is `max_action_timeout_s` (plain seconds, alias `max_action_timeout`), not a `{ secs, nanos }` object.
 - The directory cache field is `directory_cache` with `max_entries` / `max_size_bytes` / `cache_root` — not `experimental_directory_cache` with `max_bytes` / `max_directories`.
-- There is no `graceful_shutdown_timeout` field.
+- No `graceful_shutdown_timeout` field exists.
 
 ## StoreSpec Variants
 
@@ -241,7 +241,7 @@ See [Appendix B: Scheduler Catalog](./scheduler-catalog.md) for the field-by-fie
 
 | Variant | Config Key | Description |
 |---------|-----------|-------------|
-| Simple | `simple` | Primary scheduler with property matching |
+| `simple` | `simple` | Primary scheduler with property matching |
 | gRPC | `grpc` | Forwarding proxy to a remote scheduler |
 | CacheLookup | `cache_lookup` | AC check before dispatch |
 | PropertyModifier | `property_modifier` | Transform properties before nesting |

@@ -11,7 +11,7 @@ This creates real problems:
 - A client sets `container-image: docker://my-toolchain:latest`. Does the server interpret this? Pull the image? Use it as an opaque match key? The protocol doesn't say.
 - A worker advertises `cpu_count: 8`. A client requests `cpu_count: 4`. Is the worker eligible? Is `cpu_count` a minimum, an exact match, or informational? The protocol doesn't say.
 
-The `container-image` question is worth pinning down now. As a platform-property value, `container-image: docker://…` is an *opaque match key*: the scheduler compares it as a string; the server never parses or pulls it. Whether a container is pulled at all is up to the worker, not the protocol (Part V, [Container-Based Toolchains](../part5/containers.md)). The protocol itself has no notion of resolving that URI into content — "does the server pull the image?" is simply not a question REAPI answers.
+The `container-image` question is worth pinning down now. As a platform-property value, `container-image: docker://…` is an *opaque match key*: the scheduler compares it as a string; the server never parses or pulls it. Whether a container is pulled at all is up to the worker, not the protocol (Part V, [Container-Based Toolchains](../part5/containers.md)). The protocol itself has no notion of resolving that URI into content — "does the server pull the image?" is not a question REAPI answers.
 
 NativeLink resolves the untyped-property side with typed property matching in the scheduler config:
 
@@ -27,7 +27,7 @@ supported_platform_properties: {
 
 See [`nativelink-config/src/schedulers.rs`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/src/schedulers.rs) for the `PropertyType` enum: `Minimum`, `Exact`, `Priority`, `Ignore`.
 
-But this is NativeLink's interpretation. Buildbarn does something different. EngFlow does something different. There is no interoperability guarantee on platform semantics.
+But this is NativeLink's interpretation. Buildbarn does something different. EngFlow does something different. No interoperability guarantee covers platform semantics.
 
 ## Gap 2: No Toolchain Identity
 
@@ -45,7 +45,7 @@ Part V of this book is entirely about these approaches.
 
 ## Gap 3: No Cache Invalidation
 
-There is no `InvalidateActionResult` RPC. `UpdateActionResult` can overwrite an entry (last-writer-wins), but a client that gets a cache hit never re-executes the action to produce a fresh result — so in practice a stale result stays until evicted by LRU/TTL or the entire cache is cleared.
+No `InvalidateActionResult` RPC exists. `UpdateActionResult` can overwrite an entry (last-writer-wins), but a client that gets a cache hit never re-executes the action to produce a fresh result — so in practice a stale result stays until evicted by LRU/TTL or the entire cache is cleared.
 
 In practice, you need invalidation when:
 - A toolchain bug produced incorrect outputs

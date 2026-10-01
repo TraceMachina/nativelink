@@ -62,11 +62,11 @@ This means your choice of build system and your choice of remote execution backe
 
 Three things differentiate NativeLink from alternatives:
 
-1. **Rust, not a garbage-collected runtime.** No GC pauses. Predictable latency at the p99. The hot paths are simple and auditable.
+1. **Rust, not a garbage-collected runtime.** No GC pauses. Predictable latency at the p99. The hot paths are small and auditable.
 
 2. **Composable stores.** Storage backends compose algebraically — you build complex topologies (fast/slow tiering, deduplication, compression, verification) by nesting store configurations. No code changes, no plugins.
 
-3. **One binary.** CAS, AC, scheduler, and worker are all the same binary with different config. Development and production use the same code path. There is no "dev mode" that works differently from production.
+3. **One binary.** CAS, AC, scheduler, and worker are all the same binary with different config. Development and production use the same code path. No "dev mode" works differently from production.
 
 ## The Next 30 Seconds
 

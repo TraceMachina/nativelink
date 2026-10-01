@@ -1,6 +1,6 @@
 # Mental Model
 
-There is exactly one idea in remote execution: **content-addressing**.
+Remote execution rests on exactly one idea: **content-addressing**.
 
 Everything else — the caching, the distribution, the deduplication, the integrity checking — is a consequence of this one idea. If you understand content-addressing, you understand the system. If you don't, no amount of configuration documentation will help you.
 
@@ -63,7 +63,7 @@ NativeLink's entire architecture follows from content-addressing:
 
 - **Workers are stateless.** They fetch inputs by digest, run a command, upload outputs by digest. They hold no state between actions. This is why they can be cattle, not pets — scale them up, kill them, replace them.
 
-- **The scheduler keeps no durable state.** It matches actions to workers by platform properties, holding its action queue and worker registrations in memory (the process wires the scheduler maps up at `src/bin/nativelink.rs:304-317`; `SimpleScheduler` owns an in-memory worker pool and awaited-action queue, `nativelink-scheduler/src/simple_scheduler.rs:124`). It doesn't need to remember what happened before: that state lives only for the lifetime of the process, and failed actions are simply re-dispatched.
+- **The scheduler keeps no durable state.** It matches actions to workers by platform properties, holding its action queue and worker registrations in memory (the process wires the scheduler maps up at `src/bin/nativelink.rs:304-317`; `SimpleScheduler` owns an in-memory worker pool and awaited-action queue, `nativelink-scheduler/src/simple_scheduler.rs:124`). It doesn't need to remember what happened before: that state lives only for the lifetime of the process, and failed actions are re-dispatched.
 
 - **Anything with a stable hash becomes an ordinary CAS input.** Because identity is computed from bytes, an OCI toolchain image or a Nix store closure can be addressed by content and dropped into the same store as any build artifact.
 

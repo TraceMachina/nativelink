@@ -1,6 +1,6 @@
 # The Execution Contract
 
-Remote execution works because client and server agree on a contract. The contract is implicit in the protocol but never clearly stated in the official spec. Here it is.
+Remote execution works because client and server agree on a contract. The contract is implicit in the protocol but never spelled out in the official spec. Here it is.
 
 ## What the Client Promises
 
@@ -30,7 +30,7 @@ Here's where it gets interesting — the things the protocol explicitly does **n
 
 ### No toolchain identity
 
-The platform properties are key-value string pairs. There is no standard for what they mean. `OSFamily: Linux` and `container-image: docker://ubuntu:22.04` are both valid, but neither actually specifies the toolchain. Two workers with identical platform properties can have different compilers, different libc versions, different everything.
+The platform properties are key-value string pairs. No standard says what they mean. `OSFamily: Linux` and `container-image: docker://ubuntu:22.04` are both valid, but neither actually specifies the toolchain. Two workers with identical platform properties can have different compilers, different libc versions, different everything.
 
 This is the fundamental gap in REAPI, and it's why toolchain management is an entire part of this book.
 
@@ -40,9 +40,9 @@ Actions are independent. The protocol provides no mechanism for expressing "acti
 
 ### No output determinism verification
 
-The server trusts the worker. Two runs of the same non-deterministic action hash to *different* CAS output digests, so both land in the store as valid uploads under different keys; nothing compares them. There is no built-in mechanism to detect or prevent this.
+The server trusts the worker. Two runs of the same non-deterministic action hash to *different* CAS output digests, so both land in the store as valid uploads under different keys; nothing compares them. No built-in mechanism detects or prevents this.
 
-`VerifyStore` does not close this gap, and it is worth being precise about its scope. Wrapping a **CAS** store, it re-hashes each blob *on the write path* as the upload streams in and rejects any blob whose bytes don't match the digest the client claimed (`verify_store.rs:162`); reads pass straight through unverified (`verify_store.rs:222`). So it catches corruption and lying clients at ingest — never non-determinism, since two differing-but-correctly-hashed outputs are both honest uploads. It also guards the CAS, not the AC: `verify_size`/`verify_hash` are meant to be off for the action cache and on for CAS stores (`stores.rs:960`).
+`VerifyStore` does not close this gap, and it is worth being precise about its scope. Wrapping a **CAS** store, it re-hashes each blob *on the write path* as the upload streams in and rejects any blob whose bytes don't match the digest the client claimed (`verify_store.rs:162`); reads pass straight through unverified (`verify_store.rs:222`). That catches corruption and lying clients at ingest — never non-determinism, since two differing-but-correctly-hashed outputs are both honest uploads. It also guards the CAS, not the AC: `verify_size`/`verify_hash` are meant to be off for the action cache and on for CAS stores (`stores.rs:960`).
 
 ### No cache invalidation
 

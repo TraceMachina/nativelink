@@ -2,7 +2,7 @@
 
 Content addressing is the best idea in build infrastructure, and almost nobody takes it all the way.
 
-The pitch is simple: name everything by the hash of its bytes, and identity stops being a guess. A source file, a compiler output, an action result — if the hash matches, the data is correct, and no clock, path, tag, or promise gets a vote. Build systems have understood this for a decade. What they keep missing is how far it goes. Your source tree is content. Your build outputs are content. Your *toolchain* is content. The thing your registry calls an "image" is content wearing a costume. Push the idea to its conclusion and one truth falls out: there should be one content-addressed store under all of it, and everything else — execution, toolchain distribution, caching — should be a protocol that speaks to that store.
+The pitch is one sentence: name everything by the hash of its bytes, and identity stops being a guess. A source file, a compiler output, an action result — if the hash matches, the data is correct, and no clock, path, tag, or promise gets a vote. Build systems have understood this for a decade. What they keep missing is how far it goes. Your source tree is content. Your build outputs are content. Your *toolchain* is content. The thing your registry calls an "image" is content wearing a costume. Push the idea to its conclusion and one truth falls out: there should be one content-addressed store under all of it, and everything else — execution, toolchain distribution, caching — should be a protocol that speaks to that store.
 
 NativeLink is a serious implementation of that idea. It gives you a Content-Addressable Storage engine and a Remote Execution service in front of it, built so that the `CAS` is not a build-cache implementation detail but the ground truth it already is. This book is the map of that idea, and the honest field guide to the system that implements it.
 
@@ -14,7 +14,7 @@ NativeLink is a serious implementation of that idea. It gives you a Content-Addr
 
 You build software. You've heard of remote caching or remote execution — maybe you've fought with it. You use Bazel, Buck2, or another build system that speaks REAPI, and you want to understand what actually happens when your build talks to a remote backend, without cargo-culting YAML from a getting-started guide.
 
-If you're evaluating NativeLink against Buildbarn, EngFlow, or BuildFarm, this book makes the architectural differences obvious. If you're trying to drag your cache hit rate above 90%, the toolchain chapters will save you weeks.
+If you're evaluating NativeLink against Buildbarn, EngFlow, or BuildFarm, this book makes the architectural differences plain. If you're trying to drag your cache hit rate above 90%, the toolchain chapters will save you weeks.
 
 And if you want to go deeper than operating NativeLink — to read its source, extend it, or contribute upstream — Part II is written for you.
 
@@ -45,6 +45,6 @@ Read Part I front to back the first time. Part I and II give you the mental mode
 
 This book is opinionated, because remote execution is too important and too poorly understood for hedging. When something is wrong, we say so. When there's a better way, we show it. When the protocol has gaps, we name them.
 
-The build-system world has spent a decade telling people to "just set `--remote_cache`" and wondering why cache hit rates are terrible. The answer is always toolchains. This book will make that obvious.
+The build-system world has spent a decade telling people to "just set `--remote_cache`" and wondering why cache hit rates are terrible. The answer is always toolchains. This book will show you why.
 
 Let's go.

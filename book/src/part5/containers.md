@@ -37,7 +37,7 @@ ENV CXX=/usr/bin/clang++-17
 
 ## NativeLink Worker Image Builder
 
-There are two distinct models here, and the shipped tooling implements only one of them. The first bakes the toolchain *into* the worker image, so the worker's own root filesystem **is** the toolchain — there is no nested container per action. The second (the [`container-image` property](#worker-configuration) below) keeps a generic worker and runs each action inside a container the entrypoint launches. NativeLink ships the first; the second is yours to wire up.
+Two distinct models exist here, and the shipped tooling implements only one of them. The first bakes the toolchain *into* the worker image, so the worker's own root filesystem **is** the toolchain — there is no nested container per action. The second (the [`container-image` property](#worker-configuration) below) keeps a generic worker and runs each action inside a container the entrypoint launches. NativeLink ships the first; the second is yours to wire up.
 
 NativeLink provides a Nix function that packages a set of toolchain derivations together with worker scaffolding into an OCI image:
 
@@ -65,7 +65,7 @@ The output is again the baked model: a worker whose filesystem carries the Buck2
 
 ## Worker Configuration
 
-The second model keeps a generic worker and runs each action inside a container the worker's `entrypoint` launches. **NativeLink ships no `docker run` wrapper for this.** The worker's execution path builds the action command directly — `process::Command::new(program)` (`running_actions_manager.rs:1373`), where `program` is the action's own arguments, optionally prefixed by the configured `entrypoint` (`running_actions_manager.rs:1232-1242`). There is no `container-run.sh` in the tree; the worker never invokes `docker` on its own. To containerize each action you write that entrypoint script yourself and point `entrypoint` at it.
+The second model keeps a generic worker and runs each action inside a container the worker's `entrypoint` launches. **NativeLink ships no `docker run` wrapper for this.** The worker's execution path builds the action command directly — `process::Command::new(program)` (`running_actions_manager.rs:1373`), where `program` is the action's own arguments, optionally prefixed by the configured `entrypoint` (`running_actions_manager.rs:1232-1242`). No `container-run.sh` exists in the tree; the worker never invokes `docker` on its own. To containerize each action you write that entrypoint script yourself and point `entrypoint` at it.
 
 The worker advertises a `container-image` platform property and passes the requested image to your entrypoint through the environment:
 

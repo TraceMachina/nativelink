@@ -157,8 +157,8 @@ resolve to a `RedisSpec` store declared in `stores`
 connection knob — addresses, pool size, pub/sub channel, timeouts — lives on
 that store, not on the scheduler. The two variants are `memory` (the default
 when the key is omitted; accepted as the bare string `"memory"` or as
-`{ memory: {} }`) and `redis`. There is no `experimental_redis_scheduler_state`
-field — that name fails to load with
+`{ memory: {} }`) and `redis`. No `experimental_redis_scheduler_state`
+field exists — that name fails to load with
 `unknown field 'experimental_redis_scheduler_state'`. A worked HA deployment
 lives in
 [`nativelink-config/examples/worker_with_redis_scheduler.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/worker_with_redis_scheduler.json5).
@@ -305,7 +305,7 @@ The three modification variants (`PropertyModification`,
   - `new_value` — optional; if omitted, the matched property keeps its existing
     value under `new_name` (a pure rename).
 
-So a `replace` with only `{ name, value }` is invalid — that shorthand was a
+A `replace` with only `{ name, value }` is therefore invalid — that shorthand was a
 fabrication in earlier drafts. Applied in
 `property_modifier_scheduler.rs:111-131`.
 

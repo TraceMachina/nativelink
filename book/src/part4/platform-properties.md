@@ -2,7 +2,7 @@
 
 Platform properties are how actions find workers. An action declares what it needs (`OSFamily: Linux`, `cpu_count: 4`). A worker declares what it has (`OSFamily: Linux`, `cpu_count: 8`). The scheduler matches them.
 
-This sounds simple. In practice, it's where most deployments go wrong.
+This sounds straightforward. In practice, it's where most deployments go wrong.
 
 ## The Matching Model
 

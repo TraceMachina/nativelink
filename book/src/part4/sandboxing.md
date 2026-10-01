@@ -42,7 +42,7 @@ When enabled, the worker calls `unshare()` (`configure_namespace`, `namespace_ut
 - `CLONE_NEWUTS` — UTS namespace; the hostname is pinned to `nativelink` for reproducibility (`namespace_utils.rs:448-452`).
 - `CLONE_NEWNS` (only if `use_mount_namespace`) — mount namespace, described below.
 
-There is deliberately **no** `CLONE_NEWNET`: actions in a namespace share the host network. Network isolation only comes from a container entrypoint (below).
+Deliberately **no** `CLONE_NEWNET` is set: actions in a namespace share the host network. Network isolation only comes from a container entrypoint (below).
 
 ### What the mount namespace actually does
 

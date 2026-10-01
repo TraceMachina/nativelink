@@ -8,7 +8,7 @@ The short version: **CI runs more than you do, denies more than you expect, and 
 
 Run all of this *before* you push, not after CI tells you. It is the exact sequence that would have saved every red round in the stability pass.
 
-1. **`cargo test -p <your-crate>`** — the obvious one. Necessary, not sufficient (see below).
+1. **`cargo test -p <your-crate>`** — the first reach. Necessary, not sufficient (see below).
 2. **`cargo clippy -p <your-crate> --all-targets -- -D warnings`** — *this is the one people forget.* CI runs clippy at deny-level through a Bazel aspect that `cargo test` never invokes. A change that tests clean can still red CI on a lint. The denies that actually bite:
    - **`disallowed_methods`** — `tokio::spawn` is banned; use the repo's `background_spawn!` / `spawn!` macro (it carries tracing context and naming). `std::time::SystemTime::now` and friends are often restricted too. Check `clippy.toml` for the live list.
    - **`doc-markdown`** — an identifier in a doc comment needs backticks. `/// returns StartExecute` fails; `` /// returns `StartExecute` `` passes. This one cascades: clippy runs *per Bazel target*, so the src lint and the test-file lint surface on separate runs — fix one, the next appears.
@@ -21,7 +21,7 @@ If all five are green on the metal, CI will almost certainly be green too.
 
 ## The PR description is machine-checked
 
-There is a CI gate (`pr-template-check`) that greps your PR body for **four verbatim section headings** and fails the `check` job if any is missing or too short. They are:
+A CI gate (`pr-template-check`) greps your PR body for **four verbatim section headings** and fails the `check` job if any is missing or too short. They are:
 
 - `## What and why` (≥ ~40 chars) — what the change does and the reason it's needed.
 - `## How was this verified?` (≥ ~40 chars) — **and this must say how you know it works**, including, for a bug fix, how you know the test fails *without* the change. "Ran the tests" is not an answer; "reverted the guard, the new test fails at line N with `the expected assertion`, restored, it passes" is.

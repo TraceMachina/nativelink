@@ -108,8 +108,8 @@ Wraps any store and compresses content on write, decompresses on read. The calle
 
 **Source:** [`nativelink-store/src/compression_store.rs`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-store/src/compression_store.rs)
 
-`CompressionAlgorithm` has exactly one variant: `lz4` (`stores.rs`). There
-is no ZSTD option on this store — a `compression_algorithm: { zstd: {} }`
+`CompressionAlgorithm` has exactly one variant: `lz4` (`stores.rs`). No
+ZSTD option exists on this store — a `compression_algorithm: { zstd: {} }`
 fails to load with `unknown variant zstd, expected lz4`. LZ4 is extremely
 fast in both directions and aborts early on incompressible input, which
 suits build artifacts. `Lz4Config` exposes `block_size` (default 64 KiB)

@@ -44,9 +44,9 @@ variables — it honors `OTEL_EXPORTER_OTLP_ENDPOINT` and defaults to
 production.
 
 Because `init_tracing()` runs unconditionally, NativeLink *always* attempts to
-push OTLP. With no collector listening on `:4317`, the batch exporter simply logs
-periodic export failures and the server otherwise runs normally. There is no
-"metrics off" switch short of pointing the endpoint at a sink.
+push OTLP. With no collector listening on `:4317`, the batch exporter just logs
+periodic export failures and the server otherwise runs normally. No
+"metrics off" switch exists short of pointing the endpoint at a sink.
 
 **Source:** [`nativelink-util/src/telemetry.rs`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-util/src/telemetry.rs)
 
@@ -78,7 +78,7 @@ different, and three transforms are responsible:
    `nativelink_execution_completed_count_total`. Histograms expose
    `_bucket` / `_sum` / `_count` series.
 
-So the code's `execution.completed.count` counter is queried in PromQL as
+The code's `execution.completed.count` counter is therefore queried in PromQL as
 `nativelink_execution_completed_count_total`. Every recording rule and dashboard
 panel in the repo assumes exactly this scheme; the recording-rules file says so
 in its header comment (`prometheus-recording-rules.yml:3-6`).
@@ -143,7 +143,7 @@ sum(increase(nativelink_execution_completed_count_total{execution_result="succes
   / sum(increase(nativelink_execution_completed_count_total[5m])) * 100
 ```
 
-There is **no direct "connected workers" gauge**. Worker liveness is inferred:
+**No direct "connected workers" gauge** exists. Worker liveness is inferred:
 the recording rule `nativelink:worker_utilization` counts workers with an
 executing action against workers seen at all, and `nativelink:actions_per_worker`
 groups `execution.active.count` by `execution_worker_id`
@@ -286,8 +286,8 @@ The filter force-disables a handful of noisy upstream crates regardless of
 
 ## Health Endpoint
 
-NativeLink's health check is **HTTP, not gRPC.** There is no
-`grpc.health.v1.Health` service anywhere in the binary. The health service is a
+NativeLink's health check is **HTTP, not gRPC.** No
+`grpc.health.v1.Health` service exists anywhere in the binary. The health service is a
 plain HTTP handler (`nativelink-service/src/health_server.rs`) mounted with
 `route_service` onto the `axum` router of whichever server block declares it
 (`src/bin/nativelink.rs:433-439`). It answers on that server's listener port and

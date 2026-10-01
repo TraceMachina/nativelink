@@ -122,7 +122,7 @@ Wire the non-zero exit into a pre-merge gate and a mistyped `cas_store` or `sche
 
 To run more than one scheduler replica, the schedulers must share state. NativeLink does this by pointing the `simple` scheduler's backend at a Redis **store**. The mechanism is `SimpleSpec.experimental_backend` (`schedulers.rs:160`), whose `redis` variant takes a single `redis_store` reference (`schedulers.rs:175-189`) that must resolve to a `redis_store` in your `stores` list.
 
-There is no `experimental_redis_scheduler_state` block, and the Redis connection details (`addresses`, `key_prefix`, pool size) live on the **store**, not on the scheduler:
+No `experimental_redis_scheduler_state` block exists, and the Redis connection details (`addresses`, `key_prefix`, pool size) live on the **store**, not on the scheduler:
 
 ```json5
 {
@@ -220,7 +220,7 @@ spec:
 
 Queue-depth scaling is more responsive, but be honest about where the numbers come from. NativeLink does **not** expose a Prometheus scrape endpoint. It exports metrics, traces, and logs over **OTLP** to a collector (`telemetry.rs:180-193`); the shipped manifests wire that with `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector-collector.default.svc:4317`. The `9090` port in `nativelink.yaml` is declared but the process never binds it.
 
-So there is no fixed `nativelink_*` metric name to hardcode into an HPA or a KEDA `ScaledObject`. The instrument names are derived from NativeLink's internal metrics-component tree and then transformed again by whatever your OpenTelemetry collector exports them as (VictoriaMetrics, Prometheus remote-write, and so on). If you want to scale on queued actions:
+No fixed `nativelink_*` metric name therefore exists to hardcode into an HPA or a KEDA `ScaledObject`. The instrument names are derived from NativeLink's internal metrics-component tree and then transformed again by whatever your OpenTelemetry collector exports them as (VictoriaMetrics, Prometheus remote-write, and so on). If you want to scale on queued actions:
 
 1. Route the collector's output into a Prometheus-compatible store.
 2. Inspect that store to find the **actual** series name your pipeline produced for the scheduler's queued-operations gauge — do not guess it.
@@ -315,7 +315,7 @@ spec:
 
 NativeLink handles `SIGTERM` for graceful shutdown, and it is worth knowing exactly what that does because it dictates your grace period. On `SIGTERM` the process broadcasts a shutdown signal (`nativelink.rs:947-962`) and then waits for a priority barrier before exiting with code `143`. Inside the worker, that signal drives a drain loop: **the worker blocks until its in-flight action count reaches zero**, sends a `GoingAway` message, and only then releases the shutdown guard (`local_worker.rs:493-515`).
 
-There is **no `graceful_shutdown_timeout` field** anywhere in the config — earlier drafts of this chapter invented one. The drain is unbounded; it is capped only by how long the longest in-flight action can run, which is `max_action_timeout_s` (default `1200`, i.e. 20 minutes; `cas_server.rs:1124`). Size the pod's grace period to that ceiling so Kubernetes does not `SIGKILL` a worker mid-action:
+**No `graceful_shutdown_timeout` field** exists anywhere in the config — earlier drafts of this chapter invented one. The drain is unbounded; it is capped only by how long the longest in-flight action can run, which is `max_action_timeout_s` (default `1200`, i.e. 20 minutes; `cas_server.rs:1124`). Size the pod's grace period to that ceiling so Kubernetes does not `SIGKILL` a worker mid-action:
 
 ```yaml
 spec:
@@ -404,7 +404,7 @@ Push that image to your registry and set it as the Kustomize image override (`im
 
 NativeLink has **no gRPC health service**; there is no `grpc.health.v1.Health` to probe. Health is a plain HTTP route that returns a JSON per-component report — `200 OK` when everything is healthy, `503 Service Unavailable` when any component reports `Failed` or `Timeout` (`health_server.rs:61-104`). It is mounted only where a `services` block declares `health: {}` — in the shipped config, the `worker_api` listener on **port 50061**, at the default path `/status` (`HealthConfig`, `cas_server.rs:623`).
 
-So the probe is an `httpGet` against `/status` on the health port, not a gRPC probe:
+The probe is therefore an `httpGet` against `/status` on the health port, not a gRPC probe:
 
 ```yaml
 # nativelink server pod

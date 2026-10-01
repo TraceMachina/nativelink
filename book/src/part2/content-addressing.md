@@ -20,7 +20,7 @@ Every distributed system built on location-addressing reinvents solutions to the
 
 With content-addressing, the name *is* the content (or rather, a function of it). This eliminates every problem above:
 
-- **Staleness is impossible.** The content for a given hash never changes. There is nothing to invalidate.
+- **Staleness is impossible.** The content for a given hash never changes. Nothing is left to invalidate.
 - **Races are impossible.** Two writers uploading the same content produce the same hash. The store is idempotent — writing the same bytes twice is a no-op.
 - **Deduplication is structural.** Same content = same hash = stored once. No dedup algorithm needed.
 - **Integrity is structural.** A blob's key *is* its hash, so anyone holding the bytes can re-derive the key and check it. NativeLink does exactly this — at *write* time, not read. The `VerifyStore` wrapper re-hashes every blob as it streams through `update` and rejects it before it reaches backing storage if the computed hash (`verify_store.rs:186`) or the declared size (`verify_store.rs:175`) disagrees with the digest; the read path, `get_part`, does no such check (`verify_store.rs:222`). A blob that lands in the CAS is correct by construction.

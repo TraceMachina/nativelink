@@ -1,6 +1,6 @@
 # Recipes
 
-This is the "I want to make a change — show me the exact steps and the real files" chapter. Every recipe is derived from how an *existing* feature in the codebase does it. We name the exemplar, list the files you touch, and call out the wiring that is easy to forget — the match arm, the config variant, the `post_init` — the things that compile fine when omitted and then silently do nothing at runtime.
+This is the "I want to make a change — show me the exact steps and the real files" chapter. Every recipe is derived from how an *existing* feature in the codebase does it. We name the exemplar, list the files you touch, and call out the wiring that often gets forgotten — the match arm, the config variant, the `post_init` — the things that compile fine when omitted and then silently do nothing at runtime.
 
 A note on method: NativeLink leans hard on a factory pattern. You implement a thing, you add a config variant that describes it, and you add one match arm that connects the two. Miss the match arm and your code is dead — it builds, it tests in isolation, and it is never constructed from a real config. Most of the "it doesn't work and I don't know why" in this codebase is a missing registration. Each recipe below ends by pointing at the exact registration site.
 
@@ -136,7 +136,7 @@ The trait requires `MetricsComponent` as a supertrait (`mod.rs:147`), so your im
 
 ### Step 2 — Config variant
 
-The backend selection lives *inside* `SimpleSpec`, not at the top-level `SchedulerSpec`. Add a variant to `ExperimentalSimpleSchedulerBackend` in `nativelink-config/src/schedulers.rs:333` (today: `Memory` and `Redis(...)`). The top-level `SchedulerSpec` enum (`schedulers.rs:27`) is for scheduler *kinds* (`Simple`, `Grpc`, `CacheLookup`, `PropertyModifier`) — you are not adding one of those; you are adding a backend to the simple scheduler.
+The backend selection lives *inside* `SimpleSpec`, not at the top-level `SchedulerSpec`. Add a variant to `ExperimentalSimpleSchedulerBackend` in `nativelink-config/src/schedulers.rs:333` (today: `Memory` and `Redis(...)`). The top-level `SchedulerSpec` enum (`schedulers.rs:27`) is for scheduler *kinds* (`Simple`, `Grpc`, `CacheLookup`, `PropertyModifier`) — you are not adding one of those; you are adding a backend to the `Simple` scheduler.
 
 ### Step 3 — Register in the scheduler factory
 
@@ -287,7 +287,7 @@ In `src/bin/nativelink.rs`, the router is built with `Routes::builder().routes()
 
 You can pass tokio flavors through: `#[nativelink_test(flavor = "multi_thread")]` feeds the attributes to `tokio::test`.
 
-**Fixtures and mocks.** There is no monolithic `MockStore`. The idiom is a small purpose-built fake in the test file that implements `StoreDriver` and records calls. `compression_store_test.rs` defines a `RecordingStore` with `AtomicUsize` counters and `#[derive(MetricsComponent)]` (`compression_store_test.rs:83-95`), then asserts on the counts after exercising the wrapper. For real-store round-trips, construct the actual store (`MemoryStore::new(&MemorySpec::default())`) and use the `StoreLike` convenience methods — `update_oneshot`, `has`, `get_part_unchunked` (`memory_store_test.rs:44-64`).
+**Fixtures and mocks.** No monolithic `MockStore` exists. The idiom is a small purpose-built fake in the test file that implements `StoreDriver` and records calls. `compression_store_test.rs` defines a `RecordingStore` with `AtomicUsize` counters and `#[derive(MetricsComponent)]` (`compression_store_test.rs:83-95`), then asserts on the counts after exercising the wrapper. For real-store round-trips, construct the actual store (`MemoryStore::new(&MemorySpec::default())`) and use the `StoreLike` convenience methods — `update_oneshot`, `has`, `get_part_unchunked` (`memory_store_test.rs:44-64`).
 
 **The structure of a good test:**
 

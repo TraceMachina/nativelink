@@ -189,7 +189,7 @@ The `replace` modification is the one people get wrong, because its field names 
 - `new_name` — **required.** The property name to write. To keep the same key, repeat it (as above). This is the field the fabricated `{ replace: { name, value } }` form was missing, and its absence is a hard config error.
 - `new_value` — optional; if omitted, the matched property keeps its existing value under `new_name` (a pure rename).
 
-So the example above rewrites `container-image` (any value) to a resolved digest. To rename a key while preserving its value, drop `new_value`: `{ replace: { name: "old-arch", new_name: "ISA" } }`.
+The example above rewrites `container-image` (any value) to a resolved digest. To rename a key while preserving its value, drop `new_value`: `{ replace: { name: "old-arch", new_name: "ISA" } }`.
 
 **Source:** [`nativelink-scheduler/src/property_modifier_scheduler.rs`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-scheduler/src/property_modifier_scheduler.rs)
 

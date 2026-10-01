@@ -457,6 +457,14 @@
             type = "app";
             program = "${nativelink}/bin/nativelink";
           };
+          book = {
+            type = "app";
+            program = "${pkgs.writeShellScript "book-serve" ''
+              cd "$(${pkgs.git}/bin/git rev-parse --show-toplevel)/book"
+              echo "NativeLink: The Operator & Contributor Guide — http://localhost:3000"
+              exec ${pkgs.mdbook}/bin/mdbook serve --open --port 3000 --hostname 0.0.0.0
+            ''}";
+          };
         };
         packages =
           rec {
@@ -478,6 +486,23 @@
             inherit (pkgs.nativelink-tools) local-image-test publish-ghcr create-multi-arch-image regctl-ghcr-login;
 
             default = nativelink;
+
+            # The NativeLink Operator & Contributor Guide, rendered as a static site.
+            book = pkgs.stdenvNoCC.mkDerivation {
+              name = "nativelink-operator-contributor-guide";
+              src = ./book;
+              nativeBuildInputs = [pkgs.mdbook];
+              buildPhase = ''
+                runHook preBuild
+                mdbook build --dest-dir ./out
+                runHook postBuild
+              '';
+              installPhase = ''
+                runHook preInstall
+                cp -r ./out $out
+                runHook postInstall
+              '';
+            };
 
             nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
             lre-java = pkgs.callPackage ./local-remote-execution/lre-java.nix {inherit buildImage;};

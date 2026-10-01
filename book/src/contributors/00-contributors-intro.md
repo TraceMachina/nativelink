@@ -2,9 +2,9 @@
 
 Part I taught you to *operate* NativeLink — to reason about REAPI, compose stores, deploy a fleet, and chase a cache miss. This part teaches you to *change* it.
 
-That is a different skill, and this codebase does not make it easy to pick up by osmosis. It is a genuinely well-built Rust system — a store trait clean enough to compose storage topologies in config instead of code, a scheduling model that holds up at billions of requests a month — but "well-built" and "easy to navigate on day one" are not the same thing. The abstractions are sharp, the indirection is real (type erasure, two-phase wiring, trait objects behind `Pin<&Self>`), and the hardest correctness properties live in seams that are invisible until you've been bitten. A new contributor can spend a week just building a mental map that this part hands you in an afternoon.
+That is a different skill, and this codebase does not surrender it by osmosis. It is a genuinely well-built Rust system — a store trait clean enough to compose storage topologies in config instead of code, a scheduling model that holds up at billions of requests a month — but "well-built" and "quick to navigate on day one" are not the same thing. The abstractions are sharp, the indirection is real (type erasure, two-phase wiring, trait objects behind `Pin<&Self>`), and the hardest correctness properties live in seams that are invisible until you've been bitten. A new contributor can spend a week just building a mental map that this part hands you in an afternoon.
 
-So this part is the map, in the order you actually need it:
+This part is that map, in the order you actually need it:
 
 - **[Orientation](./01-orientation.md)** — the crate map and the "where do I go to change X" table. Start here; it turns a wall of `nativelink-*` directories into a system you can navigate.
 - **[Building and testing](./02-building-and-testing.md)** — the Bazel/Cargo duality and the specific traps (the pinned nightly rustfmt, the deny-level clippy aspect, the MSRV, the DST fuzzer) that `cargo test` passing will not save you from.

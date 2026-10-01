@@ -10,7 +10,7 @@ The unifying lesson, stated once so you can forget everything else: **an operati
 
 NativeLink is Tokio all the way down. Two facts about that model generate most of what follows:
 
-1. **A future can be dropped at any `.await` point.** When a future is dropped mid-flight — a `tokio::time::timeout` elapses, a client disconnects, a `select!` branch loses — execution simply *stops* at the last suspended `.await`. Nothing after it runs. Code that acquired something before that await and planned to release it after does not get to release it, unless the release is in a `Drop`.
+1. **A future can be dropped at any `.await` point.** When a future is dropped mid-flight — a `tokio::time::timeout` elapses, a client disconnects, a `select!` branch loses — execution *stops* at the last suspended `.await`. Nothing after it runs. Code that acquired something before that await and planned to release it after does not get to release it, unless the release is in a `Drop`.
 2. **Between any two `.await` points, the world moves.** Another task ran. The map you read is stale. The worker you picked disconnected. The record you loaded was bumped. An `.await` is a yield to a hostile universe.
 
 The test harness leans on a *current-thread* runtime and a `MockClock` precisely so these interleavings become deterministic and reproducible (see `nativelink-macro`'s `nativelink_test` and the DST fuzzer below). In production they are not deterministic; they are adversarial.
@@ -35,7 +35,7 @@ The fix is an RAII guard whose `Drop` releases the count. But there is a second,
 
 ## Family 2 — Multi-step invariants across an `.await` (TOCTOU)
 
-**The shape:** you check a condition, you `.await`, you act on the condition. Between the check and the act, the condition changed. Classic time-of-check-to-time-of-use, but the "time" is an await point, so it's easy to miss.
+**The shape:** you check a condition, you `.await`, you act on the condition. Between the check and the act, the condition changed. Classic time-of-check-to-time-of-use, but the "time" is an await point, so it slips past review.
 
 **Canonical bugs.**
 - **Kill before registration (N1, PR #2849).** The worker acknowledges a dispatch, then *asynchronously* fetches the action, waits for cleanup, and makes the input directory — several `.await`s — before inserting the operation into its `running_actions` map. A `KillOperationRequest` that arrives in that window looks the operation up, finds nothing, logs an error, and drops the kill. The action then registers and runs, unkilled. The check ("is it in the map?") and the use ("so there's nothing to kill") straddle the entire async startup.

@@ -173,7 +173,7 @@ The classifier is defined in [`nativelink-config/src/schedulers.rs:43-65`](https
 - `exact` — string equality; the worker's value must match the job's exactly (`ISA`).
 - `priority` — **does not restrict** matching. The value is passed to the worker as an informational field (and, in future, will bias worker preference). Both `container-image` and `lre-rs` are `priority`.
 
-So the toolchain tag never acts as a hard filter — the worker running the matching `lre-cc` image *is* the correct executor, and the tag rides through as content-addressed identity that folds into the action hash. `ISA: "exact"` and `cpu_count: "minimum"` do the actual filtering. This is why the empty-string worker values are harmless: `priority` properties are informational, not constraints.
+The toolchain tag therefore never acts as a hard filter — the worker running the matching `lre-cc` image *is* the correct executor, and the tag rides through as content-addressed identity that folds into the action hash. `ISA: "exact"` and `cpu_count: "minimum"` do the actual filtering. This is why the empty-string worker values are harmless: `priority` properties are informational, not constraints.
 
 ## Why This Works
 

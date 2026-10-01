@@ -6,7 +6,7 @@ The number one reason remote caching fails in practice is toolchain mismatch. Yo
 
 The protocol can't help you. REAPI has no concept of "toolchain." It has platform properties (opaque strings) and command arguments (opaque bytes). The protocol assumes the client and the workers agree on what "the toolchain" is. It provides no mechanism to verify this agreement.
 
-So you have to solve it yourself. There are three approaches, each with different tradeoffs.
+You have to solve it yourself. Three approaches exist, each with different tradeoffs.
 
 ## The Three Approaches
 
@@ -87,6 +87,6 @@ What has no fourth version is the *principle*. Everything that is not one of the
 | Cache sharing across repos | Yes (same flake) | Yes (same image) | Only within project |
 | Offline development | Yes (Nix store) | No (need pull) | Yes (after fetch) |
 | Multi-language | Excellent | Good | Per-language |
-| Custom toolchains | Easy (Nix derivation) | Easy (Dockerfile) | Hard (custom rules) |
+| Custom toolchains | Low effort (Nix derivation) | Low effort (Dockerfile) | Hard (custom rules) |
 
 The next three chapters detail each of these approaches with real configurations, real code paths, and the actual files in this repository that implement them; [Platform Properties as the Bridge](./platform-bridge.md) then shows how the platform layer wires any of them to workers. Every configuration in those chapters is real JSON5.
