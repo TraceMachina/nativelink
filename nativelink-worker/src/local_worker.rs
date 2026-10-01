@@ -319,13 +319,53 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
     /// Tells the scheduler the action is refused; only meaningful when it
     /// understands the message.
-    async fn decline(&self, operation_id: String, refusal: Refusal) -> Result<(), Error> {
+    /// How long any one call to the scheduler may take before the
+    /// connection is given up on. A call that never completes is a stalled
+    /// client (seen on the bed: after a burst of unary calls a new worker's
+    /// HTTP/2 client stopped sending anything at all, the socket healthy and
+    /// idle), and the scheduler evicts a silent worker `worker_timeout_s`
+    /// later with every action it holds requeued; ending the connection
+    /// first and reconnecting is the cheaper outcome.
+    fn scheduler_call_deadline(&self) -> Duration {
+        Duration::from_secs_f32(
+            self.config
+                .worker_api_endpoint
+                .timeout
+                .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S),
+        )
+    }
+
+    /// A call to the scheduler the run loop does not wait for inline: it
+    /// rides in the loop's future set, and a deadline it misses ends the
+    /// loop, so a stalled connection becomes a reconnect rather than a
+    /// loop that never reads its stream again.
+    fn bounded_scheduler_call(
+        &self,
+        what: &'static str,
+        call: impl Future<Output = Result<(), Error>> + Send + 'static,
+    ) -> BoxFuture<'static, Result<(), Error>> {
+        let deadline = self.scheduler_call_deadline();
+        async move {
+            match time::timeout(deadline, call).await {
+                Ok(result) => result.err_tip(|| format!("Could not send {what}")),
+                Err(_) => Err(make_err!(
+                    Code::DeadlineExceeded,
+                    "{what} did not complete within {}s; the scheduler connection is stalled, reconnecting",
+                    deadline.as_secs_f32()
+                )),
+            }
+        }
+        .boxed()
+    }
+
+    fn decline(&self, operation_id: String, refusal: Refusal) -> BoxFuture<'static, Result<(), Error>> {
         self.metrics.actions_declined.inc();
-        self.grpc_client
-            .clone()
-            .execute_declined(refusal.into_declined(operation_id))
-            .await
-            .err_tip(|| "Could not send ExecuteDeclined")
+        let mut grpc_client = self.grpc_client.clone();
+        self.bounded_scheduler_call("ExecuteDeclined", async move {
+            grpc_client
+                .execute_declined(refusal.into_declined(operation_id))
+                .await
+        })
     }
 
     /// Starts a background spawn/thread that will send a message to the server every `timeout / 2`.
@@ -362,11 +402,32 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 // actions declared less than they use.
                 let load = crate::capacity::free_memory_kb()
                     .map(|free_memory_kb| WorkerLoad { free_memory_kb });
-                if let Err(e) = grpc_client.keep_alive(KeepAliveRequest { load }).await {
-                    error!(?e, "Failed to send KeepAlive in LocalWorker");
-                    return Err(e.append("KeepAlive failed; reconnecting to the scheduler"));
+                // The per-request deadline on the channel covers a request
+                // that was dispatched; a keepalive the stalled client never
+                // puts on the wire would otherwise hang here silently while
+                // the scheduler counts down to the eviction.
+                match time::timeout(
+                    Duration::from_secs_f32(timeout),
+                    grpc_client.keep_alive(KeepAliveRequest { load }),
+                )
+                .await
+                {
+                    Ok(Ok(())) => debug!("Sent KeepAlive"),
+                    Ok(Err(e)) => {
+                        error!(?e, "Failed to send KeepAlive in LocalWorker");
+                        return Err(e.append("KeepAlive failed; reconnecting to the scheduler"));
+                    }
+                    Err(_) => {
+                        error!(
+                            timeout,
+                            "KeepAlive did not complete; the scheduler connection is stalled, reconnecting"
+                        );
+                        return Err(make_err!(
+                            Code::DeadlineExceeded,
+                            "KeepAlive did not complete within {timeout}s; the scheduler connection is stalled, reconnecting"
+                        ));
+                    }
                 }
-                debug!("Sent KeepAlive");
             }
         })
         .await
@@ -457,40 +518,50 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             if shutting_down || (self.config.single_use
                                 && self.accepted_action.load(Ordering::Acquire)) {
                                 if self.dispatch_ack {
-                                    self.decline(start_execute.operation_id, Refusal::ShuttingDown).await?;
+                                    futures.push(self.decline(start_execute.operation_id, Refusal::ShuttingDown));
                                 } else if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
-                                    self.grpc_client.clone().execution_response(
-                                        ExecuteResult{
-                                            instance_name,
-                                            operation_id: start_execute.operation_id,
-                                            result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
-                                            resource_usage: None,
-                                        }
-                                    ).await?;
+                                    let mut grpc_client = self.grpc_client.clone();
+                                    let operation_id = start_execute.operation_id;
+                                    futures.push(self.bounded_scheduler_call("ExecutionResponse", async move {
+                                        grpc_client.execution_response(
+                                            ExecuteResult{
+                                                instance_name,
+                                                operation_id,
+                                                result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
+                                                resource_usage: None,
+                                            }
+                                        ).await
+                                    }));
                                 }
                                 continue;
                             }
 
                             // Admission, then the acknowledgement: what the
                             // scheduler charged on the send is confirmed or
-                            // handed back before anything runs. A scheduler
-                            // that does not speak the acknowledgement gets
-                            // the old behaviour, run whatever arrives.
+                            // handed back, and a declined action never runs.
+                            // A scheduler that does not speak the
+                            // acknowledgement gets the old behaviour, run
+                            // whatever arrives. Neither call is awaited here:
+                            // this loop is the only reader of the scheduler's
+                            // stream, and a call that hangs on a stalled
+                            // connection would keep it from ever seeing that
+                            // stream close (the worker then sat evicted and
+                            // idle until the provisioner retired it).
                             if self.dispatch_ack {
                                 if let Some(refusal) = self.admission(
                                     &start_execute,
                                     actions_in_flight.load(Ordering::Acquire),
                                 ) {
-                                    self.decline(start_execute.operation_id, refusal).await?;
+                                    futures.push(self.decline(start_execute.operation_id, refusal));
                                     continue;
                                 }
-                                self.grpc_client
-                                    .clone()
-                                    .execute_accepted(ExecuteAccepted {
-                                        operation_id: start_execute.operation_id.clone(),
-                                    })
-                                    .await
-                                    .err_tip(|| "Could not send ExecuteAccepted")?;
+                                let mut grpc_client = self.grpc_client.clone();
+                                let operation_id = start_execute.operation_id.clone();
+                                futures.push(self.bounded_scheduler_call("ExecuteAccepted", async move {
+                                    grpc_client
+                                        .execute_accepted(ExecuteAccepted { operation_id })
+                                        .await
+                                }));
                             }
                             // Admitted: a single-use worker is spent from
                             // here. A decline above must not spend it, or
@@ -1163,7 +1234,13 @@ pub async fn new_local_worker(
                                 .append("Invalid URI for worker endpoint")
                         })?
                         .connect_timeout(timeout_duration)
-                        .timeout(timeout_duration);
+                        .timeout(timeout_duration)
+                        // PING frames between RPCs, so a connection that has
+                        // gone dead underneath fails here instead of hanging
+                        // every call on it.
+                        .http2_keep_alive_interval(timeout_duration)
+                        .keep_alive_timeout(timeout_duration)
+                        .keep_alive_while_idle(true);
 
                 let transport = endpoint.connect().await.map_err(|e| {
                     Error::from_std_err(Code::Internal, &e).append(format!(

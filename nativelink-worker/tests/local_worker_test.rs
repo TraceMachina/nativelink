@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 use std::collections::HashMap;
 #[cfg(target_family = "unix")]
@@ -541,17 +542,14 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
     assert_eq!(stored_result, action_result.clone());
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
     assert_eq!(
-        test_context
-            .client
-            .going_away_count
-            .load(std::sync::atomic::Ordering::Relaxed),
+        test_context.client.going_away_count.load(Ordering::Relaxed),
         0
     );
     assert_eq!(
         test_context
             .client
             .execution_complete_count
-            .load(std::sync::atomic::Ordering::Relaxed),
+            .load(Ordering::Relaxed),
         u64::from(!single_use)
     );
 
@@ -576,7 +574,7 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
         tokio::time::timeout(Duration::from_secs(5), test_context.finish())
             .await
             .map_err(|_| make_input_err!("Single-use worker did not exit"))??;
-        assert_eq!(going_away.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(going_away.load(Ordering::Relaxed), 1);
     }
 
     Ok(())
@@ -1211,6 +1209,163 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
         Code::DeadlineExceeded,
         "Timed out looking for KeepAlive logs"
     ))
+}
+
+/// A keepalive that never completes is a stalled connection: the loop ends
+/// with the deadline, running actions are killed, and the worker reconnects
+/// and registers again, instead of sitting silent until the scheduler
+/// evicts it and the provisioner retires the pod.
+#[nativelink_test]
+async fn keep_alive_that_never_completes_ends_the_connection() -> Result<(), Error> {
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(0.2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    test_context
+        .client
+        .keep_alive_hangs
+        .store(true, Ordering::Release);
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // The deadline ends the loop, the actions are killed, and the worker
+    // comes back to register again.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        test_context.actions_manager.expect_kill_all().await;
+        let (tx_stream2, streaming_response2) = setup_grpc_stream();
+        test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response2))
+            .await;
+        drop(tx_stream2);
+    })
+    .await
+    .map_err(|_| make_err!(Code::DeadlineExceeded, "the worker did not reconnect"))?;
+    assert!(
+        logs_contain(
+            "KeepAlive did not complete; the scheduler connection is stalled, reconnecting"
+        ),
+        "the deadline must name the stall"
+    );
+    assert!(logs_contain(
+        "Worker disconnected from scheduler, reconnecting"
+    ));
+    Ok(())
+}
+
+/// The run loop is the only reader of the scheduler's stream, so no call to
+/// the scheduler is awaited inside it: a dispatch acknowledgement that hangs
+/// leaves the loop reading, and a kill that arrives next is still acted on.
+#[nativelink_test]
+async fn a_hung_acknowledgement_does_not_block_the_loop() -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        max_inflight_tasks: 2,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: worker_id.clone(),
+                    dispatch_ack: true,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Blake3,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+    // The dispatch's acknowledgement is never answered: the mock holds it.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::StartAction(StartExecute {
+                    request_metadata: None,
+                    execute_request: Some((&action_info).into()),
+                    operation_id: "first".to_string(),
+                    queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: worker_id.clone(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // A kill for it arrives while the acknowledgement hangs; the loop reads
+    // it and passes it on.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::KillOperationRequest(KillOperationRequest {
+                    operation_id: "first".to_string(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let killed = tokio::time::timeout(
+        Duration::from_secs(10),
+        test_context.actions_manager.expect_kill_operation(),
+    )
+    .await
+    .map_err(|_| make_err!(Code::DeadlineExceeded, "the loop never read the kill"))?;
+    assert_eq!(killed, OperationId::from("first"));
+    Ok(())
 }
 
 /// Regression test: a disconnect from the scheduler while an action is still
