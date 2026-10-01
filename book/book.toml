@@ -1,0 +1,24 @@
+[book]
+authors = ["NativeLink contributors"]
+description = "The documentation that should have existed from day one."
+language = "en"
+src = "src"
+title = "NativeLink: The Operator & Contributor Guide"
+
+[build]
+build-dir = "out"
+create-missing = false
+
+[output.html]
+default-theme = "ayu"
+edit-url-template = "https://github.com/TraceMachina/nativelink/edit/main/book/{path}"
+git-repository-url = "https://github.com/TraceMachina/nativelink"
+no-section-label = false
+preferred-dark-theme = "ayu"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
