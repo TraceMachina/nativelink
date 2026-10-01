@@ -3,6 +3,61 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.3](https://github.com/TraceMachina/nativelink/compare/v1.7.2..v1.7.3) - 2026-10-01
+
+
+
+### ⛰️  Features
+
+- Support queueing-service through an opt-in gRPC event sink ([#2811](https://github.com/TraceMachina/nativelink/issues/2811)) - ([181a1d3](https://github.com/TraceMachina/nativelink/commit/181a1d34a116aafd93f7b735f224a7e31f314b54))
+- bound the input fetch with max_download_timeout and let a kill reach it ([#2846](https://github.com/TraceMachina/nativelink/issues/2846)) - ([82240c6](https://github.com/TraceMachina/nativelink/commit/82240c640970e8341f6358404456845aad17df47))
+- read capacity and free memory from the worker's own cgroup directory ([#2845](https://github.com/TraceMachina/nativelink/issues/2845)) - ([b4a5468](https://github.com/TraceMachina/nativelink/commit/b4a5468248f4699fcd1ad928e3ea65167e92af86))
+- Historical resource scheduler: hints by digest keys, size classes with a cold-start policy, and where each reservation came from ([#2832](https://github.com/TraceMachina/nativelink/issues/2832)) - ([59cbad2](https://github.com/TraceMachina/nativelink/commit/59cbad26b2a793e06d5e436b3e984f3d1c2df74a))
+- Persistent workers: a configurable pool with an idle sweeper, the action environment, namespaces, measured usage, and a wait at the cap ([#2830](https://github.com/TraceMachina/nativelink/issues/2830)) - ([035dd63](https://github.com/TraceMachina/nativelink/commit/035dd631650a30334db2f5d062dbde8ff3cde301))
+- memory escalation with retry budgets by cause, the whole worker as the last step ([#2829](https://github.com/TraceMachina/nativelink/issues/2829)) - ([3c52ee1](https://github.com/TraceMachina/nativelink/commit/3c52ee1a7026014deef13f92d9cef1e6b474136b))
+- a disk soft limit, and peak_disk_kb from the files an action writes ([#2825](https://github.com/TraceMachina/nativelink/issues/2825)) - ([7bd3c54](https://github.com/TraceMachina/nativelink/commit/7bd3c5424d00bd29f6e3e1516d60105196f439e2))
+- each action gets a private /tmp, its own tmp directory bound over /tmp ([#2824](https://github.com/TraceMachina/nativelink/issues/2824)) - ([c79e3bb](https://github.com/TraceMachina/nativelink/commit/c79e3bbe69e4ecac3e87f9503f47083bffd07fd6))
+- Worker reaps the zombies actions leave behind, and an action's stragglers no longer hold its output open ([#2823](https://github.com/TraceMachina/nativelink/issues/2823)) - ([4fe0a27](https://github.com/TraceMachina/nativelink/commit/4fe0a27ba9e44e02aedf2d197e6f2189c6e543b2))
+- SIGTERM grace before the kill, output kept, a TMPDIR per action, and resource usage with an outcome ([#2822](https://github.com/TraceMachina/nativelink/issues/2822)) - ([9a95e29](https://github.com/TraceMachina/nativelink/commit/9a95e29153f9cbd64208355f211293b97c6d6106))
+- Worker readiness follows scheduler registration ([#2821](https://github.com/TraceMachina/nativelink/issues/2821)) - ([de7a540](https://github.com/TraceMachina/nativelink/commit/de7a540222ca697da3fec83cbb97ba7bcfab039c))
+- Worker advertises CPU and memory from its own cgroup limits ([#2820](https://github.com/TraceMachina/nativelink/issues/2820)) - ([d86ff4f](https://github.com/TraceMachina/nativelink/commit/d86ff4f38ca6e40e09235adfff13cbb036eef9cc))
+- soft memory enforcement against the reservation, and a disk guard before inputs are fetched ([#2812](https://github.com/TraceMachina/nativelink/issues/2812)) - ([fcdccc8](https://github.com/TraceMachina/nativelink/commit/fcdccc81fd4e29e824f8eed733f72988f3b81a18))
+- bound output capture, upload fan-out, precondition scripts and orphaned action directories ([#2810](https://github.com/TraceMachina/nativelink/issues/2810)) - ([f10c7b7](https://github.com/TraceMachina/nativelink/commit/f10c7b70c10a450cefb0062922b33e0840eec8de))
+- kill the whole process group when an action times out or is cancelled ([#2809](https://github.com/TraceMachina/nativelink/issues/2809)) - ([e6aa38a](https://github.com/TraceMachina/nativelink/commit/e6aa38a6b490c281a9df03cf205c951e1a1dbedc))
+- Dispatch is acknowledged or declined by the worker ([#2808](https://github.com/TraceMachina/nativelink/issues/2808)) - ([a21d82c](https://github.com/TraceMachina/nativelink/commit/a21d82c8bdd4225e7f2287ff8018ba243384157b))
+- GoingAway with a drain flag, reconnect backoff with jitter, and a shutdown guard that waits for the drain ([#2807](https://github.com/TraceMachina/nativelink/issues/2807)) - ([2bfa020](https://github.com/TraceMachina/nativelink/commit/2bfa0207f8910d2af4d1b3d2df564a39c1730235))
+- Matching pass: room that opens mid-pass goes to the oldest waiting action, one store read per queued action ([#2806](https://github.com/TraceMachina/nativelink/issues/2806)) - ([2762510](https://github.com/TraceMachina/nativelink/commit/276251061994325162b96a79e12dca3b4dce9e20))
+- Redis scheduler store: RESP3 cursor pages, the retention default, an unreadable row skipped, a wait for the new index ([#2803](https://github.com/TraceMachina/nativelink/issues/2803)) - ([5ef7a83](https://github.com/TraceMachina/nativelink/commit/5ef7a8315d472f92dbb785eb82dfe8bd85968e06))
+- least_loaded and best_fit allocation strategies, typed properties cached per pass ([#2805](https://github.com/TraceMachina/nativelink/issues/2805)) - ([a7cc44d](https://github.com/TraceMachina/nativelink/commit/a7cc44da142e0a8a136176213fa48f2e71464145))
+- Admin API: list connected workers and queued demand ([#2804](https://github.com/TraceMachina/nativelink/issues/2804)) - ([02a64f2](https://github.com/TraceMachina/nativelink/commit/02a64f2b4c69ba5ae157c8c88f7bf6aad8aaa730))
+- Serve the scheduler queue in order, and let workers report their load on the keepalive ([#2796](https://github.com/TraceMachina/nativelink/issues/2796)) - ([4c06bb8](https://github.com/TraceMachina/nativelink/commit/4c06bb81ec4702d830d8aba7b6f39f225e016aa6))
+- Unsatisfiable actions: the clock follows the fleet's shapes, and a timeout for a fleet with no worker at all ([#2799](https://github.com/TraceMachina/nativelink/issues/2799)) - ([31be880](https://github.com/TraceMachina/nativelink/commit/31be88082f7c376d8b8648b1017d10975215c66a))
+- Scheduler worker state: budget released at completion, pause until the next keepalive, retry cap fails with FailedPrecondition ([#2798](https://github.com/TraceMachina/nativelink/issues/2798)) - ([71bb05a](https://github.com/TraceMachina/nativelink/commit/71bb05a0eedb89b69a4d8b5b5b562bea261644cc))
+- Worker liveness: any message counts, a 10s default, a dead keepalive reconnects, SIGINT drains ([#2797](https://github.com/TraceMachina/nativelink/issues/2797)) - ([2f54cc3](https://github.com/TraceMachina/nativelink/commit/2f54cc3bcb9548b83eedc447bfa02faca8120374))
+
+### 🐛 Bug Fixes
+
+- a stalled scheduler connection reconnects instead of leaving the worker evicted and idle ([#2856](https://github.com/TraceMachina/nativelink/issues/2856)) - ([389cf73](https://github.com/TraceMachina/nativelink/commit/389cf73574e82ebee101beacea4453424908b06d))
+- a fast tier that ends short on a digest resumes from the slow store, and a missing input names its digest so the client re-uploads it ([#2855](https://github.com/TraceMachina/nativelink/issues/2855)) - ([bd1bb34](https://github.com/TraceMachina/nativelink/commit/bd1bb3402e03fd6b377ec7166dd3ba6f0c1b4416))
+- Give a live worker a grace period to report its own timeout ([#2826](https://github.com/TraceMachina/nativelink/issues/2826)) - ([5b4e555](https://github.com/TraceMachina/nativelink/commit/5b4e555070fe5e1b3e8709d11d03c1fc6812023b))
+- a read that stops short of the digest's size is an error, not EOF ([#2844](https://github.com/TraceMachina/nativelink/issues/2844)) - ([fd6530e](https://github.com/TraceMachina/nativelink/commit/fd6530ea797355506dc4f2ca6e730c398f8900cc))
+- build the cleanup mark's guard after the lock is released ([#2843](https://github.com/TraceMachina/nativelink/issues/2843)) - ([9a03932](https://github.com/TraceMachina/nativelink/commit/9a03932c0fd5b38150a865770c3222737b306836))
+- Scheduler skips and counts a queue entry it cannot read ([#2795](https://github.com/TraceMachina/nativelink/issues/2795)) - ([4001f52](https://github.com/TraceMachina/nativelink/commit/4001f5256eccfbfa1f09b849a7f03e4092c4f9bc))
+- Sorted index reads return the whole set, not ten rows ([#2794](https://github.com/TraceMachina/nativelink/issues/2794)) - ([7b2c02d](https://github.com/TraceMachina/nativelink/commit/7b2c02db4993bffb6073d408d7955d34e7882e1f))
+
+### 📚 Documentation
+
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2828](https://github.com/TraceMachina/nativelink/issues/2828)) - ([938c56f](https://github.com/TraceMachina/nativelink/commit/938c56f11f7377f5a716164d15507cad1f972cac))
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2819](https://github.com/TraceMachina/nativelink/issues/2819)) - ([5aa89ad](https://github.com/TraceMachina/nativelink/commit/5aa89ad293e738cdf30e6856485144af65804528))
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2802](https://github.com/TraceMachina/nativelink/issues/2802)) - ([74688d6](https://github.com/TraceMachina/nativelink/commit/74688d6385fd5c59833031ca0373390599e3b7a7))
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2800](https://github.com/TraceMachina/nativelink/issues/2800)) - ([9d65134](https://github.com/TraceMachina/nativelink/commit/9d651347ecd2ed93831a6c318d4db3a700c68c43))
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2792](https://github.com/TraceMachina/nativelink/issues/2792)) - ([b2b8178](https://github.com/TraceMachina/nativelink/commit/b2b8178c54e8fa7c6fbb8ca358193e0631991c26))
+
+### 🧪 Testing & CI
+
+- Give the oversized-upload store tests the 30 s deadline the third already has ([#2818](https://github.com/TraceMachina/nativelink/issues/2818)) - ([3ff63f1](https://github.com/TraceMachina/nativelink/commit/3ff63f17f52372c7ee7459d4f5f7690713fa6e5c))
+- Give trivy three vulnerability database mirrors to fall through ([#2801](https://github.com/TraceMachina/nativelink/issues/2801)) - ([a9c6801](https://github.com/TraceMachina/nativelink/commit/a9c6801f4e374016734811eb35231e14303778c8))
+
 ## [1.7.2](https://github.com/TraceMachina/nativelink/compare/v1.7.1..v1.7.2) - 2026-09-25
 
 ### Major changes
