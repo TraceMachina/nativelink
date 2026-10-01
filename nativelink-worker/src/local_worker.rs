@@ -678,6 +678,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 }
                                                 result
                                             })
+                                            // Boxed here so the chain's type ends
+                                            // here: the compiler's Send check on
+                                            // the futures above it does not have
+                                            // to walk it (it overflowed).
+                                            .boxed()
                                     }).await
                                 })
                             };
