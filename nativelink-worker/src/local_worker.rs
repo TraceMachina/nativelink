@@ -358,7 +358,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         .boxed()
     }
 
-    fn decline(&self, operation_id: String, refusal: Refusal) -> BoxFuture<'static, Result<(), Error>> {
+    fn decline(
+        &self,
+        operation_id: String,
+        refusal: Refusal,
+    ) -> BoxFuture<'static, Result<(), Error>> {
         self.metrics.actions_declined.inc();
         let mut grpc_client = self.grpc_client.clone();
         self.bounded_scheduler_call("ExecuteDeclined", async move {
@@ -478,7 +482,9 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 let mut grpc_client = self.grpc_client.clone();
                 if let Err(err) = self
                     .bounded_scheduler_call("GoingAway", async move {
-                        grpc_client.going_away(GoingAwayRequest { drain: false }).await
+                        grpc_client
+                            .going_away(GoingAwayRequest { drain: false })
+                            .await
                     })
                     .await
                 {
