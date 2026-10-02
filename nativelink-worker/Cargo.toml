@@ -74,7 +74,7 @@ pretty_assertions = { version = "1.4.1", features = [
   "std",
 ], default-features = false }
 prost-types = { version = "0.14.4", default-features = false }
-serial_test = { version = "3.2.0", features = [
+serial_test = { version = "4.0.0", features = [
   "async",
 ], default-features = false }
 tempfile = { version = "3.15.0", default-features = false }
