@@ -2187,3 +2187,70 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
 
     Ok(())
 }
+
+// Regression test for N14: an interrupted ByteStream upload is parked for
+// resumption, keeping its FastSlowStore::update() future (and in-flight
+// slow-write registration) alive. Existence-check waiters that subscribed to
+// that in-flight write must be woken when the SAME digest is completed by a
+// DIFFERENT upload (fresh upload id), not starve until their client deadline.
+#[nativelink_test]
+async fn stalled_upload_waiter_released_by_fresh_upload_of_same_digest() -> Result<(), Error> {
+    let (fast_slow_store, _fast_store, _slow_store) = make_stores();
+    let data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len())?;
+
+    // Upload A: starts streaming, then stalls forever mid-stream (simulates a
+    // cancelled/half-closed ByteStream upload parked for resumption). We keep
+    // `stalled_tx` alive so the update() future stays pending.
+    let (mut stalled_tx, stalled_rx) = make_buf_channel_pair();
+    let store_a = fast_slow_store.clone();
+    let upload_a = tokio::spawn(async move {
+        store_a
+            .update(digest, stalled_rx, UploadSizeInfo::ExactSize(100))
+            .await
+    });
+    stalled_tx.send(Bytes::from(make_random_data(10))).await?;
+    // Let upload A register its in-flight slow write.
+    tokio::task::yield_now().await;
+
+    // Waiter: FindMissingBlobs-style existence check that parks on the
+    // in-flight write of upload A.
+    let store_w = fast_slow_store.clone();
+    let waiter = tokio::spawn(async move { store_w.has(digest).await });
+    // Let the waiter subscribe to the in-flight write.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiter.is_finished(), "Waiter should be parked on upload A");
+
+    // Upload B: completes the same digest under a "fresh upload id".
+    fast_slow_store
+        .update_oneshot(digest, data.clone().into())
+        .await?;
+
+    // The waiter must be released promptly by upload B's completion.
+    let result = tokio::time::timeout(Duration::from_secs(2), waiter)
+        .await
+        .map_err(|_| {
+            make_err!(
+                Code::DeadlineExceeded,
+                "Waiter hung after same digest was completed by a fresh upload"
+            )
+        })?
+        .expect("waiter task panicked")?;
+    assert_eq!(
+        result,
+        Some(100),
+        "Waiter should see the completed blob size"
+    );
+
+    // A genuinely-absent digest must still resolve promptly once its only
+    // (stalled) writer goes away.
+    drop(stalled_tx);
+    drop(upload_a.await);
+    let absent = DigestInfo::try_new(VALID_HASH, 12345)?;
+    let absent_result = tokio::time::timeout(Duration::from_secs(2), fast_slow_store.has(absent))
+        .await
+        .map_err(|_| make_err!(Code::DeadlineExceeded, "Absent digest check hung"))??;
+    assert_eq!(absent_result, None);
+
+    Ok(())
+}

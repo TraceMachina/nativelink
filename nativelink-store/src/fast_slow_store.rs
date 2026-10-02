@@ -77,7 +77,33 @@ pub struct FastSlowStore {
     // concurrent writer that has not yet finished pushing to the slow store
     // is still visible to a concurrent existence check, preventing redundant
     // duplicate uploads of the same blob.
-    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<tokio::sync::Mutex<MaybeSize>>>>,
+    //
+    // Each key maps to a single shared slot that *all* concurrent writers of
+    // that key register on. This is load-bearing for liveness: waiters key on
+    // the digest, not on any individual upload, so a second upload (e.g. a
+    // retry under a fresh ByteStream upload id after the first was
+    // interrupted and parked for resumption) completing the blob wakes
+    // waiters that subscribed while the first upload was in flight.
+    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, InFlightSlowWrite>>,
+}
+
+/// State of an in-flight slow-store write, broadcast to existence-check
+/// waiters through a `watch` channel.
+#[derive(Clone, Copy, Debug)]
+enum InFlightWriteState {
+    /// At least one writer is still streaming this key to the slow store.
+    Pending,
+    /// The write finished: `Some(size)` if a writer completed successfully,
+    /// `None` if every writer gave up without completing.
+    Done(MaybeSize),
+}
+
+/// Per-key slot shared by every concurrent writer of that key.
+#[derive(Debug)]
+struct InFlightSlowWrite {
+    tx: tokio::sync::watch::Sender<InFlightWriteState>,
+    /// Number of live [`InFlightSlowWriteGuard`]s registered on this slot.
+    writers: usize,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -104,19 +130,22 @@ impl LoaderGuard<'_> {
     }
 }
 
-/// Cancel-safe RAII guard that removes an entry from
-/// `FastSlowStore::in_flight_slow_writes` when dropped. This ensures the
-/// map does not leak entries if the surrounding `update()` future is
-/// cancelled before the slow-store write completes.
+/// Cancel-safe RAII guard that deregisters a writer from the key's shared
+/// slot in `FastSlowStore::in_flight_slow_writes` when dropped. The map entry
+/// is removed only when the *last* writer for the key deregisters, so a
+/// parked/cancelled upload cannot orphan waiters nor evict a slot a newer
+/// upload of the same key is still using.
 struct InFlightSlowWriteGuard {
     weak_store: Weak<FastSlowStore>,
     key: Option<StoreKey<'static>>,
-    write_complete_guard: tokio::sync::OwnedMutexGuard<MaybeSize>,
+    tx: tokio::sync::watch::Sender<InFlightWriteState>,
 }
 
 impl InFlightSlowWriteGuard {
-    fn complete(mut self, size: MaybeSize) {
-        *self.write_complete_guard = size;
+    /// Marks the write done and wakes all waiters; deregistration happens in
+    /// `Drop`.
+    fn complete(self, size: MaybeSize) {
+        self.tx.send_replace(InFlightWriteState::Done(size));
     }
 }
 
@@ -128,7 +157,27 @@ impl Drop for InFlightSlowWriteGuard {
         let Some(key) = self.key.take() else {
             return;
         };
-        store.in_flight_slow_writes.lock().remove(&key);
+        let mut map = store.in_flight_slow_writes.lock();
+        let std::collections::hash_map::Entry::Occupied(mut occupied_entry) = map.entry(key) else {
+            return;
+        };
+        // Only touch the slot this guard registered on (defense against a
+        // same-key slot that was replaced out from under us).
+        if !occupied_entry.get().tx.same_channel(&self.tx) {
+            return;
+        }
+        let slot = occupied_entry.get_mut();
+        slot.writers -= 1;
+        if slot.writers == 0 {
+            // Last writer for this key. If nobody completed the write, wake
+            // waiters with "not written" so they do not hang forever.
+            slot.tx.send_modify(|state| {
+                if matches!(state, InFlightWriteState::Pending) {
+                    *state = InFlightWriteState::Done(None);
+                }
+            });
+            occupied_entry.remove();
+        }
     }
 }
 
@@ -175,18 +224,18 @@ impl FastSlowStore {
 
     fn register_in_flight_slow_write(&self, key: StoreKey<'_>) -> InFlightSlowWriteGuard {
         let owned = key.into_owned();
-        let write_complete = Arc::new(tokio::sync::Mutex::new(None));
-        let write_complete_guard = write_complete
-            .clone()
-            .try_lock_owned()
-            .expect("Newly created mutex is locked");
-        self.in_flight_slow_writes
-            .lock()
-            .insert(owned.borrow().into_owned(), write_complete);
+        let mut map = self.in_flight_slow_writes.lock();
+        let slot = map
+            .entry(owned.borrow().into_owned())
+            .or_insert_with(|| InFlightSlowWrite {
+                tx: tokio::sync::watch::channel(InFlightWriteState::Pending).0,
+                writers: 0,
+            });
+        slot.writers += 1;
         InFlightSlowWriteGuard {
             weak_store: self.weak_self.clone(),
             key: Some(owned),
-            write_complete_guard,
+            tx: slot.tx.clone(),
         }
     }
 
@@ -515,9 +564,21 @@ impl StoreDriver for FastSlowStore {
                 for (i, (k, result)) in key.iter().zip(results.iter_mut()).enumerate() {
                     if result.is_none() {
                         let owned = k.borrow().into_owned();
-                        if let Some(maybe_size) = in_flight.get(&owned) {
-                            let maybe_size = maybe_size.clone();
-                            in_flight_futs.push(async move { (i, *maybe_size.lock().await) });
+                        if let Some(slot) = in_flight.get(&owned) {
+                            let mut rx = slot.tx.subscribe();
+                            in_flight_futs.push(async move {
+                                loop {
+                                    let state = *rx.borrow_and_update();
+                                    match state {
+                                        InFlightWriteState::Done(size) => return (i, size),
+                                        InFlightWriteState::Pending => {}
+                                    }
+                                    if rx.changed().await.is_err() {
+                                        // All writers dropped without completing.
+                                        return (i, None);
+                                    }
+                                }
+                            });
                         }
                     }
                 }
