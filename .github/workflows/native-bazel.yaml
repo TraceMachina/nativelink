@@ -53,7 +53,12 @@ jobs:
         id: setup-nativelink-cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
-          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          # Default to 'cache' when the repo variable is unset so forks and
+          # untrusted PRs still get the committed anonymous read-only cache
+          # (cred_kind=public: cache_read only, --remote_upload_local_results
+          # =false, no BES). An explicit 'off' still disables; trusted lanes
+          # with secrets are unaffected.
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE || 'cache' }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
           api-key: >-
@@ -126,7 +131,12 @@ jobs:
         id: setup-nativelink-cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
-          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          # Default to 'cache' when the repo variable is unset so forks and
+          # untrusted PRs still get the committed anonymous read-only cache
+          # (cred_kind=public: cache_read only, --remote_upload_local_results
+          # =false, no BES). An explicit 'off' still disables; trusted lanes
+          # with secrets are unaffected.
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE || 'cache' }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
           api-key: >-
