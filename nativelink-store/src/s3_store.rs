@@ -627,8 +627,22 @@ where
         }
 
         let s3_path = &self.make_s3_path(&key);
+        // A zero-length bounded read has no valid inclusive byte range; satisfy
+        // it with an immediate EOF (matches `MemoryStore::get_part` semantics).
+        if length == Some(0) {
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send zero-length EOF in get_part")?;
+            return Ok(());
+        }
+        // HTTP byte ranges are inclusive on both ends: reading `length` bytes
+        // from `offset` ends at byte index `offset + length - 1`. Using
+        // `offset + length` over-reads one byte on any range that stops before
+        // the object end.
         let end_read_byte = length
-            .map_or(Some(None), |length| Some(offset.checked_add(length)))
+            .map_or(Some(None), |length| {
+                Some(offset.checked_add(length).map(|end| end - 1))
+            })
             .err_tip(|| "Integer overflow protection triggered")?;
 
         self.retrier

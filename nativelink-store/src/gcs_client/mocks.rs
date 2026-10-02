@@ -354,7 +354,11 @@ impl GcsOperations for MockGcsOperations {
                         start
                     ));
                 }
-                core::cmp::min(usize::try_from(e).unwrap_or(usize::MAX), content.len())
+                // HTTP byte ranges are inclusive of the end index.
+                core::cmp::min(
+                    usize::try_from(e).unwrap_or(usize::MAX).saturating_add(1),
+                    content.len(),
+                )
             } else {
                 content.len()
             };

@@ -549,8 +549,8 @@ async fn get_part_with_range() -> Result<(), Error> {
     assert_eq!(*read_requests[0].0, 6, "Expected start offset to be 6");
     assert_eq!(
         *read_requests[0].1,
-        Some(11),
-        "Expected end offset to be Some(11)"
+        Some(10),
+        "Expected inclusive end offset to be Some(10)"
     );
 
     Ok(())
@@ -1014,5 +1014,54 @@ async fn get_part_ignores_empty_stream_chunks() -> Result<(), Error> {
 
     handle.await??;
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_part_bounded_subrange_is_end_inclusive() -> Result<(), Error> {
+    // A strict subrange (offset + length < size) must return exactly `length`
+    // bytes with an *inclusive* end offset. Regression for the off-by-one that
+    // passed `offset + length` (one byte too many) to the HTTP byte range.
+    let mock_ops = Arc::new(MockGcsOperations::new());
+    let store = create_test_store(mock_ops.clone()).await?;
+    let digest = DigestInfo::try_new(VALID_HASH1, 11)?; // "hello world"
+    let store_key: StoreKey = to_store_key(digest);
+    let object_path = create_object_path(&store_key);
+    mock_ops
+        .add_object(&object_path, b"hello world".to_vec())
+        .await;
+    let (mut tx, mut rx) = make_buf_channel_pair();
+
+    // bytes [2, 5) = "llo" (3 bytes), ending strictly before the object end.
+    let store_clone = store.clone();
+    let get_fut = nativelink_util::spawn!("get_part_subrange_task", async move {
+        store_clone.get_part(store_key, &mut tx, 2, Some(3)).await
+    });
+    let received_data = rx.consume(Some(100)).await?;
+    assert_eq!(
+        received_data.as_ref(),
+        b"llo",
+        "strict subrange must return exactly `length` bytes"
+    );
+    get_fut.await??;
+
+    let requests = mock_ops.get_requests().await;
+    let read_requests: Vec<_> = requests
+        .iter()
+        .filter_map(|req| {
+            if let MockRequest::ReadContent { start, end, .. } = req {
+                Some((*start, *end))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(read_requests.len(), 1, "Expected one read content request");
+    assert_eq!(read_requests[0].0, 2, "Expected start offset 2");
+    assert_eq!(
+        read_requests[0].1,
+        Some(4),
+        "Expected inclusive end offset Some(4) for a 3-byte read from offset 2"
+    );
     Ok(())
 }
