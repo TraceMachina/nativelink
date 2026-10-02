@@ -2317,3 +2317,109 @@ mod peer_census_trusted_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod tl1_decoupling_tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use nativelink_config::schedulers::WorkerAllocationStrategy;
+    use nativelink_macro::nativelink_test;
+    use nativelink_util::instant_wrapper::MockInstantWrapped;
+    use tokio::sync::Notify;
+
+    use super::{
+        ApiWorkerScheduler, Duration, SharedWorkerRegistry, SystemTime, WorkerId, WorkerTimestamp,
+    };
+    use crate::default_scheduler_factory::memory_awaited_action_db_factory;
+    use crate::platform_property_manager::PlatformPropertyManager;
+    use crate::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+    use crate::worker_registry::WorkerRegistry;
+
+    fn test_scheduler(registry: SharedWorkerRegistry) -> Arc<ApiWorkerScheduler> {
+        let task_change_notify = Arc::new(Notify::new());
+        let awaited_action_db =
+            memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default);
+        let state_manager = SimpleSchedulerStateManager::new(
+            0,
+            Duration::from_secs(10),
+            Duration::from_secs(10),
+            Duration::ZERO,
+            awaited_action_db,
+            SystemTime::now,
+            None,
+        );
+        ApiWorkerScheduler::new(
+            state_manager,
+            Arc::new(PlatformPropertyManager::new(HashMap::new())),
+            WorkerAllocationStrategy::default(),
+            None,
+            None,
+            Arc::new(Notify::new()),
+            60,
+            0,
+            // dispatch_ack_timeout_s = 0 -> the unacked-dispatch sweep is skipped.
+            0,
+            registry,
+            None,
+            false,
+            Duration::from_secs(15),
+        )
+    }
+
+    /// TL1 decoupling regression.
+    ///
+    /// The registry heartbeat must be stamped on receipt, *before* `inner.lock()`.
+    /// The eviction sweep reads the registry as an independent liveness source; if
+    /// the stamp is gated behind `inner.lock()` (held by a contended or
+    /// runtime-starved caller -- in production the unacked-dispatch sweep holds it
+    /// across an `.await`), a punctual keepalive cannot refresh liveness before the
+    /// deadline and a live worker is falsely evicted as `Stale`.
+    ///
+    /// We simulate contention by holding `inner` and then delivering a keepalive on
+    /// another task.  With the fix the registry is stamped *while the lock is still
+    /// held* (decoupled); without it the keepalive is parked on the lock and nothing
+    /// is stamped -- the assertion below fails (fails-without).  The worker is
+    /// unknown to `inner`, so `refresh_lifetime` errors once the lock is released;
+    /// that is after the stamp we assert on and does not affect the result.
+    #[nativelink_test]
+    async fn heartbeat_stamped_before_inner_lock_under_contention() {
+        let registry = Arc::new(WorkerRegistry::new());
+        let scheduler = test_scheduler(registry.clone());
+        let worker_id = WorkerId::from(String::from("tl1-contended"));
+        let timestamp: WorkerTimestamp = 1000;
+
+        // Hold `inner` to simulate a contended / starved lock.
+        let inner_guard = scheduler.inner.lock().await;
+
+        // A punctual keepalive arrives while the lock is held.
+        let sched = scheduler.clone();
+        let wid = worker_id.clone();
+        let refresh = tokio::spawn(async move {
+            let _unused = sched.refresh_worker(&wid, timestamp, None, true).await;
+        });
+
+        // With the fix the stamp lands before `inner.lock()`, i.e. while we still
+        // hold the guard; without it the keepalive is parked and never stamps.
+        let stamped = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if registry.get_worker_last_seen(&worker_id).await.is_some() {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+
+        drop(inner_guard);
+        let _unused = refresh.await;
+
+        assert!(
+            stamped,
+            "heartbeat was not refreshed while inner.lock was held: a contended/starved keepalive \
+             cannot refresh the independent liveness source, so a live worker is falsely evicted \
+             as Stale"
+        );
+    }
+}
