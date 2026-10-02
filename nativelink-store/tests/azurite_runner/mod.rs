@@ -4,6 +4,7 @@ mod process;
 mod sas;
 
 use core::time::Duration;
+use std::env;
 use std::path::{Path, PathBuf};
 
 use nativelink_error::{Error, ResultExt, make_err};
@@ -94,25 +95,38 @@ fn find_azurite_binary() -> Result<PathBuf, Error> {
         "azurite-blob"
     };
 
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR")
         .map_err(|e| make_err!(Code::Internal, "CARGO_MANIFEST_DIR not set at runtime: {e}"))?;
 
-    let path = Path::new(&manifest_dir)
+    let test_path = Path::new(&manifest_dir)
         .join("tests")
-        .join("azurite_runner")
+        .join("azurite_runner");
+
+    if !test_path.exists() {
+        return Err(Error::new(
+            Code::NotFound,
+            format!(
+                "Can't find test path! Cwd is {:?} {}",
+                env::current_dir(),
+                test_path.display()
+            ),
+        ));
+    }
+
+    let runner_path = test_path
         .join("node_modules")
         .join(".bin")
         .join(binary_name);
 
-    if !path.exists() {
+    if !runner_path.exists() {
         return Err(make_err!(
             Code::NotFound,
-            "azurite-blob not found at {}. Run `npm ci` in nativelink-store/tests/azurite_runner first.",
-            path.display()
+            "azurite-blob not found at {}. Try running `bun install` in nativelink-store/tests/azurite_runner",
+            runner_path.display()
         ));
     }
 
-    Ok(path)
+    Ok(runner_path)
 }
 
 /// Polls until the just spawned `azurite-blob` answers on its blob

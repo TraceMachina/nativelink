@@ -42,7 +42,7 @@ impl AzuriteProcess {
             .to_string_lossy()
             .to_string();
 
-        info!(?log_path, "Logging azurite-blob");
+        info!(?log_path, ?bind_ip, ?location, "Starting azurite-blob");
 
         let mut child = Command::new(binary_path)
             .arg("--blobPort")

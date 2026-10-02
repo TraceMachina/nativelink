@@ -178,6 +178,10 @@ rust_test_suite(
         "tests/azurite_runner/process.rs",
         "tests/azurite_runner/sas.rs",
     ],
+    # FIXME(palfrey): we should be including this in Bazel, but the azurite_runner program makes a
+    # bunch of assumptions about it's environment (mainly regarding programs it can run) that are
+    # currently incompatible with our Bazel setup, so we don't and it skips the relevant tests
+    # data = glob(["tests/azurite_runner/node_modules/**"]),
     proc_macro_deps = [
         "//nativelink-macro",
         "@crates//:async-trait",

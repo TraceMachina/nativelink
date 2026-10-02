@@ -10,6 +10,7 @@ use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::store_trait::StoreLike;
 use tonic::Code;
+use tracing::warn;
 use uuid::Uuid;
 
 mod azurite_runner;
@@ -129,7 +130,16 @@ impl Drop for TestAzuriteHelper {
 
 #[nativelink_test]
 async fn upload_and_get_data() -> Result<(), Error> {
-    let helper = TestAzuriteHelper::new().await?;
+    let helper = match TestAzuriteHelper::new().await {
+        Ok(p) => p,
+        Err(e) if e.code == Code::NotFound => {
+            warn!("Error getting azurite helper, skipping: {e}");
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    };
 
     let data = Bytes::from_static(b"14");
     let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
@@ -156,7 +166,16 @@ async fn upload_and_get_data() -> Result<(), Error> {
 async fn upload_empty_data() -> Result<(), Error> {
     let data = Bytes::from_static(b"");
     let digest = ZERO_BYTE_DIGESTS[0];
-    let helper = TestAzuriteHelper::new().await?;
+    let helper = match TestAzuriteHelper::new().await {
+        Ok(p) => p,
+        Err(e) if e.code == Code::NotFound => {
+            warn!("Error getting azurite helper, skipping: {e}");
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    };
 
     helper.store.update_oneshot(digest, data).await?;
 
@@ -172,7 +191,16 @@ async fn upload_empty_data() -> Result<(), Error> {
 #[nativelink_test]
 async fn zero_len_items_exist_check() -> Result<(), Error> {
     let digest = DigestInfo::try_new(VALID_HASH1, 0)?;
-    let helper = TestAzuriteHelper::new().await?;
+    let helper = match TestAzuriteHelper::new().await {
+        Ok(p) => p,
+        Err(e) if e.code == Code::NotFound => {
+            warn!("Error getting azurite helper, skipping: {e}");
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    };
 
     let result = helper.store.get_part_unchunked(digest, 0, None).await;
     let err = result.unwrap_err();
