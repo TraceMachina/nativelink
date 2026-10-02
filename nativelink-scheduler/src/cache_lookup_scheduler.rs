@@ -231,8 +231,15 @@ impl CacheLookupScheduler {
         let inflight_cache_checks = self.inflight_cache_checks.clone();
         // We need this spawn because we are returning a stream and this spawn will populate the stream's data.
         background_spawn!("cache_lookup_scheduler_add_action", async move {
-            // If our spawn ever dies, we will remove the action from the inflight_cache_checks map.
-            let _scope_guard = scope_guard;
+            // If our spawn ever dies before we take ownership of the map entry, remove the
+            // action from the inflight_cache_checks map (drop-safety). We defuse this guard
+            // the moment the cache check returns (below): from that point we remove the entry
+            // ourselves on every path with no intervening `.await`, so the guard's stale
+            // remove must NOT fire afterwards — a concurrent same-key request may have
+            // re-inserted a fresh entry in the window between our remove and this spawn's
+            // exit, and letting the guard run would orphan it (its oneshot tx is dropped,
+            // surfacing a spurious "tx hung up" to that client and forcing a retry).
+            let scope_guard = scope_guard;
 
             let unique_key = match &action_info.unique_qualifier {
                 ActionUniqueQualifier::Cacheable(unique_key) => unique_key,
@@ -254,6 +261,11 @@ impl CacheLookupScheduler {
                 action_info.unique_qualifier.digest_function(),
             )
             .await;
+            // The cache check has returned; from here every path removes our own map entry
+            // with no intervening `.await` (no drop point), so defusing the drop-guard now is
+            // leak-free and prevents its stale remove from clobbering a concurrent same-key
+            // re-insertion after we remove our entry.
+            scopeguard::ScopeGuard::into_inner(scope_guard);
             match maybe_action_result {
                 Ok(action_result) => {
                     let maybe_pending_txs = {
