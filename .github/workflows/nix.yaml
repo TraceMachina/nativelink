@@ -21,6 +21,9 @@ concurrency:
 
 jobs:
   nix-bazel:
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +44,7 @@ jobs:
       - name: Setup NativeLink Cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
+          attribution-url: ${{ secrets.NATIVELINK_GITHUB_APP_URL }}
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
