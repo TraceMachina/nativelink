@@ -1027,3 +1027,46 @@ async fn single_request_permit() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn update_rejects_truncated_stream_instead_of_committing_it() -> Result<(), Error> {
+    // A mid-stream failure (sender dropped before send_eof) must surface as an
+    // Err, not be committed as a successful upload. Before the fix, the
+    // `while let Ok(chunk)` loop treated the stream Err identically to the
+    // empty-chunk EOF and upserted the partial bytes as Ok(partial_len),
+    // storing a truncated blob under the full digest's key.
+    let data = Bytes::from(vec![b'A'; 256]);
+    let digest = DigestInfo::try_new(VALID_HASH1, data.len())?;
+
+    let helper = TestMongoHelper::new(None).await?;
+    let store = helper.store.clone();
+
+    let (mut tx, rx) = make_buf_channel_pair();
+
+    let (update_result, send_result) = tokio::join!(
+        async {
+            store
+                .update(digest, rx, UploadSizeInfo::ExactSize(data.len() as u64))
+                .await
+        },
+        async {
+            // Send one non-empty chunk, then drop the writer WITHOUT send_eof,
+            // so the reader sees the chunk followed by an Err.
+            tx.send(data.clone()).await?;
+            drop(tx);
+            Ok::<_, Error>(())
+        },
+    );
+    send_result?;
+    assert!(
+        update_result.is_err(),
+        "update must return Err on a mid-stream failure, not commit a truncated blob as success",
+    );
+
+    assert!(
+        store.has(digest).await?.is_none(),
+        "a torn upload must not leave the digest present",
+    );
+
+    Ok(())
+}

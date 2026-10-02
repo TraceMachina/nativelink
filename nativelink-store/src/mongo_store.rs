@@ -484,13 +484,32 @@ impl StoreDriver for ExperimentalMongoStore {
             }
         }
 
-        // Read all data into memory with proper EOF handling
+        // Read all data into memory. A mid-stream error must be propagated,
+        // not treated as EOF: the old `while let Ok(chunk)` swallowed a stream
+        // `Err` identically to the empty-chunk EOF, committing a truncated blob
+        // under the digest's key (a torn write served as success).
         let mut data = Vec::new();
-        while let Ok(chunk) = reader.recv().await {
+        loop {
+            let chunk = reader.recv().await.map_err(|e| {
+                make_err!(
+                    Code::Internal,
+                    "Failed to read stream in ExperimentalMongoStore::update: {e}"
+                )
+            })?;
             if chunk.is_empty() {
                 break; // Empty chunk signals EOF
             }
             data.extend_from_slice(&chunk);
+        }
+
+        if let UploadSizeInfo::ExactSize(expected) = upload_size
+            && data.len() as u64 != expected
+        {
+            return Err(make_err!(
+                Code::Internal,
+                "ExperimentalMongoStore::update received {} bytes but expected {expected} (ExactSize)",
+                data.len()
+            ));
         }
 
         let size = data.len().try_into().unwrap_or(i64::MAX);
