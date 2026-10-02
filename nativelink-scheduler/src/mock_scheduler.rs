@@ -136,6 +136,35 @@ impl MockActionScheduler {
             .unwrap();
         req
     }
+
+    /// Receives an `add_action` call WITHOUT sending a response, leaving the
+    /// caller parked awaiting the result.  Pair with `respond_add_action`.
+    /// Lets a regression hold a leader parked mid-`add_action` while another
+    /// request interleaves.
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
+    pub async fn receive_add_action(&self) -> (OperationId, ActionInfo) {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let ActionSchedulerCalls::AddAction(req) = rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for add_action")
+        };
+        req
+    }
+
+    /// Sends the response for a previously `receive_add_action`-ed call,
+    /// unparking the leader.
+    #[allow(dead_code, reason = "https://github.com/rust-lang/rust/issues/46379")]
+    pub fn respond_add_action(&self, result: Result<Box<dyn ActionStateResult>, Error>) {
+        assert!(
+            self.tx_resp
+                .send(ActionSchedulerReturns::AddAction(result))
+                .is_ok(),
+            "Could not send response to mpsc"
+        );
+    }
 }
 
 #[async_trait]
