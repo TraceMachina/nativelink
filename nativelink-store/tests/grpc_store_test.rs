@@ -101,6 +101,11 @@ struct FakeStreamServer {
     drain_all: bool,
     committed_size_override: Option<i64>,
     fail_after_commit: Arc<Mutex<bool>>,
+    /// Full byte payload the fake `read` serves (sliced from `read_offset`).
+    read_payload: Arc<Vec<u8>>,
+    /// `Some(n)`: the FIRST `read` serves `n` bytes then a retryable error,
+    /// forcing the client to resume; later reads serve the remainder.
+    first_read_partial: Option<usize>,
 }
 
 impl FakeStreamServer {
@@ -111,6 +116,8 @@ impl FakeStreamServer {
             drain_all: false,
             committed_size_override: None,
             fail_after_commit: Arc::new(Mutex::new(false)),
+            read_payload: Arc::new(RAW_INPUT.as_bytes().to_vec()),
+            first_read_partial: None,
         }
     }
 
@@ -123,10 +130,6 @@ impl FakeStreamServer {
 }
 
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
-
-struct ReaderState {
-    responded: bool,
-}
 
 #[tonic::async_trait]
 impl ByteStream for FakeStreamServer {
@@ -152,19 +155,39 @@ impl ByteStream for FakeStreamServer {
             }
         }
         let read_request = grpc_request.into_inner();
-        self.read_requests.lock().await.push(ReadRequestHolder {
-            request: read_request,
-            metadata: request_metadata,
-        });
+        let offset = usize::try_from(read_request.read_offset).unwrap_or(0);
+        let this_read = {
+            let mut reqs = self.read_requests.lock().await;
+            reqs.push(ReadRequestHolder {
+                request: read_request,
+                metadata: request_metadata,
+            });
+            reqs.len()
+        };
+        let payload = self.read_payload.clone();
+        let partial = self.first_read_partial;
 
-        let folded = unfold(ReaderState { responded: false }, async move |state| {
-            if state.responded {
-                return None;
+        // Step machine: 0 => emit a data chunk, 1 => emit a retryable error
+        // (only on a partial first read), 2 => EOF. Default behaviour (no
+        // `first_read_partial`) is one chunk from `read_offset` then EOF.
+        let folded = unfold((0u8, payload), move |(step, payload)| async move {
+            match step {
+                0 => {
+                    if let (1, Some(f)) = (this_read, partial) {
+                        let start = offset.min(payload.len());
+                        let end = (offset + f).min(payload.len());
+                        let chunk = payload[start..end].to_vec();
+                        return Some((Ok(ReadResponse { data: chunk.into() }), (1u8, payload)));
+                    }
+                    let chunk = payload.get(offset..).unwrap_or(&[]).to_vec();
+                    Some((Ok(ReadResponse { data: chunk.into() }), (2u8, payload)))
+                }
+                1 => Some((
+                    Err(Status::unavailable("simulated mid-stream drop")),
+                    (2u8, payload),
+                )),
+                _ => None,
             }
-            let response = ReadResponse {
-                data: RAW_INPUT.as_bytes().into(),
-            };
-            Some((Ok(response), ReaderState { responded: true }))
         });
         Ok(Response::new(Box::pin(folded)))
     }
@@ -867,6 +890,72 @@ async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<()
     assert_eq!(
         got, expected_digests,
         "stitched responses must stay in request order"
+    );
+    Ok(())
+}
+
+
+/// A 10-byte payload, longer than the partial-forward below, so a bounded read
+/// has a meaningful remaining window to carry across a resume.
+const RESUME_PAYLOAD: &[u8] = b"0123456789";
+
+/// Regression for the `GrpcStore` bounded-read resume over-read: a mid-stream
+/// retry advanced `read_offset` but left `read_limit` at its original value, so
+/// the resume re-requested the full window from the new offset and over-read by
+/// exactly the bytes already forwarded. The deterministic witness is the second
+/// (resume) `ReadRequest` on the wire: its `read_limit` must shrink by the
+/// forwarded byte count. Fails without the fix by construction (limit stays L).
+#[nativelink_test]
+async fn bounded_read_resume_shrinks_read_limit() -> Result<(), Error> {
+    const FORWARDED: usize = 3;
+    let requested_len = RESUME_PAYLOAD.len();
+
+    let server = FakeStreamServer {
+        read_payload: Arc::new(RESUME_PAYLOAD.to_vec()),
+        first_read_partial: Some(FORWARDED),
+        ..FakeStreamServer::new()
+    };
+    let (server, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.retry.max_retries = 1;
+    let store = GrpcStore::new(&spec)?;
+    let digest = DigestInfo::try_new(VALID_HASH, requested_len).unwrap();
+
+    let (tx, mut rx) = make_buf_channel_pair();
+    let get_fut = store.get_part(
+        digest,
+        tx,
+        0,
+        Some(u64::try_from(requested_len).unwrap()),
+    );
+    let drain_fut = async move {
+        let mut total = 0usize;
+        loop {
+            match rx.recv().await {
+                Ok(chunk) if !chunk.is_empty() => total += chunk.len(),
+                _ => break,
+            }
+        }
+        total
+    };
+    let (res, total) = futures::join!(get_fut, drain_fut);
+    res?;
+    assert_eq!(
+        total, requested_len,
+        "writer must receive exactly the requested bytes across the resume"
+    );
+
+    let reqs = server.read_requests.lock().await;
+    assert!(reqs.len() >= 2, "expected a resume read, saw {}", reqs.len());
+    let limit = i64::try_from(requested_len).unwrap();
+    let fwd = i64::try_from(FORWARDED).unwrap();
+    assert_eq!(reqs[0].request.read_offset, 0);
+    assert_eq!(reqs[0].request.read_limit, limit);
+    assert_eq!(reqs[1].request.read_offset, fwd);
+    assert_eq!(
+        reqs[1].request.read_limit,
+        limit - fwd,
+        "resume read_limit must shrink by bytes already forwarded (over-read bug)"
     );
     Ok(())
 }
