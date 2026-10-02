@@ -1540,6 +1540,13 @@ impl ApiWorkerScheduler {
         load: Option<WorkerLoad>,
         keepalive: bool,
     ) -> Result<(), Error> {
+        // TL1: stamp the independent registry liveness source on RECEIPT, before
+        // taking inner.lock() -- a contended lock or a saturated runtime must not
+        // delay the heartbeat past the eviction deadline and evict a live worker.
+        let now = UNIX_EPOCH + Duration::from_secs(timestamp);
+        self.worker_registry
+            .update_worker_heartbeat(worker_id, now)
+            .await;
         {
             let mut inner = self.inner.lock().await;
             inner
@@ -1581,10 +1588,6 @@ impl ApiWorkerScheduler {
                 }
             }
         }
-        let now = UNIX_EPOCH + Duration::from_secs(timestamp);
-        self.worker_registry
-            .update_worker_heartbeat(worker_id, now)
-            .await;
         Ok(())
     }
 

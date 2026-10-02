@@ -70,7 +70,12 @@ impl WorkerRegistry {
     /// Updates the heartbeat timestamp for a worker.
     pub async fn update_worker_heartbeat(&self, worker_id: &WorkerId, now: SystemTime) {
         let mut workers = self.workers.write().await;
-        workers.insert(worker_id.clone(), now);
+        // TL1: monotone -- never regress last_seen. A delayed or out-of-order
+        // keepalive must not move liveness backward and manufacture a false Stale.
+        let slot = workers.entry(worker_id.clone()).or_insert(now);
+        if now > *slot {
+            *slot = now;
+        }
         trace!(?worker_id, now = %humantime::format_rfc3339(now), "FLOW: Worker heartbeat updated in registry");
     }
 
@@ -139,6 +144,24 @@ mod tests {
     use nativelink_macro::nativelink_test;
 
     use super::*;
+
+    /// TL1 regression: a delayed or out-of-order keepalive must never regress
+    /// `last_seen`. A plain `insert` moves liveness backward and manufactures a
+    /// false `Stale` (fails-without by construction); monotone keeps the newer time.
+    #[nativelink_test]
+    async fn heartbeat_is_monotone_never_regresses() {
+        let registry = WorkerRegistry::new();
+        let worker_id = WorkerId::from(String::from("tl1"));
+        let t_late = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        let t_early = SystemTime::UNIX_EPOCH + Duration::from_secs(970);
+        registry.update_worker_heartbeat(&worker_id, t_late).await;
+        registry.update_worker_heartbeat(&worker_id, t_early).await;
+        assert_eq!(
+            registry.get_worker_last_seen(&worker_id).await,
+            Some(t_late),
+            "heartbeat regressed: non-monotone update manufactured a false Stale"
+        );
+    }
 
     #[nativelink_test]
     async fn test_worker_heartbeat() {
