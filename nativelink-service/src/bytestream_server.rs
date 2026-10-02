@@ -1392,9 +1392,17 @@ impl ByteStreamServer {
                 complete: false,
             }));
         };
+        // `item_size` is the store's reported size; for the filesystem store
+        // that is the block-rounded on-disk footprint, not the logical byte
+        // count. Clamp the reported committed_size to the declared digest size
+        // and only report `complete` once the store holds at least that many
+        // bytes, so QueryWriteStatus never over-reports nor falsely completes.
+        let expected_size = digest.size_bytes();
+        let complete = item_size >= expected_size;
+        let committed_size = if complete { expected_size } else { item_size };
         Ok(Response::new(QueryWriteStatusResponse {
-            committed_size: item_size.try_into().unwrap_or(i64::MAX),
-            complete: true,
+            committed_size: committed_size.try_into().unwrap_or(i64::MAX),
+            complete,
         }))
     }
 }
