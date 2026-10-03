@@ -21,12 +21,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use aws_config::BehaviorVersion;
-use aws_config::default_provider::credentials::DefaultCredentialsChain;
-use aws_config::provider_config::ProviderConfig;
 use aws_sdk_s3::Client;
-use aws_sdk_s3::config::Region;
-use nativelink_config::stores::{ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec};
+use nativelink_config::stores::OntapS3ExistenceCacheSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -45,7 +41,6 @@ use tokio::time::{interval, sleep};
 use tracing::{Level, debug, event};
 
 use crate::cas_utils::is_zero_digest;
-use crate::common_s3_utils::TlsClient;
 use crate::ontap_s3_store::OntapS3Store;
 
 #[derive(Serialize, Deserialize)]
@@ -342,9 +337,8 @@ where
 
     pub async fn new(spec: &OntapS3ExistenceCacheSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let inner_spec = &spec.backend;
-        let inner_store = Arc::new(OntapS3Store::new(inner_spec, now_fn.clone()).await?);
-        let inner_store = Store::new((*inner_store).clone());
-        let s3_client = create_s3_client(inner_spec).await?;
+        let inner_store = Store::new(OntapS3Store::new(inner_spec, now_fn.clone()).await?);
+        let s3_client = OntapS3Store::make_client(inner_spec).await?;
 
         let digests = Arc::new(RwLock::new(HashSet::new()));
         let last_sync = Arc::new(AtomicU64::new(0));
@@ -412,28 +406,6 @@ where
 
         Ok(cache)
     }
-}
-
-async fn create_s3_client(spec: &ExperimentalOntapS3Spec) -> Result<Client, Error> {
-    let http_client = TlsClient::new(&spec.common)?;
-    let credentials_provider = DefaultCredentialsChain::builder()
-        .configure(
-            ProviderConfig::without_region()
-                .with_region(Some(Region::new(Cow::Owned(spec.vserver_name.clone()))))
-                .with_http_client(http_client.clone()),
-        )
-        .build()
-        .await;
-
-    let config = aws_sdk_s3::Config::builder()
-        .credentials_provider(credentials_provider)
-        .endpoint_url(&spec.endpoint)
-        .region(Region::new(spec.vserver_name.clone()))
-        .force_path_style(true)
-        .behavior_version(BehaviorVersion::latest())
-        .build();
-
-    Ok(Client::from_conf(config))
 }
 
 #[async_trait]

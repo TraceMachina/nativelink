@@ -14,10 +14,11 @@ behind a local fast tier, with credentials that aren't in the config file.
   A config file you can edit (see [Configuration](/configuration)), and a bucket you can write to.
 </Prerequisites>
 
-Three providers share one store type and one block of common options. `aws`
-and `r2` share one implementation (R2 is the S3 store with a derived endpoint
-and region `auto`); `ontap` has its own, with a few differences noted below.
-They differ mainly in how the endpoint and credentials are derived:
+Three providers share one store type, one implementation and one block of
+common options. `r2` and `ontap` are the S3 store with their own client
+settings (R2 derives the endpoint and signs with region `auto`; ONTAP has a few
+differences noted below). They differ mainly in how the endpoint and
+credentials are derived:
 
 | Provider | `provider` value | Identifies the endpoint by |
 | --- | --- | --- |
@@ -145,10 +146,10 @@ an internally-signed endpoint fails TLS verification. Credentials come from
 the same AWS chain as `aws` (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
 in practice), and `vserver_name` doubles as the signing region.
 
-The ONTAP implementation differs from `aws` in three ways: it always uses
-path-style addressing, its default `max_retry_buffer_per_request` is 20 MB
-rather than 5 MB, and it is HTTPS-only with HTTP/1.1 and HTTP/2 both enabled,
-so `insecure_allow_http` and `disable_http2` have no effect on it.
+The ONTAP client differs from `aws` in three ways: it always uses path-style
+addressing, it waits longer (30 seconds to connect, two minutes per
+operation), and it sends upload bodies as they are, without the checksum
+trailer and `aws-chunked` encoding the AWS SDK adds by default.
 
 <SourceLink file="nativelink-store/src/ontap_s3_store.rs" symbol="OntapS3Store" />
 
@@ -187,10 +188,10 @@ worth setting deliberately:
 | `key_prefix` | none | Namespacing inside one bucket |
 | `retry` | see below | How hard to try before surfacing an error |
 | `consider_expired_after_s` | `0` (never) | How old an object may be and still count as present |
-| `max_retry_buffer_per_request` | 5 MB (20 MB for `ontap`) | How much of a single-request upload is buffered so it can be retried |
+| `max_retry_buffer_per_request` | 5 MB | How much of a single-request upload is buffered so it can be retried |
 | `multipart_max_concurrent_uploads` | 10 | Concurrent `UploadPart` requests within one multipart upload |
-| `insecure_allow_http` | `false` | Permit plain HTTP; local testing only (`aws`, `r2`) |
-| `disable_http2` | `false` | Fall back to HTTP/1.1 for proxies that mishandle h2 (`aws`, `r2`) |
+| `insecure_allow_http` | `false` | Permit plain HTTP; local testing only |
+| `disable_http2` | `false` | Fall back to HTTP/1.1 for proxies that mishandle h2 |
 
 `retry` is exponential with jitter: up to `max_retries` retries after the
 first attempt, a base `delay` in seconds that is doubled before the first
