@@ -380,6 +380,31 @@ pub fn free_memory_kb_with(
     }
 }
 
+/// Whether `dir`, the worker's own cgroup, carries a memory limit of its
+/// own with readable usage: then nothing outside the worker gives memory
+/// back, so what it reads free while idle is the most it will read. A limit
+/// only on an ancestor (a shared `kubepods.slice`, say) is shared with
+/// other workloads, which can release memory, and without readable usage
+/// free memory falls back to the host's `MemAvailable`; neither counts.
+pub fn own_memory_limit_in(dir: &Path, read: impl Fn(&Path) -> Option<String>) -> bool {
+    let limited = read(&dir.join("memory.max"))
+        .is_some_and(|max| parse_memory_current_kb(max.trim()).is_some());
+    let usage = read(&dir.join("memory.current"))
+        .is_some_and(|current| parse_memory_current_kb(&current).is_some());
+    limited && usage
+}
+
+/// `own_memory_limit_in` for this process's cgroup.
+#[cfg(target_os = "linux")]
+pub fn memory_is_limited() -> bool {
+    own_memory_limit_in(&cgroup_dir(), read_file)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub const fn memory_is_limited() -> bool {
+    false
+}
+
 /// What the worker reports on each keepalive. Linux only; elsewhere the
 /// worker reports nothing and is never vetoed.
 #[cfg(target_os = "linux")]

@@ -187,12 +187,21 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     /// `ExecuteDeclined`. Without it the worker runs whatever it is sent,
     /// as every earlier release did.
     dispatch_ack: bool,
+    memory: MemoryAdmission,
+    metrics: Arc<Metrics>,
+}
+
+/// What local admission needs to refuse an action for load.
+struct MemoryAdmission {
     /// The platform property the scheduler reads an action's memory
     /// reservation from, as it told us on connection; empty when it does
     /// not veto on memory. Read from the same property, a refusal for load
     /// here agrees with what the scheduler would have vetoed.
-    memory_property: String,
-    metrics: Arc<Metrics>,
+    property: String,
+    /// Whether this worker admits any action while it holds nothing else,
+    /// decided once at registration and sent to the scheduler then, so the
+    /// two never disagree.
+    admits_when_idle: bool,
 }
 
 /// Why this worker will not run an action it was just sent.
@@ -321,7 +330,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         grpc_client: T,
         worker_id: String,
         dispatch_ack: bool,
-        memory_property: String,
+        memory: MemoryAdmission,
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -330,7 +339,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             grpc_client,
             worker_id,
             dispatch_ack,
-            memory_property,
+            memory,
             running_actions_manager,
             // Number of actions that have been received in `Update::StartAction`, but
             // not yet processed by running_actions_manager's spawn. This number should
@@ -351,7 +360,19 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             return Some(Refusal::AtCapacity { in_flight, max });
         }
         // The cgroup is read only for an action that reserves memory.
-        let needed_kb = memory_reservation_kb(start_execute, &self.memory_property)?;
+        let needed_kb = memory_reservation_kb(start_execute, &self.memory.property)?;
+        // With nothing else in flight under a cgroup limit, waiting frees
+        // nothing: what the worker reads free now is the most it will ever
+        // read, since its own process, its hot page cache and the kernel
+        // always count as used. Declining here would have the scheduler
+        // wait for a figure that never comes (the whole-worker escalation
+        // step asks for more than any worker reports free), so the action
+        // runs, and if it truly does not fit, the memory kill escalates or
+        // fails it. Without a limit, free memory is the host's, which other
+        // processes can give back, so waiting can help and the check stands.
+        if in_flight == 0 && self.memory.admits_when_idle {
+            return None;
+        }
         if let Some(free_kb) = crate::capacity::free_memory_kb()
             && free_kb < needed_kb
         {
@@ -1366,7 +1387,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
     async fn register_worker(
         &self,
         client: &mut T,
-    ) -> Result<(String, bool, String, Streaming<UpdateForWorker>), Error> {
+    ) -> Result<(String, bool, MemoryAdmission, Streaming<UpdateForWorker>), Error> {
         let mut extra_envs: HashMap<String, String> = HashMap::new();
         if let Some(ref additional_environment) = self.config.additional_environment {
             for (name, source) in additional_environment {
@@ -1396,6 +1417,9 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             crate::capacity::apply(capacity, memory_headroom_percent, &mut platform_properties)
                 .err_tip(|| "Advertising capacity from the cgroup")?;
         }
+        // Decided once, so what admission does and what the scheduler is
+        // told always agree.
+        let admits_when_idle = crate::capacity::memory_is_limited();
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
             &platform_properties,
@@ -1405,6 +1429,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             } else {
                 self.config.max_inflight_tasks
             },
+            admits_when_idle,
         )
         .await?;
         let mut update_for_worker_stream = client
@@ -1436,7 +1461,10 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         Ok((
             worker_id,
             dispatch_ack,
-            memory_property,
+            MemoryAdmission {
+                property: memory_property,
+                admits_when_idle,
+            },
             update_for_worker_stream,
         ))
     }
@@ -1486,13 +1514,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     (error_handler)(e).await;
                     continue; // Try to connect again.
                 }
-                Ok((worker_id, dispatch_ack, memory_property, update_for_worker_stream)) => (
+                Ok((worker_id, dispatch_ack, memory, update_for_worker_stream)) => (
                     LocalWorkerImpl::new(
                         &self.config,
                         client,
                         worker_id,
                         dispatch_ack,
-                        memory_property,
+                        memory,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
                     ),

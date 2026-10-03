@@ -24,9 +24,9 @@ use nativelink_error::Code;
 use nativelink_worker::capacity::find_limit;
 use nativelink_worker::capacity::{
     ObservedCapacity, advertised, free_memory_kb_from, free_memory_kb_with,
-    memory_headroom_percent, parse_cpu_max, parse_meminfo_available_kb, parse_meminfo_total_kb,
-    parse_memory_current_kb, parse_memory_max, parse_memory_stat_reclaimable_kb, parse_self_cgroup,
-    resolve_cgroup_dir, without_cgroup,
+    memory_headroom_percent, own_memory_limit_in, parse_cpu_max, parse_meminfo_available_kb,
+    parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
+    parse_memory_stat_reclaimable_kb, parse_self_cgroup, resolve_cgroup_dir, without_cgroup,
 };
 use pretty_assertions::assert_eq;
 
@@ -476,4 +476,34 @@ fn meminfo_value_parses_with_or_without_a_space() {
         Some(12_345_678)
     );
     assert_eq!(parse_meminfo_total_kb("MemTotal:   42 kB\n"), Some(42));
+}
+
+/// Idle admission trusts only a limit on the worker's own cgroup with
+/// usage it can read: a limit on an ancestor is shared, and without usage
+/// free memory falls back to the host's, and either can come back.
+#[test]
+fn only_an_own_limit_with_readable_usage_counts_as_limited() {
+    let dir = Path::new("/cg/worker");
+    let files = |max: Option<&'static str>, current: Option<&'static str>| {
+        move |path: &Path| match path.file_name()?.to_str()? {
+            "memory.max" => max.map(str::to_string),
+            "memory.current" => current.map(str::to_string),
+            _ => None,
+        }
+    };
+    assert!(own_memory_limit_in(
+        dir,
+        files(Some("25769803776\n"), Some("1024\n"))
+    ));
+    // No limit of its own: an unlimited child of a limited ancestor.
+    assert!(!own_memory_limit_in(
+        dir,
+        files(Some("max\n"), Some("1024\n"))
+    ));
+    assert!(!own_memory_limit_in(dir, files(None, Some("1024\n"))));
+    // A limit, but usage it cannot read.
+    assert!(!own_memory_limit_in(
+        dir,
+        files(Some("25769803776\n"), None)
+    ));
 }
