@@ -19,7 +19,8 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkerLoad {
     /// / Memory the worker could still give an action, in KiB: the cgroup
-    /// / limit less current usage, or MemAvailable without a limit.
+    /// / limit less its working set (current usage less the page cache the
+    /// / kernel can drop at once), or MemAvailable without a limit.
     #[prost(uint64, tag = "1")]
     pub free_memory_kb: u64,
 }

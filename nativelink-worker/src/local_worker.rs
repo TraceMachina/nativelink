@@ -350,10 +350,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         if max > 0 && in_flight >= max {
             return Some(Refusal::AtCapacity { in_flight, max });
         }
-        if let (Some(needed_kb), Some(free_kb)) = (
-            memory_reservation_kb(start_execute, &self.memory_property),
-            crate::capacity::free_memory_kb(),
-        ) && free_kb < needed_kb
+        // The cgroup is read only for an action that reserves memory.
+        let needed_kb = memory_reservation_kb(start_execute, &self.memory_property)?;
+        if let Some(free_kb) = crate::capacity::free_memory_kb()
+            && free_kb < needed_kb
         {
             return Some(Refusal::Load { needed_kb, free_kb });
         }
