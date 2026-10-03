@@ -357,6 +357,62 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
     Ok(())
 }
 
+// Regression: a Write that signals finish_write before sending the full
+// declared blob size MUST be rejected, even for a store with no size/hash
+// verification (e.g. a plain memory/filesystem fast tier). Otherwise the CAS
+// admits a truncated artifact that later reads serve under a digest it does not
+// hash to -- silent build corruption.
+#[nativelink_test]
+pub async fn short_finish_write_is_rejected_and_not_committed()
+-> Result<(), Box<dyn core::error::Error>> {
+    // Declare the full length in the resource name, but only send a short
+    // prefix and immediately set finish_write=true.
+    const SHORT_PREFIX: usize = 5;
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let raw_data = b"12456789abcdefghijk";
+    let declared_len = raw_data.len();
+
+    let (tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
+
+    let resource_name = format!(
+        "{}/uploads/{}/blobs/{}/{}",
+        INSTANCE_NAME, "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", HASH1, declared_len
+    );
+    let write_request = WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: raw_data[..SHORT_PREFIX].into(),
+    };
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
+
+    // The write MUST fail (not return OK with a full committed_size).
+    let server_result = join_handle.await.expect("Failed to join");
+    assert!(
+        server_result.is_err(),
+        "Short finish_write must be rejected, got Ok: {server_result:?}"
+    );
+
+    // The blob MUST NOT be present under its declared digest.
+    assert!(
+        store
+            .has(DigestInfo::try_new(HASH1, declared_len)?)
+            .await?
+            .is_none(),
+        "Truncated blob must not be committed to the store",
+    );
+
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn sha256_write_without_digest_segment_populates_cache()
 -> Result<(), Box<dyn core::error::Error>> {
@@ -1876,9 +1932,12 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
 
     {
         // Test to ensure if we send exactly our max message size, it will succeed.
-        let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
+        let data_len = MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE;
+        let data = Bytes::from(vec![0u8; data_len]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            // The declared blob size must equal the bytes actually sent, otherwise
+            // the server (correctly) rejects it as a short finish_write.
+            resource_name: make_resource_name(data_len),
             write_offset: 0,
             finish_write: true,
             data,
