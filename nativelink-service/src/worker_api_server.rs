@@ -478,15 +478,17 @@ impl WorkerConnection {
         let operation_id = OperationId::from(execute_declined.operation_id);
         let reason = execute_declined::Reason::try_from(execute_declined.reason)
             .unwrap_or(execute_declined::Reason::Unspecified);
-        let needs_kb = (reason == execute_declined::Reason::Load && execute_declined.needed_kb > 0)
-            .then_some(execute_declined.needed_kb);
+        let is_load = reason == execute_declined::Reason::Load;
+        let needs_kb =
+            (is_load && execute_declined.needed_kb > 0).then_some(execute_declined.needed_kb);
+        let free_kb = needs_kb.map(|_| execute_declined.free_kb);
         let mut why = reason.as_str_name().to_ascii_lowercase();
         if !execute_declined.detail.is_empty() {
             why.push_str(": ");
             why.push_str(&execute_declined.detail);
         }
         self.scheduler
-            .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb)
+            .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb, free_kb)
             .await
             .err_tip(|| format!("Failed to record decline of operation {operation_id}"))?;
         self.touch_liveness().await

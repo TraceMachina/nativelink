@@ -46,6 +46,9 @@ pub struct WorkerSummary {
     pub available_platform_properties: HashMap<String, String>,
     /// What the worker last reported having to spare, if it reports.
     pub free_memory_kb: Option<u64>,
+    /// Set after a decline for load: the worker is not offered actions
+    /// reserving this much or more until it reports this much free.
+    pub load_hold_kb: Option<u64>,
 }
 
 #[async_trait]
@@ -64,14 +67,16 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
     ) -> Result<(), Error>;
 
     /// The worker will not run the dispatched operation; `reason` is the
-    /// worker's word for why, `needs_kb` what it said the action wanted
-    /// when the reason was load.
+    /// worker's word for why. When the reason was load, `needs_kb` is what
+    /// it said the action wanted and `free_kb` what it read free at that
+    /// moment, fresher than its last keepalive.
     async fn worker_dispatch_declined(
         &self,
         worker_id: &WorkerId,
         operation_id: &OperationId,
         reason: String,
         needs_kb: Option<u64>,
+        free_kb: Option<u64>,
     ) -> Result<(), Error>;
 
     /// Updates the status of an action to the scheduler from the worker.

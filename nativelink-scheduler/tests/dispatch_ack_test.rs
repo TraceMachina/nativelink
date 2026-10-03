@@ -197,14 +197,121 @@ async fn wait_for_completion(listener: &mut Box<dyn ActionStateResult>) -> Actio
     }
 }
 
+type VetoScheduler = (
+    Arc<SimpleScheduler>,
+    Arc<dyn WorkerScheduler>,
+    mpsc::Receiver<UpdateForWorker>,
+);
+
+/// A scheduler with `live_memory_veto` on `memory_kb` and a retry cap of
+/// one, and its one worker, advertising 5,000 KiB, connected.
+async fn veto_scheduler() -> Result<VetoScheduler, Error> {
+    veto_scheduler_with(|_| {}).await
+}
+
+/// `veto_scheduler`, with `configure` applied to the worker before it
+/// connects.
+async fn veto_scheduler_with(configure: impl FnOnce(&mut Worker)) -> Result<VetoScheduler, Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let task_change_notify = Arc::new(Notify::new());
+    let spec = SimpleSpec {
+        supported_platform_properties: Some(HashMap::from([(
+            "memory_kb".to_string(),
+            PropertyType::Minimum,
+        )])),
+        live_memory_veto: Some("memory_kb".to_string()),
+        max_job_retries: 1,
+        ..SimpleSpec::default()
+    };
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+        &spec,
+        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let (mut worker, mut rx) = worker_with_channel(64);
+    configure(&mut worker);
+    scheduler
+        .add_worker(worker)
+        .await
+        .err_tip(|| "Failed to add worker")?;
+    tokio::task::yield_now().await;
+    let connected = rx.recv().await.unwrap();
+    assert!(matches!(
+        connected.update,
+        Some(update_for_worker::Update::ConnectionResult(_))
+    ));
+    Ok((scheduler, worker_scheduler, rx))
+}
+
+/// Queues an action reserving `memory_kb`, or no memory at all.
+async fn add_reserving(
+    scheduler: &SimpleScheduler,
+    seed: u8,
+    memory_kb: Option<u64>,
+) -> Result<Box<dyn ActionStateResult>, Error> {
+    let base = make_base_action_info(
+        UNIX_EPOCH + MockClock::time(),
+        DigestInfo::new([seed; 32], 512),
+    );
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: memory_kb
+            .map(|kb| ("memory_kb".to_string(), kb.to_string()))
+            .into_iter()
+            .collect(),
+        ..(*base).clone()
+    });
+    let listener = scheduler
+        .add_action(OperationId::default(), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+    Ok(listener)
+}
+
+/// The worker declines `operation_id` for load: it wanted `needs_kb`, and
+/// the worker read `free_kb` free.
+async fn decline_for_load(
+    worker_scheduler: &dyn WorkerScheduler,
+    operation_id: &str,
+    needs_kb: u64,
+    free_kb: u64,
+) -> Result<(), Error> {
+    worker_scheduler
+        .worker_dispatch_declined(
+            &worker_id(),
+            &OperationId::from(operation_id),
+            "load".to_string(),
+            Some(needs_kb),
+            Some(free_kb),
+        )
+        .await?;
+    tokio::task::yield_now().await;
+    Ok(())
+}
+
+/// What a dispatched action reserves under `memory_kb`.
+fn reserved_kb(start_execute: &StartExecute) -> Option<u64> {
+    start_execute
+        .platform
+        .as_ref()?
+        .properties
+        .iter()
+        .find(|property| property.name == "memory_kb")?
+        .value
+        .parse()
+        .ok()
+}
+
 /// A decline sends the action back untried: with a retry cap of one, two
-/// declines and a completion still succeed. The worker is paused by the
-/// decline; a decline for load from a busy worker lifts only on a keepalive
-/// whose free memory covers the need, any other on the next keepalive.
+/// declines and a completion still succeed. A decline for load from a busy
+/// worker holds the action back from it until a keepalive's free memory
+/// covers the need; any other decline pauses the worker until the next
+/// keepalive.
 #[nativelink_test]
-async fn a_decline_requeues_untried_and_pauses_until_the_load_fits() -> Result<(), Error> {
-    let (scheduler, worker_scheduler) = make_scheduler(1, 0);
-    let mut rx = add_worker(&scheduler).await?;
+async fn a_decline_requeues_untried_and_holds_until_the_load_fits() -> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler().await?;
     // Something already running, so the declines below come from a busy
     // worker: one that will have more room once it finishes.
     let _resident = add_action(&scheduler, 9).await?;
@@ -218,6 +325,7 @@ async fn a_decline_requeues_untried_and_pauses_until_the_load_fits() -> Result<(
             &OperationId::from(first.operation_id.as_str()),
             "load".to_string(),
             Some(2_000),
+            Some(1_000),
         )
         .await?;
     tokio::task::yield_now().await;
@@ -238,6 +346,7 @@ async fn a_decline_requeues_untried_and_pauses_until_the_load_fits() -> Result<(
             &worker_id(),
             &OperationId::from(second.operation_id.as_str()),
             "at_capacity".to_string(),
+            None,
             None,
         )
         .await?;
@@ -323,6 +432,7 @@ async fn a_decline_from_an_idle_worker_lifts_and_is_not_offered_again() -> Resul
             &OperationId::from(first.operation_id.as_str()),
             "load".to_string(),
             Some(5_000),
+            Some(4_000),
         )
         .await?;
     tokio::task::yield_now().await;
@@ -351,47 +461,197 @@ async fn a_decline_from_an_idle_worker_lifts_and_is_not_offered_again() -> Resul
 
 /// A worker that said on connection it admits any action while idle only
 /// declines for load while it holds other work, even if this scheduler has
-/// taken that work back and thinks it idle. Its decline is treated as a
-/// busy worker's: the pause waits for a keepalive with room, and the size
-/// is not marked as one it declines while idle.
+/// taken that work back and thinks it idle. Its decline is not marked as a
+/// size it declines while idle: it is held for it like a busy worker, and
+/// with nothing running here that hold lifts on the next keepalive, so the
+/// action is offered again rather than kept from it until a report of room.
 #[nativelink_test]
-async fn a_decline_from_a_worker_that_admits_when_idle_waits_for_room() -> Result<(), Error> {
-    let (scheduler, worker_scheduler) = make_scheduler(1, 0);
-    let (mut worker, mut rx) = worker_with_channel(64);
-    worker.admits_when_idle = true;
-    scheduler
-        .add_worker(worker)
-        .await
-        .err_tip(|| "Failed to add worker")?;
-    tokio::task::yield_now().await;
-    let connected = rx.recv().await.unwrap();
-    assert!(matches!(
-        connected.update,
-        Some(update_for_worker::Update::ConnectionResult(_))
-    ));
-    let _listener = add_action(&scheduler, 1).await?;
+async fn a_decline_from_a_worker_that_admits_when_idle_is_not_marked_idle() -> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler_with(|worker| {
+        worker.admits_when_idle = true;
+    })
+    .await?;
+    let _action = add_reserving(&scheduler, 1, Some(2_000)).await?;
 
     // Nothing else is running as far as the scheduler knows.
     let first = next_dispatch(&mut rx).await;
+    decline_for_load(worker_scheduler.as_ref(), &first.operation_id, 2_000, 1_500).await?;
+    no_dispatch(&mut rx).await;
+
+    // Less free than the action wants, but 2,000 still fits under the
+    // 5,000 the veto exempts nothing below; report enough for the veto and
+    // the action returns, where a size marked as declined while idle would
+    // have needed a report of 2,000 free and a worker idle in fact.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(2_000)).await?;
+    let second = next_dispatch(&mut rx).await;
+    assert_eq!(second.operation_id, first.operation_id);
+    Ok(())
+}
+
+/// A decline for load from a busy worker does not pause it. The declined
+/// size, and an action that reserves nothing, are held back from it; a
+/// smaller action is judged by the free memory the worker read for the
+/// decline, not by an older keepalive.
+#[nativelink_test]
+async fn a_load_decline_holds_its_size_and_judges_smaller_work_by_the_fresh_reading()
+-> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler().await?;
+    // Something already running, so the decline comes from a busy worker.
+    let _resident = add_reserving(&scheduler, 1, Some(1_000)).await?;
+    next_dispatch(&mut rx).await;
+    // An old, generous report.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(8_000)).await?;
+
+    let _large = add_reserving(&scheduler, 2, Some(3_000)).await?;
+    let large = next_dispatch(&mut rx).await;
+    decline_for_load(worker_scheduler.as_ref(), &large.operation_id, 3_000, 400).await?;
+    no_dispatch(&mut rx).await;
+
+    // Reserving nothing: cannot be judged against the hold, so it waits.
+    let _unreserved = add_reserving(&scheduler, 3, None).await?;
+    no_dispatch(&mut rx).await;
+    // Fits the old 8,000 but not the 400 the worker just read: held.
+    let _over_fresh = add_reserving(&scheduler, 4, Some(800)).await?;
+    no_dispatch(&mut rx).await;
+    // Fits the fresh reading: offered.
+    let _small = add_reserving(&scheduler, 5, Some(300)).await?;
+    let small = next_dispatch(&mut rx).await;
+    assert_eq!(reserved_kb(&small), Some(300));
+    Ok(())
+}
+
+/// A held worker takes a smaller action only if its ledger keeps room for
+/// the declined size beside it, so smaller work cannot take every KiB the
+/// worker frees and leave the declined action waiting forever.
+#[nativelink_test]
+async fn a_load_hold_keeps_ledger_room_for_the_declined_action() -> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler().await?;
+    let _resident = add_reserving(&scheduler, 1, Some(1_000)).await?;
+    next_dispatch(&mut rx).await;
+    let _large = add_reserving(&scheduler, 2, Some(3_000)).await?;
+    let large = next_dispatch(&mut rx).await;
+    // Plenty free for what follows; only the ledger decides.
+    decline_for_load(worker_scheduler.as_ref(), &large.operation_id, 3_000, 3_500).await?;
+    no_dispatch(&mut rx).await;
+
+    // 5,000 advertised, 1,000 reserved by the resident: 4,000 unreserved.
+    // 1,500 more would leave 2,500, short of the 3,000 held for.
+    let _too_big = add_reserving(&scheduler, 3, Some(1_500)).await?;
+    no_dispatch(&mut rx).await;
+    // 1,000 more leaves exactly 3,000.
+    let _fits = add_reserving(&scheduler, 4, Some(1_000)).await?;
+    let fits = next_dispatch(&mut rx).await;
+    assert_eq!(reserved_kb(&fits), Some(1_000));
+    Ok(())
+}
+
+/// The hold remembers the largest size declined, survives the completions
+/// that free memory, and lifts only on a keepalive reporting that much
+/// free; then the declined action is offered again.
+#[nativelink_test]
+async fn a_load_hold_survives_completions_and_smaller_declines_until_the_report()
+-> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler().await?;
+    let _resident = add_reserving(&scheduler, 1, Some(1_000)).await?;
+    next_dispatch(&mut rx).await;
+    let _large = add_reserving(&scheduler, 2, Some(3_000)).await?;
+    let large = next_dispatch(&mut rx).await;
+    decline_for_load(worker_scheduler.as_ref(), &large.operation_id, 3_000, 2_500).await?;
+
+    let _small = add_reserving(&scheduler, 3, Some(500)).await?;
+    let small = next_dispatch(&mut rx).await;
+    assert_eq!(reserved_kb(&small), Some(500));
+    // Only the hold keeps this one back: the memory veto has nothing to
+    // judge it by.
+    let _unreserved = add_reserving(&scheduler, 4, None).await?;
+    no_dispatch(&mut rx).await;
+    // The small one is declined too. The hold stays at 3,000, not 500: a
+    // report of 600 free lets the small one back, but lifts nothing.
+    decline_for_load(worker_scheduler.as_ref(), &small.operation_id, 500, 300).await?;
+    no_dispatch(&mut rx).await;
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(600)).await?;
+    let again = next_dispatch(&mut rx).await;
+    assert_eq!(again.operation_id, small.operation_id);
+    no_dispatch(&mut rx).await;
+
+    // The small one finishes while the resident still runs. That frees
+    // memory, but only a report says how much, so the hold stands.
+    complete(worker_scheduler.as_ref(), &again.operation_id).await?;
+    no_dispatch(&mut rx).await;
+
+    // The report covers it: the hold lifts, and the large action and the
+    // unreserved one are both offered, in whichever order the queue holds.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 2, Some(3_000)).await?;
+    let returned = [
+        next_dispatch(&mut rx).await.operation_id,
+        next_dispatch(&mut rx).await.operation_id,
+    ];
+    assert!(
+        returned.contains(&large.operation_id),
+        "the large action was not offered again: {returned:?}"
+    );
+    Ok(())
+}
+
+/// A hold the worker can never report enough free for, here the whole
+/// worker from a worker that admits when idle but declined while this
+/// scheduler thought it idle, lifts on the next keepalive once nothing
+/// runs: an idle worker has nothing left to free. Without that the worker
+/// would be held back from everything for good.
+#[nativelink_test]
+async fn a_load_hold_lifts_once_the_worker_is_idle() -> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler_with(|worker| {
+        worker.admits_when_idle = true;
+    })
+    .await?;
+    // The whole worker, as `worker_with_channel` advertises it.
+    let _whole = add_reserving(&scheduler, 1, Some(5_000)).await?;
+    let whole = next_dispatch(&mut rx).await;
+    decline_for_load(worker_scheduler.as_ref(), &whole.operation_id, 5_000, 4_000).await?;
+    no_dispatch(&mut rx).await;
+
+    // Never 5,000 free, but nothing runs: the hold lifts and the action,
+    // which the veto exempts as the whole worker, is offered again.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(4_000)).await?;
+    let again = next_dispatch(&mut rx).await;
+    assert_eq!(again.operation_id, whole.operation_id);
+    Ok(())
+}
+
+/// A decline for load does not lift a pause the worker was already under
+/// for another reason: here a decline at capacity, which waits for the
+/// next keepalive.
+#[nativelink_test]
+async fn a_load_decline_keeps_an_earlier_pause() -> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler().await?;
+    let _resident = add_reserving(&scheduler, 1, Some(1_000)).await?;
+    next_dispatch(&mut rx).await;
+    let _first = add_reserving(&scheduler, 2, Some(1_000)).await?;
+    let first = next_dispatch(&mut rx).await;
+    let _second = add_reserving(&scheduler, 3, Some(2_000)).await?;
+    let second = next_dispatch(&mut rx).await;
+
     worker_scheduler
         .worker_dispatch_declined(
             &worker_id(),
             &OperationId::from(first.operation_id.as_str()),
-            "load".to_string(),
-            Some(2_000),
+            "at_capacity".to_string(),
+            None,
+            None,
         )
         .await?;
     tokio::task::yield_now().await;
-    no_dispatch(&mut rx).await;
+    decline_for_load(
+        worker_scheduler.as_ref(),
+        &second.operation_id,
+        2_000,
+        4_000,
+    )
+    .await?;
 
-    // Too little free memory: still paused, as for a busy worker.
-    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(1_000)).await?;
+    // Still paused: nothing is offered, not even an action the hold allows.
+    let _small = add_reserving(&scheduler, 4, Some(100)).await?;
     no_dispatch(&mut rx).await;
-
-    // Enough: the same operation comes back.
-    keepalive(worker_scheduler.as_ref(), NOW_TIME + 2, Some(3_000)).await?;
-    let second = next_dispatch(&mut rx).await;
-    assert_eq!(second.operation_id, first.operation_id);
     Ok(())
 }
 
@@ -486,6 +746,7 @@ async fn a_late_decline_does_not_pause_the_worker() -> Result<(), Error> {
             &OperationId::from(first.operation_id.as_str()),
             "load".to_string(),
             Some(5_000),
+            Some(4_000),
         )
         .await?;
 
