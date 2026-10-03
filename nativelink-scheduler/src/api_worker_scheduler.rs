@@ -367,19 +367,30 @@ impl ApiWorkerSchedulerImpl {
             more
         });
         // A keepalive is the worker saying it is ready to be asked again,
-        // so a pause from backpressure lasts one keepalive interval. A
-        // pause taken for a decline for load is the exception: it waits
-        // for a keepalive whose free memory, read above, covers what the
-        // declined action wanted. A worker that reports no load is taken
-        // at its word.
-        let load_fits = match (worker.pause_needs_kb, worker.last_load) {
-            (Some(needs_kb), Some(load)) => load.free_memory_kb >= needs_kb,
-            _ => true,
+        // so a pause lasts one keepalive interval. A hold from a decline for
+        // load lifts on a keepalive whose free memory covers what the
+        // declined action wanted, from a worker that reports no load, or
+        // from one with nothing running: an idle worker has nothing left
+        // to free, and admits or declines what it is offered on its own.
+        let hold_lifted = worker.load_hold_kb.is_some_and(|hold_kb| {
+            worker.running_action_infos.is_empty()
+                || load.is_none_or(|load| load.free_memory_kb >= hold_kb)
+        });
+        if hold_lifted {
+            worker.load_hold_kb = None;
+        }
+        // A keepalive reporting room for what the worker declined while
+        // idle makes that size worth offering it again.
+        let idle_decline_lifted = match (worker.idle_declined_kb, load) {
+            (Some(declined_kb), Some(load)) => load.free_memory_kb >= declined_kb,
+            _ => false,
         };
-        let resumed = worker.is_paused && load_fits;
+        if idle_decline_lifted {
+            worker.idle_declined_kb = None;
+        }
+        let resumed = worker.is_paused;
         if resumed {
             worker.is_paused = false;
-            worker.pause_needs_kb = None;
             record_worker_state("paused", false);
         }
         // Either is room the fleet did not have a moment ago, so the
@@ -387,7 +398,7 @@ impl ApiWorkerSchedulerImpl {
         // a pass in flight offers the room to its parked actions first,
         // and a pass not in flight starts. `capacity_changed` by hand,
         // since `worker` still borrows the map.
-        if resumed || more_room {
+        if resumed || more_room || hold_lifted || idle_decline_lifted {
             self.capacity_generation.fetch_add(1, Ordering::Relaxed);
             self.worker_change_notify.notify_one();
         }
@@ -633,6 +644,43 @@ impl ApiWorkerSchedulerImpl {
         verdict
     }
 
+    /// Whether a worker held back by a decline for load may still take an
+    /// action reserving `needed_kb`: only one smaller than what it declined,
+    /// and only if its ledger keeps room for the declined size beside it,
+    /// so smaller work cannot take every KiB the worker frees and leave the
+    /// declined action waiting forever. An action that reserves nothing,
+    /// and so cannot be judged, waits for the hold to lift. A worker with
+    /// no hold takes anything.
+    fn fits_beside_hold(w: &Worker, needed_kb: Option<u64>, property: Option<&str>) -> bool {
+        let Some(hold_kb) = w.load_hold_kb else {
+            return true;
+        };
+        let Some(needed_kb) = needed_kb else {
+            return false;
+        };
+        let unreserved_kb = Self::reservation_kb(&w.platform_properties, property);
+        needed_kb < hold_kb
+            && unreserved_kb
+                .is_some_and(|unreserved_kb| unreserved_kb.saturating_sub(needed_kb) >= hold_kb)
+    }
+
+    /// The memory the action reserves under the `live_memory_veto` property,
+    /// if the veto is on and the action declares it.
+    fn live_memory_veto_kb(&self, platform_properties: &PlatformProperties) -> Option<u64> {
+        Self::reservation_kb(platform_properties, self.live_memory_veto.as_deref())
+    }
+
+    /// What `platform_properties` reserves under `property`, if anything.
+    fn reservation_kb(
+        platform_properties: &PlatformProperties,
+        property: Option<&str>,
+    ) -> Option<u64> {
+        match platform_properties.properties.get(property?) {
+            Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
+            _ => None,
+        }
+    }
+
     /// Finds an idle worker among `candidates` that can run the action now.
     fn find_available_worker(
         &self,
@@ -643,6 +691,7 @@ impl ApiWorkerSchedulerImpl {
         // Check function for availability AND dynamic Minimum property verification.
         // The index only does presence checks for Minimum properties since their
         // values change dynamically as jobs are assigned to workers.
+        let needed_kb = self.live_memory_veto_kb(platform_properties);
         let worker_matches = |(worker_id, w): &(&WorkerId, &Worker)| -> bool {
             if !w.can_accept_work() {
                 if full_worker_logging {
@@ -657,21 +706,42 @@ impl ApiWorkerSchedulerImpl {
                 return false;
             }
 
+            if let (Some(needed_kb), Some(declined_kb)) = (needed_kb, w.idle_declined_kb)
+                && needed_kb >= declined_kb
+            {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} skipped for this action: it declined {declined_kb} KiB while idle, the action asks {needed_kb} KiB"
+                    );
+                }
+                return false;
+            }
+
+            if !Self::fits_beside_hold(w, needed_kb, self.live_memory_veto.as_deref()) {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} held back from this action: it declined {:?} KiB for load, the action asks {needed_kb:?} KiB",
+                        w.load_hold_kb
+                    );
+                }
+                return false;
+            }
+
             // The ledger only knows what actions declared; the worker's own
             // report of what it has left catches the ones that declared too
             // little. A worker that reports nothing is never vetoed.
             // An action that asks for the worker's whole advertised memory
-            // (the last escalation step) is not vetoed: no worker ever
-            // reports that much free, since its own binary, the kernel and
-            // the page cache hold some, and the ledger already keeps it
+            // (the last escalation step) is not vetoed: a worker seldom
+            // reports that much free, since its own process memory and
+            // active page cache still count as used, so the veto could
+            // hold it back indefinitely, and the ledger already keeps it
             // alone there.
-            if let (Some(property), Some(load)) = (self.live_memory_veto.as_deref(), w.last_load)
-                && let Some(PlatformPropertyValue::Minimum(needed_kb)) =
-                    platform_properties.properties.get(property)
-                && *needed_kb > load.free_memory_kb
+            if let (Some(property), Some(needed_kb), Some(load)) =
+                (self.live_memory_veto.as_deref(), needed_kb, w.last_load)
+                && needed_kb > load.free_memory_kb
                 && matches!(
                     w.total_platform_properties.properties.get(property),
-                    Some(PlatformPropertyValue::Minimum(advertised_kb)) if *needed_kb < *advertised_kb
+                    Some(PlatformPropertyValue::Minimum(advertised_kb)) if needed_kb < *advertised_kb
                 )
             {
                 if full_worker_logging {
@@ -1241,9 +1311,11 @@ impl ApiWorkerSchedulerImpl {
         }
     }
 
-    /// The worker declined a dispatch: the ledger is restored, the action
-    /// requeued untried, and the worker paused; for a decline for load the
-    /// pause holds until the worker reports that much free memory.
+    /// The worker declined a dispatch: the ledger is restored and the action
+    /// requeued untried. A decline for load from a busy worker, with the
+    /// live memory veto on, holds the declined size back from it (see
+    /// `fits_beside_hold`); any other decline pauses it until the next
+    /// keepalive.
     /// Returns whether there was a dispatch to take back. A decline for an
     /// operation the worker no longer holds (it finished, or the sweep
     /// already requeued it) is nothing to act on, like a late
@@ -1254,6 +1326,7 @@ impl ApiWorkerSchedulerImpl {
         operation_id: &OperationId,
         reason: String,
         needs_kb: Option<u64>,
+        free_kb: Option<u64>,
     ) -> Result<bool, Error> {
         let holds_it = self
             .workers
@@ -1263,21 +1336,77 @@ impl ApiWorkerSchedulerImpl {
             debug!(?worker_id, %operation_id, %reason, "Decline for an operation not on this worker");
             return Ok(false);
         }
-        info!(?worker_id, %operation_id, %reason, ?needs_kb, "Worker declined dispatch");
-        self.update_action(
-            worker_id,
-            operation_id,
-            UpdateOperationType::UpdateWithDecline(Decline { reason }),
-        )
-        .await?;
-        if let Some(worker) = self.workers.get_mut(worker_id) {
-            if !worker.is_paused {
-                worker.is_paused = true;
-                record_worker_state("paused", true);
+        info!(?worker_id, %operation_id, %reason, ?needs_kb, ?free_kb, "Worker declined dispatch");
+        let was_paused = self
+            .workers
+            .peek(worker_id)
+            .is_some_and(|worker| worker.is_paused);
+        // The worker's state below follows the decline whether or not the
+        // operation's own record could be updated: the worker has already
+        // given the action back.
+        let updated = self
+            .update_action(
+                worker_id,
+                operation_id,
+                UpdateOperationType::UpdateWithDecline(Decline { reason }),
+            )
+            .await;
+        let veto_on = self.live_memory_veto.is_some();
+        let Some(worker) = self.workers.get_mut(worker_id) else {
+            return updated.map(|()| true);
+        };
+        // A worker that does not admit when idle (an older one, or one with
+        // no cgroup limit) and declines while holding nothing here may not
+        // have more room however long it waits. A worker that admits when
+        // idle declined because it holds other work, whatever this
+        // scheduler last saw it hold.
+        let idle_without_admission =
+            !worker.admits_when_idle && worker.running_action_infos.is_empty();
+        match needs_kb {
+            // A decline for load from a busy worker, with the veto on: it
+            // will have room once some of its work finishes, and meanwhile
+            // it can run what fits. It is held back from actions reserving
+            // what it declined or more (see `fits_beside_hold`) until it
+            // reports that much free or goes idle. The free memory it read
+            // for the decline, fresher than its last keepalive, is what
+            // smaller actions are judged against. A pause it was already
+            // under for another reason stands.
+            Some(needs_kb) if !idle_without_admission && veto_on => {
+                if worker.is_paused && !was_paused {
+                    worker.is_paused = false;
+                    record_worker_state("paused", false);
+                }
+                worker.load_hold_kb = Some(
+                    worker
+                        .load_hold_kb
+                        .map_or(needs_kb, |hold_kb| hold_kb.max(needs_kb)),
+                );
+                if let Some(free_kb) = free_kb {
+                    worker.last_load = Some(WorkerLoad {
+                        free_memory_kb: free_kb,
+                    });
+                }
             }
-            worker.pause_needs_kb = needs_kb;
+            // Any other decline pauses until the next keepalive. One from a
+            // worker that does not admit when idle, seen idle here, also
+            // marks the size: it is not offered that much again until it
+            // reports that much free, or the action would bounce between it
+            // and the queue untried.
+            _ => {
+                if !worker.is_paused {
+                    worker.is_paused = true;
+                    record_worker_state("paused", true);
+                }
+                if idle_without_admission && let Some(needs_kb) = needs_kb {
+                    worker.idle_declined_kb = Some(
+                        worker
+                            .idle_declined_kb
+                            .map_or(needs_kb, |declined_kb| declined_kb.min(needs_kb)),
+                    );
+                }
+            }
         }
-        Ok(true)
+        updated.map(|()| true)
     }
 
     /// Dispatches this worker has not acknowledged within the timeout, as
@@ -1563,6 +1692,7 @@ impl ApiWorkerScheduler {
                             worker_id,
                             &operation_id,
                             "unacknowledged".to_string(),
+                            None,
                             None,
                         )
                         .await
@@ -1890,11 +2020,12 @@ impl WorkerScheduler for ApiWorkerScheduler {
         operation_id: &OperationId,
         reason: String,
         needs_kb: Option<u64>,
+        free_kb: Option<u64>,
     ) -> Result<(), Error> {
         let mut inner = self.inner.lock().await;
         // Counted once the action is back in the queue, not per message.
         if inner
-            .dispatch_declined(worker_id, operation_id, reason, needs_kb)
+            .dispatch_declined(worker_id, operation_id, reason, needs_kb, free_kb)
             .await?
         {
             self.metrics
@@ -2103,6 +2234,7 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 platform_properties: as_strings(&worker.total_platform_properties),
                 available_platform_properties: as_strings(&worker.platform_properties),
                 free_memory_kb: worker.last_load.map(|load| load.free_memory_kb),
+                load_hold_kb: worker.load_hold_kb,
             })
             .collect()
     }
