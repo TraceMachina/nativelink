@@ -110,6 +110,9 @@ struct MockTransport {
     /// Raw XML body of the last `commit_block_list` request (the committed block
     /// list), captured so tests can assert the exact set/order of block ids.
     committed_block_list: Mutex<Option<Bytes>>,
+    /// The `Range` header of every download, in order, so a test can assert
+    /// that a retry resumed rather than started again.
+    download_ranges: Mutex<Vec<Option<String>>>,
     count: AtomicUsize,
 }
 
@@ -132,6 +135,10 @@ impl MockTransport {
 
     fn request_count(&self) -> usize {
         self.count.load(Ordering::SeqCst)
+    }
+
+    fn download_ranges(&self) -> Vec<Option<String>> {
+        self.download_ranges.lock().unwrap().clone()
     }
 
     fn committed_block_list(&self) -> Option<Bytes> {
@@ -160,6 +167,13 @@ impl HttpClient for MockTransport {
         let canned = match request.method() {
             Method::Head => Self::pop(&self.properties).unwrap_or_else(|| properties_ok(0)),
             Method::Get => {
+                self.download_ranges.lock().unwrap().push(
+                    request
+                        .headers()
+                        .iter()
+                        .find(|(name, _)| name.as_str().eq_ignore_ascii_case("range"))
+                        .map(|(_, value)| value.as_str().to_owned()),
+                );
                 Self::pop(&self.download).unwrap_or_else(|| download_ok(StatusCode::Ok, Vec::new()))
             }
             Method::Put if query.contains("comp=blocklist") => {
@@ -596,6 +610,98 @@ async fn test_multipart_upload_large_file() -> Result<(), Error> {
             "block ids must be committed in ascending order"
         );
         last_pos = pos;
+    }
+    Ok(())
+}
+
+/// Azure answers a download with the block it read, so for a blob whose
+/// length is not a multiple of the block size the last block runs past the
+/// end. The store must hand the caller the digest's bytes and no more: the
+/// surplus used to travel on to `verify_store`, which rejected the whole
+/// stream, so a readable blob failed every read and with it every action
+/// that wanted it.
+#[nativelink_test]
+async fn a_body_longer_than_the_digest_is_trimmed_to_it() -> Result<(), Error> {
+    const CONTENT: u64 = 100;
+    const BLOCK: u64 = 64;
+    let content: Vec<u8> = (0..CONTENT)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    // What Azure returns: the content padded out to the next whole block.
+    let mut padded = content.clone();
+    padded.resize(usize::try_from(BLOCK * 2).unwrap(), 0xAA);
+
+    let mock = MockTransport::new();
+    mock.push_download(download_ok(StatusCode::Ok, padded));
+
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+    let result = store
+        .get_part_unchunked(DigestInfo::try_new(TEST_HASH, CONTENT)?, 0, None)
+        .await?;
+
+    assert_eq!(result.len(), usize::try_from(CONTENT).unwrap());
+    assert_eq!(result, content);
+    Ok(())
+}
+
+/// The same bound applies to an explicit length, and to a read that starts
+/// part way in.
+#[nativelink_test]
+async fn an_explicit_length_bounds_an_over_long_body() -> Result<(), Error> {
+    const OFFSET: u64 = 10;
+    const LENGTH: u64 = 20;
+    let body: Vec<u8> = (0..100u8).collect();
+
+    let mock = MockTransport::new();
+    mock.push_download(download_ok(StatusCode::PartialContent, body.clone()));
+
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+    let result = store
+        .get_part_unchunked(create_test_digest()?, OFFSET, Some(LENGTH))
+        .await?;
+
+    assert_eq!(result.len(), usize::try_from(LENGTH).unwrap());
+    assert_eq!(result, &body[..usize::try_from(LENGTH).unwrap()]);
+    Ok(())
+}
+
+/// The range a read asks for is built from the offset plus whatever the
+/// writer has already taken, so a retry continues the read instead of
+/// starting it again and appending a second copy of what the consumer
+/// already holds. The mock cannot fail a response part way through, so this
+/// pins the arithmetic on the first attempt, where the written count is
+/// zero; the resume itself follows the shape the S3 store already uses.
+#[nativelink_test]
+async fn the_requested_range_starts_at_the_offset_plus_what_was_sent() -> Result<(), Error> {
+    const OFFSET: u64 = 10;
+    const LENGTH: u64 = 20;
+    let body: Vec<u8> = (0..100u8).collect();
+
+    let mock = MockTransport::new();
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(download_ok(StatusCode::PartialContent, body));
+
+    let retry = Retry {
+        max_retries: 8,
+        delay: 0.0,
+        jitter: 0.0,
+        ..Default::default()
+    };
+    let store = create_test_store(Arc::clone(&mock), Some(retry), None)?;
+    let result = store
+        .get_part_unchunked(create_test_digest()?, OFFSET, Some(LENGTH))
+        .await?;
+    assert_eq!(result.len(), usize::try_from(LENGTH).unwrap());
+
+    let ranges = mock.download_ranges();
+    assert_eq!(ranges.len(), 2, "expected the failed attempt and the retry");
+    for (n, range) in ranges.iter().enumerate() {
+        assert!(
+            range
+                .as_deref()
+                .is_some_and(|r| r.contains(&format!("bytes={OFFSET}"))),
+            "attempt {n} asked for {range:?}, expected it to start at {OFFSET}"
+        );
     }
     Ok(())
 }
