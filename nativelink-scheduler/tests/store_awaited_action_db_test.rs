@@ -21,7 +21,8 @@ use nativelink_scheduler::store_awaited_action_db::{
 };
 use nativelink_scheduler::worker_registry::{ORPHANED_ACTION_TIMEOUT, WorkerRegistry};
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId, WorkerId,
+    ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier, OperationId,
+    WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -425,6 +426,177 @@ async fn try_subscribe_skips_lookup_for_uncacheable_qualifier() -> Result<(), Er
         counter.load(Ordering::SeqCst),
         0,
         "uncacheable qualifier must short-circuit before any lookup",
+    );
+    Ok(())
+}
+
+/// Fake store whose single `search_by_index_prefix` returns a fixed list of
+/// already-encoded candidates, in order. Unlike `EventuallyVisibleStore` this
+/// exercises the multi-candidate selection: the unique-qualifier index retains
+/// completed records alongside a live successor, and the backend does not order
+/// by state, so `try_subscribe` must scan past a finished candidate to join a
+/// live one rather than stopping at the first exact match.
+struct MultiCandidateStore {
+    encoded: Vec<Bytes>,
+}
+
+impl MultiCandidateStore {
+    fn new(actions: &[&AwaitedAction]) -> Self {
+        Self {
+            encoded: actions
+                .iter()
+                .map(|a| {
+                    Bytes::from(serde_json::to_vec(a).expect("serialize AwaitedAction for fake"))
+                })
+                .collect(),
+        }
+    }
+}
+
+impl SchedulerStore for MultiCandidateStore {
+    type SubscriptionManager = PendingSubscriptionManager;
+
+    fn subscription_manager(
+        &self,
+    ) -> impl Future<Output = Result<Arc<Self::SubscriptionManager>, Error>> {
+        std::future::ready(Ok(Arc::new(PendingSubscriptionManager)))
+    }
+
+    fn update_data<T>(
+        &self,
+        _data: T,
+        _expiry: Option<Duration>,
+    ) -> impl Future<Output = Result<Option<i64>, Error>>
+    where
+        T: SchedulerStoreDataProvider
+            + SchedulerStoreKeyProvider
+            + SchedulerCurrentVersionProvider
+            + Send,
+    {
+        std::future::ready(Ok(Some(1)))
+    }
+
+    fn search_by_index_prefix<K>(
+        &self,
+        _index: K,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
+    >
+    where
+        K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
+        <K as SchedulerStoreDecodeTo>::DecodeOutput: Send,
+    {
+        let items: Vec<Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> = self
+            .encoded
+            .iter()
+            .map(|bytes| K::decode(1, bytes.clone()))
+            .collect();
+        std::future::ready(Ok(stream::iter(items)))
+    }
+
+    async fn count_by_index_prefix<K>(&self, _index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        Ok(0)
+    }
+
+    async fn get_and_decode<K>(
+        &self,
+        _key: K,
+    ) -> Result<Option<<K as SchedulerStoreDecodeTo>::DecodeOutput>, Error>
+    where
+        K: SchedulerStoreKeyProvider + SchedulerStoreDecodeTo + Send,
+    {
+        todo!("not exercised by try_subscribe")
+    }
+}
+
+async fn build_multi_db(
+    store: Arc<MultiCandidateStore>,
+) -> StoreAwaitedActionDb<
+    MultiCandidateStore,
+    fn() -> OperationId,
+    MockInstantWrapped,
+    fn() -> MockInstantWrapped,
+> {
+    fn new_op_id() -> OperationId {
+        OperationId::from("new-operation")
+    }
+    let now_fn: fn() -> MockInstantWrapped = MockInstantWrapped::default;
+    let op_id_fn: fn() -> OperationId = new_op_id;
+    StoreAwaitedActionDb::new(
+        store,
+        Arc::new(Notify::new()),
+        now_fn,
+        op_id_fn,
+        60,
+        60,
+        false,
+    )
+    .await
+    .expect("construct test db")
+}
+
+fn make_completed_awaited_action(operation_id: &str) -> AwaitedAction {
+    let now = SystemTime::UNIX_EPOCH;
+    let mut action = AwaitedAction::new(
+        OperationId::from(operation_id),
+        make_cacheable_action_info(),
+        now,
+    );
+    let mut state = action.state().as_ref().clone();
+    state.stage = ActionStage::Completed(ActionResult::default());
+    action.worker_set_state(Arc::new(state), now);
+    action
+}
+
+fn make_queued_awaited_action(operation_id: &str) -> AwaitedAction {
+    // A fresh `AwaitedAction` is Queued and has no worker, so it is neither
+    // finished nor abandoned — i.e. joinable.
+    AwaitedAction::new(
+        OperationId::from(operation_id),
+        make_cacheable_action_info(),
+        SystemTime::UNIX_EPOCH,
+    )
+}
+
+/// Regression for the N7 selection defect: with a completed record indexed
+/// ahead of a live successor for the same qualifier, `try_subscribe` must join
+/// the live one, not return the completed record (which forces a recreate).
+#[nativelink_test]
+async fn try_subscribe_prefers_live_candidate_over_completed() -> Result<(), Error> {
+    let completed = make_completed_awaited_action("completed-operation");
+    let live = make_queued_awaited_action("live-operation");
+    let qualifier = live.action_info().unique_qualifier.clone();
+    // Completed record first, live successor second — the order the backend can
+    // legitimately return.
+    let store = Arc::new(MultiCandidateStore::new(&[&completed, &live]));
+    let db = build_multi_db(store).await;
+
+    let result = db
+        .try_subscribe(
+            &OperationId::from("client-prefer-live"),
+            &qualifier,
+            Duration::from_mins(1),
+            0,
+        )
+        .await?
+        .expect("a joinable live candidate is present");
+
+    assert_eq!(
+        *result.operation_id(),
+        OperationId::from("live-operation"),
+        "try_subscribe must join the live successor, not the completed record \
+         (which would be recreated as a brand-new operation)",
+    );
+    assert_ne!(
+        *result.operation_id(),
+        OperationId::from("new-operation"),
+        "joining a live candidate must not recreate a fresh operation",
     );
     Ok(())
 }
