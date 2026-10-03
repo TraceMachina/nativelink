@@ -7,11 +7,13 @@ on:
     paths-ignore:
       - '.github/styles/**'
       - 'web/**'
+      - '**/*.md'
   pull_request:
     branches: [main]
     paths-ignore:
       - '.github/styles/**'
       - 'web/**'
+      - '**/*.md'
 
 permissions: read-all
 
