@@ -1991,6 +1991,17 @@ impl StoreDriver for GrpcStore {
                         return Some((RetryResult::Err(err), local_state));
                     }
                     local_state.read_offset += length;
+                    // A bounded read must also shrink its remaining limit by the
+                    // bytes already forwarded. `read_limit` is a count measured
+                    // from `read_offset` (REAPI ByteStream semantics), so a
+                    // mid-stream retry that advances `read_offset` without
+                    // decrementing `read_limit` re-requests the *original* window
+                    // size from the new offset and over-reads by exactly the
+                    // bytes already delivered. `read_limit == 0` means "read to
+                    // end" and must stay unbounded across resumes.
+                    if local_state.read_limit != 0 {
+                        local_state.read_limit = local_state.read_limit.saturating_sub(length);
+                    }
                 }
             }))
             .await
