@@ -199,12 +199,16 @@ async fn wait_for_completion(listener: &mut Box<dyn ActionStateResult>) -> Actio
 
 /// A decline sends the action back untried: with a retry cap of one, two
 /// declines and a completion still succeed. The worker is paused by the
-/// decline; a decline for load lifts only on a keepalive whose free memory
-/// covers the need, any other on the next keepalive.
+/// decline; a decline for load from a busy worker lifts only on a keepalive
+/// whose free memory covers the need, any other on the next keepalive.
 #[nativelink_test]
 async fn a_decline_requeues_untried_and_pauses_until_the_load_fits() -> Result<(), Error> {
     let (scheduler, worker_scheduler) = make_scheduler(1, 0);
     let mut rx = add_worker(&scheduler).await?;
+    // Something already running, so the declines below come from a busy
+    // worker: one that will have more room once it finishes.
+    let _resident = add_action(&scheduler, 9).await?;
+    next_dispatch(&mut rx).await;
     let mut listener = add_action(&scheduler, 1).await?;
 
     let first = next_dispatch(&mut rx).await;
@@ -250,6 +254,144 @@ async fn a_decline_requeues_untried_and_pauses_until_the_load_fits() -> Result<(
         "two declines did not count against a retry cap of one: {:?}",
         result.error
     );
+    Ok(())
+}
+
+/// A worker that declines for load while holding nothing else will never
+/// have more room, so the pause lifts on its next keepalive instead of
+/// waiting for free memory it never reports. Such a worker predates idle
+/// admission and would decline the same reservation again, so it is not
+/// offered that much or more; smaller actions still reach it.
+#[nativelink_test]
+async fn a_decline_from_an_idle_worker_lifts_and_is_not_offered_again() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let task_change_notify = Arc::new(Notify::new());
+    let spec = SimpleSpec {
+        supported_platform_properties: Some(HashMap::from([(
+            "memory_kb".to_string(),
+            PropertyType::Minimum,
+        )])),
+        live_memory_veto: Some("memory_kb".to_string()),
+        ..SimpleSpec::default()
+    };
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+        &spec,
+        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let (worker, mut rx) = worker_with_channel(64);
+    scheduler
+        .add_worker(worker)
+        .await
+        .err_tip(|| "Failed to add worker")?;
+    tokio::task::yield_now().await;
+    let connected = rx.recv().await.unwrap();
+    assert!(matches!(
+        connected.update,
+        Some(update_for_worker::Update::ConnectionResult(_))
+    ));
+
+    let add = |seed: u8, memory_kb: &str| {
+        let base = make_base_action_info(
+            UNIX_EPOCH + MockClock::time(),
+            DigestInfo::new([seed; 32], 512),
+        );
+        let action_info = Arc::new(ActionInfo {
+            platform_properties: HashMap::from([("memory_kb".to_string(), memory_kb.to_string())]),
+            ..(*base).clone()
+        });
+        let scheduler = scheduler.clone();
+        async move {
+            scheduler
+                .add_action(OperationId::default(), action_info)
+                .await?;
+            tokio::task::yield_now().await;
+            Ok::<_, Error>(())
+        }
+    };
+
+    // The whole worker, as `worker_with_channel` advertises it.
+    add(7, "5000").await?;
+
+    let first = next_dispatch(&mut rx).await;
+    worker_scheduler
+        .worker_dispatch_declined(
+            &worker_id(),
+            &OperationId::from(first.operation_id.as_str()),
+            "load".to_string(),
+            Some(5_000),
+        )
+        .await?;
+    tokio::task::yield_now().await;
+    no_dispatch(&mut rx).await;
+
+    // Less than the whole worker free, as always: the pause lifts all the
+    // same, but the declined reservation is not offered to it again.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(4_000)).await?;
+    no_dispatch(&mut rx).await;
+
+    // A smaller action that fits what it reports free still reaches it.
+    add(8, "3000").await?;
+    let second = next_dispatch(&mut rx).await;
+    assert_ne!(second.operation_id, first.operation_id);
+    no_dispatch(&mut rx).await;
+
+    // Once it finishes and the worker reports room for the declined size,
+    // that size is offered to it again.
+    complete(worker_scheduler.as_ref(), &second.operation_id).await?;
+    no_dispatch(&mut rx).await;
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 2, Some(5_000)).await?;
+    let third = next_dispatch(&mut rx).await;
+    assert_eq!(third.operation_id, first.operation_id);
+    Ok(())
+}
+
+/// A worker that said on connection it admits any action while idle only
+/// declines for load while it holds other work, even if this scheduler has
+/// taken that work back and thinks it idle. Its decline is treated as a
+/// busy worker's: the pause waits for a keepalive with room, and the size
+/// is not marked as one it declines while idle.
+#[nativelink_test]
+async fn a_decline_from_a_worker_that_admits_when_idle_waits_for_room() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler(1, 0);
+    let (mut worker, mut rx) = worker_with_channel(64);
+    worker.admits_when_idle = true;
+    scheduler
+        .add_worker(worker)
+        .await
+        .err_tip(|| "Failed to add worker")?;
+    tokio::task::yield_now().await;
+    let connected = rx.recv().await.unwrap();
+    assert!(matches!(
+        connected.update,
+        Some(update_for_worker::Update::ConnectionResult(_))
+    ));
+    let _listener = add_action(&scheduler, 1).await?;
+
+    // Nothing else is running as far as the scheduler knows.
+    let first = next_dispatch(&mut rx).await;
+    worker_scheduler
+        .worker_dispatch_declined(
+            &worker_id(),
+            &OperationId::from(first.operation_id.as_str()),
+            "load".to_string(),
+            Some(2_000),
+        )
+        .await?;
+    tokio::task::yield_now().await;
+    no_dispatch(&mut rx).await;
+
+    // Too little free memory: still paused, as for a busy worker.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(1_000)).await?;
+    no_dispatch(&mut rx).await;
+
+    // Enough: the same operation comes back.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 2, Some(3_000)).await?;
+    let second = next_dispatch(&mut rx).await;
+    assert_eq!(second.operation_id, first.operation_id);
     Ok(())
 }
 

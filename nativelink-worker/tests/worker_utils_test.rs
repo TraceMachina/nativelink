@@ -22,8 +22,14 @@ async fn make_connect_worker_request_with_extra_envs() -> Result<(), Error> {
     // So we have bash for nix cases, because the PATH gets reset
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    let res =
-        make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1).await?;
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &extra_envs,
+        1,
+        false,
+    )
+    .await?;
     assert_eq!(
         res.properties.first(),
         Some(&Property {
@@ -39,9 +45,14 @@ async fn make_connect_worker_request_with_values() -> Result<(), Error> {
     let mut worker_properties: HashMap<String, WorkerProperty> = HashMap::new();
     worker_properties.insert("test".into(), WorkerProperty::Values(vec!["bar".into()]));
 
-    let res =
-        make_connect_worker_request("1234".to_string(), &worker_properties, &HashMap::new(), 1)
-            .await?;
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &HashMap::new(),
+        1,
+        false,
+    )
+    .await?;
     assert_eq!(
         res.properties.first(),
         Some(&Property {
@@ -56,10 +67,15 @@ async fn make_connect_worker_request_with_values() -> Result<(), Error> {
 async fn make_connect_worker_request_with_bad_cmd() -> Result<(), Error> {
     let mut worker_properties: HashMap<String, WorkerProperty> = HashMap::new();
     worker_properties.insert("test".into(), WorkerProperty::QueryCmd("'\\".to_string()));
-    let res =
-        make_connect_worker_request("1234".to_string(), &worker_properties, &HashMap::new(), 1)
-            .await
-            .unwrap_err();
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &HashMap::new(),
+        1,
+        false,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(
         res,
         Error::new(
@@ -82,9 +98,15 @@ async fn make_connect_worker_request_with_bad_exit_code() -> Result<(), Error> {
     // So we have bash for nix cases, because the PATH gets reset
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    let res = make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1)
-        .await
-        .unwrap_err();
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &extra_envs,
+        1,
+        false,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(
         res,
         Error::new(
@@ -106,9 +128,15 @@ async fn make_connect_worker_request_with_signal() -> Result<(), Error> {
     let mut extra_envs = HashMap::new();
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    let res = make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1)
-        .await
-        .unwrap_err();
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &extra_envs,
+        1,
+        false,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(res.code, Code::Internal);
     assert!(res.messages[0].contains("signal: 15"));
     Ok(())
@@ -126,8 +154,14 @@ async fn make_connect_worker_request_with_stderr() -> Result<(), Error> {
     // So we have bash for nix cases, because the PATH gets reset
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    let res =
-        make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1).await?;
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &extra_envs,
+        1,
+        false,
+    )
+    .await?;
     assert_eq!(res.properties.first(), None);
     assert!(logs_contain(
         "Got stderr when running query cmd stderr=\"foo\\n\" cmd=\"bash -c \\\"echo foo >&2\\\"\" property_name=\"test\""
@@ -147,8 +181,14 @@ async fn make_connect_worker_request_with_non_utf8_stderr() -> Result<(), Error>
     // So we have bash for nix cases, because the PATH gets reset
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    let res =
-        make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1).await?;
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &extra_envs,
+        1,
+        false,
+    )
+    .await?;
     assert_eq!(res.properties.first(), None);
     assert!(logs_contain(
         "Got stderr when running query cmd stderr=\"� \\n\" cmd=\"bash -c \\\"echo -e '\\\\xf0\\\\x20' >&2\\\"\" property_name=\"test\""
@@ -168,8 +208,14 @@ async fn make_connect_worker_request_with_multiline() -> Result<(), Error> {
     // So we have bash for nix cases, because the PATH gets reset
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    let res =
-        make_connect_worker_request("1234".to_string(), &worker_properties, &extra_envs, 1).await?;
+    let res = make_connect_worker_request(
+        "1234".to_string(),
+        &worker_properties,
+        &extra_envs,
+        1,
+        false,
+    )
+    .await?;
     assert_eq!(
         res.properties,
         vec![

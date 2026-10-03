@@ -376,6 +376,15 @@ impl ApiWorkerSchedulerImpl {
             (Some(needs_kb), Some(load)) => load.free_memory_kb >= needs_kb,
             _ => true,
         };
+        // A keepalive reporting room for what the worker declined while
+        // idle makes that size worth offering it again.
+        let idle_decline_lifted = match (worker.idle_declined_kb, load) {
+            (Some(declined_kb), Some(load)) => load.free_memory_kb >= declined_kb,
+            _ => false,
+        };
+        if idle_decline_lifted {
+            worker.idle_declined_kb = None;
+        }
         let resumed = worker.is_paused && load_fits;
         if resumed {
             worker.is_paused = false;
@@ -387,7 +396,7 @@ impl ApiWorkerSchedulerImpl {
         // a pass in flight offers the room to its parked actions first,
         // and a pass not in flight starts. `capacity_changed` by hand,
         // since `worker` still borrows the map.
-        if resumed || more_room {
+        if resumed || more_room || idle_decline_lifted {
             self.capacity_generation.fetch_add(1, Ordering::Relaxed);
             self.worker_change_notify.notify_one();
         }
@@ -633,6 +642,16 @@ impl ApiWorkerSchedulerImpl {
         verdict
     }
 
+    /// The memory the action reserves under the `live_memory_veto` property,
+    /// if the veto is on and the action declares it.
+    fn live_memory_veto_kb(&self, platform_properties: &PlatformProperties) -> Option<u64> {
+        let property = self.live_memory_veto.as_deref()?;
+        match platform_properties.properties.get(property) {
+            Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
+            _ => None,
+        }
+    }
+
     /// Finds an idle worker among `candidates` that can run the action now.
     fn find_available_worker(
         &self,
@@ -643,6 +662,7 @@ impl ApiWorkerSchedulerImpl {
         // Check function for availability AND dynamic Minimum property verification.
         // The index only does presence checks for Minimum properties since their
         // values change dynamically as jobs are assigned to workers.
+        let needed_kb = self.live_memory_veto_kb(platform_properties);
         let worker_matches = |(worker_id, w): &(&WorkerId, &Worker)| -> bool {
             if !w.can_accept_work() {
                 if full_worker_logging {
@@ -657,21 +677,32 @@ impl ApiWorkerSchedulerImpl {
                 return false;
             }
 
+            if let (Some(needed_kb), Some(declined_kb)) = (needed_kb, w.idle_declined_kb)
+                && needed_kb >= declined_kb
+            {
+                if full_worker_logging {
+                    info!(
+                        "Worker {worker_id} skipped for this action: it declined {declined_kb} KiB while idle, the action asks {needed_kb} KiB"
+                    );
+                }
+                return false;
+            }
+
             // The ledger only knows what actions declared; the worker's own
             // report of what it has left catches the ones that declared too
             // little. A worker that reports nothing is never vetoed.
             // An action that asks for the worker's whole advertised memory
-            // (the last escalation step) is not vetoed: no worker ever
-            // reports that much free, since its own binary, the kernel and
-            // the page cache hold some, and the ledger already keeps it
+            // (the last escalation step) is not vetoed: a worker seldom
+            // reports that much free, since its own process memory and
+            // active page cache still count as used, so the veto could
+            // hold it back indefinitely, and the ledger already keeps it
             // alone there.
-            if let (Some(property), Some(load)) = (self.live_memory_veto.as_deref(), w.last_load)
-                && let Some(PlatformPropertyValue::Minimum(needed_kb)) =
-                    platform_properties.properties.get(property)
-                && *needed_kb > load.free_memory_kb
+            if let (Some(property), Some(needed_kb), Some(load)) =
+                (self.live_memory_veto.as_deref(), needed_kb, w.last_load)
+                && needed_kb > load.free_memory_kb
                 && matches!(
                     w.total_platform_properties.properties.get(property),
-                    Some(PlatformPropertyValue::Minimum(advertised_kb)) if *needed_kb < *advertised_kb
+                    Some(PlatformPropertyValue::Minimum(advertised_kb)) if needed_kb < *advertised_kb
                 )
             {
                 if full_worker_logging {
@@ -1275,7 +1306,27 @@ impl ApiWorkerSchedulerImpl {
                 worker.is_paused = true;
                 record_worker_state("paused", true);
             }
-            worker.pause_needs_kb = needs_kb;
+            // A worker that admits when idle declined for load because it
+            // holds other work, whatever this scheduler last saw it hold.
+            // One that does not (an older worker, or one with no cgroup
+            // limit) and declines while holding nothing here may not have
+            // more room however long it waits, so a pause until a keepalive
+            // with enough free could hold it for good. Its pause lifts on
+            // the next keepalive instead, and it is not offered that much
+            // again until it reports that much free, or the action would
+            // bounce between it and the queue untried.
+            if !worker.admits_when_idle && worker.running_action_infos.is_empty() {
+                worker.pause_needs_kb = None;
+                if let Some(needs_kb) = needs_kb {
+                    worker.idle_declined_kb = Some(
+                        worker
+                            .idle_declined_kb
+                            .map_or(needs_kb, |declined_kb| declined_kb.min(needs_kb)),
+                    );
+                }
+            } else {
+                worker.pause_needs_kb = needs_kb;
+            }
         }
         Ok(true)
     }
