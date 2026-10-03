@@ -1,13 +1,14 @@
 ---
 name: Create OCI image
 on:
+  # The OCI image build/test/Trivy-scan is deferred off the per-PR path: it is a
+  # ~90-min build, not a code-correctness gate, and the image is already built,
+  # scanned, and published on every merge to main. workflow_dispatch covers
+  # on-demand validation from a branch.
   push:
     branches:
       - main
-  pull_request:
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+  workflow_dispatch:
 
 permissions: read-all
 
