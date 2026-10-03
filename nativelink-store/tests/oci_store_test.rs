@@ -250,7 +250,7 @@ async fn ranged_get_sends_range_header_path_style() -> Result<(), Error> {
             .uri(format!(
                 "https://{HOST}/{BUCKET}/{VALID_HASH1}-1000?x-id=GetObject"
             ))
-            .header("range", format!("bytes={OFFSET}-{}", OFFSET + LENGTH))
+            .header("range", format!("bytes={OFFSET}-{}", OFFSET + LENGTH - 1))
             .body(SdkBody::empty())
             .unwrap(),
         http::Response::builder()

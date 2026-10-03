@@ -349,7 +349,7 @@ async fn smoke_test_get_part() -> Result<(), Error> {
                 .uri(format!(
                     "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=GetObject",
                 ))
-                .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH))
+                .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH - 1))
                 .body(SdkBody::empty())
                 .unwrap(),
             http::Response::builder()
@@ -587,7 +587,7 @@ async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
                 .uri(format!(
                     "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{CAS_ENTRY_SIZE}?x-id=GetObject",
                 ))
-                .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE))
+                .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE - 1))
                 .body(SdkBody::empty())
                 .unwrap(),
             http::Response::builder()
@@ -1053,5 +1053,62 @@ async fn single_put_lets_the_sdk_own_the_checksum() -> Result<(), Error> {
             .all(|(name, _)| !name.starts_with("x-amz-checksum-")),
         "the store must not write a checksum header itself"
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_part_bounded_subrange_range_is_end_inclusive() -> Result<(), Error> {
+    // A bounded read ending strictly before the object end must request an
+    // *inclusive* HTTP byte range of exactly `length` bytes. Regression for the
+    // off-by-one that requested `offset + length` (one byte too many). The
+    // StaticReplayClient only serves the exact-match range header, so without
+    // the fix the store emits `bytes=100-300`, fails to match, and errors.
+    const AC_ENTRY_SIZE: u64 = 1000;
+    const OFFSET: u64 = 100;
+    const LENGTH: u64 = 200; // OFFSET + LENGTH = 300 < AC_ENTRY_SIZE: a strict subrange.
+    let expected_payload = vec![0x88_u8; usize::try_from(LENGTH).unwrap()];
+    let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder()
+            .uri(format!(
+                "https://{BUCKET_NAME}.s3.{REGION}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=GetObject",
+            ))
+            .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH - 1))
+            .body(SdkBody::empty())
+            .unwrap(),
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .body(SdkBody::from(expected_payload.clone()))
+            .unwrap(),
+    )]);
+    let test_config = Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .region(Region::from_static(REGION))
+        .http_client(mock_client.clone())
+        .build();
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+    let store = S3Store::new_with_client_and_jitter(
+        &ExperimentalAwsSpec {
+            bucket: BUCKET_NAME.to_string(),
+            ..Default::default()
+        },
+        s3_client,
+        Arc::new(move |_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
+    )?;
+
+    let got = store
+        .get_part_unchunked(
+            DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
+            OFFSET,
+            Some(LENGTH),
+        )
+        .await?;
+    assert_eq!(
+        got.len(),
+        usize::try_from(LENGTH).unwrap(),
+        "bounded read returned wrong byte count"
+    );
+    assert_eq!(got, Bytes::from(expected_payload));
+    mock_client.assert_requests_match(&[]);
     Ok(())
 }

@@ -415,8 +415,15 @@ where
             return Ok(());
         }
 
+        if length == Some(0) {
+            writer.send_eof()?;
+            return Ok(());
+        }
         let object_path = self.make_object_path(&key);
-        let end_offset = length.map(|len| offset + len);
+        // HTTP byte ranges are inclusive on both ends; the last byte index for a
+        // `len`-byte read from `offset` is `offset + len - 1`. `offset + len`
+        // over-reads one byte on any range that stops before the object end.
+        let end_offset = length.map(|len| offset + len - 1);
         let client = &self.client;
 
         let object_path_ref = &object_path;
