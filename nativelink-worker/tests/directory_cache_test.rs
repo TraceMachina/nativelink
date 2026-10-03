@@ -487,6 +487,198 @@ async fn cold_construct_fetches_concurrently() -> Result<(), Error> {
     Ok(())
 }
 
+/// `MemoryStore` wrapper whose `get_part` of one digest takes `slow_for`
+/// (a large blob on a slow link), and which counts the reads of that digest.
+#[derive(Debug)]
+struct SlowBlobStore {
+    inner: Store,
+    slow_digest: DigestInfo,
+    slow_for: Duration,
+    slow_reads: AtomicU64,
+}
+
+impl MetricsComponent for SlowBlobStore {
+    fn publish(
+        &self,
+        _kind: MetricKind,
+        _field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        Ok(MetricPublishKnownKindData::Component)
+    }
+}
+
+#[async_trait]
+impl StoreDriver for SlowBlobStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner
+            .as_store_driver_pin()
+            .has_with_results(keys, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.inner
+            .as_store_driver_pin()
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        if key == StoreKey::Digest(self.slow_digest) {
+            self.slow_reads.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(self.slow_for).await;
+        }
+        self.inner
+            .as_store_driver_pin()
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SlowBlobStore);
+
+/// Two constructions at once that need the same executable input share its
+/// one slow-store download, however long that download takes. Executables
+/// are copied, never hardlinked, and the copy used to read the blob with
+/// `FastSlowStore::get_part`, where a reader waiting on another's download
+/// gives up after a fixed bound and reads the whole blob from the slow store
+/// again. The download here outlasts that bound (paused time).
+#[nativelink_test(start_paused = true)]
+async fn concurrent_constructions_share_one_download_of_an_executable() -> Result<(), Error> {
+    let memory_store = MemoryStore::new(&MemorySpec::default());
+    let content = Bytes::from_static(b"#!/bin/sh\necho a large toolchain binary\n");
+    let exe_digest = DigestInfo::new([3u8; 32], content.len() as u64);
+    memory_store
+        .update_oneshot(exe_digest, content.clone())
+        .await?;
+    // Two different trees, so two constructions rather than one cache entry,
+    // each holding the same executable.
+    let mut roots = Vec::new();
+    for (i, name) in [(0u8, "rustc"), (1u8, "rustc-again")] {
+        let root = ProtoDirectory {
+            files: vec![FileNode {
+                name: name.to_string(),
+                digest: Some(exe_digest.into()),
+                is_executable: true,
+                node_properties: None,
+            }],
+            directories: vec![],
+            symlinks: vec![],
+            node_properties: None,
+        }
+        .encode_to_vec();
+        let root_digest = DigestInfo::new([10 + i; 32], root.len() as u64);
+        memory_store
+            .update_oneshot(root_digest, Bytes::from(root))
+            .await?;
+        roots.push((root_digest, name));
+    }
+
+    let slow_store = Arc::new(SlowBlobStore {
+        inner: Store::new(memory_store),
+        slow_digest: exe_digest,
+        slow_for: Duration::from_mins(10),
+        slow_reads: AtomicU64::new(0),
+    });
+    let fast_spec = FilesystemSpec {
+        content_path: make_temp_path("cas_content"),
+        temp_path: make_temp_path("cas_temp"),
+        eviction_policy: None,
+        ..Default::default()
+    };
+    let fast_store: Arc<FilesystemStore> = FilesystemStore::new(&fast_spec).await?;
+    let cas_store = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(fast_spec),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(fast_store),
+        Store::new(slow_store.clone()),
+    );
+    let cache = Arc::new(
+        DirectoryCache::new(
+            DirectoryCacheConfig {
+                cache_root: make_temp_path("directory_cache").into(),
+                ..Default::default()
+            },
+            cas_store,
+        )
+        .await?,
+    );
+
+    let working_directory = PathBuf::from(make_temp_path("working_directory"));
+    let mut constructions = Vec::new();
+    for (root_digest, name) in roots {
+        let cache = cache.clone();
+        let dest = working_directory.join(Uuid::new_v4().to_string());
+        constructions.push(background_spawn!("construct", async move {
+            cache.get_or_create(root_digest, &dest).await?;
+            Ok::<_, Error>(dest.join(name))
+        }));
+    }
+    for construction in constructions {
+        let file = construction.await.expect("construction task panicked")?;
+        assert_eq!(tokio::fs::read(&file).await?, content.as_ref());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = tokio::fs::metadata(&file).await?.permissions().mode() & 0o777;
+            assert_eq!(
+                mode, 0o555,
+                "an executable input is read-only and executable"
+            );
+        }
+    }
+
+    assert_eq!(
+        slow_store.slow_reads.load(Ordering::SeqCst),
+        1,
+        "both constructions must share the one download of the executable"
+    );
+    Ok(())
+}
+
 /// SHA-256 of zero bytes, matching `cas_utils::ZERO_BYTE_DIGESTS`. Never
 /// stored in the CAS; `DirectoryCache` writes such files directly.
 fn empty_file_digest() -> DigestInfo {
