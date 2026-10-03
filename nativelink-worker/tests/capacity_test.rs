@@ -23,9 +23,10 @@ use nativelink_error::Code;
 #[cfg(target_family = "unix")]
 use nativelink_worker::capacity::find_limit;
 use nativelink_worker::capacity::{
-    ObservedCapacity, advertised, free_memory_kb_from, memory_headroom_percent, parse_cpu_max,
-    parse_meminfo_available_kb, parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
-    parse_self_cgroup, resolve_cgroup_dir, without_cgroup,
+    ObservedCapacity, advertised, free_memory_kb_from, free_memory_kb_with,
+    memory_headroom_percent, parse_cpu_max, parse_meminfo_available_kb, parse_meminfo_total_kb,
+    parse_memory_current_kb, parse_memory_max, parse_memory_stat_reclaimable_kb, parse_self_cgroup,
+    resolve_cgroup_dir, without_cgroup,
 };
 use pretty_assertions::assert_eq;
 
@@ -189,10 +190,12 @@ fn overhead_larger_than_the_limit_advertises_zero_not_a_wraparound() {
     assert_eq!(advertised(observed, &config(), 20), (0, 0));
 }
 
-/// The keepalive reports the limit less current usage when there is a
-/// limit, and what the host has available when there is not.
+/// The keepalive reports the limit less the working set (current usage
+/// less what the kernel can drop) when there is a limit, and what the host
+/// has available when there is not. With no `memory.stat` to read, nothing
+/// is taken off the usage.
 #[test]
-fn free_memory_is_limit_less_current_or_the_host_available() {
+fn free_memory_is_limit_less_working_set_or_the_host_available() {
     assert_eq!(
         parse_memory_current_kb("10737418240\n"),
         Some(10 * 1024 * 1024)
@@ -203,12 +206,105 @@ fn free_memory_is_limit_less_current_or_the_host_available() {
         Some(12_345_678)
     );
     assert_eq!(
-        free_memory_kb_from(Some(52 * 1024 * 1024), Some(40 * 1024 * 1024), Some(1)),
+        parse_meminfo_total_kb("MemTotal: 65536000 kB\nMemAvailable:   12345678 kB\n"),
+        Some(65_536_000)
+    );
+    assert_eq!(
+        free_memory_kb_from(
+            Some(52 * 1024 * 1024),
+            Some(40 * 1024 * 1024),
+            None,
+            Some(1)
+        ),
         Some(12 * 1024 * 1024)
     );
-    assert_eq!(free_memory_kb_from(Some(100), Some(200), Some(1)), Some(0));
-    assert_eq!(free_memory_kb_from(None, Some(200), Some(777)), Some(777));
-    assert_eq!(free_memory_kb_from(None, None, None), None);
+    assert_eq!(
+        free_memory_kb_from(Some(100), Some(200), None, Some(1)),
+        Some(0)
+    );
+    assert_eq!(
+        free_memory_kb_from(None, Some(200), Some(50), Some(777)),
+        Some(777)
+    );
+    assert_eq!(free_memory_kb_from(None, None, None, None), None);
+}
+
+/// Page cache the worker's own I/O built up does not count against it. The
+/// numbers are a 24 GiB worker that declined every 2 GiB action: 22.05 GiB
+/// charged, 17.39 GiB of it inactive file cache, 184.7 MiB anonymous.
+#[test]
+fn free_memory_leaves_out_inactive_page_cache() {
+    let memory_stat = "anon 193671168\nfile 22119329792\nactive_file 3446669312\ninactive_file 18672467968\nslab_reclaimable 1352925184\nfile_dirty 0\nfile_writeback 0\n";
+    assert_eq!(
+        parse_memory_stat_reclaimable_kb(memory_stat),
+        Some(18_234_832)
+    );
+    let limit_kb = 25_769_803_776 / 1024;
+    let current_kb = 23_680_266_240 / 1024;
+    assert_eq!(
+        free_memory_kb_from(Some(limit_kb), Some(current_kb), Some(18_234_832), None),
+        Some(20_275_396)
+    );
+    // Without the cache figure the old reading stands: under 2 GiB free.
+    assert_eq!(
+        free_memory_kb_from(Some(limit_kb), Some(current_kb), None, None),
+        Some(2_040_564)
+    );
+}
+
+/// Dirty and writeback pages cannot be dropped until they reach the disk,
+/// so they come off the inactive cache: a worker that just wrote its
+/// outputs does not report them as free.
+#[test]
+fn dirty_page_cache_is_not_reclaimable() {
+    let gib: u64 = 1024 * 1024 * 1024;
+    let memory_stat = format!(
+        "inactive_file {}\nfile_dirty {}\nfile_writeback {}\n",
+        10 * gib,
+        3 * gib,
+        gib
+    );
+    assert_eq!(
+        parse_memory_stat_reclaimable_kb(&memory_stat),
+        Some(6 * 1024 * 1024)
+    );
+    // More dirty than inactive (dirty pages on the active list) is nothing
+    // reclaimable, not a wraparound.
+    assert_eq!(
+        parse_memory_stat_reclaimable_kb("inactive_file 100\nfile_dirty 4096\n"),
+        Some(0)
+    );
+    // A kernel without the dirty counters still reports the inactive cache.
+    assert_eq!(
+        parse_memory_stat_reclaimable_kb("inactive_file 2048\n"),
+        Some(2)
+    );
+    // No inactive_file line is nothing known, not nothing reclaimable.
+    assert_eq!(parse_memory_stat_reclaimable_kb("anon 1\n"), None);
+    // Keys match whole: `inactive_file_extra` is not `inactive_file`.
+    assert_eq!(
+        parse_memory_stat_reclaimable_kb("inactive_file_extra 4096\ninactive_file 2048\n"),
+        Some(2)
+    );
+    assert_eq!(
+        parse_memory_stat_reclaimable_kb("inactive_file_extra 4096\n"),
+        None
+    );
+}
+
+/// The subtraction saturates: a reclaimable figure larger than the usage
+/// leaves the whole limit, never more, and usage over the limit leaves
+/// nothing.
+#[test]
+fn free_memory_never_exceeds_the_limit_or_wraps() {
+    assert_eq!(
+        free_memory_kb_from(Some(100), Some(40), Some(60), None),
+        Some(100)
+    );
+    assert_eq!(
+        free_memory_kb_from(Some(100), Some(200), Some(50), None),
+        Some(0)
+    );
 }
 
 #[test]
@@ -316,4 +412,68 @@ fn no_limit_at_any_level_is_no_limit() {
         find_limit(Path::new("/elsewhere"), root, "memory.max", own_only),
         Some((PathBuf::from("/elsewhere"), "2048\n".to_string()))
     );
+}
+
+/// A reader over fixed files, with `memory.current` answering from a list
+/// in turn, so a test can move the usage between the reads.
+fn fake_cgroup(currents: Vec<u64>, stat: &'static str) -> impl Fn(&Path) -> Option<String> {
+    let currents = std::cell::RefCell::new(currents.into_iter());
+    move |path: &Path| match path.file_name()?.to_str()? {
+        "memory.current" => currents.borrow_mut().next().map(|bytes| bytes.to_string()),
+        "memory.stat" => Some(stat.to_string()),
+        "meminfo" => Some("MemAvailable: 777 kB\n".to_string()),
+        _ => None,
+    }
+}
+
+/// The usage is read on both sides of the cache and the larger taken, so
+/// cache reclaimed or grown between the reads makes the worker report less
+/// free, not more; with no limit the host's `MemAvailable` is reported.
+#[test]
+fn free_memory_reads_bracket_the_cache_and_keep_the_larger_usage() {
+    let mib: u64 = 1024 * 1024;
+    let limited = (PathBuf::from("/cg"), (24 * 1024 * mib).to_string());
+    let stat = "inactive_file 17179869184\n"; // 16 GiB
+    // Steady: 22 GiB charged, 16 GiB of it cache: 18 GiB free.
+    assert_eq!(
+        free_memory_kb_with(Some(&limited), fake_cgroup(vec![22 * 1024 * mib; 2], stat)),
+        Some(18 * 1024 * 1024)
+    );
+    // Reclaimed mid-read (22 GiB, then 17): the 22 is kept, not 17 - 16.
+    assert_eq!(
+        free_memory_kb_with(
+            Some(&limited),
+            fake_cgroup(vec![22 * 1024 * mib, 17 * 1024 * mib], stat)
+        ),
+        Some(18 * 1024 * 1024)
+    );
+    // Grown mid-read (22 GiB, then 23): the 23 is kept.
+    assert_eq!(
+        free_memory_kb_with(
+            Some(&limited),
+            fake_cgroup(vec![22 * 1024 * mib, 23 * 1024 * mib], stat)
+        ),
+        Some(17 * 1024 * 1024)
+    );
+    // No limit: the host's MemAvailable.
+    assert_eq!(
+        free_memory_kb_with(None, fake_cgroup(vec![], stat)),
+        Some(777)
+    );
+    // A limit but no readable usage: the host's MemAvailable too.
+    assert_eq!(
+        free_memory_kb_with(Some(&limited), fake_cgroup(vec![], stat)),
+        Some(777)
+    );
+}
+
+/// `/proc/meminfo` keys carry their own colon, and a value written right
+/// after it still parses.
+#[test]
+fn meminfo_value_parses_with_or_without_a_space() {
+    assert_eq!(
+        parse_meminfo_available_kb("MemAvailable:12345678 kB\n"),
+        Some(12_345_678)
+    );
+    assert_eq!(parse_meminfo_total_kb("MemTotal:   42 kB\n"), Some(42));
 }

@@ -661,9 +661,10 @@ impl ApiWorkerSchedulerImpl {
             // report of what it has left catches the ones that declared too
             // little. A worker that reports nothing is never vetoed.
             // An action that asks for the worker's whole advertised memory
-            // (the last escalation step) is not vetoed: no worker ever
-            // reports that much free, since its own binary, the kernel and
-            // the page cache hold some, and the ledger already keeps it
+            // (the last escalation step) is not vetoed: a worker seldom
+            // reports that much free, since its own process memory and
+            // active page cache still count as used, so the veto could
+            // hold it back indefinitely, and the ledger already keeps it
             // alone there.
             if let (Some(property), Some(load)) = (self.live_memory_veto.as_deref(), w.last_load)
                 && let Some(PlatformPropertyValue::Minimum(needed_kb)) =
