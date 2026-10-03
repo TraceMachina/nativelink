@@ -416,8 +416,8 @@ fn no_limit_at_any_level_is_no_limit() {
 
 /// A reader over fixed files, with `memory.current` answering from a list
 /// in turn, so a test can move the usage between the reads.
-fn fake_cgroup(currents: &[u64], stat: &'static str) -> impl Fn(&Path) -> Option<String> + use<> {
-    let currents = std::cell::RefCell::new(currents.to_vec().into_iter());
+fn fake_cgroup(currents: Vec<u64>, stat: &'static str) -> impl Fn(&Path) -> Option<String> {
+    let currents = std::cell::RefCell::new(currents.into_iter());
     move |path: &Path| match path.file_name()?.to_str()? {
         "memory.current" => currents.borrow_mut().next().map(|bytes| bytes.to_string()),
         "memory.stat" => Some(stat.to_string()),
@@ -436,14 +436,14 @@ fn free_memory_reads_bracket_the_cache_and_keep_the_larger_usage() {
     let stat = "inactive_file 17179869184\n"; // 16 GiB
     // Steady: 22 GiB charged, 16 GiB of it cache: 18 GiB free.
     assert_eq!(
-        free_memory_kb_with(Some(&limited), fake_cgroup(&[22 * 1024 * mib; 2], stat)),
+        free_memory_kb_with(Some(&limited), fake_cgroup(vec![22 * 1024 * mib; 2], stat)),
         Some(18 * 1024 * 1024)
     );
     // Reclaimed mid-read (22 GiB, then 17): the 22 is kept, not 17 - 16.
     assert_eq!(
         free_memory_kb_with(
             Some(&limited),
-            fake_cgroup(&[22 * 1024 * mib, 17 * 1024 * mib], stat)
+            fake_cgroup(vec![22 * 1024 * mib, 17 * 1024 * mib], stat)
         ),
         Some(18 * 1024 * 1024)
     );
@@ -451,15 +451,18 @@ fn free_memory_reads_bracket_the_cache_and_keep_the_larger_usage() {
     assert_eq!(
         free_memory_kb_with(
             Some(&limited),
-            fake_cgroup(&[22 * 1024 * mib, 23 * 1024 * mib], stat)
+            fake_cgroup(vec![22 * 1024 * mib, 23 * 1024 * mib], stat)
         ),
         Some(17 * 1024 * 1024)
     );
     // No limit: the host's MemAvailable.
-    assert_eq!(free_memory_kb_with(None, fake_cgroup(&[], stat)), Some(777));
+    assert_eq!(
+        free_memory_kb_with(None, fake_cgroup(vec![], stat)),
+        Some(777)
+    );
     // A limit but no readable usage: the host's MemAvailable too.
     assert_eq!(
-        free_memory_kb_with(Some(&limited), fake_cgroup(&[], stat)),
+        free_memory_kb_with(Some(&limited), fake_cgroup(vec![], stat)),
         Some(777)
     );
 }
