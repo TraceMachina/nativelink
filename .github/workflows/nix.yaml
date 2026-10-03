@@ -88,6 +88,9 @@ jobs:
         uses: >- # v2.9.1
           Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
+      - name: Set up Azurite test runner
+        uses: ./.github/actions/setup-azurite-test-runner
+
       - name: Invoke Cargo build in Nix shell
         run: >
           nix develop --impure --command
@@ -133,7 +136,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, buck2, mongo]
+        test-name: [buildstream, buck2, mongo]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -182,7 +185,7 @@ jobs:
     name: rbe ${{ matrix.command}}
     needs: [generate-rbe-commands]
     strategy:
-        matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
+      matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
