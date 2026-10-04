@@ -360,13 +360,14 @@ pub fn free_memory_kb_with(
     };
     let read_current =
         || read(&dir.join("memory.current")).and_then(|current| parse_memory_current_kb(&current));
-    // The usage is read on both sides of the cache, and the larger taken:
-    // cache that grows during the read is in the usage but not taken off
-    // it, and cache reclaimed during the read is taken off the usage it was
-    // part of, so the order of the reads adds no over-report. The cache
-    // figure itself comes from per-CPU counters the kernel flushes in
-    // batches, so it can still run ahead of what is there by a few MiB per
-    // CPU.
+    // The usage is read on both sides of the cache, and the larger taken.
+    // That mitigates the common races, cache that grows during the read or
+    // is reclaimed during it, but the three reads are not one snapshot:
+    // cache that grows at the `memory.stat` read and is reclaimed before
+    // the second usage read is missed by both usage reads yet subtracted,
+    // so a transient cache peak can report more free than there is. The
+    // cache figure also comes from per-CPU counters the kernel flushes in
+    // batches, so it can run ahead of what is there by a few MiB per CPU.
     let current_before = read_current();
     let reclaimable_kb =
         read(&dir.join("memory.stat")).and_then(|stat| parse_memory_stat_reclaimable_kb(&stat));

@@ -426,9 +426,11 @@ fn fake_cgroup(currents: Vec<u64>, stat: &'static str) -> impl Fn(&Path) -> Opti
     }
 }
 
-/// The usage is read on both sides of the cache and the larger taken, so
-/// cache reclaimed or grown between the reads makes the worker report less
-/// free, not more; with no limit the host's `MemAvailable` is reported.
+/// The usage is read on both sides of the cache and the larger taken, which
+/// keeps cache reclaimed or grown between the reads from adding to what is
+/// reported free in these orderings. It is a mitigation, not a snapshot: a
+/// cache peak that comes and goes between the two usage reads is still
+/// subtracted. With no limit the host's `MemAvailable` is reported.
 #[test]
 fn free_memory_reads_bracket_the_cache_and_keep_the_larger_usage() {
     let mib: u64 = 1024 * 1024;
