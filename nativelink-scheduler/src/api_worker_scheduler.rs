@@ -371,11 +371,16 @@ impl ApiWorkerSchedulerImpl {
         // pause taken for a decline for load is the exception: it waits
         // for a keepalive whose free memory, read above, covers what the
         // declined action wanted. A worker that reports no load is taken
-        // at its word.
-        let load_fits = match (worker.pause_needs_kb, worker.last_load) {
-            (Some(needs_kb), Some(load)) => load.free_memory_kb >= needs_kb,
-            _ => true,
-        };
+        // at its word. So is a worker that admits when idle and holds
+        // nothing here: it declined while something of its own was still
+        // finishing, and once idle it admits whatever it is offered, so
+        // waiting for free memory it may never report would strand it.
+        let idle_and_admitting = worker.admits_when_idle && worker.running_action_infos.is_empty();
+        let load_fits = idle_and_admitting
+            || match (worker.pause_needs_kb, worker.last_load) {
+                (Some(needs_kb), Some(load)) => load.free_memory_kb >= needs_kb,
+                _ => true,
+            };
         // A keepalive reporting room for what the worker declined while
         // idle makes that size worth offering it again.
         let idle_decline_lifted = match (worker.idle_declined_kb, load) {
@@ -696,9 +701,12 @@ impl ApiWorkerSchedulerImpl {
             // reports that much free, since its own process memory and
             // active page cache still count as used, so the veto could
             // hold it back indefinitely, and the ledger already keeps it
-            // alone there.
+            // alone there. Nor is a worker that admits when idle and holds
+            // nothing: it accepts whatever it reads free, so the veto would
+            // only keep from it the actions it is idle for.
             if let (Some(property), Some(needed_kb), Some(load)) =
                 (self.live_memory_veto.as_deref(), needed_kb, w.last_load)
+                && !(w.admits_when_idle && w.running_action_infos.is_empty())
                 && needed_kb > load.free_memory_kb
                 && matches!(
                     w.total_platform_properties.properties.get(property),
@@ -1307,7 +1315,9 @@ impl ApiWorkerSchedulerImpl {
                 record_worker_state("paused", true);
             }
             // A worker that admits when idle declined for load because it
-            // holds other work, whatever this scheduler last saw it hold.
+            // holds other work, whatever this scheduler last saw it hold: it
+            // waits for room like any busy worker, and if this scheduler sees
+            // it holding nothing, its pause lifts on the next keepalive.
             // One that does not (an older worker, or one with no cgroup
             // limit) and declines while holding nothing here may not have
             // more room however long it waits, so a pause until a keepalive

@@ -351,11 +351,13 @@ async fn a_decline_from_an_idle_worker_lifts_and_is_not_offered_again() -> Resul
 
 /// A worker that said on connection it admits any action while idle only
 /// declines for load while it holds other work, even if this scheduler has
-/// taken that work back and thinks it idle. Its decline is treated as a
-/// busy worker's: the pause waits for a keepalive with room, and the size
-/// is not marked as one it declines while idle.
+/// taken that work back and thinks it idle: its decline is not marked as a
+/// size it declines while idle. While this scheduler sees it holding
+/// nothing, its pause lifts on the next keepalive whatever it reports free,
+/// since once its own work finishes it admits what it is offered.
 #[nativelink_test]
-async fn a_decline_from_a_worker_that_admits_when_idle_waits_for_room() -> Result<(), Error> {
+async fn a_decline_from_a_worker_that_admits_when_idle_lifts_once_it_holds_nothing()
+-> Result<(), Error> {
     let (scheduler, worker_scheduler) = make_scheduler(1, 0);
     let (mut worker, mut rx) = worker_with_channel(64);
     worker.admits_when_idle = true;
@@ -384,14 +386,109 @@ async fn a_decline_from_a_worker_that_admits_when_idle_waits_for_room() -> Resul
     tokio::task::yield_now().await;
     no_dispatch(&mut rx).await;
 
-    // Too little free memory: still paused, as for a busy worker.
+    // Far less free than the action wants, but the worker holds nothing
+    // here: the pause lifts and the action is offered again.
+    keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(1_000)).await?;
+    let second = next_dispatch(&mut rx).await;
+    assert_eq!(second.operation_id, first.operation_id);
+    Ok(())
+}
+
+/// A worker that admits when idle and holds work still waits for room after
+/// a decline for load, like any busy worker.
+#[nativelink_test]
+async fn a_busy_worker_that_admits_when_idle_waits_for_room() -> Result<(), Error> {
+    let (scheduler, worker_scheduler) = make_scheduler(1, 0);
+    let (mut worker, mut rx) = worker_with_channel(64);
+    worker.admits_when_idle = true;
+    scheduler
+        .add_worker(worker)
+        .await
+        .err_tip(|| "Failed to add worker")?;
+    tokio::task::yield_now().await;
+    let connected = rx.recv().await.unwrap();
+    assert!(matches!(
+        connected.update,
+        Some(update_for_worker::Update::ConnectionResult(_))
+    ));
+    let _resident = add_action(&scheduler, 9).await?;
+    next_dispatch(&mut rx).await;
+    let _listener = add_action(&scheduler, 1).await?;
+
+    let first = next_dispatch(&mut rx).await;
+    worker_scheduler
+        .worker_dispatch_declined(
+            &worker_id(),
+            &OperationId::from(first.operation_id.as_str()),
+            "load".to_string(),
+            Some(2_000),
+        )
+        .await?;
+    tokio::task::yield_now().await;
+
     keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(1_000)).await?;
     no_dispatch(&mut rx).await;
-
-    // Enough: the same operation comes back.
     keepalive(worker_scheduler.as_ref(), NOW_TIME + 2, Some(3_000)).await?;
     let second = next_dispatch(&mut rx).await;
     assert_eq!(second.operation_id, first.operation_id);
+    Ok(())
+}
+
+/// With the live memory veto on, an idle worker that admits when idle is
+/// offered an action over what it last reported free, since it will accept
+/// it; one that does not admit when idle is still vetoed.
+#[nativelink_test]
+async fn the_veto_does_not_keep_actions_from_an_idle_worker_that_admits_them() -> Result<(), Error>
+{
+    for admits_when_idle in [true, false] {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let task_change_notify = Arc::new(Notify::new());
+        let spec = SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "memory_kb".to_string(),
+                PropertyType::Minimum,
+            )])),
+            live_memory_veto: Some("memory_kb".to_string()),
+            ..SimpleSpec::default()
+        };
+        let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+            &spec,
+            memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+            || async move {},
+            task_change_notify,
+            MockInstantWrapped::default,
+            None,
+        );
+        let (mut worker, mut rx) = worker_with_channel(64);
+        worker.admits_when_idle = admits_when_idle;
+        scheduler
+            .add_worker(worker)
+            .await
+            .err_tip(|| "Failed to add worker")?;
+        tokio::task::yield_now().await;
+        rx.recv().await.unwrap();
+        // Idle, but reports less than the action asks; the worker advertises
+        // 5,000, so 4,500 is not the whole worker the veto already exempts.
+        keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(4_000)).await?;
+
+        let base = make_base_action_info(
+            UNIX_EPOCH + MockClock::time(),
+            DigestInfo::new([7; 32], 512),
+        );
+        let action_info = Arc::new(ActionInfo {
+            platform_properties: HashMap::from([("memory_kb".to_string(), "4500".to_string())]),
+            ..(*base).clone()
+        });
+        scheduler
+            .add_action(OperationId::default(), action_info)
+            .await?;
+        tokio::task::yield_now().await;
+        if admits_when_idle {
+            next_dispatch(&mut rx).await;
+        } else {
+            no_dispatch(&mut rx).await;
+        }
+    }
     Ok(())
 }
 
