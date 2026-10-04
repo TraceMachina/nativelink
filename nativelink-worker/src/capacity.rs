@@ -63,12 +63,24 @@ pub fn parse_memory_max(memory_max: &str, host_memory_kb: u64) -> Option<u64> {
     value.parse::<u64>().ok().map(|bytes| bytes / 1024)
 }
 
-/// `MemTotal` from `/proc/meminfo`, in KiB.
-pub fn parse_meminfo_total_kb(meminfo: &str) -> Option<u64> {
-    meminfo.lines().find_map(|line| {
-        let rest = line.strip_prefix("MemTotal:")?;
+/// The number after `key` on the first line that starts with it, as
+/// `/proc/meminfo` (`MemTotal:  65536000 kB`) and a cgroup's `memory.stat`
+/// (`inactive_file 18672467968`) both lay them out. A key without its own
+/// colon must be followed by whitespace, so `inactive_file` does not match
+/// `inactive_file_extra`.
+fn keyed_value(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix(key)?;
+        if !key.ends_with(':') && !rest.starts_with(char::is_whitespace) {
+            return None;
+        }
         rest.split_whitespace().next()?.parse().ok()
     })
+}
+
+/// `MemTotal` from `/proc/meminfo`, in KiB.
+pub fn parse_meminfo_total_kb(meminfo: &str) -> Option<u64> {
+    keyed_value(meminfo, "MemTotal:")
 }
 
 /// The headroom the advertisement is divided by: the block's own figure
@@ -287,23 +299,85 @@ pub fn parse_memory_current_kb(memory_current: &str) -> Option<u64> {
 
 /// `MemAvailable` from `/proc/meminfo`, in KiB.
 pub fn parse_meminfo_available_kb(meminfo: &str) -> Option<u64> {
-    meminfo.lines().find_map(|line| {
-        let rest = line.strip_prefix("MemAvailable:")?;
-        rest.split_whitespace().next()?.parse().ok()
-    })
+    keyed_value(meminfo, "MemAvailable:")
+}
+
+/// The page cache in a cgroup's `memory.stat` the kernel can drop at once,
+/// in KiB: `inactive_file`, the cache it reclaims first and what kubelet
+/// leaves out of the working set it evicts on, less `file_dirty` and
+/// `file_writeback`, which cannot be dropped until they reach the disk
+/// (kubelet does not take those off, so this reads up to that much lower).
+/// Dirty pages may sit on the active list instead; taking all of them off
+/// the inactive one errs towards less free, never more. `None` without an
+/// `inactive_file` line.
+pub fn parse_memory_stat_reclaimable_kb(memory_stat: &str) -> Option<u64> {
+    let inactive_file = keyed_value(memory_stat, "inactive_file")?;
+    let dirty = keyed_value(memory_stat, "file_dirty").unwrap_or(0);
+    let writeback = keyed_value(memory_stat, "file_writeback").unwrap_or(0);
+    Some(
+        inactive_file
+            .saturating_sub(dirty)
+            .saturating_sub(writeback)
+            / 1024,
+    )
 }
 
 /// Memory the worker could still give an action: the cgroup limit less its
-/// current usage when there is a limit, the host's `MemAvailable` when
-/// there is not, nothing when neither can be read.
+/// working set (current usage less the page cache the kernel can drop)
+/// when there is a limit, the host's `MemAvailable` when there is not,
+/// nothing when neither can be read. `memory.current` charges every page
+/// of file cache the worker's I/O has touched, and the kernel only reclaims
+/// it near the limit, so a busy worker's usage sits just under its limit
+/// with little of it in use.
 pub const fn free_memory_kb_from(
     limit_kb: Option<u64>,
     current_kb: Option<u64>,
+    reclaimable_kb: Option<u64>,
     available_kb: Option<u64>,
 ) -> Option<u64> {
     match (limit_kb, current_kb) {
-        (Some(limit), Some(current)) => Some(limit.saturating_sub(current)),
+        (Some(limit), Some(current)) => {
+            let reclaimable = match reclaimable_kb {
+                Some(kb) => kb,
+                None => 0,
+            };
+            Some(limit.saturating_sub(current.saturating_sub(reclaimable)))
+        }
         _ => available_kb,
+    }
+}
+
+/// Free memory measured against `limited`, the nearest limited cgroup and
+/// its `memory.max` as `find_limit` returns them, with `read` for the
+/// files; the host's `MemAvailable` when there is no limit.
+pub fn free_memory_kb_with(
+    limited: Option<&(PathBuf, String)>,
+    read: impl Fn(&Path) -> Option<String>,
+) -> Option<u64> {
+    let Some((dir, max)) = limited else {
+        return read(Path::new("/proc/meminfo"))
+            .and_then(|meminfo| parse_meminfo_available_kb(&meminfo));
+    };
+    let read_current =
+        || read(&dir.join("memory.current")).and_then(|current| parse_memory_current_kb(&current));
+    // The usage is read on both sides of the cache, and the larger taken.
+    // That mitigates the common races, cache that grows during the read or
+    // is reclaimed during it, but the three reads are not one snapshot:
+    // cache that grows at the `memory.stat` read and is reclaimed before
+    // the second usage read is missed by both usage reads yet subtracted,
+    // so a transient cache peak can report more free than there is. The
+    // cache figure also comes from per-CPU counters the kernel flushes in
+    // batches, so it can run ahead of what is there by a few MiB per CPU.
+    let current_before = read_current();
+    let reclaimable_kb =
+        read(&dir.join("memory.stat")).and_then(|stat| parse_memory_stat_reclaimable_kb(&stat));
+    let current_kb = current_before.max(read_current());
+    match (parse_memory_current_kb(max.trim()), current_kb) {
+        (Some(limit_kb), Some(current_kb)) => {
+            free_memory_kb_from(Some(limit_kb), Some(current_kb), reclaimable_kb, None)
+        }
+        _ => read(Path::new("/proc/meminfo"))
+            .and_then(|meminfo| parse_meminfo_available_kb(&meminfo)),
     }
 }
 
@@ -319,18 +393,7 @@ pub fn free_memory_kb() -> Option<u64> {
         "memory.max",
         read_file,
     );
-    let limit_kb = limited
-        .as_ref()
-        .and_then(|(_, max)| parse_memory_current_kb(max.trim()));
-    let current_kb = limited.as_ref().and_then(|(dir, _)| {
-        std::fs::read_to_string(dir.join("memory.current"))
-            .ok()
-            .and_then(|current| parse_memory_current_kb(&current))
-    });
-    let available_kb = std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|meminfo| parse_meminfo_available_kb(&meminfo));
-    free_memory_kb_from(limit_kb, current_kb, available_kb)
+    free_memory_kb_with(limited.as_ref(), read_file)
 }
 
 #[cfg(not(target_os = "linux"))]
