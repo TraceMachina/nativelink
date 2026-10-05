@@ -510,6 +510,9 @@ async fn a_load_decline_holds_its_size_and_judges_smaller_work_by_the_fresh_read
     // Reserving nothing: cannot be judged against the hold, so it waits.
     let _unreserved = add_reserving(&scheduler, 3, None).await?;
     no_dispatch(&mut rx).await;
+    // Reserving zero is no estimate either, as the worker reads it.
+    let _zero = add_reserving(&scheduler, 7, Some(0)).await?;
+    no_dispatch(&mut rx).await;
     // Fits the old 8,000 but not the 400 the worker just read: held.
     let _over_fresh = add_reserving(&scheduler, 4, Some(800)).await?;
     no_dispatch(&mut rx).await;
@@ -710,6 +713,47 @@ async fn the_veto_does_not_keep_actions_from_an_idle_worker_that_admits_them() -
             no_dispatch(&mut rx).await;
         }
     }
+    Ok(())
+}
+
+/// A hold lasts only as long as its action still needs a worker: once the
+/// declined action is dispatched elsewhere, the worker that declined it is
+/// no longer held back for it.
+#[nativelink_test]
+async fn a_load_hold_is_released_when_the_action_runs_elsewhere() -> Result<(), Error> {
+    let (scheduler, worker_scheduler, mut rx) = veto_scheduler().await?;
+    let _resident = add_reserving(&scheduler, 1, Some(1_000)).await?;
+    next_dispatch(&mut rx).await;
+    let _large = add_reserving(&scheduler, 2, Some(3_000)).await?;
+    let large = next_dispatch(&mut rx).await;
+    decline_for_load(worker_scheduler.as_ref(), &large.operation_id, 3_000, 2_500).await?;
+
+    // A second worker with exactly room for the large action takes it.
+    let (tx, mut rx_other) = mpsc::channel(64);
+    let other = Worker::new(
+        WorkerId("other_worker".to_string()),
+        PlatformProperties::new(HashMap::from([(
+            "memory_kb".to_string(),
+            PlatformPropertyValue::Minimum(3_000),
+        )])),
+        tx,
+        NOW_TIME,
+        /* max_inflight_tasks */ 4,
+    );
+    scheduler
+        .add_worker(other)
+        .await
+        .err_tip(|| "Failed to add worker")?;
+    tokio::task::yield_now().await;
+    rx_other.recv().await.unwrap();
+    let elsewhere = next_dispatch(&mut rx_other).await;
+    assert_eq!(elsewhere.operation_id, large.operation_id);
+
+    // The first worker is held back for it no longer: 1,500 fits its 4,000
+    // unreserved and its 2,500 reading, and the other worker has no room.
+    let _middle = add_reserving(&scheduler, 3, Some(1_500)).await?;
+    let middle = next_dispatch(&mut rx).await;
+    assert_eq!(reserved_kb(&middle), Some(1_500));
     Ok(())
 }
 

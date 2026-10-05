@@ -191,6 +191,9 @@ struct ApiWorkerSchedulerImpl {
     /// The `minimum` property compared against each worker's reported free
     /// memory before placement; unset means no veto.
     live_memory_veto: Option<String>,
+    /// The workers holding room for each operation they declined for load,
+    /// so dispatching it anywhere releases those holds.
+    holds_by_operation: HashMap<OperationId, HashSet<WorkerId>>,
     /// How a memory kill is turned into a retry with a larger reservation;
     /// unset means the kill fails the action.
     memory_escalation: Option<MemoryEscalationSpec>,
@@ -377,7 +380,7 @@ impl ApiWorkerSchedulerImpl {
                 || load.is_none_or(|load| load.free_memory_kb >= hold_kb)
         });
         if hold_lifted {
-            worker.load_hold_kb = None;
+            worker.clear_load_holds();
         }
         // A keepalive reporting room for what the worker declined while
         // idle makes that size worth offering it again.
@@ -671,12 +674,14 @@ impl ApiWorkerSchedulerImpl {
     }
 
     /// What `platform_properties` reserves under `property`, if anything.
+    /// A zero reservation is no estimate at all, as the worker treats it,
+    /// so it reads as none.
     fn reservation_kb(
         platform_properties: &PlatformProperties,
         property: Option<&str>,
     ) -> Option<u64> {
         match platform_properties.properties.get(property?) {
-            Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
+            Some(PlatformPropertyValue::Minimum(kb)) if *kb > 0 => Some(*kb),
             _ => None,
         }
     }
@@ -1268,6 +1273,9 @@ impl ApiWorkerSchedulerImpl {
                     .await;
                 return Result::<(), _>::Err(err).merge(evicted).merge(requeued);
             }
+            // The operation has a worker now, so no other worker needs to
+            // hold room for it.
+            self.release_holds_for(&operation_id);
             Ok(())
         } else {
             warn!(
@@ -1379,16 +1387,16 @@ impl ApiWorkerSchedulerImpl {
                     worker.is_paused = false;
                     record_worker_state("paused", false);
                 }
-                worker.load_hold_kb = Some(
-                    worker
-                        .load_hold_kb
-                        .map_or(needs_kb, |hold_kb| hold_kb.max(needs_kb)),
-                );
+                worker.hold_for(operation_id.clone(), needs_kb);
                 if let Some(free_kb) = free_kb {
                     worker.last_load = Some(WorkerLoad {
                         free_memory_kb: free_kb,
                     });
                 }
+                self.holds_by_operation
+                    .entry(operation_id.clone())
+                    .or_default()
+                    .insert(worker_id.clone());
             }
             // Any other decline pauses until the next keepalive. One from a
             // worker that does not admit when idle, seen idle here, also
@@ -1410,6 +1418,24 @@ impl ApiWorkerSchedulerImpl {
             }
         }
         updated.map(|()| true)
+    }
+
+    /// Releases every hold kept for `operation_id`, which has found a
+    /// worker: room held for it would otherwise outlive the need, limiting
+    /// those workers for an action that is already running elsewhere.
+    fn release_holds_for(&mut self, operation_id: &OperationId) {
+        let Some(holders) = self.holds_by_operation.remove(operation_id) else {
+            return;
+        };
+        let mut released = false;
+        for worker_id in holders {
+            if let Some(worker) = self.workers.0.peek_mut(&worker_id) {
+                released |= worker.release_hold_for(operation_id);
+            }
+        }
+        if released {
+            self.capacity_changed();
+        }
     }
 
     /// Dispatches this worker has not acknowledged within the timeout, as
@@ -1595,6 +1621,7 @@ impl ApiWorkerScheduler {
                 worker_state_manager,
                 allocation_strategy,
                 live_memory_veto,
+                holds_by_operation: HashMap::new(),
                 memory_escalation,
                 worker_change_notify,
                 capacity_generation: capacity_generation.clone(),

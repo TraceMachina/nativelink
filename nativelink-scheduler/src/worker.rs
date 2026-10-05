@@ -127,9 +127,13 @@ pub struct Worker {
     /// leave its ledger without room for this much, until a keepalive
     /// reports this much free or the worker goes idle. A completion that
     /// leaves work running does not lift it; only the report says how much
-    /// it freed.
+    /// it freed. The largest of `load_holds`.
     #[metric(help = "Reservation in KiB the worker declined for load and is held back from.")]
     pub load_hold_kb: Option<u64>,
+
+    /// Each declined operation this worker holds room for, and how much: a
+    /// hold lasts only as long as the operation still needs a worker.
+    pub load_holds: HashMap<OperationId, u64>,
 
     /// The worker said on connection that it admits any action while it
     /// holds nothing else, so a decline for load from it comes from a busy
@@ -233,6 +237,7 @@ impl Worker {
             last_update_timestamp: timestamp,
             is_paused: false,
             load_hold_kb: None,
+            load_holds: HashMap::new(),
             admits_when_idle: false,
             idle_declined_kb: None,
             is_draining: false,
@@ -442,10 +447,30 @@ impl Worker {
         // An idle worker has nothing left to free, and admits or declines
         // what it is offered on its own, so a hold has nothing to wait for.
         if self.running_action_infos.is_empty() {
-            self.load_hold_kb = None;
+            self.clear_load_holds();
         }
         self.metrics.actions_completed.inc();
         Ok(())
+    }
+
+    /// Holds room for `operation_id`, which this worker declined for load.
+    pub fn hold_for(&mut self, operation_id: OperationId, needs_kb: u64) {
+        let held = self.load_holds.entry(operation_id).or_default();
+        *held = (*held).max(needs_kb);
+        self.load_hold_kb = self.load_holds.values().copied().max();
+    }
+
+    /// Releases the room held for `operation_id`: it no longer needs it.
+    /// Returns whether there was a hold to release.
+    pub fn release_hold_for(&mut self, operation_id: &OperationId) -> bool {
+        let released = self.load_holds.remove(operation_id).is_some();
+        self.load_hold_kb = self.load_holds.values().copied().max();
+        released
+    }
+
+    pub fn clear_load_holds(&mut self) {
+        self.load_holds.clear();
+        self.load_hold_kb = None;
     }
 
     pub fn has_actions(&self) -> bool {
