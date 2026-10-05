@@ -83,12 +83,12 @@ jobs:
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
             if [ "${{ matrix.bazel_version }}" == "8.7.0" ]; then
               # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
-              bazel test //... \
+              ./tools/bazel-retry.sh test //... \
                 --lockfile_mode=off \
                 --extra_toolchains=@rust_toolchains//:all \
                 --verbose_failures
             else
-              bazel test //... \
+              ./tools/bazel-retry.sh test //... \
                 --lockfile_mode=error \
                 --extra_toolchains=@rust_toolchains//:all \
                 --verbose_failures
@@ -150,7 +150,7 @@ jobs:
 
       - name: Run Store tester with sentinel
         run: |
-          bazel run //:redis_store_tester \
+          ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode sentinel --mode sequential
@@ -161,7 +161,7 @@ jobs:
 
       - name: Run Store tester with standard
         run: |
-          bazel run //:redis_store_tester \
+          ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode standard --mode sequential
@@ -172,7 +172,7 @@ jobs:
 
       - name: Run Store tester with cluster
         run: |
-          bazel run //:redis_store_tester \
+          ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode cluster --mode sequential
