@@ -69,7 +69,7 @@ use uuid::Uuid;
 use crate::cas_utils::is_zero_digest;
 use crate::redis_utils::{
     FtAggregateCursor, FtAggregateOptions, FtCreateOptions, SearchSchema, ft_aggregate, ft_create,
-    ft_search_count,
+    ft_info_indexing, ft_search_count,
 };
 
 /// The default size of the read chunk when reading data from Redis.
@@ -549,6 +549,34 @@ where
             has_remove_callback_subscribe: OnceCell::const_new(),
             remove_callbacks,
         })
+    }
+
+    /// `STRLEN` of a key, retried on a transient error like the reads are.
+    async fn strlen(
+        &self,
+        client: &mut ClientWithPermit<C>,
+        encoded_key: &str,
+    ) -> Result<u64, Error> {
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            match redis::cmd("STRLEN")
+                .arg(encoded_key)
+                .query_async::<u64>(&mut client.connection_manager)
+                .await
+            {
+                Ok(v) => return Ok(v),
+                Err(err)
+                    if attempt < MAX_REDIS_RETRY_ATTEMPTS && is_retryable_redis_error(&err) =>
+                {
+                    client.reconnect(&self.connection_manager).await?;
+                    sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                }
+                Err(err) => {
+                    return Err(Error::from(err).append("In RedisStore::get_part::strlen"));
+                }
+            }
+        }
     }
 
     async fn get_client(&self) -> Result<ClientWithPermit<C>, Error> {
@@ -1308,6 +1336,7 @@ where
         );
 
         let mut client = self.get_client().await?;
+        let mut bytes_read: u64 = 0;
         loop {
             // getrange is position-based and idempotent, so re-resolve the
             // master and retry on a transient failover without re-sending
@@ -1347,12 +1376,30 @@ where
                         .send(chunk)
                         .await
                         .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+                } else if bytes_read > 0 {
+                    // GETRANGE answers the same for a value that ends on a
+                    // chunk boundary and for a key removed between two
+                    // chunks (eviction under allkeys-lru). Handing the second
+                    // on as EOF is a truncated blob that every store above
+                    // caches as complete, so ask how long the value is now
+                    // and refuse anything but the end we stopped at.
+                    let value_len = self.strlen(&mut client, encoded_key).await?;
+                    let read_end = u64::try_from(data_start)
+                        .unwrap_or(0)
+                        .saturating_add(bytes_read);
+                    if value_len != read_end {
+                        return Err(make_err!(
+                            Code::NotFound,
+                            "Data for {key:?} changed under the read in the Redis store: read {bytes_read} bytes from offset {data_start}, the key now holds {value_len}"
+                        ));
+                    }
                 }
 
                 break; // No more data to read.
             }
 
             // We received a full chunk's worth of data, so write it...
+            bytes_read += chunk.len() as u64;
             writer
                 .send(chunk)
                 .await
@@ -1623,6 +1670,42 @@ end
 return {{ 1, new_version }}
 "
 );
+
+/// How long a freshly created index is given to finish its background
+/// scan before a read goes ahead regardless, and how often it is asked.
+const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const INDEX_READY_POLL: Duration = Duration::from_millis(50);
+
+/// Polls `FT.INFO` until the index reports `indexing 0`, the timeout
+/// passes, or the call fails; none of those stops the caller, which reads
+/// the index either way.
+async fn wait_for_index_ready<C>(connection_manager: C, index: &str)
+where
+    C: ConnectionLike + Send + Clone,
+{
+    let started = Instant::now();
+    loop {
+        match ft_info_indexing(connection_manager.clone(), index).await {
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(err) => {
+                warn!(
+                    ?err,
+                    index, "Could not read FT.INFO after creating the index; reading it now"
+                );
+                return;
+            }
+        }
+        if started.elapsed() >= INDEX_READY_TIMEOUT {
+            warn!(
+                index,
+                "Index still backfilling after {INDEX_READY_TIMEOUT:?}; reading it now"
+            );
+            return;
+        }
+        sleep(INDEX_READY_POLL).await;
+    }
+}
 
 /// This is the output of the calculations below hardcoded into the executable.
 const FINGERPRINT_CREATE_INDEX_HEX: &str = "3e762c15";
@@ -2200,6 +2283,7 @@ where
                         max_idle: CURSOR_IDLE_MS,
                     },
                     sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
+                    sort_desc: K::SORT_DESCENDING,
                 },
             )
             .await
@@ -2237,7 +2321,7 @@ where
             // (Sentinel failover) — re-resolve it and retry rather than letting
             // the scheduler's matching loop spin on a stale handle. (A missing
             // index is not retryable here; it falls through to the create path
-            // below, which re-runs on the next matching cycle if needed.)
+            // below, which creates the index and retries the aggregate inline.)
             Err(err) if is_retryable_redis_error(&err) => {
                 let (connection_manager, _connect_id) =
                     self.connection_manager.reconnect(connect_id).await?;
@@ -2281,6 +2365,24 @@ where
                         })
                     }
                 });
+
+                // FT.CREATE returns before the index holds the keys that
+                // already exist; RediSearch scans them in the background.
+                // An aggregate in that window reads a partial index, and
+                // for the scheduler's queue that is a queue with actions
+                // missing, so wait for the scan to finish first. The wait
+                // is bounded; past it the aggregate runs anyway and the next
+                // pass re-reads.
+                if create_result.is_ok() {
+                    wait_for_index_ready(
+                        connection_manager.clone(),
+                        &format!(
+                            "{}",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+                        ),
+                    )
+                    .await;
+                }
 
                 let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(

@@ -55,8 +55,17 @@ jobs:
 
       - name: Invoke Bazel build in Nix shell
         run: |
+          # --config=nl-toolchain pins the hermetic LLVM + downloaded Rust
+          # toolchain identity. Without it, compiles inside `nix develop`
+          # resolve the nix-store default toolchain, baking /nix/store/<hash>
+          # paths into every action key — which is why this lane previously got
+          # 0 remote cache hits against a cache warmed off a non-nix toolchain.
+          # Pinning the hermetic identity makes this lane's action digests match
+          # a warm writer that uses the same identity. No remote executor is
+          # added here: this is cache-read keyed by a stable toolchain, not RBE.
           nix develop --impure --command \
             bazel-retry test //... \
+              --config=nl-toolchain \
               --verbose_failures \
               --lockfile_mode=error \
 

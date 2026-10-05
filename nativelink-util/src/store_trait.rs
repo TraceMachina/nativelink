@@ -625,6 +625,14 @@ pub trait StoreDriver:
     // for ref stores
     async fn post_init(self: Arc<Self>) -> Result<(), Error>;
 
+    /// Drops this store's own copy of `key`, so the next read repopulates it
+    /// from below; a store that holds the durable copy keeps it and answers
+    /// `false`. Used when a read proves a cached copy is bad. Returns whether
+    /// anything was dropped.
+    async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(false)
+    }
+
     /// See: [`StoreLike::has`] for details.
     #[inline]
     async fn has(self: Pin<&Self>, key: StoreKey<'_>) -> Result<Option<u64>, Error> {
@@ -977,6 +985,17 @@ pub trait SchedulerIndexProvider {
 
     /// The sort key for the index (if any).
     const MAYBE_SORT_KEY: Option<&'static str> = None;
+
+    /// Whether results sorted by `MAYBE_SORT_KEY` come back descending.
+    ///
+    /// A backend serves one direction per index, so the direction is a
+    /// property of the provider rather than of the call. The scheduler's
+    /// awaited-action index packs priority into the high bits and an
+    /// inverted insert timestamp into the low bits, so descending is
+    /// "highest priority first, then oldest first"; ascending is the exact
+    /// opposite, which is what the Redis backend served until this const
+    /// existed.
+    const SORT_DESCENDING: bool = false;
 
     /// If the data is versioned.
     type Versioned: BoolValue;

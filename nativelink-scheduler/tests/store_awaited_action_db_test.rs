@@ -1,5 +1,6 @@
 #![allow(clippy::todo)]
 
+use core::ops::Bound;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
@@ -7,11 +8,14 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use bytes::Bytes;
-use futures::{Stream, stream};
+use futures::{Stream, StreamExt, stream};
 use mock_instant::thread_local::{MockClock, SystemTime as MockSystemTime};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_scheduler::awaited_action_db::{AwaitedAction, AwaitedActionDb};
+use nativelink_scheduler::awaited_action_db::{
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PersistedSortKey, SortedAwaitedAction,
+    SortedAwaitedActionState,
+};
 use nativelink_scheduler::store_awaited_action_db::{
     StoreAwaitedActionDb, inner_update_awaited_action,
 };
@@ -136,6 +140,7 @@ async fn test_inner_update_awaited_action() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -154,7 +159,7 @@ async fn test_inner_update_awaited_action() -> Result<(), Error> {
     assert_eq!(
         update.0,
         Bytes::from(
-            "{\"version\":0,\"action_info\":{\"command_digest\":\"0101010101010101010101010101010101010101010101010101010101010101-10\",\"input_root_digest\":\"0202020202020202020202020202020202020202020202020202020202020202-10\",\"timeout\":{\"secs\":1,\"nanos\":0},\"platform_properties\":{},\"priority\":0,\"load_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"insert_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"unique_qualifier\":{\"Uncacheable\":{\"instance_name\":\"foo\",\"digest_function\":\"Sha256\",\"digest\":\"0303030303030303030303030303030303030303030303030303030303030303-10\"}}},\"operation_id\":{\"String\":\"DEMO_OPERATION_ID\"},\"sort_key\":9223372041149743103,\"last_worker_updated_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"last_client_keepalive_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"worker_id\":null,\"state\":{\"stage\":\"Queued\",\"last_transition_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"client_operation_id\":{\"String\":\"DEMO_OPERATION_ID\"},\"action_digest\":\"0303030303030303030303030303030303030303030303030303030303030303-10\"},\"maybe_origin_metadata\":null,\"attempts\":0}"
+            "{\"version\":0,\"action_info\":{\"command_digest\":\"0101010101010101010101010101010101010101010101010101010101010101-10\",\"input_root_digest\":\"0202020202020202020202020202020202020202020202020202020202020202-10\",\"timeout\":{\"secs\":1,\"nanos\":0},\"platform_properties\":{},\"priority\":0,\"load_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"insert_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"unique_qualifier\":{\"Uncacheable\":{\"instance_name\":\"foo\",\"digest_function\":\"Sha256\",\"digest\":\"0303030303030303030303030303030303030303030303030303030303030303-10\"}}},\"operation_id\":{\"String\":\"DEMO_OPERATION_ID\"},\"sort_key\":9223372041149743103,\"last_worker_updated_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"last_client_keepalive_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"worker_id\":null,\"state\":{\"stage\":\"Queued\",\"last_transition_timestamp\":{\"secs_since_epoch\":0,\"nanos_since_epoch\":0},\"client_operation_id\":{\"String\":\"DEMO_OPERATION_ID\"},\"action_digest\":\"0303030303030303030303030303030303030303030303030303030303030303-10\"},\"maybe_origin_metadata\":null,\"attempts\":0,\"worker_losses\":0,\"escalations\":0}"
         ),
         "{update:#?}"
     );
@@ -176,6 +181,7 @@ fn make_cacheable_action_info() -> Arc<ActionInfo> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Cacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: DigestInfo::zero_digest(),
@@ -400,6 +406,7 @@ async fn try_subscribe_skips_lookup_for_uncacheable_qualifier() -> Result<(), Er
     let db = build_db(store, false).await;
 
     let uncacheable = ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+        execution_scope: None,
         instance_name: INSTANCE_NAME.to_string(),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::zero_digest(),
@@ -619,6 +626,226 @@ async fn active_action_count_only_queries_the_store_when_enabled() -> Result<(),
         on_counts.load(Ordering::SeqCst) >= 4,
         "enabling it should count every stage at least once a minute, got {}",
         on_counts.load(Ordering::SeqCst),
+    );
+    Ok(())
+}
+
+fn queued_at(insert_timestamp: SystemTime, priority: i32) -> AwaitedAction {
+    let mut action_info = make_cacheable_action_info();
+    let action_info_mut = Arc::make_mut(&mut action_info);
+    action_info_mut.insert_timestamp = insert_timestamp;
+    action_info_mut.priority = priority;
+    AwaitedAction::new(OperationId::default(), action_info, insert_timestamp)
+}
+
+/// The record's `sort_key` stays a `u64` in the layout released schedulers
+/// read, so a record written here loads on an older scheduler during a
+/// rolling upgrade or after a rollback.
+#[nativelink_test]
+async fn record_sort_key_is_readable_by_an_older_scheduler() -> Result<(), Error> {
+    let insert = SystemTime::UNIX_EPOCH + Duration::from_nanos(1_700_000_000_123_456_789);
+    let record = serde_json::to_value(queued_at(insert, 0)).expect("a record serializes");
+    let sort_key = record["sort_key"]
+        .as_u64()
+        .expect("sort_key must be a u64 for older readers");
+    // Priority 0 sits at the top of the unsigned range, then the inverted
+    // whole seconds.
+    assert_eq!(
+        sort_key,
+        (0x8000_0000u64 << 32) | u64::from(0x6553_f100_u32 ^ u32::MAX)
+    );
+    Ok(())
+}
+
+/// A record written by an older scheduler carries only the seconds key,
+/// yet once loaded here it orders at nanosecond resolution like any other,
+/// because the key is computed from the action info both versions store.
+#[nativelink_test]
+async fn a_record_from_an_older_scheduler_orders_at_nanosecond_resolution() -> Result<(), Error> {
+    let first = SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_100);
+    let second = first + Duration::from_millis(1);
+    let reload = |action: AwaitedAction| -> Result<AwaitedAction, Error> {
+        let bytes = serde_json::to_vec(&action).expect("a record serializes");
+        AwaitedAction::try_from(bytes.as_slice())
+    };
+    let first = reload(queued_at(first, 0))?;
+    let second = reload(queued_at(second, 0))?;
+    // The descending read serves the larger key first.
+    assert!(
+        SortedAwaitedAction::from(&first).sort_key > SortedAwaitedAction::from(&second).sort_key,
+        "the action queued first must be served first"
+    );
+    Ok(())
+}
+
+/// During a rolling upgrade the Redis index holds 16-digit keys from older
+/// schedulers next to 32-digit keys from this one. It sorts them as strings,
+/// and the descending read serves the older entries first.
+#[nativelink_test]
+async fn index_keys_from_both_versions_serve_older_entries_first() -> Result<(), Error> {
+    let earlier = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let later = earlier + Duration::from_mins(1);
+    for priority in [i32::MIN, -1, 0, 1, i32::MAX] {
+        let old = PersistedSortKey::from_action_info(queued_at(earlier, priority).action_info())
+            .index_field();
+        let new = SortedAwaitedAction::from(&queued_at(later, priority))
+            .sort_key
+            .index_field();
+        assert_eq!(old.len(), 16);
+        assert_eq!(new.len(), 32);
+        let mut keys = vec![new.clone(), old.clone()];
+        keys.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(keys, vec![old, new], "priority {priority}");
+    }
+    Ok(())
+}
+
+/// Fake `SchedulerStore` whose listing returns the given actions and which
+/// counts every `get_and_decode` by key prefix, so a test can see what a
+/// listed subscriber reads when borrowed.
+struct ListingStore {
+    encoded_actions: Vec<Bytes>,
+    reads_by_prefix: Mutex<HashMap<String, usize>>,
+}
+
+impl ListingStore {
+    fn new(actions: &[AwaitedAction]) -> Self {
+        Self {
+            encoded_actions: actions
+                .iter()
+                .map(|action| Bytes::from(serde_json::to_vec(action).expect("serialize")))
+                .collect(),
+            reads_by_prefix: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl SchedulerStore for ListingStore {
+    type SubscriptionManager = PendingSubscriptionManager;
+
+    fn subscription_manager(
+        &self,
+    ) -> impl Future<Output = Result<Arc<Self::SubscriptionManager>, Error>> {
+        std::future::ready(Ok(Arc::new(PendingSubscriptionManager)))
+    }
+
+    fn update_data<T>(
+        &self,
+        _data: T,
+        _expiry: Option<Duration>,
+    ) -> impl Future<Output = Result<Option<i64>, Error>>
+    where
+        T: SchedulerStoreDataProvider
+            + SchedulerStoreKeyProvider
+            + SchedulerCurrentVersionProvider
+            + Send,
+    {
+        std::future::ready(Ok(Some(1)))
+    }
+
+    fn search_by_index_prefix<K>(
+        &self,
+        _index: K,
+    ) -> impl Future<
+        Output = Result<
+            impl Stream<Item = Result<<K as SchedulerStoreDecodeTo>::DecodeOutput, Error>> + Send,
+            Error,
+        >,
+    >
+    where
+        K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
+        <K as SchedulerStoreDecodeTo>::DecodeOutput: Send,
+    {
+        let items: Vec<_> = self
+            .encoded_actions
+            .iter()
+            .map(|encoded| K::decode(1, encoded.clone()))
+            .collect();
+        std::future::ready(Ok(stream::iter(items)))
+    }
+
+    async fn count_by_index_prefix<K>(&self, _index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        Ok(self.encoded_actions.len() as u64)
+    }
+
+    async fn get_and_decode<K>(
+        &self,
+        key: K,
+    ) -> Result<Option<<K as SchedulerStoreDecodeTo>::DecodeOutput>, Error>
+    where
+        K: SchedulerStoreKeyProvider + SchedulerStoreDecodeTo + Send,
+    {
+        let key = key.get_key().as_str().to_string();
+        let prefix = key.split('_').next().unwrap_or("").to_string();
+        *self.reads_by_prefix.lock().await.entry(prefix).or_default() += 1;
+        Ok(None)
+    }
+}
+
+/// A listing already loads every record it returns, so borrowing a listed
+/// subscriber must not read the record again. Only the client keepalive,
+/// kept under its own key, is read, and once per subscriber.
+#[nativelink_test]
+async fn listed_subscriber_borrows_without_reading_the_record_again() -> Result<(), Error> {
+    fn new_op_id() -> OperationId {
+        OperationId::from("new-operation")
+    }
+    let actions: Vec<AwaitedAction> = (0..3)
+        .map(|i| {
+            AwaitedAction::new(
+                OperationId::from(format!("op-{i}")),
+                make_cacheable_action_info(),
+                MockSystemTime::now().into(),
+            )
+        })
+        .collect();
+    let store = Arc::new(ListingStore::new(&actions));
+    let now_fn: fn() -> MockInstantWrapped = MockInstantWrapped::default;
+    let op_id_fn: fn() -> OperationId = new_op_id;
+    let db = StoreAwaitedActionDb::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        now_fn,
+        op_id_fn,
+        60,
+        60,
+        false,
+    )
+    .await?;
+
+    let subscribers: Vec<_> = db
+        .get_range_of_actions(
+            SortedAwaitedActionState::Queued,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            true,
+        )
+        .await?
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(subscribers.len(), 3);
+    for (subscriber, action) in subscribers.iter().zip(&actions) {
+        let subscriber = subscriber.as_ref().map_err(Clone::clone)?;
+        // Borrowed twice, as the matcher does.
+        assert_eq!(
+            subscriber.borrow().await?.operation_id(),
+            action.operation_id()
+        );
+        assert_eq!(
+            subscriber.borrow().await?.operation_id(),
+            action.operation_id()
+        );
+    }
+
+    let reads = store.reads_by_prefix.lock().await;
+    assert_eq!(reads.get("aa"), None, "the record is not read again");
+    assert_eq!(
+        reads.get("ck"),
+        Some(&3),
+        "the keepalive is read once per subscriber"
     );
     Ok(())
 }

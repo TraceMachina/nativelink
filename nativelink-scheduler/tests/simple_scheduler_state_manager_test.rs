@@ -1,16 +1,30 @@
+use core::ops::Bound;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use futures::StreamExt;
+use futures::{Stream, StreamExt, stream};
 use mock_instant::thread_local::MockClock;
-use nativelink_error::{Code, Error, make_err};
+use nativelink_config::schedulers::SimpleSpec;
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
-use nativelink_scheduler::awaited_action_db::AwaitedAction;
+use nativelink_metric::{
+    MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+};
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::UpdateForWorker;
+use nativelink_scheduler::awaited_action_db::{
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
+    SortedAwaitedActionState,
+};
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
-use nativelink_scheduler::simple_scheduler_state_manager::SimpleSchedulerStateManager;
+use nativelink_scheduler::simple_scheduler::SimpleScheduler;
+use nativelink_scheduler::simple_scheduler_state_manager::{
+    SimpleSchedulerStateManager, TimeoutCause,
+};
+use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_registry::WorkerRegistry;
+use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
     OperationId, WorkerId,
@@ -22,7 +36,8 @@ use nativelink_util::operation_state_manager::{
     ClientStateManager, MatchingEngineStateManager, OperationFilter, OperationStageFlags,
     UpdateOperationType, WorkerStateManager,
 };
-use tokio::sync::Notify;
+use nativelink_util::platform_properties::PlatformProperties;
+use tokio::sync::{Notify, mpsc};
 
 #[nativelink_test]
 async fn drops_missing_actions() -> Result<(), Error> {
@@ -79,6 +94,7 @@ fn action_info(started: SystemTime) -> ActionInfo {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: started,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: "main".to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -109,7 +125,7 @@ fn state_manager(
     registry: Arc<WorkerRegistry>,
 ) -> Arc<
     SimpleSchedulerStateManager<
-        impl nativelink_scheduler::awaited_action_db::AwaitedActionDb,
+        impl AwaitedActionDb,
         MockInstantWrapped,
         fn() -> MockInstantWrapped,
     >,
@@ -132,7 +148,7 @@ fn state_manager_no_executing_ceiling(
     registry: Arc<WorkerRegistry>,
 ) -> Arc<
     SimpleSchedulerStateManager<
-        impl nativelink_scheduler::awaited_action_db::AwaitedActionDb,
+        impl AwaitedActionDb,
         MockInstantWrapped,
         fn() -> MockInstantWrapped,
     >,
@@ -244,6 +260,231 @@ async fn does_not_time_out_a_live_worker_mid_action() -> Result<(), Error> {
     assert!(
         !state_mgr.should_timeout_operation(&action).await,
         "a heartbeating worker's action must survive past worker_timeout_s"
+    );
+    Ok(())
+}
+
+/// `Action.timeout` for the deadline tests below. The grace is
+/// `WORKER_TIMEOUT`, the state managers' `no_event_action_timeout`.
+const ACTION_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// An action with `ACTION_TIMEOUT`, assigned to `worker_id` and executing
+/// since `started`.
+fn action_with_timeout(worker_id: &WorkerId, started: SystemTime) -> AwaitedAction {
+    let mut info = action_info(started);
+    info.timeout = ACTION_TIMEOUT;
+    let action_digest = info.digest();
+    let operation_id = OperationId::default();
+    let mut action = AwaitedAction::new(operation_id.clone(), Arc::new(info), started);
+    action.worker_set_state(
+        Arc::new(ActionState {
+            stage: ActionStage::Executing,
+            client_operation_id: operation_id,
+            action_digest,
+            last_transition_timestamp: started,
+        }),
+        started,
+    );
+    action.set_worker_id(Some(worker_id.clone()), started);
+    action
+}
+
+const fn action_timeout_cause() -> TimeoutCause {
+    TimeoutCause::ActionTimeout {
+        timeout: ACTION_TIMEOUT,
+        grace: WORKER_TIMEOUT,
+    }
+}
+
+/// Just short of `Action.timeout` plus the grace.
+const WITHIN_GRACE: Duration =
+    Duration::from_secs(ACTION_TIMEOUT.as_secs() + WORKER_TIMEOUT.as_secs() - 1);
+
+/// Just past `Action.timeout` plus the grace.
+const PAST_GRACE: Duration =
+    Duration::from_secs(ACTION_TIMEOUT.as_secs() + WORKER_TIMEOUT.as_secs() + 1);
+
+/// A heartbeating worker enforces `Action.timeout` itself, from when the
+/// command starts, and reports a completed `DEADLINE_EXCEEDED` result. The
+/// scheduler's clock starts at assignment, earlier, so ending the action at
+/// `Action.timeout` would requeue every action that runs to its timeout onto
+/// the worker still running it, and the worker's own result would then evict
+/// it. The grace lets the live worker report first.
+#[nativelink_test]
+async fn gives_a_live_worker_the_grace_to_report_its_own_timeout() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("enforces-its-own-timeout"));
+    let action = action_with_timeout(&worker_id, make_system_time(0));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(&worker_id, make_system_time(WITHIN_GRACE.as_secs()))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(WITHIN_GRACE);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a live worker's action past Action.timeout but within the grace is the worker's to end"
+    );
+    Ok(())
+}
+
+/// A heartbeating worker that never reports (a hung input fetch, an
+/// unkillable child, a broken `timeout_handled_externally` wrapper) is timed
+/// out by `Action.timeout` once the grace has passed, even with
+/// `max_action_executing_timeout_s` disabled.
+#[nativelink_test]
+async fn times_out_a_live_but_wedged_worker_past_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("heartbeats-but-never-reports"));
+    let action = action_with_timeout(&worker_id, make_system_time(0));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(&worker_id, make_system_time(PAST_GRACE.as_secs()))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(PAST_GRACE);
+    let cause = state_mgr.timeout_cause(&action).await;
+    assert_eq!(
+        cause,
+        Some(action_timeout_cause()),
+        "a live worker's action past Action.timeout plus the grace must time out"
+    );
+    assert!(
+        cause
+            .unwrap()
+            .to_string()
+            .contains("Action.timeout of 60 seconds"),
+        "the client's error must name the deadline that fired"
+    );
+    Ok(())
+}
+
+/// The grace runs from the worker's last update when that is later than the
+/// assignment, so it only has to cover the time since the worker last showed
+/// signs of life.
+#[nativelink_test]
+async fn measures_the_grace_from_the_workers_last_update() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("updated-after-assignment"));
+    let mut action = action_with_timeout(&worker_id, make_system_time(0));
+    let updated = Duration::from_secs(30);
+    let state = action.state().clone();
+    action.worker_set_state(state, make_system_time(updated.as_secs()));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .update_worker_heartbeat(
+            &worker_id,
+            make_system_time((PAST_GRACE + updated).as_secs()),
+        )
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(PAST_GRACE);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "the grace must run from the last worker update, not the assignment"
+    );
+
+    MockClock::advance(updated);
+    assert_eq!(
+        state_mgr.timeout_cause(&action).await,
+        Some(action_timeout_cause()),
+        "past Action.timeout plus the grace from the last update, the action must time out"
+    );
+    Ok(())
+}
+
+/// A peer instance's live worker enforces `Action.timeout` itself too, so it
+/// gets the same grace here.
+#[nativelink_test]
+async fn gives_a_peer_instances_worker_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    // Deliberately not registered here: it belongs to another instance.
+    let action = action_with_timeout(
+        &WorkerId::from(String::from("owned-by-another-scheduler")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager_no_executing_ceiling(Arc::new(WorkerRegistry::new()));
+
+    MockClock::advance(WITHIN_GRACE);
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a peer's worker's action within the grace is the worker's to end"
+    );
+    Ok(())
+}
+
+/// An orphan nobody reaps, or a peer's worker that never reports, is timed
+/// out by `Action.timeout` past the grace rather than waiting for the orphan
+/// ceiling.
+#[nativelink_test]
+async fn times_out_an_orphan_on_action_timeout_past_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let action = action_with_timeout(
+        &WorkerId::from(String::from("owner-was-scaled-down")),
+        make_system_time(0),
+    );
+    let state_mgr = state_manager_no_executing_ceiling(Arc::new(WorkerRegistry::new()));
+
+    MockClock::advance(PAST_GRACE);
+    assert_eq!(
+        state_mgr.timeout_cause(&action).await,
+        Some(action_timeout_cause()),
+        "an orphan past Action.timeout plus the grace must time out, not wait an hour"
+    );
+    Ok(())
+}
+
+/// Registry heartbeats refresh only on keepalives, so a worker whose
+/// keepalives lag reads Stale while its action is still running and still
+/// updating. `Action.timeout` must not pre-empt it there either.
+#[nativelink_test]
+async fn gives_a_stale_worker_with_a_recent_update_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("keepalives-lag"));
+    let assigned = WORKER_TIMEOUT + Duration::from_secs(30);
+    let action = action_with_timeout(&worker_id, make_system_time(assigned.as_secs()));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .register_worker(&worker_id, make_system_time(0))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    // Past Action.timeout, and less than worker_timeout_s since the action's
+    // last update, so only Action.timeout could fire.
+    MockClock::advance(assigned + ACTION_TIMEOUT + Duration::from_secs(1));
+    assert!(
+        !state_mgr.should_timeout_operation(&action).await,
+        "a stale worker's recently updated action must get the grace too"
+    );
+    Ok(())
+}
+
+/// A Stale worker's action past `Action.timeout` plus the grace is timed out
+/// for that reason, which is what the client is told.
+#[nativelink_test]
+async fn times_out_a_stale_worker_on_action_timeout_past_the_grace() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("connected-to-us"));
+    let action = action_with_timeout(&worker_id, make_system_time(0));
+
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .register_worker(&worker_id, make_system_time(0))
+        .await;
+    let state_mgr = state_manager_no_executing_ceiling(registry);
+
+    MockClock::advance(PAST_GRACE);
+    assert_eq!(
+        state_mgr.timeout_cause(&action).await,
+        Some(action_timeout_cause()),
+        "a stale worker's action past Action.timeout plus the grace must name Action.timeout"
     );
     Ok(())
 }
@@ -398,7 +639,7 @@ async fn is_executing_on_worker_follows_the_assignment() -> Result<(), Error> {
 /// Counts what the matching engine would be handed.
 async fn queued_count(
     state_mgr: &SimpleSchedulerStateManager<
-        impl nativelink_scheduler::awaited_action_db::AwaitedActionDb,
+        impl AwaitedActionDb,
         MockInstantWrapped,
         fn() -> MockInstantWrapped,
     >,
@@ -450,5 +691,614 @@ async fn the_sweep_retires_queued_actions_no_client_is_waiting_on() -> Result<()
     );
     // And stays retired rather than being retired again on every pass.
     assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 0);
+    Ok(())
+}
+
+/// What a listing of the queue does after its first entry.
+#[derive(Clone, Copy)]
+enum Fault {
+    /// The listing names a second entry whose record is gone, as after an
+    /// eviction: the stream yields the read error in its place. The rest of
+    /// the listing follows.
+    LostRecord,
+    /// The next page fails to load, as when the store goes away mid-read:
+    /// the stream yields the error and ends.
+    Transport,
+    /// The second entry is listed but reading its record fails with this
+    /// code, as when it expired or was evicted between the search and the
+    /// read (`NotFound`), was damaged (`InvalidArgument`), or the store
+    /// went away (`Unavailable`).
+    BrokenRecord(Code),
+    /// The store hands back a row it could not decode, as the Redis listing
+    /// does for damaged JSON: an `InvalidArgument` item between two good
+    /// ones, before any subscriber exists.
+    UndecodableRow,
+}
+
+/// A subscriber whose record may be unreadable.
+enum MaybeBroken<S> {
+    Sound(S),
+    Broken(Code),
+}
+
+impl<S: AwaitedActionSubscriber> AwaitedActionSubscriber for MaybeBroken<S> {
+    async fn changed(&mut self) -> Result<AwaitedAction, Error> {
+        match self {
+            Self::Sound(subscriber) => subscriber.changed().await,
+            Self::Broken(code) => Err(make_err!(*code, "record unreadable")),
+        }
+    }
+
+    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+        match self {
+            Self::Sound(subscriber) => subscriber.borrow().await,
+            Self::Broken(code) => Err(make_err!(*code, "record unreadable")),
+        }
+    }
+}
+
+/// The memory database with one fault injected into every queue listing.
+struct FaultyDb<T: AwaitedActionDb> {
+    inner: T,
+    fault: Fault,
+}
+
+impl<T: AwaitedActionDb> MetricsComponent for FaultyDb<T> {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        self.inner.publish(kind, field_metadata)
+    }
+}
+
+impl<T: AwaitedActionDb> FaultyDb<T> {
+    /// The listing as the store hands it back, with the fault in place of
+    /// or beside its second entry.
+    fn inject(
+        &self,
+        listed: Vec<Result<T::Subscriber, Error>>,
+    ) -> Vec<Result<MaybeBroken<T::Subscriber>, Error>> {
+        let mut items = Vec::new();
+        for (i, item) in listed.into_iter().enumerate() {
+            if i == 1 {
+                match self.fault {
+                    Fault::LostRecord => {
+                        items.push(Err(make_err!(Code::NotFound, "record evicted")));
+                    }
+                    Fault::UndecodableRow => {
+                        items.push(Err(make_err!(
+                            Code::InvalidArgument,
+                            "In AwaitedAction::decode"
+                        )));
+                    }
+                    Fault::Transport => {
+                        items.push(Err(make_err!(Code::Unavailable, "FT.CURSOR READ failed")));
+                        break;
+                    }
+                    Fault::BrokenRecord(code) => {
+                        items.push(Ok(MaybeBroken::Broken(code)));
+                        continue;
+                    }
+                }
+            }
+            items.push(item.map(MaybeBroken::Sound));
+        }
+        items
+    }
+}
+
+impl<T: AwaitedActionDb> AwaitedActionDb for FaultyDb<T> {
+    type Subscriber = MaybeBroken<T::Subscriber>;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        Ok(self
+            .inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await?
+            .map(MaybeBroken::Sound))
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let listed: Vec<_> = self.inner.get_all_awaited_actions().await?.collect().await;
+        Ok(stream::iter(self.inject(listed)))
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        Ok(self
+            .inner
+            .get_by_operation_id(operation_id)
+            .await?
+            .map(MaybeBroken::Sound))
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let listed: Vec<_> = self
+            .inner
+            .get_range_of_actions(state, start, end, desc)
+            .await?
+            .collect()
+            .await;
+        Ok(stream::iter(self.inject(listed)))
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.inner.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        Ok(MaybeBroken::Sound(
+            self.inner
+                .add_action(client_operation_id, action_info, no_event_action_timeout)
+                .await?,
+        ))
+    }
+}
+
+fn faulty_state_manager(
+    fault: Fault,
+) -> Arc<
+    SimpleSchedulerStateManager<
+        impl AwaitedActionDb,
+        MockInstantWrapped,
+        fn() -> MockInstantWrapped,
+    >,
+> {
+    let task_change_notify = Arc::new(Notify::new());
+    SimpleSchedulerStateManager::new(
+        5,
+        WORKER_TIMEOUT,
+        Duration::from_mins(5),
+        MAX_EXECUTING,
+        FaultyDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify,
+                MockInstantWrapped::default,
+            ),
+            fault,
+        },
+        MockInstantWrapped::default,
+        Some(Arc::new(WorkerRegistry::new())),
+    )
+}
+
+/// Three abandoned actions, and the listing reports a lost record between
+/// the first and the second. The sweep retires all three.
+#[nativelink_test]
+async fn the_sweep_skips_a_lost_record_and_retires_the_rest() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::LostRecord);
+    for _ in 0..3 {
+        drop(
+            state_mgr
+                .add_action(
+                    OperationId::default(),
+                    Arc::new(action_info(make_system_time(0))),
+                )
+                .await?,
+        );
+    }
+    MockClock::advance(Duration::from_mins(6));
+
+    assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 3);
+    assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 0);
+    Ok(())
+}
+
+/// The listing's next page fails to load. That is not a lost entry, it is
+/// an incomplete sweep, and it must say so rather than report a clean pass
+/// over the entries it never reached.
+#[nativelink_test]
+async fn the_sweep_fails_when_the_listing_fails() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::Transport);
+    for _ in 0..3 {
+        drop(
+            state_mgr
+                .add_action(
+                    OperationId::default(),
+                    Arc::new(action_info(make_system_time(0))),
+                )
+                .await?,
+        );
+    }
+    MockClock::advance(Duration::from_mins(6));
+
+    let err = state_mgr
+        .sweep_abandoned_queued_actions()
+        .await
+        .expect_err("a listing that failed part way is a failed sweep");
+    assert_eq!(err.code, Code::Unavailable);
+    Ok(())
+}
+
+/// Queues `n` actions and returns their client listeners.
+async fn add_queued_actions(
+    state_mgr: &impl ClientStateManager,
+    n: usize,
+) -> Result<Vec<Box<dyn nativelink_util::operation_state_manager::ActionStateResult>>, Error> {
+    let mut clients = Vec::with_capacity(n);
+    for _ in 0..n {
+        clients.push(
+            state_mgr
+                .add_action(
+                    OperationId::default(),
+                    Arc::new(action_info(make_system_time(0))),
+                )
+                .await?,
+        );
+    }
+    Ok(clients)
+}
+
+/// Three abandoned actions, the second one's record unreadable when the
+/// sweep goes to read it. The sweep retires the other two.
+#[nativelink_test]
+async fn the_sweep_skips_a_record_it_cannot_read() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::BrokenRecord(Code::NotFound));
+    for _ in 0..3 {
+        drop(
+            state_mgr
+                .add_action(
+                    OperationId::default(),
+                    Arc::new(action_info(make_system_time(0))),
+                )
+                .await?,
+        );
+    }
+    MockClock::advance(Duration::from_mins(6));
+
+    assert_eq!(state_mgr.sweep_abandoned_queued_actions().await?, 2);
+    Ok(())
+}
+
+/// A listing that meets a record it cannot decode leaves it out and goes on,
+/// so the provisioner and the admin API, which read this listing every few
+/// seconds, still see every other queued action.
+#[nativelink_test]
+async fn the_listing_skips_a_record_it_cannot_read() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::BrokenRecord(Code::InvalidArgument));
+    // Kept so the clients count as waiting.
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    assert_eq!(listed.len(), 2, "the unreadable record is left out");
+    for operation in &listed {
+        operation
+            .as_state()
+            .await
+            .err_tip(|| "every listed operation is readable")?;
+    }
+    Ok(())
+}
+
+/// The Redis listing reports a row it cannot decode as an error item, before
+/// any record is read. The queued listing leaves it out and lists the rest.
+#[nativelink_test]
+async fn the_listing_skips_a_row_it_cannot_decode() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::UndecodableRow);
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    assert_eq!(
+        listed.len(),
+        3,
+        "the undecodable row is left out, the rest listed"
+    );
+    for operation in &listed {
+        operation
+            .as_state()
+            .await
+            .err_tip(|| "every listed operation is readable")?;
+    }
+    Ok(())
+}
+
+/// The listing of every operation, which collects the whole set before it
+/// filters, also survives a row it cannot decode instead of failing whole.
+#[nativelink_test]
+async fn the_listing_of_every_operation_skips_a_row_it_cannot_decode() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::UndecodableRow);
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter::default(),
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    assert_eq!(listed.len(), 3);
+    Ok(())
+}
+
+/// The listing of every operation still fails when the store does, rather
+/// than quietly listing whatever came before the failure.
+#[nativelink_test]
+async fn the_listing_of_every_operation_fails_when_the_store_does() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::Transport);
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let err = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter::default(),
+    )
+    .await
+    .err()
+    .expect("a store failure fails the listing");
+    assert_eq!(err.code, Code::Unavailable);
+    Ok(())
+}
+
+/// A read that fails because the store is unreachable is not a lost record;
+/// the listing reports it instead of quietly leaving the action out.
+#[nativelink_test]
+async fn the_listing_reports_a_store_failure_on_read() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = faulty_state_manager(Fault::BrokenRecord(Code::Unavailable));
+    // Kept so the clients count as waiting.
+    let _clients = add_queued_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    let mut failures = 0;
+    for operation in &listed {
+        if let Err(err) = operation.as_state().await {
+            assert_eq!(err.code, Code::Unavailable);
+            failures += 1;
+        }
+    }
+    assert_eq!(failures, 1, "the store failure reaches the reader");
+    Ok(())
+}
+
+fn faulty_scheduler(fault: Fault) -> Arc<SimpleScheduler> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let task_change_notify = Arc::new(Notify::new());
+    let spec = SimpleSpec {
+        client_action_timeout_s: 1_000_000,
+        ..Default::default()
+    };
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &spec,
+        FaultyDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify,
+                MockInstantWrapped::default,
+            ),
+            fault,
+        },
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    scheduler
+}
+
+async fn three_queued_actions_and_a_worker(
+    scheduler: &SimpleScheduler,
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    for _ in 0..3 {
+        scheduler
+            .add_action(
+                OperationId::default(),
+                Arc::new(action_info(make_system_time(0))),
+            )
+            .await?;
+    }
+    let (tx, mut rx) = mpsc::channel(64);
+    scheduler
+        .add_worker(Worker::new(
+            WorkerId("worker".to_string()),
+            PlatformProperties::default(),
+            tx,
+            NOW_TIME,
+            0,
+        ))
+        .await?;
+    // The connection result.
+    rx.recv().await.unwrap();
+    Ok(rx)
+}
+
+/// A lost record in the middle of the queue is skipped, and the actions
+/// behind it are still dispatched in the same pass.
+#[nativelink_test]
+async fn the_matcher_skips_a_lost_record_and_dispatches_the_rest() -> Result<(), Error> {
+    let scheduler = faulty_scheduler(Fault::LostRecord);
+    let mut rx = three_queued_actions_and_a_worker(&scheduler).await?;
+
+    scheduler.do_try_match_for_test().await?;
+    for _ in 0..3 {
+        rx.try_recv().expect("each real action reaches the worker");
+    }
+    assert!(rx.try_recv().is_err());
+    Ok(())
+}
+
+/// A listing that fails part way is a failed pass, which the loop reruns
+/// at once; it must not be read as one orphan and a clean pass.
+#[nativelink_test]
+async fn the_matcher_fails_the_pass_when_the_listing_fails() -> Result<(), Error> {
+    let scheduler = faulty_scheduler(Fault::Transport);
+    let _rx = three_queued_actions_and_a_worker(&scheduler).await?;
+
+    let err = scheduler
+        .do_try_match_for_test()
+        .await
+        .expect_err("a listing that failed part way is a failed pass");
+    assert_eq!(err.code, Code::Unavailable);
+    Ok(())
+}
+
+/// Adds a queued action through the client side and returns the operation
+/// id the matching engine sees for it.
+async fn queued_operation_id(
+    state_mgr: &(impl ClientStateManager + MatchingEngineStateManager),
+) -> Result<
+    (
+        OperationId,
+        Box<dyn nativelink_util::operation_state_manager::ActionStateResult>,
+    ),
+    Error,
+> {
+    let client = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+    let mut queued = MatchingEngineStateManager::filter_operations(
+        state_mgr,
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let operation = queued.next().await.expect("one queued operation");
+    let operation_id = operation.as_state().await?.0.client_operation_id.clone();
+    Ok((operation_id, client))
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_completes_a_queued_action() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    let (operation_id, client) = queued_operation_id(state_mgr.as_ref()).await?;
+
+    let failed = state_mgr
+        .fail_queued_operation(
+            &operation_id,
+            make_err!(Code::FailedPrecondition, "no worker"),
+        )
+        .await?;
+    assert!(failed);
+
+    let (state, _origin_metadata) = client.as_state().await?;
+    let ActionStage::Completed(result) = &state.stage else {
+        panic!("expected Completed, got {:?}", state.stage);
+    };
+    let err = result.error.as_ref().expect("error carried through");
+    assert_eq!(err.code, Code::FailedPrecondition);
+    assert_eq!(err.messages, vec!["no worker".to_string()]);
+    assert_eq!(state.last_transition_timestamp, make_system_time(0));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_leaves_an_executing_action_alone() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    let (operation_id, client) = queued_operation_id(state_mgr.as_ref()).await?;
+    let worker_id = WorkerId::from(String::from("worker"));
+    state_mgr
+        .assign_operation(&operation_id, Ok(&worker_id))
+        .await?;
+
+    let failed = state_mgr
+        .fail_queued_operation(
+            &operation_id,
+            make_err!(Code::FailedPrecondition, "no worker"),
+        )
+        .await?;
+    assert!(!failed);
+    assert_eq!(client.as_state().await?.0.stage, ActionStage::Executing);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_ignores_an_unknown_action() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+
+    let failed = state_mgr
+        .fail_queued_operation(
+            &OperationId::default(),
+            make_err!(Code::FailedPrecondition, "no worker"),
+        )
+        .await?;
+    assert!(!failed);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn fail_queued_operation_ignores_a_completed_action() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    let (operation_id, client) = queued_operation_id(state_mgr.as_ref()).await?;
+    assert!(
+        state_mgr
+            .fail_queued_operation(&operation_id, make_err!(Code::FailedPrecondition, "first"))
+            .await?
+    );
+
+    // A second failure must not overwrite the first result.
+    let failed = state_mgr
+        .fail_queued_operation(&operation_id, make_err!(Code::Internal, "second"))
+        .await?;
+    assert!(!failed);
+    let (state, _origin_metadata) = client.as_state().await?;
+    let ActionStage::Completed(result) = &state.stage else {
+        panic!("expected Completed, got {:?}", state.stage);
+    };
+    assert_eq!(
+        result.error.as_ref().unwrap().code,
+        Code::FailedPrecondition
+    );
     Ok(())
 }

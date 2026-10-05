@@ -76,6 +76,22 @@ pub enum WorkerAllocationStrategy {
     LeastRecentlyUsed,
     /// Prefer workers that have been most recently used to run a job.
     MostRecentlyUsed,
+    /// Prefer the worker running the fewest actions, least recently used
+    /// among equals. A worker that just joined has nothing running, so it
+    /// takes the next action instead of waiting for every older worker to
+    /// be used once more, and a burst spreads across the fleet instead of
+    /// filling one worker to its concurrency cap.
+    LeastLoaded,
+    /// Prefer the worker the action fits most tightly: among the workers
+    /// that can take it, the one whose remaining `minimum` properties
+    /// (memory, CPU) would be smallest afterwards, as a share of what it
+    /// advertises. Big actions are kept for the workers with big room and
+    /// small ones fill the gaps, so a fleet of mixed sizes wastes the
+    /// least. A `priority` property on the action that a worker carries
+    /// with the same value prefers that worker before the fit is judged,
+    /// which is what such a property is for (a zone, a cache locality).
+    /// Ties go to the fewest running actions, then least recently used.
+    BestFit,
 }
 
 // defaults to every 10s
@@ -152,8 +168,10 @@ pub struct SimpleSpec {
     pub enable_active_action_count_metric: bool,
 
     /// Remove workers from pool once the worker has not responded in this
-    /// amount of time in seconds.
-    /// Default: 5 seconds
+    /// amount of time in seconds. Any message from the worker counts, not
+    /// only keepalives. Eviction requeues everything the worker held, so
+    /// keep this well above the longest pause a loaded worker can see.
+    /// Default: 10 seconds (four default keepalive intervals)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub worker_timeout_s: u64,
 
@@ -177,19 +195,133 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub unacknowledged_kill_timeout_s: u64,
 
-    /// If a job returns an internal error or times out this many times when
-    /// attempting to run on a worker the scheduler will return the last error
-    /// to the client. Jobs will be retried and this configuration is to help
-    /// prevent one rogue job from infinitely retrying and taking up a lot of
-    /// resources when the task itself is the one causing the server to go
-    /// into a bad state.
+    /// Requeue a dispatched action the worker has not acknowledged within
+    /// this many seconds, untried and without counting an attempt, and
+    /// pause the worker. The clock is the worker's own messages: a dispatch
+    /// is dated by the worker's last message before it, and the check runs
+    /// on each later message, so keep this above a few keepalive intervals.
+    /// Workers from v1.7.3 acknowledge every dispatch;
+    /// older workers never do, so leave this unset while any are
+    /// connected or their every action would be requeued.
+    /// Default: unset (off)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub dispatch_ack_timeout_s: u64,
+
+    /// Fail a queued action once no connected worker has been able to run
+    /// it for this many seconds, instead of leaving it queued forever. An
+    /// action counts as impossible to run when no connected worker could
+    /// take it even when idle: an `exact` value no worker has, a required
+    /// key no worker declares, or a `minimum` larger than any worker's
+    /// total. An action that is only waiting for a busy worker is never
+    /// failed by this setting, and neither is any action while no workers
+    /// are connected at all.
+    ///
+    /// The action fails with `FAILED_PRECONDITION` and a message naming the
+    /// properties that could not be satisfied. Bazel does not retry this,
+    /// and runs the action locally if `--remote_local_fallback` is set.
+    ///
+    /// The time is measured per distinct set of platform properties, and
+    /// each action must also have been queued for this long itself before
+    /// it is failed. Actions that queue together therefore fail within
+    /// about one timeout of each other, while during a pool outage later
+    /// actions fail as they age rather than in an immediate burst. An
+    /// action's own wait is measured from its original submission, which
+    /// is not reset when a second client attaches to the same action or
+    /// when it is queued again after its worker is lost; in those cases
+    /// the per-shape clock still guarantees no capable worker was seen for
+    /// the full timeout before it is failed.
+    ///
+    /// Roll this out with the timeout at 0 on every scheduler first and
+    /// watch the `scheduler.unsatisfiable.queued` metric for a while:
+    /// anything that appears there during normal operation is an action
+    /// this setting would have failed. Then set it above the longest time
+    /// a worker pool needs to provision or restart, such as scaling up from
+    /// zero, a rolling restart of the whole pool, or spot preemption, not
+    /// above the typical queue wait. Only properties listed in
+    /// `supported_platform_properties` are enforced strictly; a property
+    /// that is not listed does not restrict workers that do not declare it.
+    ///
+    /// When several schedulers share one Redis backend, each publishes what
+    /// its workers can run whenever a worker joins or leaves and at least
+    /// every 5 seconds, and reads what the others publish every 5 seconds.
+    /// An action is only failed when no scheduler has a worker that could
+    /// run it, and never while the other schedulers cannot be read. A
+    /// worker that joins or leaves a peer is seen here within about 5
+    /// seconds, and the workers of a peer that stops altogether stop
+    /// counting within about 20, so keep this well above that. Schedulers
+    /// publish whatever this is set to, so roll out a version that has this
+    /// setting to every scheduler before setting it on any of them.
+    /// (The 5 and 20 seconds follow from `FLEET_EXCHANGE_INTERVAL` and
+    /// `FLEET_RECORD_TTL_INTERVALS` in the scheduler; if those change,
+    /// remember to change this documentation.)
+    ///
+    /// Such actions are logged and counted in the
+    /// `scheduler.unsatisfiable.queued` metric whatever this is set to.
+    ///
+    /// Default: 0 (never fail)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub unsatisfiable_action_timeout_s: u64,
+
+    /// Seconds a queued action waits while no worker at all is connected to
+    /// this scheduler, nor, on a shared backend, to any peer, before it
+    /// fails with `FailedPrecondition`. `unsatisfiable_action_timeout_s`
+    /// only runs against workers that are there, so a pool that scales from
+    /// zero is never failed on sight; but a provisioner that will not create
+    /// a pod for a shape it cannot serve leaves such an action waiting for
+    /// a fleet that never comes, and this is the bound on that. Keep it
+    /// above the longest time a pool needs to bring up its first worker.
+    /// Default: 0 (never fail)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub no_worker_action_timeout_s: u64,
+
+    /// If a job returns an internal error or times out this many times the
+    /// scheduler completes it with `FailedPrecondition` carrying the last
+    /// error, a code clients do not retry. This is to help prevent one rogue
+    /// job from infinitely retrying and taking up a lot of resources when the
+    /// task itself is the one causing the server to go into a bad state.
+    /// A lost worker and a memory escalation are not the action's failures
+    /// and have their own budgets: `max_worker_loss_retries` and
+    /// `memory_escalation.max_steps`.
     /// Default: 3
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_job_retries: usize,
 
+    /// How many times an action whose worker was lost (disconnected, timed
+    /// out, evicted, or OOM-killed as a whole) is queued again before the
+    /// scheduler completes it with `FailedPrecondition`. A lost worker is
+    /// usually not the action's fault, so these do not spend
+    /// `max_job_retries`; the cap only stops an action that takes a worker
+    /// down every time it runs.
+    /// Default: 10
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_worker_loss_retries: usize,
+
     /// The strategy used to assign workers jobs.
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
+
+    /// The name of a `minimum` platform property, usually `memory_kb`, that
+    /// the scheduler compares against the free memory each worker reports
+    /// with its keepalive: a worker reporting less than the action asks for
+    /// is skipped for that action, whatever the admission ledger says. The
+    /// ledger only subtracts what actions declare; this catches the ones
+    /// that declared too little. Workers older than v1.7.3 report nothing
+    /// and are never vetoed.
+    /// Default: unset (off)
+    #[serde(default)]
+    pub live_memory_veto: Option<String>,
+
+    /// When a worker reports an action killed for memory (`KILLED_MEMORY`,
+    /// by its own reservation enforcement or by the kernel), requeue the
+    /// action with a larger reservation instead of failing it. Escalations
+    /// have their own budget (`max_steps`) and do not spend
+    /// `max_job_retries`. The reservation grows to the largest memory any
+    /// connected worker advertises (or `max_kb`); the last step reserves
+    /// that worker whole, memory and CPU, so the action runs alone, and only
+    /// a kill there fails the action: nothing in the fleet could run it.
+    /// Default: unset (a memory kill fails the action)
+    #[serde(default)]
+    pub memory_escalation: Option<MemoryEscalationSpec>,
 
     /// The storage backend to use for the scheduler.
     /// Default: memory
@@ -345,6 +477,120 @@ fn default_historical_resource_memory_property_name() -> String {
     "memory_kb".to_string()
 }
 
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct MemoryEscalationSpec {
+    /// The `minimum` platform property carrying the memory reservation.
+    /// Default: `memory_kb`
+    #[serde(default = "default_historical_resource_memory_property_name")]
+    pub property: String,
+
+    /// Each kill scales the reservation by this factor, in hundredths:
+    /// 200 doubles it, 150 adds half.
+    /// Default: 200
+    #[serde(default = "default_memory_escalation_percent")]
+    pub percent: u64,
+
+    /// Never reserve more than this many KiB; 0 takes the largest memory
+    /// any connected worker advertises.
+    /// Default: 0
+    #[serde(default)]
+    pub max_kb: u64,
+
+    /// The memory values of the fleet's size classes, ascending, in KiB.
+    /// When set, a kill steps the reservation to the next class above it
+    /// instead of scaling by `percent`; past the top class the last step
+    /// reserves the largest worker whole. The chart fills this from the
+    /// same classes the `historical_resource` scheduler uses.
+    /// Default: empty (scale by `percent`)
+    #[serde(default)]
+    pub ladder_kb: Vec<u64>,
+
+    /// The `minimum` platform property carrying the CPU reservation. The
+    /// last escalation reserves the largest worker's whole memory and,
+    /// through this property, its whole CPU, so nothing shares the worker
+    /// with the action. Empty leaves CPU alone.
+    /// Default: `cpu_count`
+    #[serde(default = "default_memory_escalation_cpu_property")]
+    pub cpu_property: String,
+
+    /// The most escalations one action gets before the scheduler completes
+    /// it with `FailedPrecondition`; 0 lets the ceiling alone bound them.
+    /// Default: 8
+    #[serde(default = "default_memory_escalation_max_steps")]
+    pub max_steps: u64,
+}
+
+fn default_memory_escalation_cpu_property() -> String {
+    "cpu_count".to_string()
+}
+
+const fn default_memory_escalation_max_steps() -> u64 {
+    8
+}
+
+const fn default_memory_escalation_percent() -> u64 {
+    200
+}
+
+#[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ColdStartSpec {
+    /// Value for `cpu_property_name`, on the scale the workers advertise.
+    /// 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub cpu_count: u64,
+
+    /// Value for `memory_property_name`, in KiB. 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_kb: u64,
+
+    /// Value for `disk_property_name`, in KiB. 0 leaves the property alone.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub disk_kb: u64,
+}
+
+fn default_disk_property_name_for_hints() -> String {
+    "disk_kb".to_string()
+}
+
+/// A named point on the fleet's size ladder. List them ascending; each
+/// should dominate the one before on every dimension it names. A zero
+/// leaves that dimension alone.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct SizeClassSpec {
+    /// Free text, referenced by hints and by the cold-start policy.
+    pub name: String,
+
+    /// Value for `cpu_property_name`, on the scale the workers advertise.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub cpu_count: u64,
+
+    /// Value for `memory_property_name`, in KiB.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_kb: u64,
+
+    /// Value for `disk_property_name`, in KiB.
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub disk_kb: u64,
+}
+
+/// A class for actions whose timeout is at least `min_timeout_s`. Bazel's
+/// test sizes arrive as timeouts (short 60 s, moderate 300 s, long 900 s,
+/// eternal 3600 s), so this maps them to classes without a CAS fetch.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct TimeoutClassSpec {
+    #[serde(deserialize_with = "convert_numeric_with_shellexpand")]
+    pub min_timeout_s: u64,
+    pub class: String,
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -373,7 +619,10 @@ pub struct HistoricalResourceSpec {
     )]
     pub refresh_interval_s: u64,
 
-    /// Platform property name used for CPU minimums.
+    /// Platform property name used for CPU minimums. The nested scheduler
+    /// must declare it as a `minimum` property (as it must the memory and
+    /// disk names): an undeclared property is matched as an exact string,
+    /// and an action carrying a number would then match no worker.
     /// Default: `cpu_count`
     #[serde(
         default = "default_historical_resource_cpu_property_name",
@@ -382,12 +631,52 @@ pub struct HistoricalResourceSpec {
     pub cpu_property_name: String,
 
     /// Platform property name used for memory minimums, expressed in KiB.
+    /// Declared as `minimum` on the nested scheduler, like the CPU name.
     /// Default: `memory_kb`
     #[serde(
         default = "default_historical_resource_memory_property_name",
         deserialize_with = "convert_string_with_shellexpand"
     )]
     pub memory_property_name: String,
+
+    /// Platform property name used for disk minimums, expressed in KiB.
+    /// Declared as `minimum` on the nested scheduler, like the CPU name.
+    /// Default: `disk_kb`
+    #[serde(
+        default = "default_disk_property_name_for_hints",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub disk_property_name: String,
+
+    /// The fleet's size ladder. A hint may name a `class` instead of
+    /// numbers, and the cold-start policy below picks one for actions no
+    /// hint matches. Empty means raw numbers only.
+    #[serde(default)]
+    pub classes: Vec<SizeClassSpec>,
+
+    /// The class an untagged action gets when no hint and no rule below
+    /// matches. Takes precedence over `cold_start` when both are set.
+    #[serde(default)]
+    pub default_class: Option<String>,
+
+    /// Class by Bazel `action_mnemonic` for untagged actions; a known heavy
+    /// mnemonic (`TestRunner`, `Link`) starts in the right class.
+    #[serde(default)]
+    pub class_by_mnemonic: HashMap<String, String>,
+
+    /// Class by the action's timeout, the largest `min_timeout_s` at or
+    /// below the timeout wins. Checked before `default_class`, after the
+    /// mnemonic rule.
+    #[serde(default)]
+    pub class_by_timeout: Vec<TimeoutClassSpec>,
+
+    /// Reservation given to an action that no hint matches and the client
+    /// left untagged. Only a property that is absent is filled; a value the
+    /// client sent is kept. Without this an untagged action costs the
+    /// scheduler's ledger nothing, so any number of them can land on one
+    /// worker.
+    #[serde(default)]
+    pub cold_start: Option<ColdStartSpec>,
 
     /// The nested scheduler to use after applying resource hints.
     pub scheduler: Box<SchedulerSpec>,

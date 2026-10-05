@@ -103,6 +103,10 @@ impl StoreDriver for MemoryStore {
         Ok(())
     }
 
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(self.remove_entry(key).await)
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

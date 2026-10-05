@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use nativelink_config::schedulers::{
-    ExperimentalSimpleSchedulerBackend, SchedulerSpec, SimpleSpec,
+    ExperimentalSimpleSchedulerBackend, PropertyType, SchedulerSpec, SimpleSpec,
 };
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -97,6 +97,36 @@ async fn inner_scheduler_factory(
             (Some(property_modifier_scheduler), worker_scheduler)
         }
         SchedulerSpec::HistoricalResource(spec) => {
+            HistoricalResourceScheduler::validate(spec)?;
+            // A number the scheduler writes into a property the nested
+            // scheduler does not treat as a minimum is matched as an exact
+            // string, and no worker advertises that string.
+            if let SchedulerSpec::Simple(simple) = spec.scheduler.as_ref()
+                && let Some(declared) = &simple.supported_platform_properties
+            {
+                let cold = spec.cold_start.unwrap_or_default();
+                let dimensions = [
+                    (
+                        &spec.cpu_property_name,
+                        spec.classes.iter().any(|c| c.cpu_count > 0) || cold.cpu_count > 0,
+                    ),
+                    (
+                        &spec.memory_property_name,
+                        spec.classes.iter().any(|c| c.memory_kb > 0) || cold.memory_kb > 0,
+                    ),
+                    (
+                        &spec.disk_property_name,
+                        spec.classes.iter().any(|c| c.disk_kb > 0) || cold.disk_kb > 0,
+                    ),
+                ];
+                for (name, used) in dimensions {
+                    if used && declared.get(name) != Some(&PropertyType::Minimum) {
+                        return Err(make_input_err!(
+                            "historical_resource reserves {name} but the nested scheduler does not declare it as a minimum property; add it to supported_platform_properties as minimum"
+                        ));
+                    }
+                }
+            }
             let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
@@ -121,6 +151,14 @@ async fn simple_scheduler_factory(
     now_fn: fn() -> SystemTime,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
+    if let Some(policy) = &spec.memory_escalation
+        && policy.percent <= 100
+    {
+        return Err(make_input_err!(
+            "memory_escalation.percent must be above 100 to grow the reservation, got {}",
+            policy.percent
+        ));
+    }
     match spec
         .experimental_backend
         .as_ref()
@@ -166,7 +204,11 @@ async fn simple_scheduler_factory(
                 task_change_notify.clone(),
                 now_fn,
                 Default::default,
-                spec.retain_completed_for_s,
+                // Passed through as 0, the store wrote every completed
+                // record with no expiry (the Lua update treats 0 as
+                // forever), so the scheduler's Redis kept every action ever
+                // run and the search index grew without bound.
+                retain_completed_for_s(spec.retain_completed_for_s),
                 // Same normalisation SimpleScheduler applies, so the
                 // keepalive stops being kept exactly when the timeout that
                 // reads it comes due.
@@ -190,8 +232,19 @@ async fn simple_scheduler_factory(
     }
 }
 
+/// How long a completed record is kept, whichever backend holds it: the
+/// configured value, or the same default for both when it is unset.
+#[must_use]
+pub const fn retain_completed_for_s(configured: u32) -> u32 {
+    if configured == 0 {
+        DEFAULT_RETAIN_COMPLETED_FOR_S
+    } else {
+        configured
+    }
+}
+
 pub fn memory_awaited_action_db_factory<I, NowFn>(
-    mut retain_completed_for_s: u32,
+    configured_retain_completed_for_s: u32,
     task_change_notify: &Arc<Notify>,
     now_fn: NowFn,
 ) -> MemoryAwaitedActionDb<I, NowFn>
@@ -199,12 +252,9 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Clone + Send + Sync + 'static,
 {
-    if retain_completed_for_s == 0 {
-        retain_completed_for_s = DEFAULT_RETAIN_COMPLETED_FOR_S;
-    }
     MemoryAwaitedActionDb::new(
         &EvictionPolicy {
-            max_seconds: retain_completed_for_s,
+            max_seconds: retain_completed_for_s(configured_retain_completed_for_s),
             ..Default::default()
         },
         task_change_notify.clone(),

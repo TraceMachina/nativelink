@@ -1518,7 +1518,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 
     fn get_and_update_generation(&self) -> Result<Generation, Error> {
         self.next_generation
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
                 generation.checked_add(1)
             })
             .map(Generation::new)
@@ -2053,6 +2053,10 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
 impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
         Ok(())
+    }
+
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(self.evicting_map.remove(&key.into_owned()).await)
     }
 
     async fn has_with_results(

@@ -33,6 +33,8 @@ pub(crate) struct FtAggregateOptions {
     pub load: Vec<String>,
     pub cursor: FtAggregateCursor,
     pub sort_by: Vec<String>,
+    /// Sort direction for every key in `sort_by`.
+    pub sort_desc: bool,
 }
 
 /// Per-query `FT.AGGREGATE` timeout in milliseconds.
@@ -47,6 +49,10 @@ pub(crate) struct FtAggregateOptions {
 /// explicit value generous enough to absorb 1M+ document scans on a
 /// busy `RediSearch` instance.
 const FT_AGGREGATE_TIMEOUT_MS: u64 = 10_000;
+
+/// The bound on a sorted aggregate. `RediSearch` sorts only this many rows
+/// and returns no more, and without it the bound is ten.
+const FT_AGGREGATE_SORT_MAX: u64 = 1_000_000;
 
 /// Calls `FT.AGGREGATE` in redis. redis-rs does not properly support this command
 /// so we have to manually handle it.
@@ -81,8 +87,17 @@ where
         .arg(options.cursor.max_idle)
         .arg("SORTBY")
         .arg(options.sort_by.len() * 2);
+    let direction = if options.sort_desc { "DESC" } else { "ASC" };
     for key in &options.sort_by {
-        ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg("ASC");
+        ft_aggregate_cmd = ft_aggregate_cmd.arg(key).arg(direction);
+    }
+    if !options.sort_by.is_empty() {
+        // A SORTBY without MAX makes RediSearch return ten rows, whatever
+        // the cursor's COUNT says: with 300 actions queued the scheduler
+        // listed 10, the matching pass took 10 per pass, the abandoned
+        // sweep retired 10 a minute, and the provisioner read demand as
+        // 10. MAX is the sort's bound, so it has to cover the whole set.
+        ft_aggregate_cmd = ft_aggregate_cmd.arg("MAX").arg(FT_AGGREGATE_SORT_MAX);
     }
     let res = ft_aggregate_cmd
         .query_async::<Value>(&mut connection_manager)
@@ -146,7 +161,7 @@ where
     ))
 }
 
-fn resp2_data_parse(
+pub(crate) fn resp2_data_parse(
     output: &mut RedisCursorData,
     results_array: &[Value],
 ) -> Result<(), RedisError> {
@@ -193,7 +208,7 @@ fn resp2_data_parse(
     Ok(())
 }
 
-fn resp3_data_parse(
+pub(crate) fn resp3_data_parse(
     output: &mut RedisCursorData,
     results_map: &Vec<(Value, Value)>,
 ) -> Result<(), RedisError> {

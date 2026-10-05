@@ -20,13 +20,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 #[cfg(target_family = "unix")]
 use std::fs::Permissions;
 #[cfg(target_family = "unix")]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(target_family = "unix")]
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -36,11 +38,12 @@ use bytes::{Bytes, BytesMut};
 use filetime::{FileTime, set_file_mtime};
 use formatx::Template;
 use futures::future::{
-    BoxFuture, Future, FutureExt, TryFutureExt, join_all, try_join, try_join_all,
+    BoxFuture, Fuse, Future, FutureExt, TryFutureExt, join_all, try_join, try_join_all,
 };
 use futures::stream::{FuturesUnordered, StreamExt, TryStreamExt};
 use nativelink_config::cas_server::{
-    EnvironmentSource, UploadActionResultConfig, UploadCacheResultsStrategy,
+    Buck2FileCaptureConfig, DiskEnforcement, EnvironmentSource, MemoryEnforcement,
+    ResourceEnforcementConfig, UploadActionResultConfig, UploadCacheResultsStrategy,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
@@ -50,7 +53,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     Tree as ProtoTree, UpdateActionResultRequest,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, HistoricalExecuteResponse, StartExecute,
+    ActionResourceUsage, HistoricalExecuteResponse, Reservation, ResourceOutcome, StartExecute,
 };
 use nativelink_store::ac_utils::{
     ESTIMATED_DIGEST_SIZE, compute_buf_digest, get_and_decode_digest, serialize_and_upload_message,
@@ -67,6 +70,7 @@ use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
+use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn, spawn_blocking};
 use parking_lot::Mutex;
 use prost::Message;
@@ -75,15 +79,17 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{Notify, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+use crate::buck2_file_capture::Buck2FileCapture;
 use crate::persistent_worker::{
-    Input as PersistentWorkerInput, PersistentWorkerPool, WireFormat, WorkRequest, WorkerKey,
+    Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
+    WorkerKey,
 };
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -102,12 +108,150 @@ const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
 #[cfg(target_os = "linux")]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How many output files are open for upload at once, across the whole
+/// output tree: one semaphore, taken around each file from open to upload,
+/// so nested directories cannot multiply the bound. An unbounded set has hit
+/// the descriptor limit on actions with tens of thousands of outputs. The
+/// same number bounds each stream's fan-out.
+const UPLOAD_CONCURRENCY: usize = 64;
+
 /// What the sampler observed over an action's lifetime.
-#[cfg(target_os = "linux")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct SampledResourceUsage {
     peak_memory_kb: u64,
     cpu_time_ms: u64,
+    /// The last reading before the group was gone, which is what a kernel
+    /// kill is judged against.
+    last_memory_kb: u64,
+    /// The most the action's own files under its directory came to, when
+    /// disk was measured; 0 otherwise.
+    peak_disk_kb: u64,
+}
+
+/// Why the worker ended an action before the action ended itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillReason {
+    Timeout,
+    Memory,
+    Disk,
+    External,
+}
+
+const SIGKILL_NUMBER: i32 = 9;
+
+/// Appended to a `NotFound` raised while fetching something the client
+/// referenced by digest (the action, its command, its inputs), so the
+/// worker loop can tell a missing input from any other missing thing
+/// without reading a store's wording.
+pub const MISSING_INPUT_ERROR_TIP: &str = "action input missing from CAS";
+
+fn tag_missing_input(err: Error) -> Error {
+    if err.code == Code::NotFound {
+        err.append(MISSING_INPUT_ERROR_TIP)
+    } else {
+        err
+    }
+}
+
+/// How long a killed action's output pipes, or those of one that left
+/// stragglers behind, get to drain. They close when every process holding
+/// them is gone, which the SIGKILL to the group sees to; a process that
+/// left the group could still hold them, so that wait is bounded, and what
+/// was read by then is kept. An action that exited cleanly with nothing
+/// left behind is read to the end.
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Classifies how an action ended. A kill the worker sent names itself; a
+/// SIGKILL nobody here sent, with the last memory sample within 10% of the
+/// limit, is the kernel's OOM killer; any other signal is external.
+pub fn classify_outcome(
+    kill_reason: Option<KillReason>,
+    signal: Option<i32>,
+    last_memory_kb: u64,
+    memory_limit_kb: Option<u64>,
+) -> (ResourceOutcome, bool) {
+    match (kill_reason, signal) {
+        (Some(KillReason::Memory), _) => (ResourceOutcome::KilledMemory, true),
+        (Some(KillReason::Disk), _) => (ResourceOutcome::KilledDisk, true),
+        (Some(KillReason::Timeout), _) => (ResourceOutcome::KilledTimeout, false),
+        (None, None) => (ResourceOutcome::Completed, false),
+        (None, Some(SIGKILL_NUMBER)) => {
+            let near_limit = memory_limit_kb.is_some_and(|limit_kb| {
+                limit_kb > 0 && last_memory_kb.saturating_mul(10) >= limit_kb.saturating_mul(9)
+            });
+            if near_limit {
+                (ResourceOutcome::KilledMemory, false)
+            } else {
+                (ResourceOutcome::KilledExternal, false)
+            }
+        }
+        (Some(KillReason::External), _) | (None, Some(_)) => {
+            (ResourceOutcome::KilledExternal, false)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+type SpawnedChild = crate::namespace_utils::MaybeNamespacedChild;
+#[cfg(not(target_os = "linux"))]
+type SpawnedChild = process::Child;
+
+/// SIGKILL through the child wrapper, which takes the whole process group
+/// with it, logged if it fails.
+async fn hard_kill(child: &mut SpawnedChild, why: &str) {
+    if let Err(err) = child.kill().await {
+        error!(?err, why, "Could not kill process in RunningActionsManager");
+    }
+}
+
+/// Starts stopping an action. With a grace period the process group gets
+/// SIGTERM and the returned future fires when SIGKILL is due; without one
+/// SIGKILL goes out now and the future never fires.
+async fn stop_action(
+    child: &mut SpawnedChild,
+    grace: Duration,
+    why: &str,
+) -> Fuse<BoxFuture<'static, ()>> {
+    debug!(grace_ms = grace.as_millis(), why, "Stopping action");
+    #[cfg(target_os = "linux")]
+    if !grace.is_zero()
+        && let Some(pgid) = child.id()
+    {
+        signal_process_group(pgid, libc::SIGTERM);
+        return tokio::time::sleep(grace).boxed().fuse();
+    }
+    hard_kill(child, why).await;
+    Fuse::terminated()
+}
+
+/// The reservation the action was admitted with, read back from its
+/// platform properties so the measurement travels with its yardstick.
+fn reservation_of(
+    properties: &HashMap<String, String>,
+    memory_property: Option<&str>,
+    disk_property: Option<&str>,
+) -> Option<Reservation> {
+    let read = |name: &str| {
+        properties
+            .get(name)
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    };
+    let reservation = Reservation {
+        cpu_count: read("cpu_count").unwrap_or(0),
+        memory_kb: read(memory_property.unwrap_or("memory_kb")).unwrap_or(0),
+        disk_kb: read(disk_property.unwrap_or("disk_kb")).unwrap_or(0),
+    };
+    (reservation.cpu_count > 0 || reservation.memory_kb > 0 || reservation.disk_kb > 0)
+        .then_some(reservation)
+}
+
+#[cfg(target_os = "linux")]
+fn pod_memory_limit_kb() -> Option<u64> {
+    crate::capacity::observe_cgroup().map(|observed| observed.memory_kb)
+}
+#[cfg(not(target_os = "linux"))]
+const fn pod_memory_limit_kb() -> Option<u64> {
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -116,14 +260,146 @@ struct ActionResourceUsageSampler {
     handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
+/// What the sampler found over a ceiling, with the figure it saw. Only the
+/// Linux sampler sends one; the arm that receives it is built everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+enum OverLimit {
+    Memory(u64),
+    Disk(u64),
+}
+
+/// The ceilings the sampler enforces. Memory: two consecutive samples over
+/// `memory_limit_kb`, or one at twice it. Disk: one sample of the action's
+/// own files over `disk_limit_kb`. The first breach is sent on
+/// `over_limit_tx` and the caller kills the action; nothing is sent when no
+/// ceiling is set, and the caller keeps the sender alive so the receiver
+/// stays pending.
 #[cfg(target_os = "linux")]
-fn start_action_resource_usage_sampler(pgid: u32) -> ActionResourceUsageSampler {
+struct Ceilings {
+    memory_limit_kb: Option<u64>,
+    disk_limit_kb: Option<u64>,
+    over_limit_tx: Option<oneshot::Sender<OverLimit>>,
+}
+
+/// One disk sample every this many memory samples: a walk of the action
+/// directory is a stat per file, so it runs every ten seconds, not four
+/// times a second.
+#[cfg(target_os = "linux")]
+const DISK_SAMPLE_EVERY: u32 = 40;
+
+#[cfg(target_os = "linux")]
+fn start_action_resource_usage_sampler(
+    pgid: u32,
+    ceilings: Ceilings,
+    disk_directory: Option<(PathBuf, SystemTime)>,
+) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx)
+        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory)
     );
     ActionResourceUsageSampler { stop_tx, handle }
+}
+
+/// KiB on disk of the files under `directory` that the action wrote: regular
+/// files modified at or after `since`, the directory's stamp from just
+/// before its command started (see [`directory_stamp`]). Its
+/// inputs were materialized before that, as hard links into the CAS store
+/// or private copies, and keep their earlier times, so they are told apart
+/// by time rather than by link count: a hard link drops to one link the
+/// moment the store evicts the blob, and would then pass for the action's
+/// own. Symlinks and the directories' own blocks are not counted. Blocking;
+/// run it on the blocking pool.
+#[cfg(target_family = "unix")]
+pub fn directory_private_kb(directory: &Path, since: SystemTime) -> u64 {
+    let mut total_blocks: u64 = 0;
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let file_type = metadata.file_type();
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file()
+                && metadata.modified().is_ok_and(|modified| modified >= since)
+            {
+                total_blocks = total_blocks.saturating_add(metadata.blocks());
+            }
+        }
+    }
+    // st_blocks are 512-byte units whatever the filesystem's block size.
+    total_blocks / 2
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn directory_private_kb(_directory: &Path, _since: SystemTime) -> u64 {
+    0
+}
+
+/// Touches `directory` and returns the time the filesystem recorded for it.
+/// File mtimes come from the kernel's coarse clock, which on Linux can lag
+/// the wall clock by a tick, so a file written right after
+/// `SystemTime::now()` can look older than that moment. The walk compares
+/// mtimes against this stamp, taken from the same clock, so a file the
+/// action writes afterwards is never older than it.
+#[cfg(target_family = "unix")]
+pub fn directory_stamp(directory: &Path) -> Result<SystemTime, Error> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::fs::File::open(directory)
+        .err_tip(|| format!("Opening {} to stamp it", directory.display()))?;
+    // SAFETY: a zeroed timespec is valid; only tv_nsec is set.
+    let mut now: libc::timespec = unsafe { core::mem::zeroed() };
+    now.tv_nsec = libc::UTIME_NOW;
+    let times = [now, now];
+    // SAFETY: futimens takes an open fd and a pointer to two timespecs that
+    // outlive the call.
+    if unsafe { libc::futimens(dir.as_raw_fd(), times.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .err_tip(|| format!("Stamping {}", directory.display()));
+    }
+    dir.metadata()
+        .and_then(|metadata| metadata.modified())
+        .err_tip(|| format!("Reading the stamp on {}", directory.display()))
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn directory_stamp(_directory: &Path) -> Result<SystemTime, Error> {
+    Ok(SystemTime::now())
+}
+
+/// Starts a disk sample: the action's own files, walked on the blocking
+/// pool as a task of its own, so the memory samples carry on while a large
+/// tree is being walked. `None` when there is no directory to measure.
+#[cfg(target_os = "linux")]
+fn start_disk_sample(
+    directory: Option<&(PathBuf, SystemTime)>,
+) -> Option<JoinHandleDropGuard<u64>> {
+    let (directory, since) = directory?.clone();
+    Some(spawn_blocking!("action_disk_sample", move || {
+        directory_private_kb(&directory, since)
+    }))
+}
+
+/// A signal to every process in the action's group. The action is its own
+/// group leader, so this reaches the children a shell forked. The SIGKILL
+/// at the end of a kill goes through the child wrapper, which takes the
+/// group with it (or tells the stub, namespaced); this is for the SIGTERM
+/// that gives an action its grace, and for the stragglers left once the
+/// action's own process has exited. Returns whether any process got it.
+#[cfg(target_family = "unix")]
+fn signal_process_group(pgid: u32, signal: i32) -> bool {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return false;
+    };
+    // SAFETY: killpg only takes integers and has no memory safety
+    // considerations; a stale group id is reported as ESRCH, not acted on.
+    unsafe { libc::killpg(pgid, signal) == 0 }
 }
 
 #[cfg(target_os = "linux")]
@@ -138,13 +414,25 @@ async fn finish_action_resource_usage_sampler(
 async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
+    mut ceilings: Ceilings,
+    disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
+    let mut last_memory_kb = 0;
+    let mut peak_disk_kb = 0;
+    let mut samples_over_limit = 0u32;
+    let mut samples_since_disk = DISK_SAMPLE_EVERY;
+    // The walk in flight, if one is; polled, never awaited, from the loop.
+    let mut disk_sample: Option<JoinHandleDropGuard<u64>> = None;
     // CPU time is cumulative per process and a process that exits stops
     // appearing, so summing the live group at the end would lose everything
     // short-lived. Keep the last figure seen for each pid and total them at
     // the end instead.
     let mut cpu_ticks_by_pid = HashMap::new();
+    // What the group had already spent when sampling began. A one-shot
+    // process starts at nothing; a pooled process carries every request it
+    // served before, which is not this action's.
+    let mut baseline_ticks: Option<u64> = None;
 
     let sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
         let observed = sample_process_group(pgid, cpu_ticks_by_pid);
@@ -155,12 +443,65 @@ async fn sample_action_resource_usage(
     };
 
     loop {
-        if sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).is_none()
-            && !Path::new(&format!("/proc/{pgid}")).exists()
-        {
+        let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        if baseline_ticks.is_none() {
+            baseline_ticks = Some(cpu_ticks_by_pid.values().sum());
+        }
+        if let Some(memory_kb) = observed {
+            last_memory_kb = memory_kb;
+        }
+        if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
             break;
+        }
+        // Two consecutive samples over the ceiling, so one spike between
+        // reads is not a kill; one sample at twice the ceiling is, because
+        // an allocation that fast reaches the pod's limit before the next
+        // read (observed: twelve 20 GiB allocators filled a 52 GiB pod in
+        // under a second).
+        if let (Some(observed_kb), Some(limit_kb)) = (observed, ceilings.memory_limit_kb) {
+            if observed_kb > limit_kb {
+                samples_over_limit += 1;
+            } else {
+                samples_over_limit = 0;
+            }
+            let gross = observed_kb >= limit_kb.saturating_mul(2);
+            if (samples_over_limit >= 2 || gross)
+                && let Some(over_limit_tx) = ceilings.over_limit_tx.take()
+                && over_limit_tx.send(OverLimit::Memory(observed_kb)).is_err()
+            {
+                // The receiver is gone only when the action already ended.
+                debug!(observed_kb, "Memory ceiling breached, action already ended");
+            }
+        }
+
+        // A walk that finished since the last sample; the memory samples
+        // above never waited for it.
+        if let Some(handle) = disk_sample.as_mut()
+            && let core::task::Poll::Ready(finished) = futures::poll!(handle)
+        {
+            disk_sample = None;
+            if let Ok(disk_kb) = finished {
+                peak_disk_kb = peak_disk_kb.max(disk_kb);
+                if let Some(limit_kb) = ceilings.disk_limit_kb
+                    && disk_kb > limit_kb
+                    && let Some(over_limit_tx) = ceilings.over_limit_tx.take()
+                    && over_limit_tx.send(OverLimit::Disk(disk_kb)).is_err()
+                {
+                    debug!(disk_kb, "Disk ceiling breached, action already ended");
+                }
+            }
+        }
+        // The periodic walk belongs to the soft limit; the guard alone
+        // measures once, at the end, and pays no walk while running.
+        samples_since_disk += 1;
+        if ceilings.disk_limit_kb.is_some()
+            && samples_since_disk >= DISK_SAMPLE_EVERY
+            && disk_sample.is_none()
+        {
+            samples_since_disk = 0;
+            disk_sample = start_disk_sample(disk_directory.as_ref());
         }
 
         if *stop_rx.borrow() {
@@ -170,17 +511,35 @@ async fn sample_action_resource_usage(
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+                    if let Some(memory_kb) = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid) {
+                        last_memory_kb = memory_kb;
+                    }
                     break;
                 }
             }
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
     }
+    // What the action left on disk at the end is the figure that matters
+    // for sizing; this walk, one stat per entry under the action directory,
+    // is the only one the guard mode pays.
+    drop(disk_sample.take());
+    if let Some(handle) = start_disk_sample(disk_directory.as_ref())
+        && let Ok(disk_kb) = handle.await
+    {
+        peak_disk_kb = peak_disk_kb.max(disk_kb);
+    }
 
     SampledResourceUsage {
         peak_memory_kb,
-        cpu_time_ms: ticks_to_millis(cpu_ticks_by_pid.values().sum()),
+        cpu_time_ms: ticks_to_millis(
+            cpu_ticks_by_pid
+                .values()
+                .sum::<u64>()
+                .saturating_sub(baseline_ticks.unwrap_or(0)),
+        ),
+        last_memory_kb,
+        peak_disk_kb,
     }
 }
 
@@ -232,7 +591,7 @@ fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> 
             let entry = cpu_ticks_by_pid.entry(member_pid).or_insert(0);
             *entry = (*entry).max(ticks);
         }
-        if let Some(memory_kb) = read_process_rss_kb(member_pid) {
+        if let Some(memory_kb) = read_process_memory_kb(member_pid) {
             total_kb += memory_kb;
             found_any_process = true;
         }
@@ -241,11 +600,27 @@ fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> 
     found_any_process.then_some(total_kb)
 }
 
+/// The process's share of its resident pages: `Pss` from `smaps_rollup`
+/// divides a page shared by N processes N ways, so summed over the group it
+/// counts a forked parent's pages, shared libraries and mapped inputs once.
+/// `VmRSS` counts them once per process, and a test runner that forks eight
+/// children would sample at several times what the cgroup charges. Falls
+/// back to `VmRSS` where `smaps_rollup` cannot be read (kernels before 4.14).
 #[cfg(target_os = "linux")]
-fn read_process_rss_kb(pid: u32) -> Option<u64> {
+fn read_process_memory_kb(pid: u32) -> Option<u64> {
+    if let Ok(rollup) = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+        && let Some(pss_kb) = parse_kb_field(&rollup, "Pss:")
+    {
+        return Some(pss_kb);
+    }
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status.lines().find_map(|line| {
-        let rest = line.strip_prefix("VmRSS:")?;
+    parse_kb_field(&status, "VmRSS:")
+}
+
+/// The value of a `Field:    1234 kB` line in `/proc` text, in KiB.
+pub fn parse_kb_field(text: &str, field: &str) -> Option<u64> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix(field)?;
         rest.split_whitespace().next()?.parse().ok()
     })
 }
@@ -1054,7 +1429,14 @@ async fn upload_file(
     hasher: DigestHasherFunc,
     metadata: std::fs::Metadata,
     digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
+    uploads: Arc<Semaphore>,
 ) -> Result<FileInfo, Error> {
+    // Held from the open to the end of the upload: this is the bound on
+    // files open at once for the whole output tree.
+    let _permit = uploads
+        .acquire()
+        .await
+        .err_tip(|| "Upload semaphore closed")?;
     let is_executable = is_executable(&metadata, &full_path);
     let file_size = metadata.len();
     let file = fs::open_file(&full_path, 0, u64::MAX)
@@ -1228,11 +1610,12 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
     full_work_directory: &'a str,
     hasher: DigestHasherFunc,
     digest_uploaders: Arc<Mutex<HashMap<DigestInfo, DigestUploader>>>,
+    uploads: Arc<Semaphore>,
 ) -> BoxFuture<'a, Result<(Directory, VecDeque<ProtoDirectory>), Error>> {
     Box::pin(async move {
-        let file_futures = FuturesUnordered::new();
-        let dir_futures = FuturesUnordered::new();
-        let symlink_futures = FuturesUnordered::new();
+        let mut file_futures = Vec::new();
+        let mut dir_futures = Vec::new();
+        let mut symlink_futures = Vec::new();
         {
             let (_permit, dir_handle) = fs::read_dir(&full_dir_path)
                 .await
@@ -1259,6 +1642,7 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                             full_work_directory,
                             hasher,
                             digest_uploaders.clone(),
+                            uploads.clone(),
                         )
                         .and_then(|(dir, all_dirs)| async move {
                             let directory_name = full_path
@@ -1293,13 +1677,21 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
                     );
                 } else if file_type.is_file() {
                     let digest_uploaders = digest_uploaders.clone();
+                    let uploads = uploads.clone();
                     file_futures.push(async move {
                         let metadata = fs::metadata(&full_path)
                             .await
                             .err_tip(|| format!("Could not open file {}", full_path.display()))?;
-                        upload_file(cas_store, &full_path, hasher, metadata, digest_uploaders)
-                            .map_ok(TryInto::try_into)
-                            .await?
+                        upload_file(
+                            cas_store,
+                            &full_path,
+                            hasher,
+                            metadata,
+                            digest_uploaders,
+                            uploads,
+                        )
+                        .map_ok(TryInto::try_into)
+                        .await?
                     });
                 } else if file_type.is_symlink() {
                     symlink_futures.push(
@@ -1310,12 +1702,20 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
             }
         }
 
-        let dir_entries = dir_futures
+        // The stream bound keeps the fan-out in check at each level; the
+        // files open at once are bounded by `uploads`, which every level
+        // shares, since per-level bounds would multiply.
+        let dir_entries = futures::stream::iter(dir_futures)
+            .buffer_unordered(UPLOAD_CONCURRENCY)
             .try_collect::<Vec<(DirectoryNode, VecDeque<Directory>)>>()
             .await?;
         let (mut file_nodes, mut symlinks) = try_join(
-            file_futures.try_collect::<Vec<FileNode>>(),
-            symlink_futures.try_collect::<Vec<SymlinkNode>>(),
+            futures::stream::iter(file_futures)
+                .buffer_unordered(UPLOAD_CONCURRENCY)
+                .try_collect::<Vec<FileNode>>(),
+            futures::stream::iter(symlink_futures)
+                .buffer_unordered(UPLOAD_CONCURRENCY)
+                .try_collect::<Vec<SymlinkNode>>(),
         )
         .await?;
 
@@ -1396,18 +1796,54 @@ async fn do_cleanup(
     operation_id: &OperationId,
     action_directory: &str,
 ) -> Result<(), Error> {
-    // Mark this operation as being cleaned up
-    let Some(_cleaning_guard) = running_actions_manager.perform_cleanup(operation_id.clone())
-    else {
-        // Cleanup is already happening elsewhere.
-        return Ok(());
-    };
+    // Mark this operation as being cleaned up. The other holders of the
+    // mark are the orphan sweep and a retry's stale-directory removal, both
+    // brief; waiting on them is what keeps this cleanup from being skipped,
+    // which would leave the action's entries and reservations in place for
+    // good.
+    let _cleaning_guard = running_actions_manager
+        .take_cleanup_mark(operation_id.clone())
+        .await;
 
-    debug!("Worker cleaning up");
+    let capture = running_actions_manager
+        .buck2_captures
+        .lock()
+        .remove(operation_id);
+    if let Some(capture) = capture
+        && let Err(err) = capture.finish().await
+    {
+        // Capture completeness is independent of the execution result.
+        warn!(%operation_id, ?err, "Buck2 archive finalization was partial");
+    }
+
+    // Debug-only hack to not cleanup workers when we need to debug something
+    if !env::var("NATIVELINK_DONT_CLEANUP")
+        .unwrap_or_default()
+        .is_empty()
+    {
+        info!("Skip because env var");
+        return Ok(());
+    }
+
+    debug!(%action_directory, "Worker cleaning up");
     // Note: We need to be careful to keep trying to cleanup even if one of the steps fails.
-    let remove_dir_result = fs::remove_dir_all(action_directory)
-        .await
-        .err_tip(|| format!("Could not remove working directory {action_directory}"));
+    // A fetch or an upload ended by a kill or a timeout can leave a blocking
+    // copy or a stamp finishing inside the tree for a moment; the removal is
+    // retried through that instead of failing on the first try.
+    let remove_deadline = Instant::now() + running_actions_manager.max_cleanup_wait;
+    let remove_dir_result = loop {
+        match fs::remove_dir_all(action_directory).await {
+            Ok(()) => break Ok(()),
+            Err(err) if Instant::now() < remove_deadline => {
+                debug!(%operation_id, ?err, "Removing the working directory again");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(err) => {
+                break Err(err)
+                    .err_tip(|| format!("Could not remove working directory {action_directory}"));
+            }
+        }
+    };
 
     if let Err(err) = running_actions_manager.cleanup_action(operation_id) {
         error!(%operation_id, ?err, "Error cleaning up action");
@@ -1450,10 +1886,178 @@ pub trait RunningAction: Sync + Send + Sized + Unpin + 'static {
     fn get_work_directory(&self) -> &String;
 }
 
+/// What an action wrote to stdout or stderr: in memory when small, on disk
+/// past `max_captured_output_bytes`, with the head kept for the log.
+#[derive(Debug)]
+pub enum CapturedOutput {
+    Memory(Bytes),
+    Spilled {
+        path: PathBuf,
+        len: u64,
+        head: Bytes,
+    },
+}
+
+impl CapturedOutput {
+    const fn len(&self) -> u64 {
+        match self {
+            Self::Memory(bytes) => bytes.len() as u64,
+            Self::Spilled { len, .. } => *len,
+        }
+    }
+
+    /// The first bytes, for a log line; all of them when in memory.
+    fn head(&self) -> &[u8] {
+        match self {
+            Self::Memory(bytes) => bytes,
+            Self::Spilled { head, .. } => head,
+        }
+    }
+}
+
+/// The first `limit` bytes of captured output as text for a log line. The
+/// cut is by bytes, so one through a multibyte character becomes U+FFFD
+/// rather than a panic.
+pub fn log_excerpt(bytes: &[u8], limit: usize) -> Cow<'_, str> {
+    String::from_utf8_lossy(&bytes[..min(bytes.len(), limit)])
+}
+
+impl From<Bytes> for CapturedOutput {
+    fn from(bytes: Bytes) -> Self {
+        Self::Memory(bytes)
+    }
+}
+
+/// Reads a child's stream to the end, or until `stop` says to keep what
+/// has been read: an action can leave a process behind that holds the
+/// pipe open after the action itself has exited, and its output must not
+/// wait on that. Up to `cap` bytes stay in memory; the moment the buffer
+/// passes the cap, everything so far and everything after goes to
+/// `spill_path`, and the buffer is cut back to the cap as the head.
+pub async fn capture_output<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    cap: u64,
+    spill_path: PathBuf,
+    what: &str,
+    mut stop: watch::Receiver<bool>,
+) -> Result<CapturedOutput, Error> {
+    // `None` when told to stop; a closed sender counts as that too.
+    async fn read_or_stop<R: tokio::io::AsyncRead + Unpin>(
+        reader: &mut R,
+        buf: &mut BytesMut,
+        stop: &mut watch::Receiver<bool>,
+        what: &str,
+    ) -> Result<Option<usize>, Error> {
+        if *stop.borrow() {
+            return Ok(None);
+        }
+        tokio::select! {
+            // Data already in the pipe is read before a stop is honoured.
+            biased;
+            read = reader.read_buf(buf) => read
+                .map(Some)
+                .err_tip(|| format!("Error reading {what} stream")),
+            _ = stop.changed() => Ok(None),
+        }
+    }
+    let mut buf = BytesMut::new();
+    // A raw handle, outside the open-file budget on purpose: the spill
+    // lives as long as the child's stream, an fd the budget never covered,
+    // and a permit held for a whole noisy action would starve the store
+    // paths the budget exists for.
+    let mut spill: Option<(tokio::fs::File, u64)> = None;
+    loop {
+        if let Some((file, len)) = spill.as_mut() {
+            let mut chunk = BytesMut::with_capacity(64 * 1024);
+            let Some(sz) = read_or_stop(&mut reader, &mut chunk, &mut stop, what).await? else {
+                break;
+            };
+            if sz == 0 {
+                break;
+            }
+            file.write_all(&chunk)
+                .await
+                .err_tip(|| format!("Error spilling {what} to {}", spill_path.display()))?;
+            *len += sz as u64;
+            continue;
+        }
+        let Some(sz) = read_or_stop(&mut reader, &mut buf, &mut stop, what).await? else {
+            break;
+        };
+        if sz == 0 {
+            break;
+        }
+        if cap > 0 && buf.len() as u64 > cap {
+            let mut file = tokio::fs::File::create(&spill_path)
+                .await
+                .err_tip(|| format!("Error creating {what} spill file {}", spill_path.display()))?;
+            file.write_all(&buf)
+                .await
+                .err_tip(|| format!("Error spilling {what} to {}", spill_path.display()))?;
+            let len = buf.len() as u64;
+            buf.truncate(usize::try_from(cap).unwrap_or(usize::MAX));
+            spill = Some((file, len));
+        }
+    }
+    match spill {
+        None => Ok(CapturedOutput::Memory(buf.freeze())),
+        Some((mut file, len)) => {
+            file.flush()
+                .await
+                .err_tip(|| format!("Error flushing {what} spill file"))?;
+            drop(file);
+            Ok(CapturedOutput::Spilled {
+                path: spill_path,
+                len,
+                head: buf.freeze(),
+            })
+        }
+    }
+}
+
+/// Uploads captured output to the CAS, from memory or from its spill file.
+async fn upload_captured_output(
+    cas_store: Pin<&FastSlowStore>,
+    output: CapturedOutput,
+    hasher: DigestHasherFunc,
+    what: &str,
+) -> Result<DigestInfo, Error> {
+    match output {
+        CapturedOutput::Memory(data) => {
+            let digest = compute_buf_digest(&data, &mut hasher.hasher());
+            cas_store
+                .update_oneshot(digest, data)
+                .await
+                .err_tip(|| format!("Uploading {what}"))?;
+            Ok(digest)
+        }
+        CapturedOutput::Spilled { path, len, .. } => {
+            let file = fs::open_file(&path, 0, u64::MAX)
+                .await
+                .err_tip(|| format!("Could not open {what} spill file {}", path.display()))?;
+            let (digest, file) = hasher
+                .hasher()
+                .digest_for_file(&path, file.into_inner(), Some(len))
+                .await
+                .err_tip(|| format!("Failed to hash {what} spill file {}", path.display()))?;
+            cas_store
+                .update_with_whole_file(
+                    digest,
+                    path.clone().into_os_string(),
+                    file,
+                    UploadSizeInfo::ExactSize(len),
+                )
+                .await
+                .err_tip(|| format!("Uploading {what} from {}", path.display()))?;
+            Ok(digest)
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RunningActionImplExecutionResult {
-    stdout: Bytes,
-    stderr: Bytes,
+    stdout: CapturedOutput,
+    stderr: CapturedOutput,
     exit_code: i32,
     resource_usage: Option<ActionResourceUsage>,
 }
@@ -1488,6 +2092,9 @@ pub struct RunningActionImpl {
     input_lease: Option<Arc<ActionInputLease>>,
     timeout: Duration,
     running_actions_manager: Arc<RunningActionsManagerImpl>,
+    /// Set on a kill; every phase that can wait watches it, so a kill ends
+    /// a fetch or an upload as surely as it ends the command.
+    kill_token: watch::Sender<bool>,
     state: Mutex<RunningActionImplState>,
     has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
@@ -1511,7 +2118,9 @@ impl RunningActionImpl {
             )
         });
         let (kill_channel_tx, kill_channel_rx) = oneshot::channel();
+        let (kill_token, _) = watch::channel(false);
         Self {
+            kill_token,
             operation_id,
             action_directory,
             work_directory,
@@ -1554,6 +2163,44 @@ impl RunningActionImpl {
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
     async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+        // Before anything lands on disk: an action that reserved more than
+        // is free is refused as backpressure, not run into ENOSPC halfway
+        // through its inputs. Free means free after what the actions
+        // already admitted reserved: four 4 GiB actions dispatched in one
+        // second all see the same 10 GiB, so the disk alone would admit
+        // them all. The reservation is held until the action's cleanup.
+        if let Some(property) = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| enforcement.disk_property_name.as_deref())
+            && let Some(reserved_kb) = self
+                .action_info
+                .platform_properties
+                .get(property)
+                .and_then(|value| value.parse::<u64>().ok())
+            && reserved_kb > 0
+            && let Some(free_kb) = free_disk_kb(&self.running_actions_manager.root_action_directory)
+        {
+            // Held across the check and the insert, so two actions
+            // preparing at once cannot both pass on the same free space.
+            let mut reservations = self.running_actions_manager.disk_reservations_kb.lock();
+            let reserved_by_others_kb: u64 = reservations
+                .iter()
+                .filter(|(operation_id, _)| **operation_id != self.operation_id)
+                .map(|(_, kb)| *kb)
+                .sum();
+            if free_kb.saturating_sub(reserved_by_others_kb) < reserved_kb {
+                self.metrics().disk_guard_refusals.inc();
+                return Err(make_err!(
+                    Code::ResourceExhausted,
+                    "Not enough free disk for this action: reserved {reserved_kb} KiB ({property}), {free_kb} KiB free under {} with {reserved_by_others_kb} KiB reserved by the actions already admitted",
+                    self.running_actions_manager.root_action_directory
+                ));
+            }
+            reservations.insert(self.operation_id.clone(), reserved_kb);
+        }
         {
             let mut state = self.state.lock();
             state.execution_metadata.input_fetch_start_timestamp =
@@ -1568,6 +2215,7 @@ impl RunningActionImpl {
                 )
                 .await
                 .err_tip(|| "Converting command_digest to Command")
+                .map_err(tag_missing_input)
             });
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
@@ -1590,6 +2238,7 @@ impl RunningActionImpl {
                         self.input_lease.clone(),
                     ))
                     .await
+                    .map_err(tag_missing_input)
             })
             .await?;
             command
@@ -1668,6 +2317,98 @@ impl RunningActionImpl {
         })
     }
 
+    /// The environment an action's process starts with: the worker's
+    /// `additional_environment`, then the action's own variables on top,
+    /// and on Windows the `SystemRoot` and `PATH` defaults without which
+    /// nothing runs. With `per_action` the sources that belong to one
+    /// action (its timeout, a side channel file, its directory) are in and
+    /// the side channel file is reported through it; without it they are
+    /// left out, for a pooled process that serves many actions.
+    fn action_environment(
+        &self,
+        command_proto: &ProtoCommand,
+        requested_timeout: Duration,
+        mut per_action: Option<&mut Option<Cow<'_, OsStr>>>,
+    ) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::new();
+        if let Some(additional_environment) = &self
+            .running_actions_manager
+            .execution_configuration
+            .additional_environment
+        {
+            for (name, source) in additional_environment {
+                let value = match source {
+                    EnvironmentSource::Property(property) => self
+                        .action_info
+                        .platform_properties
+                        .get(property)
+                        .cloned()
+                        .unwrap_or_default(),
+                    EnvironmentSource::Value(value) => value.clone(),
+                    EnvironmentSource::FromEnvironment => env::var(name).unwrap_or_default(),
+                    EnvironmentSource::TimeoutMillis => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        requested_timeout.as_millis().to_string()
+                    }
+                    EnvironmentSource::SideChannelFile => {
+                        let Some(side_channel_file) = per_action.as_mut() else {
+                            continue;
+                        };
+                        let file = format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
+                        **side_channel_file = Some(Cow::Owned(file.clone().into()));
+                        file
+                    }
+                    EnvironmentSource::ActionDirectory => {
+                        if per_action.is_none() {
+                            continue;
+                        }
+                        self.action_directory.clone()
+                    }
+                };
+                env.insert(name.clone(), value);
+            }
+        }
+        for variable in &command_proto.environment_variables {
+            env.insert(variable.name.clone(), variable.value.clone());
+        }
+        // If SystemRoot is not set on windows we set it to default. Failing
+        // to do this causes all commands to fail.
+        #[cfg(target_family = "windows")]
+        {
+            if !env.keys().any(|name| name.to_uppercase() == "SYSTEMROOT") {
+                env.insert("SystemRoot".to_string(), "C:\\Windows".to_string());
+            }
+            if !env.keys().any(|name| name.to_uppercase() == "PATH") {
+                env.insert("PATH".to_string(), "C:\\Windows\\System32".to_string());
+            }
+        }
+        env
+    }
+
+    /// What the scheduler's kill leaves behind for a pooled action, whether
+    /// it came while waiting for a worker process or while one served it.
+    fn record_persistent_worker_kill(&self, command_proto: ProtoCommand, command: &str) {
+        let mut state = self.state.lock();
+        state.error = Error::merge_option(
+            state.error.take(),
+            Some(Error::new(
+                Code::Cancelled,
+                format!("Persistent worker command '{command}' was killed by scheduler"),
+            )),
+        );
+        state.command_proto = Some(command_proto);
+        state.execution_result = Some(RunningActionImplExecutionResult {
+            stdout: Bytes::new().into(),
+            stderr: Bytes::new().into(),
+            exit_code: EXIT_CODE_FOR_SIGNAL,
+            resource_usage: None,
+        });
+        state.execution_metadata.execution_completed_timestamp =
+            (self.running_actions_manager.callbacks.now_fn)();
+    }
+
     async fn inner_execute(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let (command_proto, mut kill_channel_rx) = {
             let mut state = self.state.lock();
@@ -1700,56 +2441,132 @@ impl RunningActionImpl {
         } else {
             command_proto.arguments.iter().map(AsRef::as_ref).collect()
         };
+        let command_directory = if command_proto.working_directory.is_empty() {
+            self.work_directory.clone()
+        } else {
+            format!(
+                "{}/{}",
+                self.work_directory, command_proto.working_directory
+            )
+        };
         // TODO(palfrey): This should probably be in debug, but currently
         //                    that's too busy and we often rely on this to
         //                    figure out toolchain misconfiguration issues.
         //                    De-bloat the `debug` level by using the `trace`
         //                    level more effectively and adjust this.
-        info!(?args, "Executing command");
+        info!(?args, %command_directory, "Executing command");
 
         let program = self
             .canonicalise_path(args[0], &command_proto.working_directory)
             .err_tip(|| format!("Canonicalisation failure. Command={args:#?}"))?;
-        if let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info) {
+        let requested_timeout = if self.action_info.timeout.is_zero() {
+            self.running_actions_manager.max_action_timeout
+        } else {
+            self.action_info.timeout
+        };
+        if self
+            .running_actions_manager
+            .execution_configuration
+            .persistent_workers
+            .enabled
+            && let Some(wire_format_result) = action_supports_persistent_workers(&self.action_info)
+        {
             match wire_format_result {
                 Ok(wire_format) => {
                     let command_argv = os_args_to_strings(&args)?;
-                    let key = WorkerKey::from_argv(&command_argv, wire_format)?;
+                    // What a one-shot action gets, but for the sources that
+                    // belong to one action: a process that serves many
+                    // cannot carry a timeout, a side channel file or an
+                    // action directory.
+                    let env = self.action_environment(&command_proto, requested_timeout, None);
+                    let key = WorkerKey::from_argv(&command_argv, wire_format)?
+                        .with_env(env.into_iter().collect());
                     let request = WorkRequest {
                         arguments: persistent_worker_request_arguments(&command_argv),
                         inputs: Vec::<PersistentWorkerInput>::new(),
                         request_id: 0,
                         cancel: false,
                         verbosity: 0,
-                        sandbox_dir: if command_proto.working_directory.is_empty() {
-                            self.work_directory.clone()
-                        } else {
-                            format!(
-                                "{}/{}",
-                                self.work_directory, command_proto.working_directory
-                            )
-                        },
+                        sandbox_dir: command_directory.clone(),
                     };
                     let worker_cwd =
                         PathBuf::from(&self.running_actions_manager.root_action_directory);
 
-                    match self
+                    // The wait for a process is bounded by the action's own
+                    // timeout as well as the pool's, and raced against the
+                    // kill: a cancelled action must not hold a slot, and a
+                    // short action cannot wait longer than it may run.
+                    let acquire_started = Instant::now();
+                    let acquire_bound = self
                         .running_actions_manager
                         .persistent_worker_pool
-                        .acquire(key.clone(), &program, &worker_cwd)
-                        .await
-                    {
+                        .acquire_timeout()
+                        .min(self.timeout);
+                    let acquired = {
+                        let acquire_fut = self
+                            .running_actions_manager
+                            .persistent_worker_pool
+                            .acquire(key.clone(), &program, &worker_cwd);
+                        tokio::pin!(acquire_fut);
+                        tokio::select! {
+                            result = &mut acquire_fut => Some(result),
+                            _ = &mut kill_channel_rx => None,
+                            () = tokio::time::sleep(acquire_bound) => Some(Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "No persistent worker came back within the action's remaining time ({acquire_bound:?})"
+                            ))),
+                        }
+                    };
+                    let Some(acquired) = acquired else {
+                        let command = args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                        self.record_persistent_worker_kill(command_proto, &command);
+                        return Ok(self);
+                    };
+                    match acquired {
                         Ok(mut lease) => {
+                            self.metrics().persistent_worker_dispatches.inc();
                             let timer = self.metrics().child_process.begin_timer();
+                            let execution_started = Instant::now();
+                            // What the pooled process and its children use
+                            // while they serve this request. The process is
+                            // shared, so nothing here is enforced against
+                            // the action's reservation; it is measured so
+                            // the sizing loop learns what the tool needs.
+                            // CPU is what the process spent from here on;
+                            // peak memory is the whole process, which holds
+                            // what earlier requests left in it.
+                            #[cfg(target_os = "linux")]
+                            let sampler = lease.worker().pid().map(|pgid| {
+                                start_action_resource_usage_sampler(
+                                    pgid,
+                                    Ceilings {
+                                        memory_limit_kb: None,
+                                        disk_limit_kb: None,
+                                        over_limit_tx: None,
+                                    },
+                                    None,
+                                )
+                            });
                             let dispatch_result = {
+                                let remaining =
+                                    self.timeout.saturating_sub(acquire_started.elapsed());
                                 let dispatch_fut =
-                                    lease.worker().dispatch_with_timeout(&request, self.timeout);
+                                    lease.worker().dispatch_with_timeout(&request, remaining);
                                 tokio::pin!(dispatch_fut);
                                 tokio::select! {
                                     result = &mut dispatch_fut => Some(result),
                                     _ = &mut kill_channel_rx => None,
                                 }
                             };
+                            #[cfg(target_os = "linux")]
+                            let sampled_usage = match sampler {
+                                Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                                    .await
+                                    .unwrap_or_default(),
+                                None => SampledResourceUsage::default(),
+                            };
+                            #[cfg(not(target_os = "linux"))]
+                            let sampled_usage = SampledResourceUsage::default();
                             let response = match dispatch_result {
                                 Some(Ok(response)) => {
                                     lease.release(true).await;
@@ -1764,29 +2581,9 @@ impl RunningActionImpl {
                                 None => {
                                     drop(timer);
                                     lease.release(false).await;
-                                    {
-                                        let mut state = self.state.lock();
-                                        state.error = Error::merge_option(
-                                            state.error.take(),
-                                            Some(Error::new(
-                                                Code::Cancelled,
-                                                format!(
-                                                    "Persistent worker command '{}' was killed by scheduler",
-                                                    args.join(OsStr::new(" ")).to_string_lossy()
-                                                ),
-                                            )),
-                                        );
-                                        state.command_proto = Some(command_proto);
-                                        state.execution_result =
-                                            Some(RunningActionImplExecutionResult {
-                                                stdout: Bytes::new(),
-                                                stderr: Bytes::new(),
-                                                exit_code: EXIT_CODE_FOR_SIGNAL,
-                                                resource_usage: None,
-                                            });
-                                        state.execution_metadata.execution_completed_timestamp =
-                                            (self.running_actions_manager.callbacks.now_fn)();
-                                    }
+                                    let command =
+                                        args.join(OsStr::new(" ")).to_string_lossy().into_owned();
+                                    self.record_persistent_worker_kill(command_proto, &command);
                                     return Ok(self);
                                 }
                             };
@@ -1798,14 +2595,47 @@ impl RunningActionImpl {
                                 self.metrics().child_process_failure_error_code.inc();
                             }
                             info!(?args, ?key, "Persistent worker command complete");
+                            let (memory_property, disk_property) = self
+                                .running_actions_manager
+                                .execution_configuration
+                                .resource_enforcement
+                                .as_ref()
+                                .map_or((None, None), |e| {
+                                    (
+                                        e.memory.as_ref().map(|m| m.property_name.as_str()),
+                                        e.disk_property_name.as_deref(),
+                                    )
+                                });
+                            let (outcome, enforced) =
+                                classify_outcome(None, None, sampled_usage.last_memory_kb, None);
+                            let resource_usage = Some(ActionResourceUsage {
+                                peak_memory_kb: sampled_usage.peak_memory_kb,
+                                cpu_time_ms: sampled_usage.cpu_time_ms,
+                                sampled: sampled_usage.peak_memory_kb > 0
+                                    || sampled_usage.cpu_time_ms > 0,
+                                operation_id: String::new(),
+                                worker_id: String::new(),
+                                wall_time_ms: u64::try_from(
+                                    execution_started.elapsed().as_millis(),
+                                )
+                                .unwrap_or(u64::MAX),
+                                peak_disk_kb: 0,
+                                outcome: outcome.into(),
+                                enforced,
+                                reserved: reservation_of(
+                                    &self.action_info.platform_properties,
+                                    memory_property,
+                                    disk_property,
+                                ),
+                            });
                             {
                                 let mut state = self.state.lock();
                                 state.command_proto = Some(command_proto);
                                 state.execution_result = Some(RunningActionImplExecutionResult {
-                                    stdout: Bytes::new(),
-                                    stderr: Bytes::from(response.output),
+                                    stdout: Bytes::new().into(),
+                                    stderr: Bytes::from(response.output).into(),
                                     exit_code: response.exit_code,
-                                    resource_usage: None,
+                                    resource_usage,
                                 });
                                 state.execution_metadata.execution_completed_timestamp =
                                     (self.running_actions_manager.callbacks.now_fn)();
@@ -1813,6 +2643,7 @@ impl RunningActionImpl {
                             return Ok(self);
                         }
                         Err(err) => {
+                            self.metrics().persistent_worker_fallbacks.inc();
                             info!(
                                 ?err,
                                 ?key,
@@ -1822,6 +2653,7 @@ impl RunningActionImpl {
                     }
                 }
                 Err(err) => {
+                    self.metrics().persistent_worker_fallbacks.inc();
                     info!(
                         ?err,
                         "Falling back to one-shot execution; unsupported persistent worker protocol"
@@ -1839,79 +2671,31 @@ impl RunningActionImpl {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(format!(
-                "{}/{}",
-                self.work_directory, command_proto.working_directory
-            ))
+            .current_dir(command_directory.clone())
             .env_clear();
 
-        let requested_timeout = if self.action_info.timeout.is_zero() {
-            self.running_actions_manager.max_action_timeout
-        } else {
-            self.action_info.timeout
-        };
-
-        let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
-        if let Some(additional_environment) = &self
+        if self
             .running_actions_manager
             .execution_configuration
-            .additional_environment
+            .set_tmpdir
         {
-            for (name, source) in additional_environment {
-                let value = match source {
-                    EnvironmentSource::Property(property) => self
-                        .action_info
-                        .platform_properties
-                        .get(property)
-                        .map_or_else(|| Cow::Borrowed(""), |v| Cow::Borrowed(v.as_str())),
-                    EnvironmentSource::Value(value) => Cow::Borrowed(value.as_str()),
-                    EnvironmentSource::FromEnvironment => {
-                        Cow::Owned(env::var(name).unwrap_or_default())
-                    }
-                    EnvironmentSource::TimeoutMillis => {
-                        Cow::Owned(requested_timeout.as_millis().to_string())
-                    }
-                    EnvironmentSource::SideChannelFile => {
-                        let file_cow =
-                            format!("{}/{}", self.action_directory, Uuid::new_v4().simple());
-                        maybe_side_channel_file = Some(Cow::Owned(file_cow.clone().into()));
-                        Cow::Owned(file_cow)
-                    }
-                    EnvironmentSource::ActionDirectory => {
-                        Cow::Borrowed(self.action_directory.as_str())
-                    }
-                };
-                command_builder.env(name, value.as_ref());
-            }
+            // One tmp per action, removed with the action directory, so two
+            // actions writing the same name under $TMPDIR no longer collide.
+            // Code that hardcodes /tmp still does.
+            let tmp_directory = format!("{}/tmp", self.action_directory);
+            fs::create_dir_all(&tmp_directory)
+                .await
+                .err_tip(|| format!("Creating {tmp_directory} for TMPDIR"))?;
+            command_builder.env("TMPDIR", &tmp_directory);
         }
 
-        #[cfg(target_family = "unix")]
-        let envs = &command_proto.environment_variables;
-        // If SystemRoot is not set on windows we set it to default. Failing to do
-        // this causes all commands to fail.
-        #[cfg(target_family = "windows")]
-        let envs = {
-            let mut envs = command_proto.environment_variables.clone();
-            if !envs.iter().any(|v| v.name.to_uppercase() == "SYSTEMROOT") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "SystemRoot".to_string(),
-                        value: "C:\\Windows".to_string(),
-                    },
-                );
-            }
-            if !envs.iter().any(|v| v.name.to_uppercase() == "PATH") {
-                envs.push(
-                    nativelink_proto::build::bazel::remote::execution::v2::command::EnvironmentVariable {
-                        name: "PATH".to_string(),
-                        value: "C:\\Windows\\System32".to_string(),
-                    },
-                );
-            }
-            envs
-        };
-        for environment_variable in envs {
-            command_builder.env(&environment_variable.name, &environment_variable.value);
+        let mut maybe_side_channel_file: Option<Cow<'_, OsStr>> = None;
+        for (name, value) in self.action_environment(
+            &command_proto,
+            requested_timeout,
+            Some(&mut maybe_side_channel_file),
+        ) {
+            command_builder.env(name, value);
         }
 
         // Sandboxing of the command if we are running on Linux, this resolves issues where
@@ -1921,42 +2705,64 @@ impl RunningActionImpl {
             let use_namespaces = self.running_actions_manager.use_namespaces;
 
             if !matches!(use_namespaces, UseNamespaces::No) {
+                let (mount, isolate_tmp) = match use_namespaces {
+                    UseNamespaces::YesAndMount { isolate_tmp } => (true, isolate_tmp),
+                    UseNamespaces::No | UseNamespaces::Yes => (false, false),
+                };
                 let root_action_directory = std::ffi::CString::new(
                     self.running_actions_manager.root_action_directory.clone(),
                 )
                 .err_tip(|| "In RunningActionImpl::inner_execute()")?;
                 let action_directory = std::ffi::CString::new(self.action_directory.clone())
                     .err_tip(|| "In RunningActionImpl::inner_execute()")?;
+                // The action's private /tmp is its own tmp directory, the
+                // same one TMPDIR points at, bound over /tmp in the child.
+                let tmp_directory = if isolate_tmp {
+                    let tmp_directory = format!("{}/tmp", self.action_directory);
+                    fs::create_dir_all(&tmp_directory)
+                        .await
+                        .err_tip(|| format!("Creating {tmp_directory} for the private /tmp"))?;
+                    Some(
+                        std::ffi::CString::new(tmp_directory)
+                            .err_tip(|| "In RunningActionImpl::inner_execute()")?,
+                    )
+                } else {
+                    None
+                };
 
                 // SAFETY: This function is specifically designed to operate in a async-signal-safe
                 // environment.
                 unsafe {
                     command_builder.pre_exec(move || {
                         crate::namespace_utils::configure_namespace(
-                            matches!(use_namespaces, UseNamespaces::YesAndMount),
+                            mount,
+                            tmp_directory.as_deref(),
                             &root_action_directory,
                             &action_directory,
                         )
                     });
                 }
             }
-
-            // Run the action as its own process-group leader (pgid == child
-            // pid). The resource-usage sampler attributes memory by process
-            // group, so this keeps the whole action together — including
-            // processes reparented to the worker when an intermediate shell
-            // exits — and never conflates it with the worker's own group.
-            command_builder.process_group(0);
         }
+        // Run the action as its own process-group leader (pgid == child
+        // pid) on every unix. The resource-usage sampler attributes memory
+        // by process group, and the kill at exit ends the group, so this
+        // keeps the whole action together, including processes reparented
+        // to the worker when an intermediate shell exits, and never
+        // conflates it with the worker's own group.
+        #[cfg(target_family = "unix")]
+        command_builder.process_group(0);
 
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {args:?}"))?;
-        let mut stdout_reader = child_process
+        // Ours until the wait below collects it; the reaper leaves it alone.
+        let _owned_child = crate::reaper::OwnedChild::new(child_process.id());
+        let stdout_reader = child_process
             .stdout
             .take()
             .err_tip(|| "Expected stdout to exist on command this should never happen")?;
-        let mut stderr_reader = child_process
+        let stderr_reader = child_process
             .stderr
             .take()
             .err_tip(|| "Expected stderr to exist on command this should never happen")?;
@@ -1972,10 +2778,83 @@ impl RunningActionImpl {
             child_process,
         );
 
+        // The reservation the scheduler placed this action by, if the
+        // worker is asked to hold it to that number.
+        let memory_reservation = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| {
+                let memory = enforcement.memory.as_ref()?;
+                let reserved_kb = self
+                    .action_info
+                    .platform_properties
+                    .get(&memory.property_name)?
+                    .parse::<u64>()
+                    .ok()?;
+                (reserved_kb > 0).then(|| {
+                    let limit_kb = reserved_kb.saturating_mul(100 + memory.headroom_percent) / 100;
+                    (reserved_kb, limit_kb)
+                })
+            });
+        // The disk reservation, held to only with `disk: soft`; disk is
+        // measured whenever the enforcement names a disk property.
+        let disk_enforcement = self
+            .running_actions_manager
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| {
+                let property = enforcement.disk_property_name.as_deref()?;
+                let reserved_kb = self
+                    .action_info
+                    .platform_properties
+                    .get(property)
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0);
+                let limit_kb = (enforcement.disk_soft && reserved_kb > 0).then(|| {
+                    reserved_kb.saturating_mul(100 + enforcement.disk_headroom_percent) / 100
+                });
+                Some((reserved_kb, limit_kb))
+            });
+        let (over_limit_tx, over_limit_rx) = oneshot::channel::<OverLimit>();
+        // Holds the sender when no ceiling is enforced, so the receiver
+        // below stays pending instead of resolving closed.
+        let mut over_limit_keepalive = Some(over_limit_tx);
         #[cfg(target_os = "linux")]
-        let mut maybe_resource_usage_sampler =
-            child_process.id().map(start_action_resource_usage_sampler);
+        let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
+            let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
+            let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
+            let over_limit_tx = (memory_limit_kb.is_some() || disk_limit_kb.is_some())
+                .then(|| over_limit_keepalive.take())
+                .flatten();
+            let disk_directory = disk_enforcement.map(|_| {
+                let directory = PathBuf::from(&self.action_directory);
+                let since = directory_stamp(&directory).unwrap_or_else(|err| {
+                    warn!(?err, "Timing the disk walk by the wall clock instead");
+                    SystemTime::now()
+                });
+                (directory, since)
+            });
+            start_action_resource_usage_sampler(
+                pgid,
+                Ceilings {
+                    memory_limit_kb,
+                    disk_limit_kb,
+                    over_limit_tx,
+                },
+                disk_directory,
+            )
+        });
+        #[cfg(not(target_os = "linux"))]
+        let _ = &disk_enforcement;
+        let mut over_limit_fut = over_limit_rx.fuse();
 
+        // The group to end when the action's own process has exited; taken
+        // before the guard owns the child.
+        #[cfg(target_family = "unix")]
+        let action_pgid = child_process.id();
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
                 child_process.try_wait();
@@ -1995,33 +2874,45 @@ impl RunningActionImpl {
             }
         });
 
+        let output_cap = self
+            .running_actions_manager
+            .execution_configuration
+            .max_captured_output_bytes;
+        let stdout_spill = PathBuf::from(&self.action_directory).join("nativelink.stdout");
+        let stderr_spill = PathBuf::from(&self.action_directory).join("nativelink.stderr");
+        // Flipped when the pipes have had their drain after the action
+        // ended; the readers then keep what they have.
+        let (drain_stop_tx, drain_stop_rx) = watch::channel(false);
+        let stdout_stop = drain_stop_rx.clone();
         let all_stdout_fut = spawn!("stdout_reader", async move {
-            let mut all_stdout = BytesMut::new();
-            loop {
-                let sz = stdout_reader
-                    .read_buf(&mut all_stdout)
-                    .await
-                    .err_tip(|| "Error reading stdout stream")?;
-                if sz == 0 {
-                    break; // EOF.
-                }
-            }
-            Result::<Bytes, Error>::Ok(all_stdout.freeze())
+            capture_output(
+                stdout_reader,
+                output_cap,
+                stdout_spill,
+                "stdout",
+                stdout_stop,
+            )
+            .await
         });
         let all_stderr_fut = spawn!("stderr_reader", async move {
-            let mut all_stderr = BytesMut::new();
-            loop {
-                let sz = stderr_reader
-                    .read_buf(&mut all_stderr)
-                    .await
-                    .err_tip(|| "Error reading stderr stream")?;
-                if sz == 0 {
-                    break; // EOF.
-                }
-            }
-            Result::<Bytes, Error>::Ok(all_stderr.freeze())
+            capture_output(
+                stderr_reader,
+                output_cap,
+                stderr_spill,
+                "stderr",
+                drain_stop_rx,
+            )
+            .await
         });
-        let mut killed_action = false;
+        let mut kill_reason: Option<KillReason> = None;
+        let kill_grace = self
+            .running_actions_manager
+            .execution_configuration
+            .kill_grace;
+        // Armed by a soft kill; fires SIGKILL if the action is still there
+        // when the grace period ends.
+        let mut grace_fut: Fuse<BoxFuture<'static, ()>> = Fuse::terminated();
+        let execution_started = std::time::Instant::now();
 
         let timer = self.metrics().child_process.begin_timer();
         let mut sleep_fut = (self.running_actions_manager.callbacks.sleep_fn)(self.timeout).fuse();
@@ -2029,19 +2920,15 @@ impl RunningActionImpl {
             tokio::select! {
                 () = &mut sleep_fut => {
                     self.running_actions_manager.metrics.task_timeouts.inc();
-                    killed_action = true;
-                    if let Err(err) = child_process_guard.kill().await {
-                        error!(
-                            ?err,
-                            "Could not kill process in RunningActionsManager for action timeout",
-                        );
-                    }
+                    kill_reason = Some(KillReason::Timeout);
+                    grace_fut = stop_action(&mut child_process_guard, kill_grace, "action timeout").await;
                     {
                         let joined_command = args.join(OsStr::new(" "));
                         let command = joined_command.to_string_lossy();
                         info!(
                             seconds = self.action_info.timeout.as_secs_f32(),
                             %command,
+                            %command_directory,
                             "Command timed out"
                         );
                         let mut state = self.state.lock();
@@ -2055,40 +2942,174 @@ impl RunningActionImpl {
                         )));
                     }
                 },
+                () = &mut grace_fut => {
+                    warn!(
+                        operation_id = ?self.operation_id,
+                        grace_ms = kill_grace.as_millis(),
+                        "Action did not leave on SIGTERM within its grace period, sending SIGKILL"
+                    );
+                    hard_kill(&mut child_process_guard, "grace period expired").await;
+                },
+                Ok(over_limit) = &mut over_limit_fut => match over_limit {
+                    OverLimit::Disk(observed_kb) => {
+                        self.running_actions_manager.metrics.disk_reservation_kills.inc();
+                        kill_reason = Some(KillReason::Disk);
+                        // The files are still being written; no grace here.
+                        hard_kill(&mut child_process_guard, "disk reservation").await;
+                        let (reserved_kb, limit_kb) = disk_enforcement
+                            .map_or((0, 0), |(reserved_kb, limit_kb)| {
+                                (reserved_kb, limit_kb.unwrap_or(0))
+                            });
+                        let (property, headroom) = self
+                            .running_actions_manager
+                            .execution_configuration
+                            .resource_enforcement
+                            .as_ref()
+                            .map_or(("", 0), |e| (e.disk_property_name.as_deref().unwrap_or(""), e.disk_headroom_percent));
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            reserved_kb,
+                            limit_kb,
+                            observed_kb,
+                            "Action exceeded its disk reservation, killed"
+                        );
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action exceeded its disk reservation: reserved {reserved_kb} KiB ({property}), \
+                                 limit {limit_kb} KiB with {headroom}% headroom, its own files came to {observed_kb} KiB. \
+                                 Raise the reservation or write less."
+                            ),
+                        )));
+
+                    }
+                    OverLimit::Memory(observed_kb) => {
+                        self.running_actions_manager.metrics.memory_reservation_kills.inc();
+                        kill_reason = Some(KillReason::Memory);
+                        // Memory is still growing; no grace here.
+                        hard_kill(&mut child_process_guard, "memory reservation").await;
+                        let (reserved_kb, limit_kb) = memory_reservation.unwrap_or((0, 0));
+                        let (property, headroom) = self
+                            .running_actions_manager
+                            .execution_configuration
+                            .resource_enforcement
+                            .as_ref()
+                            .and_then(|e| e.memory.as_ref())
+                            .map_or(("", 0), |m| (m.property_name.as_str(), m.headroom_percent));
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            reserved_kb,
+                            limit_kb,
+                            observed_kb,
+                            "Action exceeded its memory reservation, killed"
+                        );
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action exceeded its memory reservation: reserved {reserved_kb} KiB ({property}), \
+                                 limit {limit_kb} KiB with {headroom}% headroom, observed {observed_kb} KiB. \
+                                 Raise the reservation or shrink the action."
+                            ),
+                        )));
+
+                    }
+                },
                 maybe_exit_status = child_process_guard.wait() => {
                     // Defuse our guard so it does not try to cleanup and make senseless logs.
                     drop(ScopeGuard::<_, _>::into_inner(child_process_guard));
+                    drop(over_limit_keepalive.take());
                     let exit_status = maybe_exit_status.err_tip(|| "Failed to collect exit code of process")?;
                     // TODO(palfrey) We should implement stderr/stdout streaming to client here.
                     // If we get killed before the stream is started, then these will lock up.
-                    // TODO(palfrey) There is a significant bug here. If we kill the action and the action creates
-                    // child processes, it can create zombies. See: https://github.com/tracemachina/nativelink/issues/225
-                    let (stdout, stderr) = if killed_action {
+                    let killed_action = kill_reason.is_some();
+                    if killed_action {
                         drop(timer);
-                        (Bytes::new(), Bytes::new())
                     } else {
                         timer.measure();
-                        let (maybe_all_stdout, maybe_all_stderr) = tokio::join!(all_stdout_fut, all_stderr_fut);
-                        (
-                            maybe_all_stdout.err_tip(|| "Internal error reading from stdout of worker task")??,
-                            maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??
-                        )
+                    }
+                    // The action is over; anything still running in its
+                    // group is a straggler (a background job, a helper that
+                    // daemonized) holding the pipes open, and without this
+                    // the action would sit here until its timeout. The
+                    // sandboxes Bazel runs locally end them the same way.
+                    #[cfg(target_family = "unix")]
+                    let had_stragglers = action_pgid
+                        .is_some_and(|pgid| signal_process_group(pgid, libc::SIGKILL));
+                    #[cfg(not(target_family = "unix"))]
+                    let had_stragglers = false;
+                    // An action that exited on its own with nothing left in
+                    // its group closes its pipes itself, and its output is
+                    // the result, so that read runs to the end: a reader
+                    // slowed by a busy spill must not lose bytes to a clock.
+                    // The wait is bounded only when there was something to
+                    // hold the pipes: a killed action, whose output is a
+                    // bonus, or stragglers, one of which may have left the
+                    // group. What was read by then is kept.
+                    let mut drain = core::pin::pin!(async { tokio::join!(all_stdout_fut, all_stderr_fut) });
+                    let (maybe_all_stdout, maybe_all_stderr) = if killed_action || had_stragglers {
+                        tokio::select! {
+                            outputs = &mut drain => outputs,
+                            () = tokio::time::sleep(OUTPUT_DRAIN_TIMEOUT) => {
+                                warn!(
+                                    operation_id = ?self.operation_id,
+                                    drain_s = OUTPUT_DRAIN_TIMEOUT.as_secs(),
+                                    killed_action,
+                                    had_stragglers,
+                                    "A process held the action's output pipes open past the drain; keeping what was read"
+                                );
+                                drain_stop_tx.send_replace(true);
+                                drain.await
+                            }
+                        }
+                    } else {
+                        drain.await
                     };
+                    let (stdout, stderr) = (
+                        maybe_all_stdout.err_tip(|| "Internal error reading from stdout of worker task")??,
+                        maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??,
+                    );
+
+                    #[cfg(target_os = "linux")]
+                    let sampled_usage = match maybe_resource_usage_sampler.take() {
+                        Some(sampler) => finish_action_resource_usage_sampler(sampler)
+                            .await
+                            .unwrap_or_default(),
+                        None => SampledResourceUsage::default(),
+                    };
+                    #[cfg(not(target_os = "linux"))]
+                    let sampled_usage = SampledResourceUsage::default();
+
+                    let memory_limit_kb = memory_reservation
+                        .map(|(_, limit_kb)| limit_kb)
+                        .or(self.running_actions_manager.pod_memory_limit_kb);
+                    // The signal that ended the process, where the platform reports one.
+                    #[cfg(target_family = "unix")]
+                    let signal = exit_status.signal();
+                    #[cfg(not(target_family = "unix"))]
+                    let signal = None;
+                    let (outcome, enforced) = classify_outcome(
+                        kill_reason,
+                        signal,
+                        sampled_usage.last_memory_kb,
+                        memory_limit_kb,
+                    );
 
                     let exit_code = exit_status.code().map_or_else(|| {
-                        // No exit code means the runner was terminated by a
-                        // signal. SIGKILL on Linux is the kernel OOM killer's
-                        // weapon of choice, so flag this for operators trying
-                        // to correlate action failures with kubectl-top
-                        // memory pressure.
-                        warn!(
-                            ?args,
-                            "Runner subprocess terminated by signal (no exit code); likely OOMKilled \
-                             or externally killed. If this repeats for the same action, raise \
-                             `workers.specs[*].resources.limits.memory` or shrink the action's \
-                             concurrency."
-                        );
                         self.metrics().child_process_failure_error_code.inc();
+                        if kill_reason.is_none() {
+                            // No exit code and no kill of ours: a signal from
+                            // outside. SIGKILL near the memory limit is the
+                            // kernel's OOM killer.
+                            warn!(
+                                ?args,
+                                outcome = outcome.as_str_name(),
+                                last_memory_kb = sampled_usage.last_memory_kb,
+                                ?memory_limit_kb,
+                                "Runner subprocess terminated by a signal nobody here sent"
+                            );
+                        }
                         EXIT_CODE_FOR_SIGNAL
                     }, |exit_code| {
                         if exit_code == 0 {
@@ -2098,32 +3119,53 @@ impl RunningActionImpl {
                         }
                         exit_code
                     });
+                    if kill_reason.is_none() && outcome == ResourceOutcome::KilledMemory {
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action was killed by the kernel at {} KiB, within 10% of the {} KiB memory limit: \
+                                 out of memory. Raise the reservation or shrink the action.",
+                                sampled_usage.last_memory_kb,
+                                memory_limit_kb.unwrap_or(0),
+                            ),
+                        )));
+                    }
 
-                    #[cfg(target_os = "linux")]
-                    let resource_usage = match maybe_resource_usage_sampler.take() {
-                        Some(sampler) => finish_action_resource_usage_sampler(sampler)
-                            .await
-                            .and_then(|usage| {
-                                // An action too short to catch a sample leaves
-                                // both at zero; report nothing rather than a
-                                // misleading zero.
-                                (usage.peak_memory_kb > 0 || usage.cpu_time_ms > 0).then_some(
-                                    ActionResourceUsage {
-                                        peak_memory_kb: usage.peak_memory_kb,
-                                        cpu_time_ms: usage.cpu_time_ms,
-                                        sampled: true,
-                                        operation_id: String::new(),
-                                        worker_id: String::new(),
-                                    },
-                                )
-                            }),
-                        None => None,
-                    };
-                    #[cfg(not(target_os = "linux"))]
-                    let resource_usage = None;
+                    let (memory_property, disk_property) = self
+                        .running_actions_manager
+                        .execution_configuration
+                        .resource_enforcement
+                        .as_ref()
+                        .map_or((None, None), |e| {
+                            (
+                                e.memory.as_ref().map(|m| m.property_name.as_str()),
+                                e.disk_property_name.as_deref(),
+                            )
+                        });
+                    let resource_usage = Some(ActionResourceUsage {
+                        peak_memory_kb: sampled_usage.peak_memory_kb,
+                        cpu_time_ms: sampled_usage.cpu_time_ms,
+                        // An action too short to catch a sample leaves both at
+                        // zero; say so rather than report a misleading zero.
+                        sampled: sampled_usage.peak_memory_kb > 0
+                            || sampled_usage.cpu_time_ms > 0
+                            || sampled_usage.peak_disk_kb > 0,
+                        operation_id: String::new(),
+                        worker_id: String::new(),
+                        wall_time_ms: u64::try_from(execution_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                        peak_disk_kb: sampled_usage.peak_disk_kb,
+                        outcome: outcome.into(),
+                        enforced,
+                        reserved: reservation_of(
+                            &self.action_info.platform_properties,
+                            memory_property,
+                            disk_property,
+                        ),
+                    });
 
                     // log something useful instead of repeating same ?arg
-                    info!(?exit_code, "Command complete");
+                    info!(?exit_code, outcome = outcome.as_str_name(), "Command complete");
 
                     let maybe_error_override = if let Some(side_channel_file) = maybe_side_channel_file {
                         process_side_channel_file(side_channel_file.clone(), &args, requested_timeout).await
@@ -2147,14 +3189,8 @@ impl RunningActionImpl {
                     return Ok(self);
                 },
                 _ = &mut kill_channel_rx => {
-                    killed_action = true;
-                    if let Err(err) = child_process_guard.kill().await {
-                        error!(
-                            operation_id = ?self.operation_id,
-                            ?err,
-                            "Could not kill process",
-                        );
-                    }
+                    kill_reason = Some(KillReason::External);
+                    grace_fut = stop_action(&mut child_process_guard, kill_grace, "scheduler kill").await;
                     {
                         let mut state = self.state.lock();
                         state.error = Error::merge_option(state.error.take(), Some(Error::new(
@@ -2204,7 +3240,7 @@ impl RunningActionImpl {
         let cas_store = self.running_actions_manager.cas_store.as_ref();
         let hasher = self.action_info.unique_qualifier.digest_function();
 
-        let mut output_path_futures = FuturesUnordered::new();
+        let mut output_path_futures: Vec<BoxFuture<'_, Result<OutputType, Error>>> = Vec::new();
         let mut output_paths = command_proto.output_paths;
         if output_paths.is_empty() {
             output_paths
@@ -2213,6 +3249,7 @@ impl RunningActionImpl {
             output_paths.append(&mut command_proto.output_directories);
         }
         let digest_uploaders = Arc::new(Mutex::new(HashMap::new()));
+        let uploads = Arc::new(Semaphore::new(UPLOAD_CONCURRENCY));
         for entry in output_paths {
             let full_path = OsString::from(if command_proto.working_directory.is_empty() {
                 format!("{}/{}", self.work_directory, entry)
@@ -2224,198 +3261,210 @@ impl RunningActionImpl {
             });
             let work_directory = &self.work_directory;
             let digest_uploaders = digest_uploaders.clone();
-            output_path_futures.push(async move {
-                let metadata = {
-                    let metadata = match fs::symlink_metadata(&full_path).await {
-                        Ok(file) => file,
-                        Err(e) => {
-                            if e.code == Code::NotFound {
-                                // In the event our output does not exist, according to the bazel remote
-                                // execution spec, we simply ignore it continue.
-                                return Result::<OutputType, Error>::Ok(OutputType::None);
+            let uploads = uploads.clone();
+            output_path_futures.push(
+                async move {
+                    let metadata = {
+                        let metadata = match fs::symlink_metadata(&full_path).await {
+                            Ok(file) => file,
+                            Err(e) => {
+                                if e.code == Code::NotFound {
+                                    // In the event our output does not exist, according to the bazel remote
+                                    // execution spec, we simply ignore it continue.
+                                    return Result::<OutputType, Error>::Ok(OutputType::None);
+                                }
+                                return Err(e).err_tip(|| {
+                                    format!("Could not open file {}", full_path.display())
+                                });
                             }
-                            return Err(e).err_tip(|| {
-                                format!("Could not open file {}", full_path.display())
-                            });
-                        }
-                    };
+                        };
 
-                    if metadata.is_file() {
-                        return Ok(OutputType::File(
-                            upload_file(
+                        if metadata.is_file() {
+                            return Ok(OutputType::File(
+                                upload_file(
+                                    cas_store.as_pin(),
+                                    &full_path,
+                                    hasher,
+                                    metadata,
+                                    digest_uploaders,
+                                    uploads,
+                                )
+                                .await
+                                .map(|mut file_info| {
+                                    file_info.name_or_path = NameOrPath::Path(entry);
+                                    file_info
+                                })
+                                .err_tip(|| format!("Uploading file {}", full_path.display()))?,
+                            ));
+                        }
+                        metadata
+                    };
+                    if metadata.is_dir() {
+                        Ok(OutputType::Directory(
+                            upload_directory(
                                 cas_store.as_pin(),
                                 &full_path,
+                                work_directory,
                                 hasher,
-                                metadata,
                                 digest_uploaders,
+                                uploads,
                             )
-                            .await
-                            .map(|mut file_info| {
-                                file_info.name_or_path = NameOrPath::Path(entry);
-                                file_info
+                            .and_then(|(root_dir, children)| async move {
+                                let tree = ProtoTree {
+                                    root: Some(root_dir),
+                                    children: children.into(),
+                                };
+                                let tree_digest = serialize_and_upload_message(
+                                    &tree,
+                                    cas_store.as_pin(),
+                                    &mut hasher.hasher(),
+                                )
+                                .await
+                                .err_tip(|| format!("While processing {entry}"))?;
+                                Ok(DirectoryInfo {
+                                    path: entry,
+                                    tree_digest,
+                                })
                             })
-                            .err_tip(|| format!("Uploading file {}", full_path.display()))?,
-                        ));
-                    }
-                    metadata
-                };
-                if metadata.is_dir() {
-                    Ok(OutputType::Directory(
-                        upload_directory(
-                            cas_store.as_pin(),
-                            &full_path,
-                            work_directory,
-                            hasher,
-                            digest_uploaders,
-                        )
-                        .and_then(|(root_dir, children)| async move {
-                            let tree = ProtoTree {
-                                root: Some(root_dir),
-                                children: children.into(),
-                            };
-                            let tree_digest = serialize_and_upload_message(
-                                &tree,
-                                cas_store.as_pin(),
-                                &mut hasher.hasher(),
-                            )
                             .await
-                            .err_tip(|| format!("While processing {entry}"))?;
-                            Ok(DirectoryInfo {
-                                path: entry,
-                                tree_digest,
-                            })
-                        })
-                        .await
-                        .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
-                    ))
-                } else if metadata.is_symlink() {
-                    // Resolve the symlink to determine what it points to.
-                    // Symlinks created by DirectoryCache (absolute paths into
-                    // the cache directory) must NOT be uploaded as symlinks —
-                    // the target path is worker-local and meaningless to the
-                    // client. Instead, follow the symlink and upload the
-                    // resolved content (file or directory).
-                    let target = fs::read_link(&full_path).await.err_tip(|| {
-                        format!("Reading symlink target for {}", full_path.display())
-                    })?;
-                    let is_absolute_symlink = Path::new(&target).is_absolute();
+                            .err_tip(|| format!("Uploading directory {}", full_path.display()))?,
+                        ))
+                    } else if metadata.is_symlink() {
+                        // Resolve the symlink to determine what it points to.
+                        // Symlinks created by DirectoryCache (absolute paths into
+                        // the cache directory) must NOT be uploaded as symlinks —
+                        // the target path is worker-local and meaningless to the
+                        // client. Instead, follow the symlink and upload the
+                        // resolved content (file or directory).
+                        let target = fs::read_link(&full_path).await.err_tip(|| {
+                            format!("Reading symlink target for {}", full_path.display())
+                        })?;
+                        let is_absolute_symlink = Path::new(&target).is_absolute();
 
-                    if is_absolute_symlink {
-                        // Absolute symlink — resolve and upload contents.
-                        match fs::metadata(&full_path).await {
-                            Ok(resolved_meta) => {
-                                if resolved_meta.is_dir() {
-                                    // Upload as directory (Tree proto).
-                                    Ok(OutputType::Directory(
-                                        upload_directory(
-                                            cas_store.as_pin(),
-                                            &full_path,
-                                            work_directory,
-                                            hasher,
-                                            digest_uploaders,
-                                        )
-                                        .and_then(|(root_dir, children)| async move {
-                                            let tree = ProtoTree {
-                                                root: Some(root_dir),
-                                                children: children.into(),
-                                            };
-                                            let tree_digest = serialize_and_upload_message(
-                                                &tree,
+                        if is_absolute_symlink {
+                            // Absolute symlink — resolve and upload contents.
+                            match fs::metadata(&full_path).await {
+                                Ok(resolved_meta) => {
+                                    if resolved_meta.is_dir() {
+                                        // Upload as directory (Tree proto).
+                                        Ok(OutputType::Directory(
+                                            upload_directory(
                                                 cas_store.as_pin(),
-                                                &mut hasher.hasher(),
+                                                &full_path,
+                                                work_directory,
+                                                hasher,
+                                                digest_uploaders,
+                                                uploads,
+                                            )
+                                            .and_then(|(root_dir, children)| async move {
+                                                let tree = ProtoTree {
+                                                    root: Some(root_dir),
+                                                    children: children.into(),
+                                                };
+                                                let tree_digest = serialize_and_upload_message(
+                                                    &tree,
+                                                    cas_store.as_pin(),
+                                                    &mut hasher.hasher(),
+                                                )
+                                                .await
+                                                .err_tip(|| format!("While processing {entry}"))?;
+                                                Ok(DirectoryInfo {
+                                                    path: entry,
+                                                    tree_digest,
+                                                })
+                                            })
+                                            .await
+                                            .err_tip(
+                                                || {
+                                                    format!(
+                                                        "Uploading symlinked directory {}",
+                                                        full_path.display()
+                                                    )
+                                                },
+                                            )?,
+                                        ))
+                                    } else {
+                                        // Upload as file (follow symlink).
+                                        Ok(OutputType::File(
+                                            upload_file(
+                                                cas_store.as_pin(),
+                                                &full_path,
+                                                hasher,
+                                                resolved_meta,
+                                                digest_uploaders,
+                                                uploads,
                                             )
                                             .await
-                                            .err_tip(|| format!("While processing {entry}"))?;
-                                            Ok(DirectoryInfo {
-                                                path: entry,
-                                                tree_digest,
+                                            .map(|mut file_info| {
+                                                file_info.name_or_path = NameOrPath::Path(entry);
+                                                file_info
                                             })
-                                        })
-                                        .await
-                                        .err_tip(|| {
+                                            .err_tip(
+                                                || {
+                                                    format!(
+                                                        "Uploading symlinked file {}",
+                                                        full_path.display()
+                                                    )
+                                                },
+                                            )?,
+                                        ))
+                                    }
+                                }
+                                Err(e) => {
+                                    if e.code != Code::NotFound {
+                                        return Err(e).err_tip(|| {
                                             format!(
-                                                "Uploading symlinked directory {}",
+                                                "While resolving absolute symlink {}",
                                                 full_path.display()
                                             )
-                                        })?,
-                                    ))
-                                } else {
-                                    // Upload as file (follow symlink).
-                                    Ok(OutputType::File(
-                                        upload_file(
-                                            cas_store.as_pin(),
-                                            &full_path,
-                                            hasher,
-                                            resolved_meta,
-                                            digest_uploaders,
-                                        )
-                                        .await
-                                        .map(|mut file_info| {
-                                            file_info.name_or_path = NameOrPath::Path(entry);
-                                            file_info
-                                        })
-                                        .err_tip(|| {
+                                        });
+                                    }
+                                    Ok(OutputType::None)
+                                }
+                            }
+                        } else {
+                            // Relative symlink — action intentionally created it.
+                            // Upload as a proper symlink.
+                            let output_symlink = upload_symlink(&full_path, work_directory)
+                                .await
+                                .map(|mut symlink_info| {
+                                    symlink_info.name_or_path = NameOrPath::Path(entry);
+                                    symlink_info
+                                })
+                                .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
+                            match fs::metadata(&full_path).await {
+                                Ok(metadata) => {
+                                    if metadata.is_dir() {
+                                        Ok(OutputType::DirectorySymlink(output_symlink))
+                                    } else {
+                                        // Note: If it's anything but directory we put it as a file symlink.
+                                        Ok(OutputType::FileSymlink(output_symlink))
+                                    }
+                                }
+                                Err(e) => {
+                                    if e.code != Code::NotFound {
+                                        return Err(e).err_tip(|| {
                                             format!(
-                                                "Uploading symlinked file {}",
+                                                "While querying target symlink metadata for {}",
                                                 full_path.display()
                                             )
-                                        })?,
-                                    ))
-                                }
-                            }
-                            Err(e) => {
-                                if e.code != Code::NotFound {
-                                    return Err(e).err_tip(|| {
-                                        format!(
-                                            "While resolving absolute symlink {}",
-                                            full_path.display()
-                                        )
-                                    });
-                                }
-                                Ok(OutputType::None)
-                            }
-                        }
-                    } else {
-                        // Relative symlink — action intentionally created it.
-                        // Upload as a proper symlink.
-                        let output_symlink = upload_symlink(&full_path, work_directory)
-                            .await
-                            .map(|mut symlink_info| {
-                                symlink_info.name_or_path = NameOrPath::Path(entry);
-                                symlink_info
-                            })
-                            .err_tip(|| format!("Uploading symlink {}", full_path.display()))?;
-                        match fs::metadata(&full_path).await {
-                            Ok(metadata) => {
-                                if metadata.is_dir() {
-                                    Ok(OutputType::DirectorySymlink(output_symlink))
-                                } else {
-                                    // Note: If it's anything but directory we put it as a file symlink.
+                                        });
+                                    }
+                                    // If the file doesn't exist, we consider it a file. Even though the
+                                    // file doesn't exist we still need to populate an entry.
                                     Ok(OutputType::FileSymlink(output_symlink))
                                 }
                             }
-                            Err(e) => {
-                                if e.code != Code::NotFound {
-                                    return Err(e).err_tip(|| {
-                                        format!(
-                                            "While querying target symlink metadata for {}",
-                                            full_path.display()
-                                        )
-                                    });
-                                }
-                                // If the file doesn't exist, we consider it a file. Even though the
-                                // file doesn't exist we still need to populate an entry.
-                                Ok(OutputType::FileSymlink(output_symlink))
-                            }
                         }
+                    } else {
+                        Err(make_err!(
+                            Code::Internal,
+                            "{full_path:?} was not a file, folder or symlink. Must be one.",
+                        ))
                     }
-                } else {
-                    Err(make_err!(
-                        Code::Internal,
-                        "{full_path:?} was not a file, folder or symlink. Must be one.",
-                    ))
                 }
-            });
+                .boxed(),
+            );
         }
         let mut output_files = vec![];
         let mut output_folders = vec![];
@@ -2423,12 +3472,10 @@ impl RunningActionImpl {
         let mut output_file_symlinks = vec![];
 
         if execution_result.exit_code != 0 {
-            let stdout = core::str::from_utf8(&execution_result.stdout).unwrap_or("<no-utf8>");
-            let stderr = core::str::from_utf8(&execution_result.stderr).unwrap_or("<no-utf8>");
             error!(
                 exit_code = ?execution_result.exit_code,
-                stdout = ?stdout[..min(stdout.len(), 1000)],
-                stderr = ?stderr[..min(stderr.len(), 1000)],
+                stdout = ?log_excerpt(execution_result.stdout.head(), 1000),
+                stderr = ?log_excerpt(execution_result.stderr.head(), 1000),
                 command = ?command_proto.arguments,
                 "Command returned non-zero exit code",
             );
@@ -2438,11 +3485,15 @@ impl RunningActionImpl {
             let start = std::time::Instant::now();
             let data = execution_result.stdout;
             let data_len = data.len();
-            let digest = compute_buf_digest(&data, &mut hasher.hasher());
-            cas_store
-                .update_oneshot(digest, data)
-                .await
-                .err_tip(|| "Uploading stdout")?;
+            // Boxed: the upload future is large, and two of them inline
+            // pushed the debug test binary past its thread stack.
+            let digest = Box::pin(upload_captured_output(
+                cas_store.as_pin(),
+                data,
+                hasher,
+                "stdout",
+            ))
+            .await?;
             debug!(
                 ?digest,
                 data_len,
@@ -2455,11 +3506,15 @@ impl RunningActionImpl {
             let start = std::time::Instant::now();
             let data = execution_result.stderr;
             let data_len = data.len();
-            let digest = compute_buf_digest(&data, &mut hasher.hasher());
-            cas_store
-                .update_oneshot(digest, data)
-                .await
-                .err_tip(|| "Uploading  stderr")?;
+            // Boxed: the upload future is large, and two of them inline
+            // pushed the debug test binary past its thread stack.
+            let digest = Box::pin(upload_captured_output(
+                cas_store.as_pin(),
+                data,
+                hasher,
+                "stderr",
+            ))
+            .await?;
             debug!(
                 ?digest,
                 data_len,
@@ -2474,6 +3529,8 @@ impl RunningActionImpl {
             num_output_paths = output_path_futures.len(),
             "upload_results: starting stdout/stderr/output_paths uploads",
         );
+        let mut output_path_futures =
+            futures::stream::iter(output_path_futures).buffer_unordered(UPLOAD_CONCURRENCY);
         let join_start = std::time::Instant::now();
         let upload_result = futures::try_join!(stdout_digest_fut, stderr_digest_fut, async {
             while let Some(output_type) = output_path_futures.try_next().await? {
@@ -2599,12 +3656,61 @@ impl RunningAction for RunningActionImpl {
     }
 
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
-        let res = self
-            .metrics()
-            .clone()
-            .prepare_action
-            .wrap(Self::inner_prepare_action(self))
-            .await;
+        let download_timeout = self.running_actions_manager.max_download_timeout;
+        let operation_id = self.operation_id.clone();
+        let metrics = self.metrics().clone();
+        let mut kill_rx = self.kill_token.subscribe();
+        // Boxed: the prepare state machine is large, and pinning it on the
+        // stack next to the select below overflowed a test thread.
+        let mut prepare_fut = Box::pin(
+            metrics
+                .prepare_action
+                .wrap(Self::inner_prepare_action(self)),
+        );
+        // A fetch that never answers would otherwise hold the slot for good
+        // while the worker's keepalives say it is fine: name it every minute
+        // and give up at the timeout, so the scheduler can retry elsewhere.
+        let stall_warn_fut = async {
+            let mut elapsed_secs = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_mins(1)).await;
+                elapsed_secs += 60;
+                warn!(
+                    ?operation_id,
+                    elapsed_s = elapsed_secs,
+                    timeout_s = download_timeout.as_secs(),
+                    "prepare_action: still fetching inputs, possible stall",
+                );
+            }
+        };
+        let res = tokio::time::timeout(download_timeout, async {
+            tokio::pin!(stall_warn_fut);
+            tokio::select! {
+                result = &mut prepare_fut => result,
+                _ = kill_rx.wait_for(|killed| *killed) => {
+                    warn!(%operation_id, "prepare_action: killed while fetching inputs");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while fetching its inputs"
+                    ))
+                }
+                () = &mut stall_warn_fut => unreachable!(),
+            }
+        })
+        .await
+        .map_err(|_| {
+            warn!(
+                %operation_id,
+                timeout_s = download_timeout.as_secs(),
+                "prepare_action: input fetch timed out"
+            );
+            make_err!(
+                Code::DeadlineExceeded,
+                "Fetching the inputs of operation {operation_id} took longer than max_download_timeout ({}s)",
+                download_timeout.as_secs(),
+            )
+        })
+        .and_then(|res| res);
         if let Err(ref e) = res {
             warn!(?e, "Error during prepare_action");
         }
@@ -2633,6 +3739,7 @@ impl RunningAction for RunningActionImpl {
             "upload_results: starting with timeout",
         );
         let metrics = self.metrics().clone();
+        let kill_token = self.kill_token.clone();
         let upload_fut = metrics
             .upload_results
             .wrap(Self::inner_upload_results(self));
@@ -2651,11 +3758,24 @@ impl RunningAction for RunningActionImpl {
             }
         };
 
+        // Only a kill that arrives during the upload ends it: a kill that
+        // already ended the command leaves a killed result that still has to
+        // reach the scheduler, so the token's current state is taken as seen
+        // and only a change from here on aborts.
+        let mut kill_rx = kill_token.subscribe();
+        kill_rx.borrow_and_update();
         let res = tokio::time::timeout(upload_timeout, async {
             tokio::pin!(upload_fut);
             tokio::pin!(stall_warn_fut);
             tokio::select! {
                 result = &mut upload_fut => result,
+                Ok(()) = kill_rx.changed() => {
+                    warn!(%operation_id, "upload_results: killed while uploading");
+                    Err(make_err!(
+                        Code::Aborted,
+                        "Operation {operation_id} was killed while uploading its results"
+                    ))
+                }
                 () = &mut stall_warn_fut => unreachable!(),
             }
         })
@@ -2773,8 +3893,100 @@ impl Debug for Callbacks {
 /// may be used to run the action with a particular set of additional
 /// environment variables, or perhaps configure it to execute within a
 /// container.
+/// What the worker holds an action to beyond the scheduler's ledger. Each
+/// axis is on or off on its own; the value exists when at least one is on.
+#[derive(Debug, Clone)]
+pub struct ResourceEnforcement {
+    /// Soft memory enforcement: the worker kills an action whose process
+    /// group grows past its reservation plus headroom. Linux only; the
+    /// sampler that measures it does not exist elsewhere. An action run
+    /// through a persistent worker is not covered: that process outlives
+    /// the action and serves others, so its memory is no one action's
+    /// reservation, and only the pod's limit bounds it.
+    pub memory: Option<MemoryLimit>,
+    /// Refuse an action whose disk reservation, under this property, is
+    /// more than the free space under the work directory less what the
+    /// actions already admitted reserved, and measure what the action
+    /// writes.
+    pub disk_property_name: Option<String>,
+    /// Kill an action whose own files pass the disk reservation plus
+    /// `disk_headroom_percent`.
+    pub disk_soft: bool,
+    pub disk_headroom_percent: u64,
+}
+
+/// The reservation a memory ceiling is built from.
+#[derive(Debug, Clone)]
+pub struct MemoryLimit {
+    /// Platform property carrying the reservation in KiB.
+    pub property_name: String,
+    /// Percent above the reservation the action may reach.
+    pub headroom_percent: u64,
+}
+
+impl ResourceEnforcement {
+    /// From the worker's configuration. `None` when neither axis is on;
+    /// `disk: guard` alone is honoured as much as `memory: soft` alone.
+    pub fn from_config(config: &ResourceEnforcementConfig) -> Option<Self> {
+        let memory = match config.memory {
+            MemoryEnforcement::None => None,
+            MemoryEnforcement::Soft => Some(MemoryLimit {
+                property_name: config.memory_property_name.clone(),
+                headroom_percent: config.memory_headroom_percent,
+            }),
+        };
+        let disk_property_name =
+            (config.disk != DiskEnforcement::None).then(|| config.disk_property_name.clone());
+        (memory.is_some() || disk_property_name.is_some()).then_some(Self {
+            memory,
+            disk_property_name,
+            disk_soft: config.disk == DiskEnforcement::Soft,
+            disk_headroom_percent: config.disk_headroom_percent,
+        })
+    }
+}
+
+/// Free space in KiB on the filesystem holding `path`, as an unprivileged
+/// process may use it.
+#[cfg(target_family = "unix")]
+pub fn free_disk_kb(path: &str) -> Option<u64> {
+    let c_path = std::ffi::CString::new(path).ok()?;
+    let mut stat: libc::statvfs = unsafe { core::mem::zeroed() };
+    // SAFETY: `c_path` is a valid C string and `stat` is a zeroed out
+    // parameter the call fills in.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), &raw mut stat) };
+    if rc != 0 {
+        return None;
+    }
+    Some(widen(stat.f_bavail).saturating_mul(widen(stat.f_frsize)) / 1024)
+}
+
+/// `statvfs` fields are u32 or u64 depending on the platform.
+#[cfg(target_family = "unix")]
+fn widen(value: impl Into<u64>) -> u64 {
+    value.into()
+}
+
+#[cfg(not(target_family = "unix"))]
+pub fn free_disk_kb(_path: &str) -> Option<u64> {
+    None
+}
+
 #[derive(Debug, Default)]
 pub struct ExecutionConfiguration {
+    /// Bytes of stdout or stderr kept in memory before the rest spills to a
+    /// file under the action directory; 0 keeps everything in memory.
+    pub max_captured_output_bytes: u64,
+    /// Kill an action that exceeds its memory reservation, before the
+    /// pod's cgroup limit takes the whole worker with it.
+    pub resource_enforcement: Option<ResourceEnforcement>,
+    /// Time a timed-out or cancelled action gets between SIGTERM and
+    /// SIGKILL to write its own cleanup; zero sends SIGKILL at once.
+    pub kill_grace: Duration,
+    /// Point `TMPDIR` at a directory of the action's own, removed with it.
+    pub set_tmpdir: bool,
+    /// Buck2-only helper, configured for a dedicated execution container.
+    pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
     /// `ActionInfo` with all of the arguments in the `ActionInfo` passed as
     /// arguments to this command.
@@ -2783,6 +3995,25 @@ pub struct ExecutionConfiguration {
     /// executes other than those in the `ActionInfo`.  On Windows, `SystemRoot`
     /// and PATH are also assigned (see `inner_execute`).
     pub additional_environment: Option<HashMap<String, EnvironmentSource>>,
+    /// Bazel persistent workers: whether an action that supports them runs
+    /// in a pooled process, and how the pool is sized.
+    pub persistent_workers: PersistentWorkersSettings,
+}
+
+/// See `ExecutionConfiguration::persistent_workers`.
+#[derive(Debug, Clone, Copy)]
+pub struct PersistentWorkersSettings {
+    pub enabled: bool,
+    pub pool: PoolConfig,
+}
+
+impl Default for PersistentWorkersSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pool: PoolConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -3033,7 +4264,12 @@ impl UploadActionResults {
 pub enum UseNamespaces {
     No,
     Yes,
-    YesAndMount,
+    /// Also unshare the mount namespace. With `isolate_tmp` each action gets
+    /// a private `/tmp`, its own tmp directory bound over `/tmp`, on top of
+    /// the masked root action directory.
+    YesAndMount {
+        isolate_tmp: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -3046,6 +4282,7 @@ pub struct RunningActionsManagerArgs<'a> {
     pub upload_action_result_config: &'a UploadActionResultConfig,
     pub max_action_timeout: Duration,
     pub max_upload_timeout: Duration,
+    pub max_download_timeout: Duration,
     pub max_cleanup_wait: Duration,
     pub max_cleanup_backoff: Duration,
     pub timeout_handled_externally: bool,
@@ -3059,7 +4296,10 @@ pub struct RunningActionsManagerArgs<'a> {
     pub use_namespaces: UseNamespaces,
 }
 
-struct CleanupGuard {
+/// The mark that an operation's directory is being cleaned; dropping it
+/// clears the mark and wakes whoever waits for it.
+#[derive(Debug)]
+pub struct CleanupGuard {
     manager: Weak<RunningActionsManagerImpl>,
     operation_id: OperationId,
 }
@@ -3086,7 +4326,11 @@ pub struct RunningActionsManagerImpl {
     upload_action_results: UploadActionResults,
     max_action_timeout: Duration,
     max_upload_timeout: Duration,
+    max_download_timeout: Duration,
     timeout_handled_externally: bool,
+    /// The container's memory limit, the yardstick for calling a SIGKILL
+    /// nobody here sent an OOM kill.
+    pod_memory_limit_kb: Option<u64>,
     #[cfg(target_os = "linux")]
     use_namespaces: UseNamespaces,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
@@ -3095,6 +4339,10 @@ pub struct RunningActionsManagerImpl {
     action_done_tx: watch::Sender<()>,
     callbacks: Callbacks,
     metrics: Arc<Metrics>,
+    /// Disk each admitted action reserved, by operation, so the disk guard
+    /// checks against what is left after them. An entry lives from the
+    /// guard passing to `cleanup_action`.
+    disk_reservations_kb: Mutex<HashMap<OperationId, u64>>,
     /// Track operations being cleaned up to avoid directory collisions during action retries.
     /// When an action fails and is retried on the same worker, we need to ensure the previous
     /// attempt's directory is fully cleaned up before creating a new one.
@@ -3112,6 +4360,9 @@ pub struct RunningActionsManagerImpl {
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
     persistent_worker_pool: PersistentWorkerPool,
+    /// Retires idle persistent workers; ends with the manager.
+    _persistent_worker_sweeper: JoinHandleDropGuard<()>,
+    buck2_captures: Mutex<HashMap<OperationId, Buck2FileCapture>>,
 }
 
 impl RunningActionsManagerImpl {
@@ -3130,6 +4381,9 @@ impl RunningActionsManagerImpl {
             .get_arc()
             .err_tip(|| "FilesystemStore's internal Arc was lost")?;
         let (action_done_tx, _) = watch::channel(());
+        let persistent_worker_pool =
+            PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
+        let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
@@ -3142,7 +4396,9 @@ impl RunningActionsManagerImpl {
             )
             .err_tip(|| "During RunningActionsManagerImpl construction")?,
             max_action_timeout: args.max_action_timeout,
+            pod_memory_limit_kb: pod_memory_limit_kb(),
             max_upload_timeout: args.max_upload_timeout,
+            max_download_timeout: args.max_download_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
             action_done_tx,
@@ -3151,13 +4407,16 @@ impl RunningActionsManagerImpl {
                 directory_cache: args.directory_cache.as_ref().map(Arc::downgrade),
                 ..Default::default()
             }),
+            disk_reservations_kb: Mutex::new(HashMap::new()),
             cleaning_up_operations: Mutex::new(HashSet::new()),
             max_cleanup_wait: args.max_cleanup_wait,
             max_cleanup_backoff: args.max_cleanup_backoff,
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             active_input_leases: args.active_input_leases,
-            persistent_worker_pool: PersistentWorkerPool::default(),
+            persistent_worker_pool,
+            _persistent_worker_sweeper: persistent_worker_sweeper,
+            buck2_captures: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
         })
@@ -3176,18 +4435,20 @@ impl RunningActionsManagerImpl {
     /// Fixes a race condition that occurs when an action fails to execute on a worker, and the same worker
     /// attempts to re-execute the same action before the physical cleanup (file is removed) completes.
     /// See this issue for additional details: <https://github.com/TraceMachina/nativelink/issues/1859>
-    async fn wait_for_cleanup_if_needed(&self, operation_id: &OperationId) -> Result<(), Error> {
+    async fn wait_for_cleanup_if_needed(
+        self: &Arc<Self>,
+        operation_id: &OperationId,
+    ) -> Result<(), Error> {
         let start = Instant::now();
         let mut backoff = Duration::from_millis(10);
         let mut has_waited = false;
 
         loop {
-            let should_wait = {
-                let cleaning = self.cleaning_up_operations.lock();
-                cleaning.contains(operation_id)
-            };
-
-            if !should_wait {
+            // The mark is held for the removal below, so it cannot race the
+            // orphan sweep's removal of the same tree; while someone else
+            // holds it, this waits.
+            let mark = self.perform_cleanup(operation_id.clone());
+            if let Some(_cleaning_guard) = mark {
                 let action_is_running = self
                     .running_actions
                     .lock()
@@ -3318,16 +4579,116 @@ impl RunningActionsManagerImpl {
             let action =
                 get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
                     .await
-                    .err_tip(|| "During start_action")?;
-            let action_info = ActionInfo::try_from_action_and_execute_request(
+                    .err_tip(|| "During start_action")
+                    .map_err(tag_missing_input)?;
+            let mut action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,
                 load_start_timestamp,
                 queued_timestamp,
             )
             .err_tip(|| "Could not create ActionInfo in create_and_add_action()")?;
+            // With enforcement on, the scheduler's view of the properties
+            // replaces the client's: a hint or cold-start reservation the
+            // scheduler placed this action by only exists there, and what
+            // is enforced (and exported to the environment) has to be the
+            // number the ledger charged. Off, the worker keeps reading the
+            // client's copy as it always did, so an upgrade changes no
+            // action's environment on its own.
+            if self.execution_configuration.resource_enforcement.is_some()
+                && let Some(platform) = start_execute.platform
+            {
+                for property in platform.properties {
+                    action_info
+                        .platform_properties
+                        .insert(property.name, property.value);
+                }
+            }
             Ok(action_info)
         })
+    }
+
+    /// Removes action directories under the root that no running action
+    /// owns and that have not been touched for `max_cleanup_wait`. A
+    /// cleanup that failed (the store was down, the process restarted
+    /// mid-removal) leaves its directory behind, and it counts against the
+    /// pod's disk until something removes it. A directory that will not go
+    /// is logged and counted and the sweep carries on, or one stubborn
+    /// entry would stop every sweep at the same place. Returns how many
+    /// were removed; the error is for the listing itself failing.
+    ///
+    /// A directory is named for its operation, and a retry of that
+    /// operation may be starting at any moment. The retry's
+    /// `wait_for_cleanup_if_needed` waits while the operation is marked as
+    /// cleaning, so the sweep takes that mark for the removal and reads
+    /// ownership and age under it; a mark already held is the action's own
+    /// cleanup, which finishes the job.
+    pub async fn sweep_orphaned_directories(self: &Arc<Self>) -> Result<usize, Error> {
+        let (_permit, dir_handle) = fs::read_dir(&self.root_action_directory)
+            .await
+            .err_tip(|| format!("Reading {} for orphans", self.root_action_directory))?
+            .into_inner();
+        let mut dir_stream = ReadDirStream::new(dir_handle);
+        let now = SystemTime::now();
+        let mut removed = 0;
+        while let Some(entry) = dir_stream.next().await {
+            let entry = entry.err_tip(|| "Iterating action root for orphans")?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            // A running action's directory is not the sweep's to touch, and
+            // its cleanup waits on the mark, so the mark is taken only for
+            // an unowned directory and given back at once if the directory
+            // became owned in between: an action that starts and ends
+            // inside that window then cleans up as usual, not later.
+            let is_owned = || {
+                self.running_actions
+                    .lock()
+                    .keys()
+                    .any(|operation_id| operation_id.to_string() == name)
+            };
+            if is_owned() {
+                continue;
+            }
+            let Some(_cleaning_guard) = self.perform_cleanup(OperationId::from(name.as_str()))
+            else {
+                continue;
+            };
+            if is_owned() {
+                continue;
+            }
+            let path = entry.path();
+            // Not followed: a symlink under the root is not an action
+            // directory, whatever it points at.
+            let Ok(metadata) = fs::symlink_metadata(&path).await else {
+                continue;
+            };
+            if !metadata.is_dir() {
+                continue;
+            }
+            // Young directories may belong to an action between creation and
+            // registration; only settled ones are orphans.
+            let age = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .unwrap_or(Duration::MAX);
+            if age < self.max_cleanup_wait {
+                continue;
+            }
+            warn!(path = %path.display(), age_secs = age.as_secs(), "Removing orphaned action directory");
+            match fs::remove_dir_all(&path).await {
+                Ok(()) => {
+                    self.metrics.orphan_removals.inc();
+                    removed += 1;
+                }
+                Err(err) => {
+                    self.metrics.orphan_removal_failures.inc();
+                    warn!(path = %path.display(), ?err, "Could not remove orphaned action directory");
+                }
+            }
+        }
+        Ok(removed)
     }
 
     fn cleanup_action(&self, operation_id: &OperationId) -> Result<(), Error> {
@@ -3345,6 +4706,7 @@ impl RunningActionsManagerImpl {
                 )
             })
         };
+        self.disk_reservations_kb.lock().remove(operation_id);
         // No need to copy anything, we just are telling the receivers an event happened.
         self.action_done_tx.send_modify(|()| {});
         result.map(|_| ())
@@ -3357,6 +4719,9 @@ impl RunningActionsManagerImpl {
             operation_id = ?action.operation_id,
             "Sending kill to running operation",
         );
+        // The token first: a phase waiting on it (a fetch, an upload) ends
+        // now, whether or not the command ever started.
+        action.kill_token.send_replace(true);
         let kill_channel_tx = {
             let mut action_state = action.state.lock();
             action_state.kill_channel_tx.take()
@@ -3371,14 +4736,41 @@ impl RunningActionsManagerImpl {
         }
     }
 
-    fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
-        let mut cleaning = self.cleaning_up_operations.lock();
-        cleaning
-            .insert(operation_id.clone())
-            .then_some(CleanupGuard {
-                manager: Arc::downgrade(self),
-                operation_id,
-            })
+    /// Marks the operation as being cleaned and returns the guard that
+    /// clears the mark, or `None` when another cleanup already holds it.
+    ///
+    /// The guard is built only after the lock is released: its `Drop` takes
+    /// the same lock, so a guard made under it and thrown away (as
+    /// `then_some` did, whatever the insert said) deadlocked the thread on
+    /// its own mutex and, one by one, every runtime thread that then came to
+    /// clean up or start an action, while the worker's keepalives kept it
+    /// looking alive. The orphan sweep made the double mark routine: it marks
+    /// every directory it visits, and a directory whose action is mid-cleanup
+    /// is already marked.
+    pub fn perform_cleanup(self: &Arc<Self>, operation_id: OperationId) -> Option<CleanupGuard> {
+        let inserted = self
+            .cleaning_up_operations
+            .lock()
+            .insert(operation_id.clone());
+        inserted.then(|| CleanupGuard {
+            manager: Arc::downgrade(self),
+            operation_id,
+        })
+    }
+
+    /// Takes the cleanup mark, waiting for whoever holds it to let go. The
+    /// wait is armed before the mark is tried, so a release in between is
+    /// not missed.
+    pub async fn take_cleanup_mark(self: &Arc<Self>, operation_id: OperationId) -> CleanupGuard {
+        loop {
+            let notified = self.cleanup_complete_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(guard) = self.perform_cleanup(operation_id.clone()) {
+                return guard;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -3393,6 +4785,11 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         self.metrics
             .create_and_add_action
             .wrap(async move {
+                let capture_metadata = start_execute.request_metadata.clone();
+                let capture_worker = worker_id.clone();
+                let capture_digest = start_execute.execute_request.as_ref()
+                    .and_then(|request| request.action_digest.as_ref())
+                    .map(|digest| digest.hash.clone()).unwrap_or_default();
                 let queued_timestamp = start_execute
                     .queued_timestamp
                     .and_then(|time| time.try_into().ok())
@@ -3424,14 +4821,19 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                 } else {
                     action_info.timeout
                 };
-                if timeout > self.max_action_timeout {
-                    return Err(make_err!(
-                        Code::InvalidArgument,
-                        "Action timeout of {} seconds is greater than the maximum allowed timeout of {} seconds",
-                        timeout.as_secs_f32(),
-                        self.max_action_timeout.as_secs_f32()
-                    ));
-                }
+                // REAPI lets a server clamp a timeout over its maximum; the
+                // client asked for more time, not for a rejection.
+                let timeout = if timeout > self.max_action_timeout {
+                    info!(
+                        ?operation_id,
+                        requested_s = timeout.as_secs_f32(),
+                        max_s = self.max_action_timeout.as_secs_f32(),
+                        "Action timeout clamped to the worker maximum"
+                    );
+                    self.max_action_timeout
+                } else {
+                    timeout
+                };
                 let running_action = Arc::new(RunningActionImpl::new(
                     execution_metadata,
                     operation_id.clone(),
@@ -3451,10 +4853,31 @@ impl RunningActionsManager for RunningActionsManagerImpl {
                                 operation_id
                             ));
                     }
-                    running_actions.insert(operation_id, Arc::downgrade(&running_action));
+                    running_actions.insert(operation_id.clone(), Arc::downgrade(&running_action));
                     running_action
                         .has_manager_entry
                         .store(true, Ordering::Release);
+                }
+                if let Some(config) = &self.execution_configuration.buck2_file_capture
+                    && Buck2FileCapture::eligible(capture_metadata.as_ref()) {
+                    // The directory exists already. A cancelled registration must
+                    // take the same Drop cleanup path as a prepared action.
+                    running_action.did_cleanup.store(false, Ordering::Release);
+                    match Buck2FileCapture::start(
+                        config,
+                        capture_metadata.as_ref(),
+                        &capture_worker,
+                        &operation_id.to_string(),
+                        &capture_digest,
+                    ).await {
+                        Ok(Some(capture)) => {
+                            self.buck2_captures.lock().insert(operation_id, capture);
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            warn!(%operation_id, ?err, "Buck2 container file capture could not start");
+                        }
+                    }
                 }
                 Ok(running_action)
             })
@@ -3557,6 +4980,10 @@ pub struct Metrics {
     cleanup_waits: CounterWithTime,
     #[metric(help = "Number of stale directories removed during action retries.")]
     stale_removals: CounterWithTime,
+    #[metric(help = "Orphaned action directories removed by the periodic sweep.")]
+    orphan_removals: CounterWithTime,
+    #[metric(help = "Orphaned action directories the sweep could not remove.")]
+    orphan_removal_failures: CounterWithTime,
     #[metric(help = "Number of timeouts while waiting for cleanup to complete.")]
     cleanup_wait_timeouts: CounterWithTime,
     #[metric(help = "Stats about the get_proto_command_from_store command.")]
@@ -3579,6 +5006,18 @@ pub struct Metrics {
     upload_stderr: AsyncCounterWrapper,
     #[metric(help = "Total number of task timeouts.")]
     task_timeouts: CounterWithTime,
+    #[metric(help = "Actions killed for exceeding their memory reservation.")]
+    memory_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions refused because their disk reservation exceeded the free space.")]
+    disk_guard_refusals: CounterWithTime,
+    #[metric(help = "Actions killed for writing past their disk reservation.")]
+    disk_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions served by a pooled persistent worker process.")]
+    persistent_worker_dispatches: CounterWithTime,
+    #[metric(
+        help = "Actions that asked for a persistent worker and ran one-shot instead: pool at capacity, spawn failure or an unsupported protocol."
+    )]
+    persistent_worker_fallbacks: CounterWithTime,
     #[metric(
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]

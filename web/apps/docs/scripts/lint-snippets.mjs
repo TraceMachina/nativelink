@@ -25,14 +25,22 @@
 //
 // Exit code is 1 if any snippet uses a key the reference does not know.
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const docsRoot = join(here, "..");
 const contentDir = join(docsRoot, "content/docs");
-const REFERENCE = join(contentDir, "reference/nativelink-config/index.mdx");
+/**
+ * The generated references to harvest field names from: the latest release's
+ * page, and main's on top of it, so a field added since the last release is
+ * known once `gen:config-reference main` has been run.
+ */
+const REFERENCES = [
+  join(contentDir, "reference/nativelink-config/index.mdx"),
+  join(contentDir, "reference/nativelink-config/main.mdx"),
+];
 
 /** Keys under these parents are operator-chosen, not config fields. */
 const FREEFORM_PARENTS = new Set([
@@ -83,10 +91,17 @@ function walk(dir, out = []) {
   return out;
 }
 
-/** Every field name and tagged-variant key the generated reference documents. */
-function harvestKnownKeys(referencePath) {
-  const text = readFileSync(referencePath, "utf8");
+/** Every field name and tagged-variant key the generated references document. */
+function harvestKnownKeys(referencePaths) {
   const known = new Set(KNOWN_MAP_KEYS);
+  for (const referencePath of referencePaths) {
+    if (!existsSync(referencePath)) continue;
+    harvestKnownKeysFrom(readFileSync(referencePath, "utf8"), known);
+  }
+  return known;
+}
+
+function harvestKnownKeysFrom(text, known) {
 
   // Props-table rows: `| \`field\` | type | … |`
   for (const m of text.matchAll(/^\|\s*`([a-z0-9_]+)`\s*\|/gm)) known.add(m[1]);
@@ -246,7 +261,7 @@ function braceBalance(src) {
 // --------------------------------------------------------------------------
 
 function main() {
-  const known = harvestKnownKeys(REFERENCE);
+  const known = harvestKnownKeys(REFERENCES);
   const files = walk(contentDir).filter((f) => !f.includes("reference/nativelink-config/"));
 
   const problems = [];

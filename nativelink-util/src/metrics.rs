@@ -32,6 +32,7 @@ pub const EXECUTION_RESULT: &str = "execution.result";
 pub const EXECUTION_INSTANCE: &str = "execution.instance";
 pub const EXECUTION_PRIORITY: &str = "execution.priority";
 pub const EXECUTION_WORKER_ID: &str = "execution.worker_id";
+pub const EXECUTION_OUTCOME: &str = "execution.outcome";
 pub const EXECUTION_ACTION_MNEMONIC: &str = "execution.action_mnemonic";
 pub const EXECUTION_EXIT_CODE: &str = "execution.exit_code";
 pub const EXECUTION_ACTION_DIGEST: &str = "execution.action_digest";
@@ -43,6 +44,8 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 
 // Metric attribute keys for the scheduler.
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
+/// The platform properties no worker could satisfy, comma separated.
+pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
 
 // Metric attribute keys for tiered stores.
 pub const STORE_TIER: &str = "store.tier";
@@ -62,12 +65,22 @@ pub const WORKER_STATE: &str = "worker.state";
 pub const WORKER_DISCONNECT_REASON: &str = "worker.disconnect.reason";
 
 /// Why a worker left the pool.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerDisconnectReason {
-    /// The worker's connection ended.
+    /// The worker's connection ended without a drain.
     Disconnected,
-    /// The scheduler evicted it, usually after a timeout or an error.
-    Evicted,
+    /// The worker announced a drain and its connection ended after it.
+    Drained,
+    /// No message within `worker_timeout_s`.
+    Timeout,
+    /// A kill sent to the worker was never acknowledged.
+    KillUnacknowledged,
+    /// A command to the worker or an update from it failed.
+    Error,
+    /// Removed through the admin API.
+    Removed,
+    /// The scheduler is shutting down.
+    Shutdown,
 }
 
 impl WorkerDisconnectReason {
@@ -75,7 +88,12 @@ impl WorkerDisconnectReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Disconnected => "disconnected",
-            Self::Evicted => "evicted",
+            Self::Drained => "drained",
+            Self::Timeout => "timeout",
+            Self::KillUnacknowledged => "kill_unacknowledged",
+            Self::Error => "error",
+            Self::Removed => "removed",
+            Self::Shutdown => "shutdown",
         }
     }
 }
@@ -689,12 +707,17 @@ pub struct ExecutionMetrics {
 /// Wall time is already covered by `execution.stage.duration`. This is the
 /// other half: an action pinning eight cores for a minute and one sleeping
 /// for a minute look identical by wall time and nothing alike here.
-pub fn record_execution_cpu_time(cpu_time_ms: u64, instance_name: &str, action_mnemonic: &str) {
+pub fn record_execution_cpu_time(
+    cpu_time_ms: u64,
+    instance_name: &str,
+    action_mnemonic: &str,
+    outcome: &str,
+) {
     #[expect(clippy::cast_precision_loss)] // Milliseconds; f64 is exact well past any real action.
     let seconds = cpu_time_ms as f64 / 1000.0;
     EXECUTION_METRICS.execution_cpu_time.record(
         seconds,
-        &execution_sample_attributes(instance_name, action_mnemonic),
+        &execution_sample_attributes(instance_name, action_mnemonic, outcome),
     );
 }
 
@@ -708,23 +731,31 @@ pub fn record_execution_peak_memory(
     peak_memory_kb: u64,
     instance_name: &str,
     action_mnemonic: &str,
+    outcome: &str,
 ) {
     EXECUTION_METRICS.execution_peak_memory.record(
         peak_memory_sample(peak_memory_kb),
-        &execution_sample_attributes(instance_name, action_mnemonic),
+        &execution_sample_attributes(instance_name, action_mnemonic, outcome),
     );
 }
 
 /// Attributes for a per-action resource sample. The mnemonic is attached only
 /// when known: an empty value on every sample from an unattributed client
 /// would read as a real mnemonic named "".
-fn execution_sample_attributes(instance_name: &str, action_mnemonic: &str) -> Vec<KeyValue> {
+fn execution_sample_attributes(
+    instance_name: &str,
+    action_mnemonic: &str,
+    outcome: &str,
+) -> Vec<KeyValue> {
     let mut attrs = vec![KeyValue::new(EXECUTION_INSTANCE, instance_name.to_string())];
     if !action_mnemonic.is_empty() {
         attrs.push(KeyValue::new(
             EXECUTION_ACTION_MNEMONIC,
             action_mnemonic.to_string(),
         ));
+    }
+    if !outcome.is_empty() {
+        attrs.push(KeyValue::new(EXECUTION_OUTCOME, outcome.to_string()));
     }
     attrs
 }
@@ -869,10 +900,26 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
             .with_unit("{worker}")
             .build(),
 
+        dispatch_requeues: meter
+            .u64_counter("scheduler.dispatch.requeues")
+            .with_description("Dispatches sent back to the queue untried, by reason: declined, channel_full, unacknowledged")
+            .build(),
+
         worker_keepalives: meter
             .u64_counter("worker.keepalives")
             .with_description("Total worker keepalives received")
             .with_unit("{keepalive}")
+            .build(),
+
+        worker_keepalive_gap: meter
+            .f64_histogram("worker.keepalive.gap")
+            .with_description(
+                "Seconds since the previous message from the same worker, at each message",
+            )
+            .with_unit("s")
+            .with_boundaries(vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 15.0, 20.0, 30.0, 60.0,
+            ])
             .build(),
 
         worker_state_count: meter
@@ -900,8 +947,12 @@ pub struct WorkerMetrics {
     pub worker_connections: metrics::Counter<u64>,
     /// Workers that have left, cumulative, by reason.
     pub worker_disconnections: metrics::Counter<u64>,
+    /// Dispatches requeued untried, by reason.
+    pub dispatch_requeues: metrics::Counter<u64>,
     /// Keepalives received, cumulative.
     pub worker_keepalives: metrics::Counter<u64>,
+    /// Seconds between consecutive messages from a worker.
+    pub worker_keepalive_gap: metrics::Histogram<f64>,
     /// Connected workers currently paused or draining.
     pub worker_state_count: metrics::UpDownCounter<i64>,
 }
@@ -942,9 +993,29 @@ pub fn record_worker_state(state: &'static str, entered: bool) {
     );
 }
 
+/// Records a dispatch going back to the queue untried: the worker declined
+/// it, its channel was full, or it never acknowledged it.
+pub fn record_dispatch_requeue(reason: &'static str) {
+    WORKER_METRICS
+        .dispatch_requeues
+        .add(1, &[KeyValue::new("reason", reason)]);
+}
+
 /// Records a keepalive from a worker.
 pub fn record_worker_keepalive() {
     WORKER_METRICS.worker_keepalives.add(1, &[]);
+}
+
+/// Records the gap since the worker's previous message. The distribution
+/// is what the eviction margin is judged against.
+pub fn record_worker_keepalive_gap(seconds: u64) {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "seconds; exact well past any real gap"
+    )]
+    WORKER_METRICS
+        .worker_keepalive_gap
+        .record(seconds as f64, &[]);
 }
 
 /// Global gRPC serving metrics.
@@ -1022,6 +1093,62 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_description("Matching passes run, by result")
             .with_unit("{pass}")
             .build(),
+
+        unsatisfiable_queued: meter
+            .u64_gauge("scheduler.unsatisfiable.queued")
+            .with_description(
+                "Queued actions that no worker connected to this scheduler could run even when idle",
+            )
+            .with_unit("{action}")
+            .build(),
+
+        unsatisfiable_failed: meter
+            .u64_counter("scheduler.unsatisfiable.failed")
+            .with_description("Queued actions failed because no worker could ever run them")
+            .with_unit("{action}")
+            .build(),
+
+        queue_depth: meter
+            .u64_gauge("scheduler.queue.depth")
+            .with_description("Queued actions the last matching pass read")
+            .with_unit("{action}")
+            .build(),
+
+        queue_retired: meter
+            .u64_counter("scheduler.queue.retired")
+            .with_description("Queued actions retired because no client was listening any more")
+            .with_unit("{action}")
+            .build(),
+
+        parked_dispatched: meter
+            .u64_counter("scheduler.matching.parked_dispatched")
+            .with_description(
+                "Queued actions dispatched onto room that opened while the matching pass was past them, taken ahead of the newer actions the pass was reading",
+            )
+            .with_unit("{action}")
+            .build(),
+
+        awaited_action_orphans: meter
+            .u64_counter("scheduler.awaited_action.orphans")
+            .with_description(
+                "Operations the queue listed whose record was gone on read, by site; non-zero means the scheduler's store is losing records, usually to eviction",
+            )
+            .with_unit("{operation}")
+            .build(),
+
+        sweep_failures: meter
+            .u64_counter("scheduler.sweep.failures")
+            .with_description("Abandoned-queue sweeps that ended in an error before finishing")
+            .with_unit("{sweep}")
+            .build(),
+
+        hint_resolutions: meter
+            .u64_counter("scheduler.hints.resolutions")
+            .with_description(
+                "Actions the historical resource scheduler sized, by where the numbers came from: a hint keyed by target, action digest, command digest or mnemonic, the cold start, or nothing",
+            )
+            .with_unit("{action}")
+            .build(),
     }
 });
 
@@ -1036,6 +1163,26 @@ pub struct SchedulerOtlpMetrics {
     pub matching_duration: metrics::Histogram<f64>,
     /// Matching passes, by result.
     pub matching_passes: metrics::Counter<u64>,
+    /// Queued actions seen in the last matching pass that no worker
+    /// connected to this scheduler could run even when idle. Per scheduler
+    /// instance, judged against that instance's own workers.
+    pub unsatisfiable_queued: metrics::Gauge<u64>,
+    /// Queued actions failed because no worker could ever run them, by
+    /// the properties that could not be satisfied.
+    pub unsatisfiable_failed: metrics::Counter<u64>,
+    /// Queued actions the last matching pass read.
+    pub queue_depth: metrics::Gauge<u64>,
+    /// Queued actions retired for having no client.
+    pub queue_retired: metrics::Counter<u64>,
+    /// Actions a pass parked for want of room and dispatched when room
+    /// opened before the pass ended, ahead of the newer actions it was reading.
+    pub parked_dispatched: metrics::Counter<u64>,
+    /// Listed operations whose record was gone on read, by site.
+    pub awaited_action_orphans: metrics::Counter<u64>,
+    /// Abandoned-queue sweeps that failed before finishing.
+    pub sweep_failures: metrics::Counter<u64>,
+    /// Actions sized by the historical resource scheduler, by source.
+    pub hint_resolutions: metrics::Counter<u64>,
 }
 
 /// Records a completed matching pass.
@@ -1048,6 +1195,67 @@ pub fn record_matching_pass(duration_secs: f64, succeeded: bool) {
         &[KeyValue::new(
             SCHEDULER_MATCH_RESULT,
             if succeeded { "ok" } else { "error" },
+        )],
+    );
+}
+
+/// Records how many unsatisfiable queued actions a matching pass saw.
+pub fn record_unsatisfiable_queued(count: u64) {
+    SCHEDULER_METRICS.unsatisfiable_queued.record(count, &[]);
+}
+
+/// Records how many queued actions a matching pass read.
+pub fn record_queue_depth(count: u64) {
+    SCHEDULER_METRICS.queue_depth.record(count, &[]);
+}
+
+/// Records queued actions retired by the abandoned sweep.
+pub fn record_queue_retired(count: u64) {
+    if count > 0 {
+        SCHEDULER_METRICS.queue_retired.add(count, &[]);
+    }
+}
+
+/// Records parked actions a pass sent to a worker onto room that opened
+/// mid-pass: confirmed sends, not attempts. A dispatch that failed or lost
+/// the assignment race to another scheduler is not counted.
+pub fn record_parked_dispatched(count: u64) {
+    if count > 0 {
+        SCHEDULER_METRICS.parked_dispatched.add(count, &[]);
+    }
+}
+
+/// Records an operation the queue listed whose record was gone when read;
+/// `site` is where it was met (`matching`, `sweep`).
+pub fn record_awaited_action_orphan(site: &'static str) {
+    SCHEDULER_METRICS
+        .awaited_action_orphans
+        .add(1, &[KeyValue::new("site", site)]);
+}
+
+/// Records an abandoned-queue sweep that failed before finishing.
+pub fn record_sweep_failure() {
+    SCHEDULER_METRICS.sweep_failures.add(1, &[]);
+}
+
+/// Records where an action's reservation came from: `target`,
+/// `action_digest`, `command_digest`, `mnemonic`, `cold_start` or `none`.
+/// The cold-start share of a run is `cold_start` over the total.
+pub fn record_hint_resolution(source: &'static str) {
+    SCHEDULER_METRICS
+        .hint_resolutions
+        .add(1, &[KeyValue::new("source", source)]);
+}
+
+/// Records a queued action failed for being unsatisfiable. `properties`
+/// names the ones no worker could satisfy, sorted and comma separated, so
+/// the label set is bounded by the declared platform properties.
+pub fn record_unsatisfiable_failed(properties: String) {
+    SCHEDULER_METRICS.unsatisfiable_failed.add(
+        1,
+        &[KeyValue::new(
+            SCHEDULER_UNSATISFIABLE_PROPERTIES,
+            properties,
         )],
     );
 }

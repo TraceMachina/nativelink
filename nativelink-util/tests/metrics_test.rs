@@ -266,7 +266,8 @@ fn test_worker_disconnect_reason_labels() {
         WorkerDisconnectReason::Disconnected.as_str(),
         "disconnected"
     );
-    assert_eq!(WorkerDisconnectReason::Evicted.as_str(), "evicted");
+    assert_eq!(WorkerDisconnectReason::Timeout.as_str(), "timeout");
+    assert_eq!(WorkerDisconnectReason::Drained.as_str(), "drained");
 }
 
 #[test]
@@ -284,7 +285,7 @@ fn test_worker_metric_helpers_are_callable() {
     record_worker_connected();
     record_worker_state("draining", true);
     record_worker_state("paused", true);
-    record_worker_disconnected(WorkerDisconnectReason::Evicted, true, true);
+    record_worker_disconnected(WorkerDisconnectReason::Timeout, true, true);
 }
 
 #[test]
@@ -349,8 +350,8 @@ fn test_new_metric_helpers_are_callable() {
     record_store_tier_read("slow", "hit");
     record_store_tier_io("fast", "read", 4096);
     record_health_check("store", "ok");
-    record_execution_peak_memory(512 * 1024, "main", "CppCompile");
-    record_execution_cpu_time(90_000, "main", "CppCompile");
+    record_execution_peak_memory(512 * 1024, "main", "CppCompile", "COMPLETED");
+    record_execution_cpu_time(90_000, "main", "CppCompile", "COMPLETED");
     record_connection_acquired("grpc", Some(12), false);
     record_connection_acquired("redis", Some(0), true);
     record_connection_acquired("grpc", None, false);

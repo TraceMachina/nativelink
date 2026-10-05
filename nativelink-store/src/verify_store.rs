@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nativelink_config::stores::VerifySpec;
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
@@ -31,6 +31,7 @@ use nativelink_util::metrics_utils::CounterWithTime;
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
 };
+use tracing::warn;
 
 #[derive(Debug, MetricsComponent)]
 pub struct VerifyStore {
@@ -151,6 +152,46 @@ impl VerifyStore {
     }
 }
 
+impl VerifyStore {
+    async fn inner_check_read(
+        &self,
+        mut rx: DropCloserReadHalf,
+        writer: &mut DropCloserWriteHalf,
+        expected: u64,
+        key: StoreKey<'_>,
+    ) -> Result<(), Error> {
+        let mut sum_size: u64 = 0;
+        loop {
+            let chunk = rx
+                .recv()
+                .await
+                .err_tip(|| "Failed to read chunk in check_read in verify store")?;
+            if chunk.is_empty() {
+                if sum_size != expected {
+                    self.size_verification_failures.inc();
+                    return Err(make_err!(
+                        Code::DataLoss,
+                        "Read {sum_size} bytes of the {expected} expected for {key:?} in verify store"
+                    ));
+                }
+                return writer.send_eof().err_tip(|| "In verify_store::check_read");
+            }
+            sum_size += chunk.len() as u64;
+            if sum_size > expected {
+                self.size_verification_failures.inc();
+                return Err(make_err!(
+                    Code::DataLoss,
+                    "Read {sum_size} bytes, more than the {expected} expected for {key:?} in verify store"
+                ));
+            }
+            writer
+                .send(chunk)
+                .await
+                .err_tip(|| "Failed to forward chunk in verify store")?;
+        }
+    }
+}
+
 #[async_trait]
 impl StoreDriver for VerifyStore {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
@@ -230,7 +271,70 @@ impl StoreDriver for VerifyStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        self.inner_store.get_part(key, writer, offset, length).await
+        // A digest names its size, so a read that ends short of it is a
+        // truncated blob, whatever tier below lost the tail: handed on as
+        // EOF it would be cached as complete by every store above and fed
+        // to actions as an input. The hash is not recomputed on reads.
+        let expected = match &key {
+            StoreKey::Digest(digest) if self.verify_size => {
+                let to_end = digest.size_bytes().saturating_sub(offset);
+                Some(length.map_or(to_end, |length| length.min(to_end)))
+            }
+            _ => None,
+        };
+        let Some(expected) = expected else {
+            return self.inner_store.get_part(key, writer, offset, length).await;
+        };
+        let (mut tx, rx) = make_buf_channel_pair();
+        // The writer half lives inside the read future, so an inner read that
+        // fails after some data closes the channel as it returns; held out
+        // here it kept the forwarding loop waiting for bytes that never came.
+        let read_key = key.borrow().into_owned();
+        let read_fut = async move {
+            self.inner_store
+                .get_part(read_key, &mut tx, offset, length)
+                .await
+        };
+        let check_fut = self.inner_check_read(rx, writer, expected, key.borrow());
+        let (read_res, check_res) = tokio::join!(read_fut, check_fut);
+        // The checker's verdict first: on a read past the expected size it
+        // drops its receiver and the inner send then fails with Internal,
+        // which must not hide the DataLoss. Otherwise the inner error (a
+        // NotFound from below) comes before the checker's closed-channel
+        // Internal, as `update` orders the same pair.
+        let result = match (read_res, check_res) {
+            (_, Err(e)) if e.code == Code::DataLoss => Err(e),
+            (Err(e), _) | (Ok(()), Err(e)) => Err(e),
+            (Ok(()), Ok(())) => Ok(()),
+        };
+        if let Err(err) = &result
+            && err.code == Code::DataLoss
+        {
+            // The copy that served this read is bad; drop it from every
+            // cache below so the next read repopulates from the durable
+            // tier, or fails with NotFound and the client re-uploads.
+            match self
+                .inner_store
+                .as_store_driver_pin()
+                .remove(key.borrow())
+                .await
+            {
+                Ok(removed) => warn!(
+                    ?key,
+                    removed, "Dropped a copy that failed size verification"
+                ),
+                Err(remove_err) => warn!(
+                    ?key,
+                    ?remove_err,
+                    "Could not drop a copy that failed size verification"
+                ),
+            }
+        }
+        result
+    }
+
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store.as_store_driver_pin().remove(key).await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {

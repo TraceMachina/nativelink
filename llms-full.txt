@@ -6306,16 +6306,15 @@ alive between them.
 
 ## Two things to know before you start [#two-things-to-know-before-you-start]
 
-**Almost nothing needs configuring in NativeLink.** No field anywhere in
-[the configuration model](/configuration) turns this on, tunes the pool, or
-selects a protocol; `LocalWorkerConfig` has no persistent-worker section at
-all, and every pool parameter is a compiled-in constant. The feature is
-driven by two platform properties on each action. The one thing NativeLink
-does need from you is on the scheduler: those two keys must be listed in
-`supported_platform_properties`, because the scheduler rejects an action that
-carries a key it does not know. If you have seen a `persistent_workers`
-config block in older documentation, it did not correspond to anything in the
-binary.
+**Little needs configuring in NativeLink.** The pool is on by default and
+the protocol is chosen by two platform properties on each action. The
+worker's `persistent_workers` block (v1.7.3 and later) sizes it: how many
+processes per key, how long an idle one lives, how many requests one serves,
+how long an action at the cap waits for a process to come back, and
+`enabled: false` to run every such action one-shot.
+The one thing NativeLink does need from you is on the scheduler: those two
+keys must be listed in `supported_platform_properties`, because a scheduler
+older than v1.6.6 rejects an action that carries a key it does not know.
 
 **The module is licensed separately.** Most of the repository is
 `FSL-1.1-Apache-2.0`. Every file under `nativelink-worker/src/persistent_worker/`
@@ -6435,19 +6434,23 @@ while everything still appears to work.
 
 ## The isolation you give up [#the-isolation-you-give-up]
 
-This is the part to read twice. NativeLink applies real isolation to ordinary
-actions and **applies none of it to persistent workers**. The persistent path
-returns before any of it runs.
+This is the part to read twice. A persistent worker process outlives the
+actions it serves, so some of the isolation an ordinary action gets cannot
+apply to it, and some of it did not apply until v1.7.3.
 
-**No namespace sandboxing.** The PID, user, IPC, UTS and mount namespaces that
-ordinary actions get are not applied. `use_namespaces` and `use_mount_namespace`
-have no effect on a persistent worker.
+**Process namespaces, but not the mount namespace.** With `use_namespaces`
+the worker process gets its own PID, user, IPC and UTS namespaces, as an
+ordinary action does, so its children are reaped with it. It never gets a
+mount namespace or the private `/tmp` (`isolate_tmp`): both are per action,
+and the process is not. Persistent workers see the host's `/tmp` and the
+whole of the worker's filesystem, whatever `use_mount_namespace` says.
 
-**No environment control.** Ordinary actions get a cleared environment plus
-exactly what the action and config specify. A persistent worker process
-inherits the NativeLink worker process's own environment, and
-`environment_variables` on the command, `additional_environment` on the config,
-and the side-channel environment sources are all ignored.
+**The action's environment, and only that.** The process is started with a
+cleared environment plus the command's `environment_variables`, the way an
+ordinary action is, and that environment is part of the worker's key, so two
+actions that differ in it never share a process. `additional_environment` on
+the config, the side-channel sources and the per-action `TMPDIR` are not
+applied: they are per action, and the process is not.
 
 **A shared, long-lived working directory.** The process's own working directory
 is the worker's root action directory, not the per-action one; it has to be,
@@ -6461,6 +6464,12 @@ ever serves.
 use it to validate or invalidate its own cached state. Anything the tool caches
 across requests, it caches on trust.
 
+**Measured, not enforced.** What the process and its children use while they
+serve a request is sampled and reported as the action's resource usage, so the
+sizing loop learns what the tool needs. `resource_enforcement` never kills a
+persistent worker for one request's reservation: the process is shared, and a
+kill would take every action queued behind it.
+
 The consequence is a real correctness requirement, not a footnote: **a
 persistent worker must be hermetic by construction, because nothing is enforcing
 it.** State that leaks between requests produces wrong outputs that are then
@@ -6472,31 +6481,47 @@ it.
 
 ## The pool's actual behaviour [#the-pools-actual-behaviour]
 
-Every parameter below is a compiled-in constant. None is configurable.
+The pool is configured under `persistent_workers` on the worker; every value
+below is its default.
 
-**Four workers per key.** A fifth concurrent action for the same key does not
-queue; it falls back to normal one-shot execution and logs that it did. Your
-build stays correct and quietly gets slower, which is worth knowing when you are
-measuring.
+```json5
+persistent_workers: {
+  enabled: true,
+  max_workers_per_key: 4,
+  idle_timeout_s: 300,
+  max_requests_per_worker: 200,
+  shutdown_grace_ms: 5000,
+  acquire_timeout_s: 30,
+}
+```
+
+**Four workers per key.** A fifth concurrent action for the same key waits
+up to `acquire_timeout_s` for one of the four to come back, as Bazel's own
+`worker_max_instances` queue does; only if none does in that time does it
+fall back to normal one-shot execution, and it logs that it did. Your build
+stays correct and gets slower by a tool startup per fallback; the worker's
+`persistent_worker_fallbacks` counter says how often.
 
 **Two hundred requests per worker.** After that the process is retired and the
 next action starts a fresh one. This is deliberate recycling of accumulated JVM
 state, and it means a long build will restart workers periodically by design.
 
-**No idle timeout, in practice.** The sweeper that would retire an idle worker
-exists in the code but nothing calls it. A worker lives until the request cap
-retires it, until it dies on its own, or until the NativeLink worker process
-exits.
+**Five minutes idle.** A sweeper runs on a timer and shuts down a worker
+that has served nothing for `idle_timeout_s`, so a pool of JVMs left over from
+one build does not hold the worker's memory through the next.
 
 **Dead workers are noticed on the next acquire**, not proactively. A JVM that
 OOMs while idle is discovered when the next action asks for it, and that action
 starts a replacement.
 
-**Shutdown is not graceful.** Stdin is closed, giving the tool five seconds to
-exit on EOF, and then it is killed outright. No `SIGTERM` is sent.
+**Shutdown is not graceful.** Stdin is closed, giving the tool `shutdown_grace_ms`
+to exit on EOF, and then it is killed outright. No `SIGTERM` is sent.
 
 **One request at a time per process.** Multiplexed workers are not supported; a
 request carrying a non-zero request ID is rejected.
+
+**`enabled: false` turns it off.** Every action then runs one-shot, whatever it
+asks for.
 
 ## Steps [#steps]
 
@@ -6585,10 +6610,13 @@ invalidating.
 
 <Accordion title="Builds get slower under high parallelism" id="builds-get-slower-under-high-parallelism">
 
-More than four concurrent actions for one key fall back to one-shot execution,
-and one-shot execution of a worker-wrapped tool can be slower than the plain
-tool. The per-key cap is not configurable, so the levers are reducing
-concurrency for that mnemonic or splitting the work across more distinct keys.
+More than `max_workers_per_key` concurrent actions for one key (four by
+default) wait up to `acquire_timeout_s` for a process to come back and then
+fall back to one-shot execution, and one-shot execution of a worker-wrapped
+tool can be slower than the plain tool. Raise the cap, or reduce concurrency
+for that mnemonic. The CPU time reported for a pooled action is what the
+process spent on it; its peak memory is the whole process, including what
+earlier requests left resident.
 
 </Accordion>
 
@@ -8367,9 +8395,10 @@ is a service address. The config shape does not change.
 `SimpleSpec` has ten optional fields. Most can stay at their defaults
 forever. These four are the ones worth setting deliberately:
 
-**`worker_timeout_s`** (default 5 s): how long a silent worker stays in the
-pool. Five seconds is aggressive for a fleet on a congested network; a worker
-evicted mid-action has its action re-queued.
+**`worker_timeout_s`** (default 10 s): how long a silent worker stays in the
+pool. Any message from the worker counts, not only the heartbeat. Keep it at
+least twice the worker's `worker_api_endpoint.timeout`; a worker evicted
+mid-action has every action it held re-queued, each with an attempt spent.
 
 **`max_action_executing_timeout_s`** (default 0, disabled): caps how long an
 action can sit in `Executing` with no update, even from a worker that is
@@ -8380,7 +8409,13 @@ client gives up.
 **`max_job_retries`** (default 3): how many times an action that fails with
 an internal error is retried before the last error is returned to the client.
 It exists to stop one poisonous action from cycling through and destabilising
-your whole fleet.
+your whole fleet. A lost worker and a memory escalation do not spend it.
+
+**`max_worker_loss_retries`** (default 10): how many times an action whose
+worker was lost (disconnected, timed out, evicted, or OOM-killed as a whole)
+is queued again before the client gets a `FAILED_PRECONDITION`. Losing a
+worker is not the action's failure, so this budget is separate and larger;
+it only stops an action that takes a worker down every time it runs.
 
 **`retain_completed_for_s`** (default 60 s): how long a completed action's
 result stays available for a late `WaitExecution` call. Clients that
@@ -8390,6 +8425,119 @@ time.
 On the worker side, **`max_inflight_tasks`** (default 0, meaning unlimited) is
 the one to set on any real machine. Unlimited means the worker accepts every
 action the scheduler offers and lets the OS sort out the contention.
+
+**`drain_on_shutdown`** (off by default) makes a worker announce that it is
+draining the moment it gets `SIGTERM`, so the scheduler stops dispatching to
+it while it finishes what it holds. It needs a scheduler that understands the
+drain flag; an older one removes the worker on the spot and requeues its
+actions.
+
+Three bounds keep one action from taking the worker with it.
+**`max_captured_output_bytes`** (default 0, unbounded) caps how much of an
+action's stdout or stderr the worker holds in memory; past it the output
+spills to a file under the action directory and is uploaded from disk, so a
+tool that prints gigabytes costs disk, not RAM. **`precondition_timeout_ms`**
+(default 30000) ends a hanging precondition script and refuses the action as
+backpressure. **`orphan_sweep_interval_s`** (default 0, off) removes action
+directories under `work_directory` that no running action owns and that a
+failed cleanup left behind; the directory is always purged at startup.
+
+When the worker ends an action, for a timeout or a scheduler cancel, the
+process group gets SIGTERM first and **`kill_grace_ms`** (default 5000) to
+write its own cleanup before SIGKILL follows; the memory reservation kill
+skips the grace. A killed action keeps the stdout and stderr it produced.
+**`set_tmpdir`** (default true) gives every action its own `TMPDIR` under its
+action directory, so concurrent actions writing the same temporary file name
+no longer collide; a `TMPDIR` in the action's own environment still wins, and
+code that hard-codes `/tmp` is unaffected. A timeout above `max_action_timeout_s`
+is clamped to it rather than rejected.
+
+When the action's own process has exited, anything it left running in its
+process group (a background job, a helper that daemonized) is killed, since
+it would otherwise hold the action's output pipes open and the action would
+sit there until its timeout; the pipes then get five seconds to drain, and
+what was read by then is kept. The worker also makes itself the parent of
+every process an action leaves behind and reaps them on a timer, so a build
+whose actions fork and do not wait no longer leaves hundreds of zombies on
+the worker for the life of the pod. Under `use_namespaces` the stub does
+the reaping inside the action's PID namespace.
+
+Every executed action reports its resource usage to the scheduler with an
+`outcome`: `COMPLETED`, `KILLED_MEMORY` (the worker's reservation kill, or a
+SIGKILL from the kernel with the last memory sample within 10% of the limit),
+`KILLED_TIMEOUT` or `KILLED_EXTERNAL`, plus wall time and the reservation the
+action ran under. The scheduler logs every kill outcome with its mnemonic.
+
+**`resource_enforcement`** (off by default, Linux only) makes the worker hold an
+action to the memory reservation the scheduler placed it by. With
+`memory: soft` the worker kills the action's process group once two
+consecutive samples exceed `memory_kb` plus `memory_headroom_percent`
+(default 20), or one sample exceeds twice that, and fails it with
+`FAILED_PRECONDITION` naming the reservation and the observed peak. Samples
+are 250 ms apart, so an action that allocates faster than the pod's whole
+limit in half a second can still reach the cgroup limit first; the
+reservations admitted onto a worker must also sum to less than its limit
+with the headroom included. Without it the kill comes from the pod's cgroup limit,
+and on cgroup v2 that kill takes the worker and every action on it, not just
+the one that grew. The sample is the group's proportional set size, so a
+parent's pages shared with its forked children count once. Actions run
+through a persistent worker are not covered: that process outlives the action
+and serves others, so only the pod's limit bounds it. With enforcement on, the
+worker reads an action's properties from the scheduler's dispatch rather than
+the client's request, so a reservation the scheduler placed the action by is
+the one enforced and exported to the environment.
+
+`disk: guard` adds a check before any input is fetched: an action whose
+`disk_kb` reservation exceeds the free space under the work directory, less
+what the actions already admitted reserved, is refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
+counting an attempt and holds off this worker until its next keepalive,
+instead of running the fetch into a full disk.
+`disk: soft` is the guard plus a kill: every ten seconds the worker adds up
+the files the action has written under its own directory (those modified
+since its command started; inputs were materialized before that and are
+not counted), and an action past its `disk_kb` reservation by
+`disk_headroom_percent` is killed and fails with `FAILED_PRECONDITION`, its
+outcome `KILLED_DISK`. The walk runs on the blocking pool as its own task,
+so memory sampling carries on meanwhile. With either disk mode the action's
+usage report carries `peak_disk_kb`, what it wrote, from one walk of the
+action directory at completion, which is the only walk `guard` pays. The
+figure is reported and exported for now; the scheduler's sizing consumer
+comes with the size ladder.
+
+```json5
+"resource_enforcement": {
+  "memory": "soft",
+  "memory_property_name": "memory_kb",
+  "memory_headroom_percent": 20,
+  "disk": "soft",
+  "disk_property_name": "disk_kb",
+  "disk_headroom_percent": 20
+}
+```
+
+**`capacity`** makes the worker advertise CPU and memory from its own cgroup
+limits instead of from `platform_properties`: it reads `cpu.max` and
+`memory.max` at its cgroup v2 root, keeps back `overhead_cpu_millicores`
+(thousandths of a core) and `overhead_memory_kb` for itself, divides the
+memory by the enforcement headroom (`memory_headroom_percent`, which follows
+`resource_enforcement` unless set), and sets the two properties to the
+result at registration. The limit is the number the kernel enforces, so the
+number the scheduler packs against is derived from it rather than typed next
+to it. Where the cgroup cannot be read, hand-typed `cpu_count` and
+`memory_kb` stand with a warning; with neither typed the worker refuses to
+start, since it could take no action that asks for either. `cpu_unit` is the scale of the CPU
+property: `cores` by default, rounded down, the scale `cpu_count: {
+query_cmd: "nproc" }` and an action's `cpu_count=1` use; a fleet that
+advertises and requests thousandths of a core sets `millicores`. The
+overhead is always in thousandths of a core.
+
+```json5
+"capacity": {
+  "cpu_unit": "cores",
+  "overhead_cpu_millicores": 1000,
+  "overhead_memory_kb": 4194304
+}
+```
 
 <Callout type="info" title="Scheduler state is in memory by default">
   `experimental_backend` defaults to memory, so restarting the scheduler loses
@@ -11268,6 +11416,23 @@ restart.
 forward selected headers from the incoming request. Use it to front an existing
 cache.
 
+Development builds also support `grpc.store_type: "event_sink"` for forwarding
+BEP and origin events to a dedicated receiver. This mode accepts string keys
+with exact payload sizes and sends uncompressed `ByteStream.Write` requests.
+The resource hash identifies the event key, while the size describes the event
+bytes. Configure it only as an event publisher's store: reads, existence checks,
+and digest-key writes are rejected. A normal CAS endpoint cannot receive these
+writes. The receiver must acknowledge the full payload size only after its
+durable append completes; NativeLink rejects a different committed size, and
+its BEP response waits for that acknowledgement. A lost acknowledgement can
+cause a retry after the receiver has already persisted an event. The receiver
+must use the stable event key to detect and ignore duplicate events, including
+retries that start a new upload; the upload UUID alone is not an event identity.
+Origin publishing retains its existing bounded retry policy. This transport
+provides neither exactly-once processing nor a durable publisher recovery ledger.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreType" />
+
 `noop` takes nothing at all and discards everything written to it, reporting
 every read as a miss. It is how you deliberately turn a half of something off.
 
@@ -12317,7 +12482,7 @@ Check `worker_api_endpoint.timeout` on the worker against `worker_timeout_s`
 on the scheduler, and any proxy or load balancer between the two. The worker
 sends a `KeepAlive` RPC every `timeout / 2` (default timeout 5 seconds), and
 the scheduler evicts a worker it has not heard from within `worker_timeout_s`
-(default 5 seconds), so a hop that delays or drops those RPCs looks like a
+(default 10 seconds), so a hop that delays or drops those RPCs looks like a
 flapping worker. HTTP/2 keepalive pings on this listener come from
 `advanced_http.http2_keep_alive_interval` on the scheduler's worker API
 `servers` entry. The worker API is a long-lived streaming connection, not a
@@ -13768,8 +13933,11 @@ workers: [{
 
 `use_namespaces` puts each action in its own process namespace;
 `use_mount_namespace` additionally isolates the worker root in a new mount
-namespace, and only works when `use_namespaces` is on. Both are off by default
-and both are recommended in production. The container
+namespace and gives each action a private `/tmp` (its own temporary directory,
+bound over `/tmp` and removed with the action), and only works when
+`use_namespaces` is on. Both are off by default and both are recommended in
+production. Set `isolate_tmp: false` if actions must see the host's `/tmp`,
+for example because a tool they run lives there. The container
 running the worker needs the privileges to create namespaces; the reference
 Compose stack marks the executor service `privileged: true` for exactly this.
 
@@ -14254,8 +14422,9 @@ nativelink_executor:
 which need `CLONE_NEWUSER`/`CLONE_NEWNS`, hence the flag. Note what this buys
 and what it does not: namespaces here are a hermeticity and process-reaping
 mechanism, not a security boundary. Actions still run as the worker's own uid
-through an identity uid map, still see the host filesystem, and still have
-network access to every NativeLink port. A privileged container running
+through an identity uid map, still see the host filesystem apart from a
+private `/tmp`, and still have network access to every NativeLink port. A
+privileged container running
 arbitrary build actions is a lateral-movement primitive.
 [Security hardening](/operate/security-hardening#the-sandbox-is-not-a-security-boundary)
 covers what the sandbox actually does.
@@ -14576,10 +14745,15 @@ attempts per second at the socket for the whole outage. Worse, each worker's
 reconnect path calls `kill_all()` first, destroying every action it was
 running. Restart the scheduler when the queue is quiet, and restart it once.
 
-**Workers** drain themselves on `SIGTERM`: the process rejects new actions,
-waits for the ones it is running to finish, sends the scheduler a
-`GoingAway`, and exits. `systemctl stop` is therefore safe as long as
-`TimeoutStopSec` outlasts your longest action. To take a worker out of
+**Workers** drain themselves on `SIGTERM` (and on a first `SIGINT`; a second
+`SIGINT` exits at once): with `drain_on_shutdown: true`
+the process tells the scheduler at once that it is draining (a `GoingAway`
+with the drain flag), so nothing new is dispatched to it, finishes the
+actions it is running, and exits; the scheduler removes it when the stream
+closes. Without the flag the worker finishes first and announces itself
+last, and until then the scheduler keeps offering it work it refuses. The
+wait is bounded by `max_action_timeout_s`. `systemctl stop` is therefore
+safe as long as `TimeoutStopSec` outlasts your longest action. To take a worker out of
 rotation without stopping it, and if your scheduler configuration enables the
 `admin` service on the worker API listener:
 
@@ -14947,7 +15121,8 @@ each one decides where you have to point the collector:
 | Cache | `nativelink_cache_*` | Any process with a store wrapped in `cache_metrics` | Hit rate, operation latency, bytes in and out, per cache type |
 | Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
 | Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
-| Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes and whether it succeeded |
+| Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes, whether it succeeded, and how many waiting actions took room that opened mid-pass ahead of newer ones |
+| Sizing | `nativelink_scheduler_hints_resolutions_total` | The scheduler, with `historical_resource` configured | Actions sized, by source: a hint (`target`, `action_digest`, `command_digest`, `mnemonic`), `cold_start`, or `none`; the `cold_start` share is what a hint feed is meant to drive down |
 | gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
 | Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
 | Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |
@@ -14998,6 +15173,16 @@ Success rate:
 ```text
 sum(rate(nativelink_execution_completed_count_total{execution_result="success"}[5m])) /
 sum(rate(nativelink_execution_completed_count_total[5m]))
+```
+
+Actions the worker killed for memory, as a share of the sampled ones. The
+per-action resource histograms carry `execution_outcome` (`completed`,
+`killed_memory`, `killed_disk`), so a kill can be told from a completion and
+the memory escalation rate read against it:
+
+```text
+sum(rate(nativelink_execution_peak_memory_count{execution_outcome="killed_memory"}[5m])) /
+sum(rate(nativelink_execution_peak_memory_count[5m]))
 ```
 
 Workers connected to each scheduler instance, and how many of them are paused
@@ -15127,10 +15312,10 @@ not your pipeline.
   <Accordion title="Which metric should drive worker autoscaling?" id="which-metric-should-drive-worker-autoscaling">
     Queue time, not queue depth. `nativelink_execution_queue_time` is a real
     histogram emitted by the scheduler; a p95 above your tolerance means add
-    workers. No `nativelink_scheduler_queue_depth` series exists; the
-    closest thing is `nativelink_execution_active_count{execution_stage="queued"}`,
-    a gauge, and `nativelink_worker_connected_count` tells you how many workers
-    that queue is waiting on. Before you build an HPA on either, read the
+    workers. `nativelink_scheduler_queue_depth` is a gauge of what the last
+    matching pass read, `nativelink_execution_active_count{execution_stage="queued"}`
+    counts the same thing from the other side, and `nativelink_worker_connected_count`
+    tells you how many workers that queue is waiting on. Before you build an HPA on either, read the
     [autoscaling reference](/operate/autoscaling-reference#the-reaction-time-budget):
     the default one-minute export interval alone puts your reaction time in
     minutes, and CPU-based scaling is worse because workers are mostly I/O-bound.
@@ -15437,6 +15622,26 @@ it means any publicly-trusted certificate for that hostname is accepted.
 
 ## The sandbox is not a security boundary [#the-sandbox-is-not-a-security-boundary]
 
+For isolation from state left by an earlier action, development builds offer
+the opt-in [`single_use` lifecycle](/reference/nativelink-config/main#localworkerconfig).
+It requires a launcher that replaces the container and its writable volumes
+after every action. This prevents reuse of local files, background processes,
+and worker caches. It does not create a new kernel boundary or make untrusted
+actions safe on a privileged container host. Continue applying the network
+and process restrictions described on this page.
+
+The development-only
+[`experimental_buck2_file_capture`](/reference/nativelink-config/main#buck2filecaptureconfig)
+option additionally runs an operator-supplied collector inside that dedicated
+Linux container. Configure it to exclude platform credentials and internal
+caches, and use narrowly scoped credentials for its ingest service. The hook
+does not isolate a token from action processes with the same user privileges.
+The collector and
+its ingest service must enforce authorization and filesystem boundaries.
+Invocation metadata identifies the client request; it does not authenticate its
+owner. Separate action mount namespaces and entrypoint wrappers are rejected so
+the collector cannot accidentally archive the outer worker's filesystem.
+
 Workers can be configured with `use_namespaces: true` and
 `use_mount_namespace: true`. Both are real, and neither makes an action safe to
 run on your behalf.
@@ -15459,9 +15664,14 @@ uid-remapping sandbox; it is a process-reaping and hermeticity mechanism. PID
 namespacing means orphaned children die with the action instead of leaking;
 IPC and UTS namespacing means actions cannot see each other's semaphores or
 hostname (the hostname is set to `nativelink`). With `use_mount_namespace`
-the flag list also gains `CLONE_NEWNS`, and the worker's own root action
-directory is masked so one action cannot see another's tree; the rest of the
-host filesystem stays visible.
+the flag list also gains `CLONE_NEWNS`, the worker's own root action
+directory is masked so one action cannot see another's tree, and `/tmp` is
+replaced with the action's own temporary directory, on the worker's disk and
+removed with the action, so actions cannot collide on, or leak state
+through, predictable paths there (`isolate_tmp: false` keeps the host's
+`/tmp` visible; the bound `/tmp` carries the work volume's mount options,
+`noexec` included, not the host `/tmp`'s); the rest of the host filesystem
+stays visible.
 
 Note what is absent from that flag list: **`CLONE_NEWNET`**. No network
 namespace is created. An action has the worker's full network access, including to port
@@ -15791,6 +16001,22 @@ exist at all. Nothing in the repository wires this up for you. It is a short
 script, and it's the difference between a clean scale-in and a burst of
 retried actions.
 
+Two read-only listings sit next to it, for the same scripts and for an
+autoscaler that wants the scheduler's own view rather than its store:
+
+```
+GET {admin_path}/scheduler/{scheduler_name}/workers
+GET {admin_path}/scheduler/{scheduler_name}/demand
+```
+
+`workers` returns every connected worker with what it registered, what it
+has left after its running actions' reservations, its running count, its
+pause and drain flags and the free memory it last reported. `demand`
+returns every queued action with its operation id, when it was queued, its
+priority and its platform properties, reservations included. A worker's id
+starts with the name it registered under, which on Kubernetes is the pod
+name, so a drain script can find the ids to drain from the pod.
+
 <SourceLink file="src/bin/nativelink.rs" symbol="set_drain_worker" />
 
 </li>
@@ -15904,11 +16130,13 @@ a single connection the ceiling.
 
 <Accordion title="Workers keep being marked dead and their actions requeued" id="workers-keep-being-marked-dead-and-their-actions-requeued">
 
-`worker_timeout_s` defaults to **5 seconds**, checked once a second. That is a
+`worker_timeout_s` defaults to **10 seconds**, checked once a second. That is a
 short leash and it is deliberate (fast detection means fast requeue), but a
-worker whose host is briefly starved, or whose network hiccups, will be evicted.
-If you see churn without actual failures, raise it. The cost of raising it is a
-longer stall before a genuinely dead worker's actions are retried.
+worker whose host is starved for longer than that, or whose network hiccups,
+will be evicted. If you see churn without actual failures, raise it. The cost
+of raising it is a longer stall before a genuinely dead worker's actions are
+retried. Releases up to 1.7.2 defaulted to 5 seconds and only counted
+heartbeats, so a worker busy reporting results could still be evicted.
 
 </Accordion>
 
@@ -16674,6 +16902,43 @@ each check) and `200` otherwise.
   "nothing objected," which for most compositions is vacuous.
 </Callout>
 
+## Readiness is a different question [#readiness-is-a-different-question]
+
+`/status` answers whether the components that registered a health indicator
+have failed. It stays `200` while a component is still initializing, which is
+the right answer for a liveness probe and the wrong one for readiness. The
+`health` service therefore also serves `/ready` (`readiness_path`, default
+`/ready`), which answers `503` while anything is initializing or failed and
+`200` otherwise.
+
+For a worker, the component that matters is its registration with the
+scheduler. Each worker registers a `workers/<name>` indicator that reads
+`Initializing` until the scheduler has answered its `connect_worker` with a
+`ConnectionResult`, `Ok` while that connection holds, and `Initializing`
+again after it is lost and the worker is reconnecting, so only `/ready`
+drops: a liveness probe on `/status` stays green through a scheduler roll
+instead of restarting every worker. A Kubernetes readiness probe on the
+worker's `/ready` turns the pod Ready when the worker can take work rather
+than when its container started, and turns it not Ready again if it loses
+the scheduler. Anything that reads pod readiness, an autoscaler's idle clock
+included, then counts from registration.
+
+```json5
+// On the worker pod's HTTP listener.
+services: {
+  health: { path: "/status", readiness_path: "/ready" },
+}
+```
+
+```yaml
+readinessProbe:
+  httpGet: { path: /ready, port: 50061 }
+  periodSeconds: 5
+  failureThreshold: 3
+```
+
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="WorkerRegistration" />
+
 ## Build the deployment [#build-the-deployment]
 
 <Steps>
@@ -17265,14 +17530,17 @@ any other non-zero exit; there is no exported metric that singles out
 signal deaths, so the log line is what you alert on.
 
 **The worker process itself was killed.** The scheduler notices after
-`worker_timeout_s` (default 5 seconds, checked once a second), evicts it, and
-re-queues its in-flight actions. In this tree a disconnect *counts as an
-attempt*, so after `max_job_retries` the client finally sees:
+`worker_timeout_s` (default 10 seconds, checked once a second), evicts it, and
+re-queues its in-flight actions. A lost worker does not spend the action's
+`max_job_retries`; it has its own budget, `max_worker_loss_retries` (default
+10), so after that many losses the client finally sees, as a
+`FAILED_PRECONDITION` that Bazel does not resubmit:
 
 ```text
-Worker disconnected repeatedly while executing this action (4 > 3 attempts);
-the runner likely OOMKilled or the pod was evicted. for operation_id: ...,
-maybe_worker_id: ...
+The worker running this action was lost 11 times, more than
+max_worker_loss_retries (10); the action is likely what takes the worker down
+(OOM-killed pod, eviction). Give it a memory reservation or raise the pool's
+memory limit before retrying. for operation_id: ..., maybe_worker_id: ...
 ```
 
 That string is the single best diagnostic for a memory-pressured worker fleet.
@@ -17561,6 +17829,85 @@ The new open file limit (1024) is below the recommended value of 24576.
 Consider raising max_open_files.
 ```
 
+## Every build stalls at `[Sched]` and nothing errors [#every-build-stalls-and-nothing-errors]
+
+Clients sit on `WaitExecution` for hours, the scheduler log is quiet apart
+from `Could not find AwaitedAction for the given operation id`, idle workers
+take nothing, and the provisioner reads demand as zero. The scheduler's
+records are being evicted from Redis.
+
+`maxmemory` and `maxmemory-policy` are per Redis server, not per database.
+A deployment that puts the scheduler's records in the same instance as the
+CAS's small blobs and the BEP event stream, under `allkeys-lru`, has agreed
+that growth in any of them may evict any of them. An evicted CAS blob is a
+cache miss. An evicted scheduler record is a client waiting on an operation
+nothing will ever finish, and a queue entry that, until v1.7.3, stopped the
+abandoned sweep at the first record it could not read, so the corpses behind
+it were never retired either.
+
+What to check, in order:
+
+1. `redis-cli info memory`: `used_memory` against `maxmemory`, and
+   `evicted_keys` in `info stats`. Any eviction at all on the scheduler's
+   instance is this incident in progress.
+2. What is growing. A stalled BEP consumer is the usual cause: count keys by
+   prefix. Postgres disk full stops the consumer, so check that too.
+3. The scheduler's own counters: `scheduler.awaited_action.orphans` (queue
+   entries whose record was gone on read), `scheduler.queue.depth`,
+   `scheduler.sweep.failures`, and `worker.connected.count`. Depth above
+   zero with no connected worker for minutes is the stall itself.
+
+What to change:
+
+- Give the scheduler its own Redis with `maxmemory-policy noeviction`. A
+  full instance then refuses writes, which is an error the scheduler reports
+  and a client sees, instead of a silent loss. The Helm chart deploys one as
+  `scheduler-redis`.
+- Bound the BEP stream with `key_ttl_s` sized for the longest consumer
+  outage you mean to survive, not for convenience.
+- Alert on Redis memory and evictions and on the counters above before the
+  queue does the alerting for you.
+
+From v1.7.3 the matching pass and the abandoned sweep skip a listed
+operation whose record is gone, count it, and carry on, so an eviction no
+longer makes the pile permanent. It still makes every affected client wait
+out its timeout.
+
+## The scheduler's Redis keeps every completed action [#scheduler-redis-keeps-completed-actions]
+
+**Symptom.** With the Redis scheduler backend, `DBSIZE` on the scheduler's
+database grows by one `aa_*` hash per action ever run and never falls; the
+records all read `completed` and `TTL` says `-1`. Once the search index holds
+more than one cursor page, listings over it (the admin read the worker
+provisioner makes, the scheduler admin endpoints) can fail with
+`Failed to get operations list! Parse: Non map item`.
+
+**Cause.** Before v1.7.3 the Redis backend received `retain_completed_for_s`
+as configured, without the default applied: left unset it arrived as 0, and the versioned update treats a
+zero TTL as no expiry, so completed records were written to live forever.
+The memory backend applied the 60 second default; only Redis leaked. The
+listing failure is a second bug in the same release: a cursor page arrived
+in the RESP3 shape the first page's parser understood but the cursor reader
+did not.
+
+**Fix.** Upgrade to v1.7.3 or later; new completions expire after
+`retain_completed_for_s`. Records written before the upgrade keep their
+missing expiry, so give them one once, on the scheduler's Redis database
+(0 in the chart's layout):
+
+```bash
+redis-cli -n 0 --scan --pattern 'aa_*' \
+  | while read -r key; do
+      if [ "$(redis-cli -n 0 hget "$key" state)" = "completed" ] \
+         && [ "$(redis-cli -n 0 ttl "$key")" = "-1" ]; then
+        redis-cli -n 0 expire "$key" 60 > /dev/null
+      fi
+    done
+```
+
+A queued or executing record is left alone; only completed ones get the
+sixty seconds a fresh completion would.
+
 ## Restarting the scheduler [#restarting-the-scheduler]
 
 Not an incident so much as a procedure that behaves worse than you expect.
@@ -17826,7 +18173,7 @@ string is just the tombstone.
 
 The timeout defaults that matter: `max_action_timeout_s` 20 minutes,
 `max_upload_timeout_s` 10 minutes, `max_cleanup_wait_s` 30 seconds,
-`worker_timeout_s` 5 seconds, `client_action_timeout_s` 60 seconds,
+`worker_timeout_s` 10 seconds, `client_action_timeout_s` 60 seconds,
 `retain_completed_for_s` 60 seconds.
 
 `retain_completed_for_s` is not an execution timeout; it is how long a
@@ -17840,7 +18187,7 @@ Setting a field to `0` to disable it usually does the opposite.
 | Field | `0` means |
 | --- | --- |
 | `max_job_retries` | **3.** Not "no retries". |
-| `worker_timeout_s` | 5 seconds. |
+| `worker_timeout_s` | 10 seconds. |
 | `client_action_timeout_s` | 60 seconds. |
 | `retain_completed_for_s` | 60 seconds. |
 | `max_action_executing_timeout_s` | Genuinely disabled. The one exception. |
@@ -17881,7 +18228,8 @@ churning, those are the same incident.
 
 The worker sends a keepalive every half of its `worker_api_endpoint.timeout`
 (default 5 s, so every 2.5 s), and the scheduler evicts a worker it has not
-heard from for `worker_timeout_s` (default 5 s), checking once a second. The
+heard from for `worker_timeout_s` (default 10 s), checking once a second. Any
+message from the worker resets that clock, not only keepalives. The
 scheduler counts what it receives in `nativelink_worker_keepalives_total` and
 departures by reason in `nativelink_worker_disconnections_total`.
 
@@ -18095,11 +18443,36 @@ the merge rule, the ordering rule and the retry rule.
 A worker fetches the action's inputs from the CAS, materialises them into a
 directory, runs the command, uploads the outputs, and reports back.
 
-Workers hold no durable state; a worker that dies mid-action costs you that
+Workers hold no durable state. A worker that dies mid-action costs you that
 action, not your cache. What they do hold is a local filesystem that is
 deliberately not clean between actions;
 [worker execution](/explanations/worker-execution) explains why, and what it
 means for hermeticity.
+
+The development configuration adds an opt-in
+[`single_use` worker lifecycle](/reference/nativelink-config/main#localworkerconfig).
+A worker accepts one action, uploads its results, and exits. Run it as the only
+worker in its process and have the launcher replace the whole container with
+fresh writable volumes. This removes local files, processes, and caches left
+by previous actions. Restarting a process inside an existing container does
+not provide that isolation. The shared CAS and action cache remain available.
+
+Development builds also offer
+[`experimental_buck2_file_capture`](/reference/nativelink-config/main#buck2filecaptureconfig)
+for dedicated Linux execution containers. NativeLink starts an operator-supplied
+collector only for Buck2 assignments with invocation metadata, then waits for
+bounded final capture before deleting action files. The collector owns storage
+and access control. Capture failure does not change the action's execution result.
+This option requires the `single_use` lifecycle and does not add a file server to
+NativeLink.
+
+To keep overlapping Buck2 builds on separate workers, also enable
+[`experimental_buck2_invocation_isolation`](/reference/nativelink-config/main)
+on the Execution services for that instance. Identical in-flight actions from
+different invocations then schedule separately. Retries in the same invocation
+can still join their existing action. Completed action-cache hits remain shared
+and launch neither a worker nor a collector. Upgrade every scheduler serving the
+instance before enabling this option; it does not change other build tools.
 
 <Callout type="warn" title="The worker writes the action cache, not the scheduler">
   It is natural to assume the scheduler records the result, since the
@@ -18912,11 +19285,78 @@ values per worker.
 For clusters of tens or low hundreds of workers this is not the bottleneck.
 It is worth knowing about before you plan for thousands.
 
-`allocation_strategy` is a smaller knob than its name suggests: it chooses
-**which end of the LRU the scan starts from**, and nothing else. Starting
-from the least-recently-used end spreads load; starting from the
-most-recently-used end packs work onto hot workers and leaves the rest idle
-long enough to be scaled down. Neither is a bin-packing algorithm.
+`allocation_strategy` is a smaller knob than its name suggests. The two
+original values choose **which end of the LRU the scan starts from**, and
+nothing else. Starting from the least-recently-used end spreads load;
+starting from the most-recently-used end packs work onto hot workers and
+leaves the rest idle long enough to be scaled down. `least_loaded` takes the
+eligible worker with the fewest running actions, least recently used among
+equals, so a worker that just joined takes the next action instead of
+waiting for every older worker to be used once more, and a burst that lands
+while most of the fleet is still starting does not fill the first worker to
+its concurrency cap. None of them is a bin-packing algorithm.
+
+The admission ledger only subtracts what an action declares, so an action
+that declared too little is invisible to it. **`live_memory_veto`** names a
+`minimum` property, usually `memory_kb`, that the scheduler checks against the
+free memory each worker reports with its keepalive (the cgroup limit less
+current usage, or `MemAvailable` without a limit). A worker reporting less
+than the action asks for is skipped for that action; a worker that reports
+nothing, such as one older than v1.7.3, is never vetoed. Two metrics go with
+this: `worker.keepalive.gap` is the seconds between consecutive messages from
+a worker, which is what `worker_timeout_s` should be judged against, and
+`worker.disconnections` carries a `worker.disconnect.reason` of
+`disconnected`, `drained`, `timeout`, `kill_unacknowledged`, `error`,
+`removed` or `shutdown`.
+
+Within a priority the queue is ordered by insert time to the nanosecond, on
+both backends, so a burst submitted together dispatches in arrival order.
+
+The pass keeps that order when a worker frees up while it is running. A pass
+reads the queue one action at a time, a store round trip each on a
+store-backed queue (the listing serves the record it already loaded, and
+only the client keepalive is read), so on a long queue a worker that
+finishes mid-pass would otherwise hand its room to whatever action the pass
+happened to be reading, newer than everything it had already passed over. Instead, actions that found
+no room are parked in the order the queue listed them, highest priority first
+and then oldest, and when the fleet's capacity changes the pass offers the
+room to the parked actions in that order before the one in hand, asking the
+fleet once per property shape. `scheduler.matching.parked_dispatched` counts
+the parked actions a worker was actually told to run that way; a non-zero
+rate is normal on a busy fleet and means the head of the queue is being
+served.
+
+When a worker reports an action killed for memory, by its own reservation
+enforcement or by the kernel near the limit, **`memory_escalation`** requeues
+the action with the reservation multiplied by `percent` (default 200) instead
+of failing it. With `ladder_kb` set to the memory values of the fleet's size
+classes, a kill steps the reservation to the next class up instead of
+scaling it. The next dispatch carries the raised value, so the worker holds
+the action to that. The reservation grows to the largest memory any connected
+worker advertises (or `max_kb`); the last step reserves that worker whole,
+its memory and, through `cpu_property`, its CPU, so the action runs alone.
+Only a kill there fails the action, with a message saying no worker in the
+fleet can run it. Escalations have their own budget (`max_steps`, default 8)
+and do not spend `max_job_retries`. The execution histograms carry an
+`execution.outcome` attribute so the killed samples can be told from the
+completed ones.
+
+The `historical_resource` scheduler that fills reservations reads hints by a
+key ladder, each step probed only when the action carries that key:
+`(target_id, action_mnemonic)`, then `target_id`, then the
+action's `action_digest`, then its `command_digest` (each `hash-size` or
+`hash/size`), then the mnemonic alone. The digest keys reach every client,
+whether or not it sends Bazel request metadata; the action digest is what
+origin events carry, so it is what a producer fed by them writes. A hint may name a `class` instead of numbers, and
+**`classes`** on the same scheduler defines the fleet's size ladder: named
+points with `cpu_count`, `memory_kb` and `disk_kb`, listed ascending. An
+action no hint matches takes the class picked by `class_by_mnemonic`, then
+`class_by_timeout` (Bazel test sizes arrive as timeouts), then
+`default_class`; without classes the raw `cold_start` numbers apply. With
+`memory_escalation.ladder_kb` set to the classes' memory values, a memory
+kill steps the reservation to the next class instead of scaling it, and a
+kill at the top class fails the action. Older hint files still load: every
+new field is optional.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
@@ -18953,17 +19393,25 @@ the configuration side.
 
 ## Retries, and what "failed" means [#retries-and-what-failed-means]
 
-The attempt counter is incremented by two different events, with different
-rules.
+The attempt counter is incremented by one event, and two other events that
+used to spend it now have budgets of their own.
 
 **`UpdateWithError` increments the attempt count, unless the error is
 `ResourceExhausted`.** Backpressure is free. A worker saying "I am too busy"
 does not spend one of the action's lives, which is what makes it safe for a
 worker to shed load.
 
-**`UpdateWithDisconnect` always increments.** A worker that vanishes mid-action
-always costs an attempt. Without this, an action that reliably OOM-kills its
-worker would retry forever, taking a worker down each time.
+**`UpdateWithDisconnect` counts against `max_worker_loss_retries`** (default
+10), not `max_job_retries`. A worker that vanishes mid-action is usually not
+the action's doing, so the action goes back to the queue without spending one
+of its lives; the separate budget is what stops an action that reliably
+OOM-kills its worker from taking one down forever. Past it the client sees a
+`FAILED_PRECONDITION` saying the worker was lost that many times.
+
+**`UpdateWithEscalation` counts against `memory_escalation.max_steps`**
+(default 8), not `max_job_retries` either: the scheduler chose to run the
+action again with more memory, and the fleet's ceiling bounds how far that
+goes.
 
 The limit is checked as `attempts > max_job_retries`, strictly, so the
 default of `3` permits **four** total executions. That off-by-one is in the
@@ -19093,10 +19541,11 @@ worker gets an action is decided separately, by the LRU-ordered
 <Callout type="warn" title="The heartbeat and the eviction timeout are two separate knobs">
   The worker's heartbeat period is derived as **half** its configured
   `worker_api_endpoint.timeout`, 2.5 seconds by default. Eviction is
-  governed by the *scheduler's* `worker_timeout_s`, 5 seconds by default.
-  Nothing reconciles them. Raise the scheduler's timeout without raising the
-  worker's, or vice versa, and you get workers evicted mid-heartbeat and
-  reconnecting in a loop.
+  governed by the *scheduler's* `worker_timeout_s`, 10 seconds by default
+  (four heartbeats). Any message from the worker refreshes the clock, not
+  only the heartbeat. Nothing reconciles the two knobs. Raise the worker's
+  timeout without raising the scheduler's and you get workers evicted
+  mid-heartbeat and reconnecting in a loop.
 </Callout>
 
 ## The filesystem, and the hardlink that everything depends on [#the-filesystem-and-the-hardlink-that-everything-depends-on]
@@ -19240,7 +19689,8 @@ command finished slightly before the bytes exist.
     participant sched as Scheduler
     participant w as Worker
     participant cas as CAS + AC
-    sched->>w: assign action (over ConnectWorker)
+    sched->>w: StartExecute (over ConnectWorker)
+    w->>sched: ExecuteAccepted, or ExecuteDeclined and stop here
     w->>w: create work directory for the operation
     w->>cas: fetch missing blobs
     w->>w: hardlink inputs from filesystem CAS
@@ -19251,6 +19701,24 @@ command finished slightly before the bytes exist.
     w->>cas: write ActionResult to AC
     w->>sched: final result update
 `}</Mermaid>
+
+The first reply is the worker's admission decision. A dispatch is a
+proposal until the worker answers it: `ExecuteAccepted` confirms the ledger
+charge the scheduler made on the send, `ExecuteDeclined` hands it back. The
+worker declines when it already holds `max_inflight_tasks` actions, when the
+action's memory reservation is more than the worker currently has free, or
+when it is shutting down. A declined action returns to the queue without
+counting as an attempt, and the worker is paused until its next keepalive,
+or, for a decline for memory, until a keepalive reports that much free. The
+scheduler's channel to each worker is bounded at its concurrency plus a
+margin; a worker that has stopped reading has its dispatch requeued the same
+way rather than piling up work it will never see. A worker only sends these
+replies to a scheduler that announced support in its `ConnectionResult`, so
+an older scheduler sees the old behaviour: the worker runs whatever it is
+sent. `dispatch_ack_timeout_s` on the scheduler adds the converse: a dispatch
+no worker acknowledged within the timeout is taken back, which only makes
+sense once every connected worker acknowledges.
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="Refusal" />
 
 Four behaviours in the upload path:
 
@@ -19446,8 +19914,11 @@ is the toolchain half of the answer.
 ### Actions can run more than once [#actions-can-run-more-than-once]
 
 The default `max_job_retries` of 3 is checked strictly, so an action may
-execute **four** times. A worker disconnect always costs an attempt; a
-`ResourceExhausted` never does.
+execute **four** times on its own failures. A lost worker has its own budget,
+`max_worker_loss_retries` (default 10), and a memory escalation its own
+(`memory_escalation.max_steps`, default 8), so an action can run more often
+than four times when workers die under it or it keeps outgrowing its
+reservation; a `ResourceExhausted` never costs anything.
 
 For a pure function this is invisible. For an action with side effects (one
 that publishes, deploys, increments, or writes anywhere outside its declared
@@ -23079,8 +23550,10 @@ a how-to showing a renamed field keeps showing it, and nothing fails until a
 reader copies it and the binary answers `unknown field`.
 
 `lint:snippets` closes that gap. It harvests every field name out of the
-generated reference and checks every `json`/`json5` fence under
-`content/docs/` against it.
+generated reference, the latest release's page and main's, and checks every
+`json`/`json5` fence under `content/docs/` against it. A snippet for a field
+added since the last release passes once `gen:config-reference main` has
+been run in the same change.
 
 ```bash
 bun --filter @nativelink/docs lint:snippets

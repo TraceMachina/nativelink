@@ -43,18 +43,33 @@ common:nl-cache --build_event_upload_max_retries=8
 common:nl-write --remote_upload_local_results=true
 common:nl-write --remote_cache_async
 
+# Hermetic toolchain identity. These are the inputs that determine every C++
+# and Rust compile action's cache key: the zero-sysroot hermetic LLVM platform
+# and the downloaded Rust toolchains. They are keyed on downloaded toolchain
+# CONTENT, not on any host path, so a build that pins them produces identical
+# action digests regardless of whether it runs on a bare runner, inside a
+# `nix develop` shell (whose default toolchain otherwise bakes /nix/store/<hash>
+# paths into the action key), or on a remote worker. Pinning this group is what
+# lets a cache WRITER and a cache READER agree on digests for identical source.
+# It needs no endpoint and is safe on any x86_64 Linux host; macOS lanes must
+# not apply it (lre.bazelrc auto-applies conflicting LRE platforms there, which
+# the setup action already guards against for the remote path).
+common:nl-toolchain --platforms=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-toolchain --host_platform=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-toolchain --extra_execution_platforms=@llvm//platforms:linux_x86_64_gnu.2.28
+common:nl-toolchain --extra_toolchains=@rust_toolchains//:all
+# The default musl interpreter is dynamically linked against the musl loader,
+# which glibc-only worker images lack (genrule tools exit 127).
+common:nl-toolchain --@rules_python//python/config_settings:py_linux_libc=glibc
+
 # Remote execution. Mirrors the staging-rbe config proven from a developer
 # machine: hermetic LLVM plus downloaded Rust toolchains, so workers need no
 # GCC/Rust/Nix. Combine only with an *-exec endpoint group, and only on
 # x86_64 Linux hosts — macOS auto-applies conflicting LRE platforms from
-# lre.bazelrc, which the setup action guards against.
-common:nl-rbe --platforms=@llvm//platforms:linux_x86_64_gnu.2.28
-common:nl-rbe --host_platform=@llvm//platforms:linux_x86_64_gnu.2.28
-common:nl-rbe --extra_execution_platforms=@llvm//platforms:linux_x86_64_gnu.2.28
-common:nl-rbe --extra_toolchains=@rust_toolchains//:all
-# The default musl interpreter is dynamically linked against the musl loader,
-# which glibc-only worker images lack (genrule tools exit 127).
-common:nl-rbe --@rules_python//python/config_settings:py_linux_libc=glibc
+# lre.bazelrc, which the setup action guards against. nl-rbe inherits the
+# hermetic toolchain identity so remote-executed and locally-executed
+# cache-keyed actions share one digest space.
+common:nl-rbe --config=nl-toolchain
 common:nl-rbe --jobs=200
 # --remote_download_toplevel (not minimal): keep intermediate output trees on
 # the client so a CAS eviction mid-build is recoverable (the client can
