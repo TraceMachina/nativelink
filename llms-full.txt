@@ -19300,8 +19300,13 @@ The admission ledger only subtracts what an action declares, so an action
 that declared too little is invisible to it. **`live_memory_veto`** names a
 `minimum` property, usually `memory_kb`, that the scheduler checks against the
 free memory each worker reports with its keepalive (the cgroup limit less
-current usage, or `MemAvailable` without a limit). A worker reporting less
-than the action asks for is skipped for that action; a worker that reports
+its working set, or `MemAvailable` without a limit). The working set is
+`memory.current` less the `inactive_file` page cache in `memory.stat`, as
+kubelet counts it for eviction, except that `file_dirty` and
+`file_writeback` pages still count as used until they reach the disk, so
+inactive, clean cache a worker's own I/O built up does not count against
+it. A worker reporting less than the action asks for is skipped for that
+action; a worker that reports
 nothing, such as one older than v1.7.3, is never vetoed. Two metrics go with
 this: `worker.keepalive.gap` is the seconds between consecutive messages from
 a worker, which is what `worker_timeout_s` should be judged against, and
