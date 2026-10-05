@@ -735,9 +735,12 @@ impl ApiWorkerSchedulerImpl {
             // reports that much free, since its own process memory and
             // active page cache still count as used, so the veto could
             // hold it back indefinitely, and the ledger already keeps it
-            // alone there.
+            // alone there. Nor is a worker that admits when idle and holds
+            // nothing: it accepts whatever it reads free, so the veto would
+            // only keep from it the actions it is idle for.
             if let (Some(property), Some(needed_kb), Some(load)) =
                 (self.live_memory_veto.as_deref(), needed_kb, w.last_load)
+                && !(w.admits_when_idle && w.running_action_infos.is_empty())
                 && needed_kb > load.free_memory_kb
                 && matches!(
                     w.total_platform_properties.properties.get(property),

@@ -655,6 +655,64 @@ async fn a_load_decline_keeps_an_earlier_pause() -> Result<(), Error> {
     Ok(())
 }
 
+/// With the live memory veto on, an idle worker that admits when idle is
+/// offered an action over what it last reported free, since it will accept
+/// it; one that does not admit when idle is still vetoed.
+#[nativelink_test]
+async fn the_veto_does_not_keep_actions_from_an_idle_worker_that_admits_them() -> Result<(), Error>
+{
+    for admits_when_idle in [true, false] {
+        MockClock::set_time(Duration::from_secs(NOW_TIME));
+        let task_change_notify = Arc::new(Notify::new());
+        let spec = SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "memory_kb".to_string(),
+                PropertyType::Minimum,
+            )])),
+            live_memory_veto: Some("memory_kb".to_string()),
+            ..SimpleSpec::default()
+        };
+        let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+            &spec,
+            memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+            || async move {},
+            task_change_notify,
+            MockInstantWrapped::default,
+            None,
+        );
+        let (mut worker, mut rx) = worker_with_channel(64);
+        worker.admits_when_idle = admits_when_idle;
+        scheduler
+            .add_worker(worker)
+            .await
+            .err_tip(|| "Failed to add worker")?;
+        tokio::task::yield_now().await;
+        rx.recv().await.unwrap();
+        // Idle, but reports less than the action asks; the worker advertises
+        // 5,000, so 4,500 is not the whole worker the veto already exempts.
+        keepalive(worker_scheduler.as_ref(), NOW_TIME + 1, Some(4_000)).await?;
+
+        let base = make_base_action_info(
+            UNIX_EPOCH + MockClock::time(),
+            DigestInfo::new([7; 32], 512),
+        );
+        let action_info = Arc::new(ActionInfo {
+            platform_properties: HashMap::from([("memory_kb".to_string(), "4500".to_string())]),
+            ..(*base).clone()
+        });
+        scheduler
+            .add_action(OperationId::default(), action_info)
+            .await?;
+        tokio::task::yield_now().await;
+        if admits_when_idle {
+            next_dispatch(&mut rx).await;
+        } else {
+            no_dispatch(&mut rx).await;
+        }
+    }
+    Ok(())
+}
+
 /// A worker whose channel will not take the dispatch keeps its place: the
 /// action goes back untried, the worker is paused, and once it reads and
 /// sends a keepalive the same action comes to it.
