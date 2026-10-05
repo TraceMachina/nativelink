@@ -88,21 +88,46 @@ fn exit(status: i32) -> ! {
     unsafe { libc::_exit(status) };
 }
 
+#[derive(Clone, Copy)]
 enum NamespaceErrorType {
     Unshare = 1,
     WriteSignalSafe,
     Mount,
+    Loopback,
 }
 
-const NS_ERROR_TYPE_BITS: u8 = 2; // This is 2 because the highest value (NamespaceErrorType::Mount) is 3 and so we can store all of this in two bits
-const NS_ERROR_TYPE_MASK: i32 = 0x3; // 11 - i.e. NS_ERROR_TYPE_BITS lowest bits
+/// The namespaces every namespaced action is put in, plus the mount and
+/// network namespaces when asked for.
+const fn unshare_flags(mount: bool, isolate_network: bool) -> libc::c_int {
+    let mut flags =
+        libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
+    if mount {
+        flags |= libc::CLONE_NEWNS;
+    }
+    if isolate_network {
+        flags |= libc::CLONE_NEWNET;
+    }
+    flags
+}
+
+/// Ends the probe's child: the errno goes to the parent over `report`,
+/// whole, and the exit status carries only the step that failed. An exit
+/// status has eight bits, too few to hold every errno beside the step.
+fn probe_failed(report: libc::c_int, error_type: NamespaceErrorType, errno: i32) -> ! {
+    let errno = errno.to_ne_bytes();
+    // SAFETY: write is async-signal-safe and reads only our stack. If it
+    // fails the parent logs the step without an errno.
+    unsafe { libc::write(report, errno.as_ptr().cast(), errno.len()) };
+    exit(error_type as i32);
+}
 
 /// Determines whether the namespaces provided by this module are supported
 /// on the currently running system by forking a process and trying to enter
 /// it into the new namespaces. When `mount` is set the mount namespace is
 /// checked as well, and when `isolate_tmp` is also set the check includes
-/// bind mounting over `/tmp`.
-pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
+/// bind mounting over `/tmp`. When `isolate_network` is set the check
+/// includes a network namespace and bringing its loopback interface up.
+pub fn namespaces_supported(mount: bool, isolate_tmp: bool, isolate_network: bool) -> bool {
     if isolate_tmp && !mount {
         error!("Namespaces: isolating /tmp requires a mount namespace");
         return false;
@@ -119,15 +144,23 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
     // unmapped overflow ids until the maps are written.
     let uid_map = format!("{uid} {uid} 1\n");
     let gid_map = format!("{gid} {gid} 1\n");
+    // The child reports the errno of a failed step over this pipe.
+    let mut fds = [0; 2];
+    // SAFETY: pipe2 writes two descriptors into the array on our stack.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        error!(
+            errno = Error::last_os_error().raw_os_error(),
+            "Namespaces: could not create the pipe for the namespace check"
+        );
+        return false;
+    }
+    let (report_read, report_write) = (OwnedFd(fds[0]), OwnedFd(fds[1]));
     // SAFETY: We ensure that if pid == 0 we only call async-signal-safe functions.
     let pid = unsafe { libc::fork() };
     match pid {
         0 => {
-            let mut flags =
-                libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
-            if mount {
-                flags |= libc::CLONE_NEWNS;
-            }
+            let report = report_write.0;
+            let flags = unshare_flags(mount, isolate_network);
             // SAFETY: Unshare does not have any unsafe effects and modifies no
             // memory, it is also async-signal-safe.
             if unsafe { libc::unshare(flags) } == 0 {
@@ -141,9 +174,7 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
                     && err != libc::EACCES
                     && err != libc::ENOENT
                 {
-                    exit(
-                        (NamespaceErrorType::WriteSignalSafe as i32) | (err << NS_ERROR_TYPE_BITS),
-                    );
+                    probe_failed(report, NamespaceErrorType::WriteSignalSafe, err);
                 }
                 match write_signal_safe(c"/proc/self/uid_map", uid_map.as_bytes()) {
                     Ok(()) => {
@@ -152,10 +183,14 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
                             && err != libc::EPERM
                             && err != libc::EACCES
                         {
-                            exit(
-                                (NamespaceErrorType::WriteSignalSafe as i32)
-                                    | (err << NS_ERROR_TYPE_BITS),
-                            );
+                            probe_failed(report, NamespaceErrorType::WriteSignalSafe, err);
+                        }
+                        // As `configure_namespace` does it for an action, so
+                        // a host that lets a network namespace be created
+                        // but not configured fails here, at startup.
+                        if isolate_network && let Err(err) = bring_up_loopback() {
+                            let errno = err.raw_os_error().unwrap_or(libc::EIO);
+                            probe_failed(report, NamespaceErrorType::Loopback, errno);
                         }
                         if !mount {
                             exit(0);
@@ -173,9 +208,7 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
                         {
                             // SAFETY: We just called a libc function that failed (-1).
                             let errno = unsafe { *libc::__errno_location() };
-                            exit(
-                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
-                            );
+                            probe_failed(report, NamespaceErrorType::Mount, errno);
                         }
                         // The same sequence `perform_remount` runs for an
                         // action, so a policy that allows a bind to self but
@@ -190,25 +223,23 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
                                 })
                         {
                             let errno = err.raw_os_error().unwrap_or(libc::EIO);
-                            exit(
-                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
-                            );
+                            probe_failed(report, NamespaceErrorType::Mount, errno);
                         }
                         exit(0);
                     }
                     Err(uid_map_err) => {
-                        exit(
-                            (NamespaceErrorType::WriteSignalSafe as i32)
-                                | (uid_map_err << NS_ERROR_TYPE_BITS),
-                        );
+                        probe_failed(report, NamespaceErrorType::WriteSignalSafe, uid_map_err);
                     }
                 }
             }
             // SAFETY: We just called a libc function that failed (-1).
             let errno = unsafe { *libc::__errno_location() };
-            exit((NamespaceErrorType::Unshare as i32) | (errno << NS_ERROR_TYPE_BITS));
+            probe_failed(report, NamespaceErrorType::Unshare, errno);
         }
         pid if pid > 0 => {
+            // Only the child writes: with our copy closed, the read below
+            // ends when the child does.
+            drop(report_write);
             let mut status = 0;
             // SAFETY: The pid is valid and created by us and the status is our own stack.
             while unsafe { libc::waitpid(pid, &raw mut status, 0) } == -1 {
@@ -219,30 +250,36 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
                     return false;
                 }
             }
+            let mut errno = [0_u8; 4];
+            // SAFETY: read writes at most errno.len() bytes into our stack.
+            let read = unsafe { libc::read(report_read.0, errno.as_mut_ptr().cast(), errno.len()) };
+            let errno = (read == 4).then(|| i32::from_ne_bytes(errno));
             if libc::WIFEXITED(status) {
                 match libc::WEXITSTATUS(status) {
                     0 => {
                         return true;
                     }
-                    s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::Unshare as i32 => {
-                        let errno = s >> NS_ERROR_TYPE_BITS;
+                    s if s == NamespaceErrorType::Unshare as i32 => {
                         error!(errno, "Namespaces: Error during unshare");
-                        if errno == libc::EPERM {
+                        if errno == Some(libc::EPERM) {
                             error!(
                                 "If the worker is inside Docker, namespaces don't work unless it's a privileged container"
                             );
                         }
                     }
-                    s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::WriteSignalSafe as i32 => {
+                    s if s == NamespaceErrorType::WriteSignalSafe as i32 => {
                         error!(
-                            errno = s >> NS_ERROR_TYPE_BITS,
+                            errno,
                             "Namespaces: Error while writing the id maps under /proc/self"
                         );
                     }
-                    s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::Mount as i32 => {
+                    s if s == NamespaceErrorType::Mount as i32 => {
+                        error!(errno, "Failure to mount during namespace checking");
+                    }
+                    s if s == NamespaceErrorType::Loopback as i32 => {
                         error!(
-                            errno = s >> NS_ERROR_TYPE_BITS,
-                            "Failure to mount during namespace checking"
+                            errno,
+                            "Namespaces: could not bring up the loopback interface in a new network namespace"
                         );
                     }
                     other => {
@@ -370,6 +407,48 @@ impl Drop for OwnedFd {
             libc::close(self.0);
         }
     }
+}
+
+/// `SIOCGIFFLAGS` and `SIOCSIFFLAGS` from `linux/sockios.h`, the same on
+/// every Linux architecture. Spelled here because the type of `ioctl`'s
+/// request argument differs between glibc (`c_ulong`, the type of libc's
+/// constants) and musl (`c_int`), and a literal fits both without a cast.
+const SIOCGIFFLAGS: libc::Ioctl = 0x8913;
+const SIOCSIFFLAGS: libc::Ioctl = 0x8914;
+/// `IFF_UP` from `linux/if.h`, as the `c_short` that `ifr_flags` is.
+const IFF_UP: libc::c_short = 0x1;
+
+/// Bring the loopback interface of the current network namespace up, in an
+/// async-signal-safe manner. A new network namespace has a loopback
+/// interface and nothing else, and it starts down, so without this even
+/// `127.0.0.1` is unreachable. The kernel gives an up loopback interface
+/// its `127.0.0.1/8` and `::1` addresses by itself.
+fn bring_up_loopback() -> Result<(), Error> {
+    // SAFETY: socket is async-signal-safe and takes only integers; the
+    // descriptor is closed by the OwnedFd below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(Error::last_os_error());
+    }
+    let fd = OwnedFd(fd);
+    // SAFETY: ifreq is plain old data, for which all zeroes is valid.
+    let mut request: libc::ifreq = unsafe { core::mem::zeroed() };
+    for (dst, src) in request.ifr_name.iter_mut().zip(b"lo") {
+        // c_char is i8 or u8 depending on the architecture.
+        *dst = libc::c_char::from_ne_bytes([*src]);
+    }
+    // SAFETY: ioctl is async-signal-safe; the request is a valid ifreq on
+    // our stack, NUL-terminated by the zeroing above.
+    if unsafe { libc::ioctl(fd.0, SIOCGIFFLAGS, &raw mut request) } != 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: SIOCGIFFLAGS filled in the flags member of the union.
+    unsafe { request.ifr_ifru.ifru_flags |= IFF_UP };
+    // SAFETY: As above.
+    if unsafe { libc::ioctl(fd.0, SIOCSIFFLAGS, &raw mut request) } != 0 {
+        return Err(Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// With a private `/tmp`, the tmpfs that masks the root action directory
@@ -577,10 +656,15 @@ fn perform_remount(
 /// action's own, already created) is bound over `/tmp`, so the action has
 /// a private `/tmp` that is removed with it.
 ///
+/// When `isolate_network` is set the process also gets its own network
+/// namespace, in which only the loopback interface exists, brought up so
+/// the action can still talk to itself over `127.0.0.1` and `::1`.
+///
 /// This function is async-signal-safe and has no external locks or
 /// memory allocations.
 pub fn configure_namespace(
     mount: bool,
+    isolate_network: bool,
     tmp_directory: Option<&core::ffi::CStr>,
     root_action_directory: &core::ffi::CStr,
     action_directory: &core::ffi::CStr,
@@ -590,11 +674,10 @@ pub fn configure_namespace(
     // SAFETY: It is always safe to call getegid on Posix.
     let gid = unsafe { libc::getegid() };
 
-    let mut flags =
-        libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
-    if mount {
-        flags |= libc::CLONE_NEWNS;
-    }
+    // The new network namespace, like the others, is owned by the new user
+    // namespace, in which this process holds every capability until it
+    // execs, so it may configure the namespace's loopback interface below.
+    let flags = unshare_flags(mount, isolate_network);
     // SAFETY: Unshare does not have any unsafe effects and modifies no
     // memory, it is also async-signal-safe.
     if unsafe { libc::unshare(flags) } != 0 {
@@ -627,6 +710,11 @@ pub fn configure_namespace(
     // Configure the mount namespace if enabled.
     if mount {
         perform_remount(tmp_directory, root_action_directory, action_directory)?;
+    }
+
+    // An isolated action keeps loopback, so its own local servers work.
+    if isolate_network {
+        bring_up_loopback()?;
     }
 
     // Set hostname to "nativelink" to ensure reproducibility.

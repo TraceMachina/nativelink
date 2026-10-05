@@ -87,6 +87,8 @@ use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::buck2_file_capture::Buck2FileCapture;
+#[cfg(target_os = "linux")]
+use crate::persistent_worker::Namespacing;
 use crate::persistent_worker::{
     Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
     WorkerKey,
@@ -695,6 +697,21 @@ fn action_supports_persistent_workers(
         .get(REQUIRES_WORKER_PROTOCOL_PROPERTY)
         .map_or("proto", String::as_str);
     Some(WireFormat::parse(protocol))
+}
+
+/// The namespaces of a persistent worker process started for an action: the
+/// action's own, except never a mount namespace, since the process outlives
+/// the action.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub const fn persistent_worker_namespacing(use_namespaces: UseNamespaces) -> Namespacing {
+    match use_namespaces {
+        UseNamespaces::No => Namespacing::None,
+        UseNamespaces::Yes { isolate_network }
+        | UseNamespaces::YesAndMount {
+            isolate_network, ..
+        } => Namespacing::Yes { isolate_network },
+    }
 }
 
 fn os_args_to_strings(args: &[&OsStr]) -> Result<Vec<String>, Error> {
@@ -2481,6 +2498,10 @@ impl RunningActionImpl {
                     let env = self.action_environment(&command_proto, requested_timeout, None);
                     let key = WorkerKey::from_argv(&command_argv, wire_format)?
                         .with_env(env.into_iter().collect());
+                    #[cfg(target_os = "linux")]
+                    let key = key.with_namespacing(persistent_worker_namespacing(
+                        self.running_actions_manager.use_namespaces,
+                    ));
                     let request = WorkRequest {
                         arguments: persistent_worker_request_arguments(&command_argv),
                         inputs: Vec::<PersistentWorkerInput>::new(),
@@ -2705,9 +2726,13 @@ impl RunningActionImpl {
             let use_namespaces = self.running_actions_manager.use_namespaces;
 
             if !matches!(use_namespaces, UseNamespaces::No) {
-                let (mount, isolate_tmp) = match use_namespaces {
-                    UseNamespaces::YesAndMount { isolate_tmp } => (true, isolate_tmp),
-                    UseNamespaces::No | UseNamespaces::Yes => (false, false),
+                let (mount, isolate_tmp, isolate_network) = match use_namespaces {
+                    UseNamespaces::YesAndMount {
+                        isolate_tmp,
+                        isolate_network,
+                    } => (true, isolate_tmp, isolate_network),
+                    UseNamespaces::Yes { isolate_network } => (false, false, isolate_network),
+                    UseNamespaces::No => (false, false, false),
                 };
                 let root_action_directory = std::ffi::CString::new(
                     self.running_actions_manager.root_action_directory.clone(),
@@ -2736,6 +2761,7 @@ impl RunningActionImpl {
                     command_builder.pre_exec(move || {
                         crate::namespace_utils::configure_namespace(
                             mount,
+                            isolate_network,
                             tmp_directory.as_deref(),
                             &root_action_directory,
                             &action_directory,
@@ -4263,12 +4289,18 @@ impl UploadActionResults {
 #[derive(Copy, Clone, Debug)]
 pub enum UseNamespaces {
     No,
-    Yes,
+    /// Unshare the user, PID, UTS and IPC namespaces. With
+    /// `isolate_network` each action also gets a network namespace of its
+    /// own, with only loopback.
+    Yes {
+        isolate_network: bool,
+    },
     /// Also unshare the mount namespace. With `isolate_tmp` each action gets
     /// a private `/tmp`, its own tmp directory bound over `/tmp`, on top of
     /// the masked root action directory.
     YesAndMount {
         isolate_tmp: bool,
+        isolate_network: bool,
     },
 }
 

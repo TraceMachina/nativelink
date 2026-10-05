@@ -102,6 +102,15 @@ deliberately not clean between actions;
 [worker execution](/explanations/worker-execution) explains why, and what it
 means for hermeticity.
 
+On Linux a worker can also put each action in namespaces of its own
+(`use_namespaces`), with an optional mount namespace and private `/tmp`, and an
+optional network namespace that leaves the action only loopback
+(`isolate_network`). These are hermeticity measures, not a security boundary:
+[worker execution](/explanations/worker-execution#what-isolation-you-actually-get)
+lists what they provide, and
+[security hardening](/operate/security-hardening#the-sandbox-is-not-a-security-boundary)
+lists what they do not.
+
 The development configuration adds an opt-in
 [`single_use` worker lifecycle](/reference/nativelink-config/main#localworkerconfig).
 A worker accepts one action, uploads its results, and exits. Run it as the only

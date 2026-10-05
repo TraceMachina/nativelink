@@ -48,6 +48,20 @@ use super::protocol::{WireFormat, WorkRequest, WorkResponse};
 /// Callers may override via `LiveWorker::dispatch_with_timeout`.
 const DEFAULT_DISPATCH_TIMEOUT: Duration = Duration::from_mins(10);
 
+/// The namespaces a persistent worker process runs in. Never a mount
+/// namespace: the process outlives any one action, so a private `/tmp` per
+/// action cannot apply to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Namespacing {
+    /// The worker's own namespaces.
+    #[default]
+    None,
+    /// Its own user, PID, UTS and IPC namespaces, as one-shot actions get
+    /// under `use_namespaces`, and with `isolate_network` a network namespace
+    /// with only loopback, as they get under `isolate_network`.
+    Yes { isolate_network: bool },
+}
+
 /// One persistent-worker child process.
 #[derive(Debug)]
 pub struct LiveWorker {
@@ -83,7 +97,7 @@ impl LiveWorker {
         wire_format: WireFormat,
         working_dir: &Path,
         env: &[(String, String)],
-        namespaced: bool,
+        namespacing: Namespacing,
     ) -> Result<Self, Error> {
         let mut cmd = Command::new(executable);
         cmd.args(startup_args)
@@ -105,7 +119,7 @@ impl LiveWorker {
         #[cfg(unix)]
         cmd.process_group(0);
         #[cfg(target_os = "linux")]
-        if namespaced {
+        if let Namespacing::Yes { isolate_network } = namespacing {
             use std::os::unix::ffi::OsStrExt;
             let working_dir_c = std::ffi::CString::new(working_dir.as_os_str().as_bytes())
                 .err_tip(|| "Persistent worker working directory is not a valid C string")?;
@@ -115,6 +129,7 @@ impl LiveWorker {
                 cmd.pre_exec(move || {
                     crate::namespace_utils::configure_namespace(
                         false,
+                        isolate_network,
                         None,
                         &working_dir_c,
                         &action_dir_c,
@@ -123,7 +138,7 @@ impl LiveWorker {
             }
         }
         #[cfg(not(target_os = "linux"))]
-        let _ = namespaced;
+        let _ = namespacing;
 
         debug!(
             ?executable,
@@ -443,7 +458,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
-            false,
+            Namespacing::None,
         )
         .unwrap();
         let start = Instant::now();
@@ -468,7 +483,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
-            false,
+            Namespacing::None,
         )
         .unwrap();
 
@@ -499,7 +514,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
-            false,
+            Namespacing::None,
         )
         .unwrap();
 
@@ -529,7 +544,7 @@ mod tests {
             WireFormat::Json,
             dir.path(),
             &path_env(),
-            false,
+            Namespacing::None,
         )
         .unwrap();
         let req = WorkRequest {
