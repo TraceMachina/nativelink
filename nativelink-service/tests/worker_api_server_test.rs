@@ -170,7 +170,7 @@ async fn setup_api_server_with_task_limit(
     now_fn: NowFn,
     max_worker_tasks: u64,
 ) -> Result<TestContext, Error> {
-    setup_api_server_with(worker_timeout, now_fn, max_worker_tasks, 0).await
+    setup_api_server_with(worker_timeout, now_fn, max_worker_tasks, 0, None).await
 }
 
 async fn setup_api_server_with(
@@ -178,6 +178,7 @@ async fn setup_api_server_with(
     now_fn: NowFn,
     max_worker_tasks: u64,
     dispatch_ack_timeout_s: u64,
+    live_memory_veto: Option<String>,
 ) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
@@ -191,7 +192,7 @@ async fn setup_api_server_with(
         state_manager.clone(),
         platform_property_manager,
         WorkerAllocationStrategy::default(),
-        None,
+        live_memory_veto,
         None,
         tasks_or_worker_change_notify,
         worker_timeout,
@@ -920,6 +921,7 @@ pub async fn acknowledgement_is_recorded_before_the_sweep_it_carries_test()
         Box::new(move || Ok(Duration::from_secs(*now_timestamp_clone.lock().unwrap()))),
         0,
         ACK_TIMEOUT_S,
+        None,
     )
     .await?;
 
@@ -1052,14 +1054,24 @@ async fn summary_after_report(test_context: &TestContext, free_kb: u64) -> Worke
     panic!("the keepalive reporting {free_kb} KiB was never taken in");
 }
 
-/// A decline pauses the worker. The liveness refresh the decline carries
-/// must not lift that pause, or the next matching pass hands the worker
-/// the same action straight back; only a keepalive reporting enough room
-/// resumes it.
+/// A decline for load from a worker holding another action holds the
+/// declined size back from it rather than pausing it. The liveness refresh
+/// the decline carries must not lift that hold, or the next matching pass
+/// hands the worker the same action straight back; only a keepalive
+/// reporting enough room lifts it.
 #[nativelink_test]
-pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
+pub async fn a_load_decline_holds_the_worker_until_a_keepalive_test()
 -> Result<(), Box<dyn core::error::Error>> {
-    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    // A worker only declines for load under a live memory veto.
+    let test_context = setup_api_server_with(
+        BASE_WORKER_TIMEOUT_S,
+        Box::new(static_now_fn),
+        0,
+        0,
+        Some("memory_kb".to_string()),
+    )
+    .await?;
+    let _resident = dispatch(&test_context, 8).await?;
     let operation_id = dispatch(&test_context, 9).await?;
 
     // The decline sends the action back through the state manager.
@@ -1083,7 +1095,7 @@ pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
         "{update:?}"
     );
 
-    // A keepalive without the room asked for leaves the pause in place.
+    // A keepalive without the room asked for leaves the hold in place.
     test_context
         .worker_stream
         .send(Update::KeepAliveRequest(KeepAliveRequest {
@@ -1094,9 +1106,14 @@ pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
     let summary = summary_after_report(&test_context, 1_000).await;
+    assert_eq!(
+        summary.load_hold_kb,
+        Some(4_000),
+        "the decline's own refresh lifted the hold"
+    );
     assert!(
-        summary.is_paused,
-        "the decline's own refresh lifted the pause"
+        !summary.is_paused,
+        "a decline for load from a busy worker holds, it does not pause"
     );
 
     // One with the room lifts it.
@@ -1110,9 +1127,9 @@ pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
     let summary = summary_after_report(&test_context, 5_000).await;
-    assert!(
-        !summary.is_paused,
-        "a keepalive with the room resumes the worker"
+    assert_eq!(
+        summary.load_hold_kb, None,
+        "a keepalive with the room lifts the hold"
     );
     Ok(())
 }

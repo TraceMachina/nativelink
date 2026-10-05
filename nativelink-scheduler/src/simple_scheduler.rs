@@ -1542,9 +1542,10 @@ impl WorkerScheduler for SimpleScheduler {
         operation_id: &OperationId,
         reason: String,
         needs_kb: Option<u64>,
+        free_kb: Option<u64>,
     ) -> Result<(), Error> {
         self.worker_scheduler
-            .worker_dispatch_declined(worker_id, operation_id, reason, needs_kb)
+            .worker_dispatch_declined(worker_id, operation_id, reason, needs_kb, free_kb)
             .await
     }
 
