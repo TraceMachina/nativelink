@@ -212,13 +212,14 @@ impl WorkerApiServer {
                 connect_worker_request.worker_id_prefix,
                 Uuid::now_v6(&self.node_id).hyphenated()
             ));
-            let worker = Worker::new(
+            let mut worker = Worker::new(
                 worker_id.clone(),
                 platform_properties,
                 tx,
                 (self.now_fn)()?.as_secs(),
                 connect_worker_request.max_inflight_tasks,
             );
+            worker.admits_when_idle = connect_worker_request.admits_when_idle;
             self.scheduler
                 .add_worker(worker)
                 .await
