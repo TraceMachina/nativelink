@@ -1055,11 +1055,12 @@ async fn summary_after_report(test_context: &TestContext, free_kb: u64) -> Worke
 /// A decline pauses the worker. The liveness refresh the decline carries
 /// must not lift that pause, or the next matching pass hands the worker
 /// the same action straight back; only a keepalive reporting enough room
-/// resumes it.
+/// resumes it. The worker holds another action, so the room can come.
 #[nativelink_test]
 pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
 -> Result<(), Box<dyn core::error::Error>> {
     let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let _resident = dispatch(&test_context, 8).await?;
     let operation_id = dispatch(&test_context, 9).await?;
 
     // The decline sends the action back through the state manager.

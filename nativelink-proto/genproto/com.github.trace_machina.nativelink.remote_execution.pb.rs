@@ -19,7 +19,8 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkerLoad {
     /// / Memory the worker could still give an action, in KiB: the cgroup
-    /// / limit less current usage, or MemAvailable without a limit.
+    /// / limit less its working set (current usage less the page cache the
+    /// / kernel can drop at once), or MemAvailable without a limit.
     #[prost(uint64, tag = "1")]
     pub free_memory_kb: u64,
 }
@@ -69,6 +70,12 @@ pub struct ConnectWorkerRequest {
     /// / The default (0) means unlimited.
     #[prost(uint64, tag = "3")]
     pub max_inflight_tasks: u64,
+    /// / The worker admits any action while it holds nothing else, whatever
+    /// / it reads free, rather than declining it for load. A scheduler can
+    /// / then read a decline for load as coming from a busy worker. Absent
+    /// / (false) from older workers.
+    #[prost(bool, tag = "4")]
+    pub admits_when_idle: bool,
 }
 /// / The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]
