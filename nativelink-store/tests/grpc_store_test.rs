@@ -432,6 +432,9 @@ async fn event_sink_retry_resends_a_multi_chunk_event_from_zero() -> Result<(), 
     let mut spec = test_spec(format!("http://localhost:{port}"), false);
     spec.store_type = StoreType::EventSink;
     spec.retry.max_retries = 1;
+    // Two attempts move about 12 MiB; the shared one-second limit is too
+    // tight for that under CI's trace-level logging.
+    spec.rpc_timeout_s = 30;
     let store = GrpcStore::new(&spec)?;
     // Four WriteRequests of data.
     let payload: Vec<u8> = (0..=3 * MAX_WRITE_REQUEST_DATA_BYTES)
