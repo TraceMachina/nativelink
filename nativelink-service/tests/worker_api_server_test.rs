@@ -877,6 +877,73 @@ pub async fn execution_response_lands_when_clock_steps_backwards_test()
     Ok(())
 }
 
+/// The liveness refresh being best-effort must not widen what an evicted
+/// worker can do: its late `ExecuteResult` is refused by the ownership
+/// check in `ApiWorkerScheduler::update_action` and never reaches the
+/// state manager. The refresh failure is swallowed; the write is not.
+#[nativelink_test]
+pub async fn evicted_worker_late_result_never_reaches_state_manager_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let operation_id = dispatch(&test_context, 11).await?;
+
+    // Evict the worker while it holds the operation. The eviction itself
+    // reports the disconnect to the state manager; consume that call so
+    // anything received afterwards is attributable to the stale result.
+    let (eviction_call, _) = join!(
+        async {
+            test_context
+                .scheduler
+                .remove_worker(&test_context.worker_id)
+                .await
+                .expect("remove_worker succeeds");
+        },
+        test_context.state_manager.expect_update_operation(Ok(())),
+    );
+    let () = eviction_call;
+    assert!(
+        !test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "the worker must be gone after eviction"
+    );
+
+    // The evicted worker's connection task is still draining its stream
+    // and delivers a late result for the operation it no longer owns.
+    test_context
+        .worker_stream
+        .send(Update::ExecuteResult(ExecuteResult {
+            instance_name: "instance_name".to_string(),
+            operation_id: operation_id.to_string(),
+            result: Some(execute_result::Result::InternalError(ProtoStatus {
+                code: 13,
+                message: "stale result from an evicted worker".to_string(),
+                details: Vec::default(),
+            })),
+            resource_usage: None,
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending result {e}"))?;
+
+    // Give the connection task every chance to process the message, then
+    // prove the state manager was never called: the stale write is fenced
+    // out, it does not merely lose a race.
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    let no_update = tokio::time::timeout(
+        Duration::from_millis(100),
+        test_context.state_manager.expect_update_operation(Ok(())),
+    )
+    .await;
+    assert!(
+        no_update.is_err(),
+        "an evicted worker's late result must never reach the state manager, got {no_update:?}"
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::Error>> {
     let test_context =

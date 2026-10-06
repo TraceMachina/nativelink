@@ -77,10 +77,13 @@ fn worker_id() -> WorkerId {
     WorkerId(WORKER.to_string())
 }
 
-async fn add_worker(scheduler: &SimpleScheduler) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+async fn add_worker_with_id(
+    scheduler: &SimpleScheduler,
+    id: WorkerId,
+) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
     let (tx, mut rx) = mpsc::channel(64);
     let worker = Worker::new(
-        worker_id(),
+        id,
         PlatformProperties::new(HashMap::from([(
             "memory_kb".to_string(),
             PlatformPropertyValue::Minimum(5_000),
@@ -103,6 +106,10 @@ async fn add_worker(scheduler: &SimpleScheduler) -> Result<mpsc::Receiver<Update
         "expected a ConnectionResult, got {connected:?}"
     );
     Ok(rx)
+}
+
+async fn add_worker(scheduler: &SimpleScheduler) -> Result<mpsc::Receiver<UpdateForWorker>, Error> {
+    add_worker_with_id(scheduler, worker_id()).await
 }
 
 async fn wait_for_completion(listener: &mut Box<dyn ActionStateResult>) -> ActionResult {
@@ -172,5 +179,96 @@ async fn backwards_clock_step_does_not_fail_liveness_or_lose_results()
         .err_tip(|| "Failed to complete the action after the clock step")?;
     let result = wait_for_completion(&mut listener).await;
     assert_eq!(result, ActionResult::default());
+    Ok(())
+}
+
+/// The adversarial interleaving behind the fix's safety argument: W1 is
+/// dispatched an operation, evicted, and the operation is reassigned to
+/// W2. A late result from W1 must be refused — the client sees only
+/// W2's result. The fences are the worker-map and `running_action_infos`
+/// checks in `ApiWorkerScheduler::update_action`; a liveness refresh
+/// being best-effort changes neither.
+#[nativelink_test]
+async fn late_result_from_evicted_worker_cannot_touch_reassigned_attempt()
+-> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, worker_scheduler) = make_scheduler();
+    let w1 = WorkerId("worker_1".to_string());
+    let w2 = WorkerId("worker_2".to_string());
+    let mut rx1 = add_worker_with_id(&scheduler, w1.clone()).await?;
+
+    let base = make_base_action_info(
+        UNIX_EPOCH + MockClock::time(),
+        DigestInfo::new([8u8; 32], 512),
+    );
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: HashMap::from([("memory_kb".to_string(), "2000".to_string())]),
+        ..(*base).clone()
+    });
+    let mut listener = scheduler
+        .add_action(OperationId::default(), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+
+    let dispatched = tokio::time::timeout(Duration::from_secs(2), rx1.recv())
+        .await
+        .expect("a dispatch to W1 within two seconds")
+        .expect("W1's channel is open");
+    let Some(update_for_worker::Update::StartAction(start_execute)) = dispatched.update else {
+        panic!("expected a StartAction on W1, got {dispatched:?}");
+    };
+    let operation_id = OperationId::from(start_execute.operation_id.as_str());
+
+    // W1 disappears; the operation becomes eligible again and W2 picks
+    // it up.
+    worker_scheduler.remove_worker(&w1).await?;
+    let mut rx2 = add_worker_with_id(&scheduler, w2.clone()).await?;
+    let redispatched = tokio::time::timeout(Duration::from_secs(2), rx2.recv())
+        .await
+        .expect("a redispatch to W2 within two seconds")
+        .expect("W2's channel is open");
+    let Some(update_for_worker::Update::StartAction(restart_execute)) = redispatched.update else {
+        panic!("expected a StartAction on W2, got {redispatched:?}");
+    };
+    assert_eq!(
+        OperationId::from(restart_execute.operation_id.as_str()),
+        operation_id,
+        "W2 must have been handed the same operation"
+    );
+
+    // W1's stale connection delivers a late result. It must be refused
+    // outright, not applied to W2's attempt.
+    let stale_result = ActionResult {
+        exit_code: 77,
+        ..ActionResult::default()
+    };
+    let stale_update = worker_scheduler
+        .update_action(
+            &w1,
+            &operation_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(stale_result)),
+        )
+        .await;
+    assert!(
+        stale_update.is_err(),
+        "an evicted worker's late result must be refused, got {stale_update:?}"
+    );
+
+    // W2's execution is untouched: its result is the one the client sees.
+    worker_scheduler
+        .update_action(
+            &w2,
+            &operation_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                ActionResult::default(),
+            )),
+        )
+        .await
+        .err_tip(|| "W2's genuine result must land")?;
+    let result = wait_for_completion(&mut listener).await;
+    assert_eq!(
+        result,
+        ActionResult::default(),
+        "the client must see W2's result, not the stale exit_code 77 from W1"
+    );
     Ok(())
 }
