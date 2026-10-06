@@ -864,6 +864,91 @@ impl GrpcStore {
         self.write_internal(stream, RESUMABLE).await
     }
 
+    /// Writes one event to an event sink. A sink takes an upload only from
+    /// offset zero, so where `write` resumes a retry from its last cached
+    /// messages (mid-event, for an event over one `WriteRequest`), this
+    /// resends the whole event on every attempt. Events are bounded, so the
+    /// event is held in memory for its retries.
+    async fn update_event(
+        &self,
+        resource_name: String,
+        mut reader: DropCloserReadHalf,
+        digest: DigestInfo,
+    ) -> Result<u64, Error> {
+        let size = digest.size_bytes();
+        let data = reader
+            .consume(Some(
+                usize::try_from(size).err_tip(|| "Event size in GrpcStore::update_event")?,
+            ))
+            .await
+            .err_tip(|| "In GrpcStore::update_event")?;
+        let response = self
+            .retrier
+            .retry(unfold((), move |()| {
+                let mut requests: Vec<WriteRequest> = data
+                    .chunks(MAX_WRITE_REQUEST_DATA_BYTES)
+                    .scan(0usize, |offset, chunk| {
+                        let start = *offset;
+                        *offset += chunk.len();
+                        Some(WriteRequest {
+                            resource_name: resource_name.clone(),
+                            write_offset: i64::try_from(start).unwrap_or(i64::MAX),
+                            finish_write: false,
+                            data: data.slice(start..*offset),
+                        })
+                    })
+                    .collect();
+                requests.push(WriteRequest {
+                    resource_name: resource_name.clone(),
+                    write_offset: i64::try_from(data.len()).unwrap_or(i64::MAX),
+                    finish_write: true,
+                    data: Bytes::new(),
+                });
+                async move {
+                    let rpc = self
+                        .connection_manager
+                        .connection("update_event".into())
+                        .and_then(|channel| async move {
+                            ByteStreamClient::new(channel)
+                                .write(enrich_request(
+                                    Request::new(futures::stream::iter(requests)),
+                                    &self.headers,
+                                    &self.forward_headers,
+                                ))
+                                .await
+                                .err_tip(|| "in GrpcStore::update_event")
+                        });
+                    let result = if self.rpc_timeout > Duration::ZERO {
+                        tokio::time::timeout(self.rpc_timeout, rpc)
+                            .await
+                            .unwrap_or_else(|_elapsed| {
+                                Err(make_err!(
+                                    Code::DeadlineExceeded,
+                                    "GrpcStore::update_event RPC timed out after {}s",
+                                    self.rpc_timeout.as_secs()
+                                ))
+                            })
+                    } else {
+                        rpc.await
+                    };
+                    if let Err(err) = &result {
+                        warn!(instance_name = %self.instance_name, ?err, "GrpcStore::update_event: RPC failed; a retry resends the whole event");
+                    }
+                    Some((result.map_or_else(RetryResult::Retry, RetryResult::Ok), ()))
+                }
+            }))
+            .await?;
+        if u64::try_from(response.get_ref().committed_size).ok() != Some(size) {
+            return Err(make_err!(
+                Code::DataLoss,
+                "Event sink acknowledged {} bytes; expected {}",
+                response.get_ref().committed_size,
+                size
+            ));
+        }
+        Ok(size)
+    }
+
     async fn write_internal<T, E>(
         &self,
         stream: WriteRequestStreamWrapper<T>,
@@ -1723,6 +1808,12 @@ impl StoreDriver for GrpcStore {
             digest_size = digest.size_bytes(),
             "GrpcStore::update: starting upload for digest",
         );
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            return self.update_event(resource_name, reader, digest).await;
+        }
         let local_state = LocalState {
             resource_name,
             reader,
@@ -1781,27 +1872,13 @@ impl StoreDriver for GrpcStore {
             ))
         }));
 
-        let response = self
-            .write(
-                WriteRequestStreamWrapper::from(stream)
-                    .await
-                    .err_tip(|| "in GrpcStore::update()")?,
-            )
-            .await
-            .err_tip(|| "in GrpcStore::update()")?;
-
-        if matches!(
-            self.store_type,
-            nativelink_config::stores::StoreType::EventSink
-        ) && u64::try_from(response.get_ref().committed_size).ok() != Some(digest.size_bytes())
-        {
-            return Err(make_err!(
-                Code::DataLoss,
-                "Event sink acknowledged {} bytes; expected {}",
-                response.get_ref().committed_size,
-                digest.size_bytes()
-            ));
-        }
+        self.write(
+            WriteRequestStreamWrapper::from(stream)
+                .await
+                .err_tip(|| "in GrpcStore::update()")?,
+        )
+        .await
+        .err_tip(|| "in GrpcStore::update()")?;
 
         Ok(digest.size_bytes())
     }
