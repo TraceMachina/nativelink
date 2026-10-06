@@ -20,6 +20,9 @@
       url = "github:nlewo/nix2container/76be9608a7f4d6c985d28b0e7be903ae2547df3e";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    flake-root = {
+      url = "github:srid/flake-root";
+    };
   };
 
   outputs = inputs @ {
@@ -39,6 +42,7 @@
       ];
       imports = [
         inputs.git-hooks.flakeModule
+        inputs.flake-root.flakeModule
         ./local-remote-execution/flake-module.nix
         ./tools/darwin/flake-module.nix
         ./tools/nixos/flake-module.nix
@@ -531,6 +535,7 @@
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
+            flake-root = config.flake-root.package;
           };
         };
         lre = {

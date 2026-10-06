@@ -1,8 +1,8 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Business Source License, Version 1.1 (the "License");
 // you may not use this file except in compliance with the License.
-// You may requested a copy of the License by emailing contact@nativelink.com.
+// You may request a copy of the License by emailing contact@nativelink.com.
 //
 // Use of this module requires an enterprise license agreement, which can be
 // attained by emailing contact@nativelink.com or signing up for Nativelink
