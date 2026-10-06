@@ -296,6 +296,9 @@ async fn a_hint_dimension_the_ladder_does_not_reserve_is_dropped() -> Result<(),
         !properties.contains_key("disk_kb"),
         "disk is not a dimension this ladder reserves: {properties:?}"
     );
+    assert!(logs_contain(
+        "Hints carry a dimension neither the ladder nor the cold start reserves; it is ignored"
+    ));
 
     // A hint left with nothing but disk falls through to the cold start.
     let properties = properties_after_add(
