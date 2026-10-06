@@ -23,7 +23,7 @@ use async_lock::Mutex;
 use futures::{StreamExt, future};
 use lru::LruCache;
 use nativelink_config::schedulers::{MemoryEscalationSpec, WorkerAllocationStrategy};
-use nativelink_error::{Code, Error, ResultExt, error_if, make_err, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
     RootMetricsComponent, group,
@@ -339,14 +339,22 @@ impl ApiWorkerSchedulerImpl {
                 worker_id
             )
         })?;
-        error_if!(
-            worker.last_update_timestamp > timestamp,
-            "Worker already had a timestamp of {}, but tried to update it with {}",
-            worker.last_update_timestamp,
-            timestamp
-        );
+        // The scheduler's wall clock can step backwards (NTP, VM time
+        // sync). The worker is no less alive for it, so a stale-looking
+        // timestamp keeps the newer one instead of failing: an error here
+        // propagates up through `touch_liveness` and would discard the
+        // message that proved liveness — including a finished
+        // `ExecuteResult`, stranding the operation in `Executing`.
+        if worker.last_update_timestamp > timestamp {
+            warn!(
+                %worker_id,
+                last_update_timestamp = worker.last_update_timestamp,
+                timestamp,
+                "Scheduler clock stepped backwards; keeping newer liveness timestamp",
+            );
+        }
         record_worker_keepalive_gap(timestamp.saturating_sub(worker.last_update_timestamp));
-        worker.last_update_timestamp = timestamp;
+        worker.last_update_timestamp = worker.last_update_timestamp.max(timestamp);
         // Any other message (an acknowledgement, a decline, an execute
         // result) proves the worker is alive and nothing more. A decline in
         // particular is not the worker saying it is ready to be asked
