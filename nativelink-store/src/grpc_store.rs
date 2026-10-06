@@ -931,6 +931,9 @@ impl GrpcStore {
                     } else {
                         rpc.await
                     };
+                    if let Err(err) = &result {
+                        warn!(instance_name = %self.instance_name, ?err, "GrpcStore::update_event: RPC failed; a retry resends the whole event");
+                    }
                     Some((result.map_or_else(RetryResult::Retry, RetryResult::Ok), ()))
                 }
             }))
