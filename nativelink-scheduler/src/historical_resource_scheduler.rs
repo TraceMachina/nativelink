@@ -173,12 +173,48 @@ impl From<&SizeClassSpec> for Numbers {
     }
 }
 
+/// The dimensions this fleet reserves: the ones its ladder or its cold
+/// start names. A hint may state any dimension its producer measured, and a
+/// minimum on a dimension no worker advertises makes the action
+/// unsatisfiable, so a hint's number on a dimension the fleet does not
+/// reserve is dropped. A configuration with neither a ladder nor a cold
+/// start reserves whatever its hints say, as it always did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Reserved {
+    cpu: bool,
+    memory: bool,
+    disk: bool,
+}
+
+impl Reserved {
+    fn from_spec(spec: &HistoricalResourceSpec) -> Self {
+        let cold = spec.cold_start.unwrap_or_default();
+        let sized = !spec.classes.is_empty()
+            || cold.cpu_count > 0
+            || cold.memory_kb > 0
+            || cold.disk_kb > 0;
+        if !sized {
+            return Self {
+                cpu: true,
+                memory: true,
+                disk: true,
+            };
+        }
+        Self {
+            cpu: cold.cpu_count > 0 || spec.classes.iter().any(|c| c.cpu_count > 0),
+            memory: cold.memory_kb > 0 || spec.classes.iter().any(|c| c.memory_kb > 0),
+            disk: cold.disk_kb > 0 || spec.classes.iter().any(|c| c.disk_kb > 0),
+        }
+    }
+}
+
 pub struct HistoricalResourceScheduler {
     hints_file: String,
     refresh_interval: Duration,
     cpu_property_name: String,
     memory_property_name: String,
     disk_property_name: String,
+    reserved: Reserved,
     cold_start: Numbers,
     classes: Vec<SizeClassSpec>,
     default_class: Option<String>,
@@ -216,6 +252,7 @@ impl HistoricalResourceScheduler {
             cpu_property_name: spec.cpu_property_name.clone(),
             memory_property_name: spec.memory_property_name.clone(),
             disk_property_name: spec.disk_property_name.clone(),
+            reserved: Reserved::from_spec(spec),
             cold_start: spec
                 .cold_start
                 .as_ref()
@@ -266,6 +303,10 @@ impl HistoricalResourceScheduler {
         // per load, so the hot path never logs it; the hint keeps whatever
         // numbers it states.
         let mut unknown_classes = HashSet::new();
+        // Likewise a number on a dimension the fleet does not reserve, once
+        // per dimension per load: a producer measures what it can, and a
+        // minimum no worker advertises would make the action unsatisfiable.
+        let mut dropped_dimensions = HashSet::new();
         let mut hints: Vec<HistoricalResourceHint> = hints
             .into_iter()
             .map(|mut hint| {
@@ -280,6 +321,39 @@ impl HistoricalResourceScheduler {
                         );
                     }
                     hint.class = None;
+                }
+                let dropped = [
+                    (
+                        !self.reserved.cpu && hint.cpu_count.is_some(),
+                        &self.cpu_property_name,
+                    ),
+                    (
+                        !self.reserved.memory && hint.memory_kb().is_some(),
+                        &self.memory_property_name,
+                    ),
+                    (
+                        !self.reserved.disk && hint.disk_kb.is_some(),
+                        &self.disk_property_name,
+                    ),
+                ];
+                for (drop, property) in dropped {
+                    if drop && dropped_dimensions.insert(property.clone()) {
+                        warn!(
+                            property = %property,
+                            hints_file = %self.hints_file,
+                            "Hints carry a dimension neither the ladder nor the cold start reserves; it is ignored"
+                        );
+                    }
+                }
+                if !self.reserved.cpu {
+                    hint.cpu_count = None;
+                }
+                if !self.reserved.memory {
+                    hint.memory_kb = None;
+                    hint.memory_mib = None;
+                }
+                if !self.reserved.disk {
+                    hint.disk_kb = None;
                 }
                 hint
             })

@@ -262,6 +262,67 @@ async fn classes_resolve_hints_and_cold_start() -> Result<(), Error> {
     Ok(())
 }
 
+/// A hint's number on a dimension the ladder does not reserve is dropped:
+/// no worker on a fleet sized by CPU and memory advertises disk, so a disk
+/// minimum would make the action unsatisfiable. Without a ladder or a cold
+/// start the hint reserves what it states, as before.
+#[nativelink_test]
+async fn a_hint_dimension_the_ladder_does_not_reserve_is_dropped() -> Result<(), Error> {
+    let hints_file = write_hints_file(
+        r#"{ "hints": [
+          { "action_mnemonic": "Genrule", "class": "m", "cpu_count": 1500, "disk_kb": 614 },
+          { "action_mnemonic": "Link", "disk_kb": 9 }
+        ] }"#,
+    );
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.classes = vec![
+        class("s", 1000, 2_097_152, 0),
+        class("m", 2000, 6_291_456, 0),
+    ];
+    spec.default_class = Some("m".to_string());
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base.clone(),
+        Some(("//pkg:a", "Genrule")),
+    )
+    .await?;
+    assert_eq!(properties["cpu_count"], "1500", "the hint's own cpu stands");
+    assert_eq!(properties["memory_kb"], "6291456", "the class fills memory");
+    assert!(
+        !properties.contains_key("disk_kb"),
+        "disk is not a dimension this ladder reserves: {properties:?}"
+    );
+
+    // A hint left with nothing but disk falls through to the cold start.
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base.clone(),
+        Some(("//pkg:b", "Link")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "6291456", "the default class");
+    assert!(!properties.contains_key("disk_kb"));
+
+    // No ladder and no cold start: the hint's dimensions all stand.
+    let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base,
+        Some(("//pkg:a", "Genrule")),
+    )
+    .await?;
+    assert_eq!(properties["disk_kb"], "614");
+    assert_eq!(properties["cpu_count"], "1500");
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
 /// An untagged action nothing hints at gets the cold-start reservation;
 /// a value the client sent is left as it is.
 #[nativelink_test]
