@@ -3,6 +3,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.5](https://github.com/TraceMachina/nativelink/compare/v1.7.4..v1.7.5) - 2026-10-06
+
+
+
+### 🐛 Bug Fixes
+
+- Resend a retried event-sink write from offset zero ([#2906](https://github.com/TraceMachina/nativelink/issues/2906)) - ([417771e](https://github.com/TraceMachina/nativelink/commit/417771e8b590db5b3b3b75c226896e73aecd0f14))
+- Drop hint dimensions the ladder does not reserve ([#2903](https://github.com/TraceMachina/nativelink/issues/2903)) - ([b6f1b9b](https://github.com/TraceMachina/nativelink/commit/b6f1b9b520bdbb20ffb9118acbb2fff26e8fded4))
+
+### 🧪 Testing & CI
+
+- Check and fix license headers ([#2902](https://github.com/TraceMachina/nativelink/issues/2902)) - ([2921f75](https://github.com/TraceMachina/nativelink/commit/2921f751751f3278d0cd43a670eba185e796fb32))
+- Add Azurite test support for AzureBlobStore ([#2684](https://github.com/TraceMachina/nativelink/issues/2684)) - ([a347402](https://github.com/TraceMachina/nativelink/commit/a347402f906b41fe0919064650ccf5cf7e49ff0b))
+
+### ⬆️ Bumps & Version Updates
+
+- Update xxhash-rust to 0.8.19 ([#2895](https://github.com/TraceMachina/nativelink/issues/2895)) - ([4ef4c34](https://github.com/TraceMachina/nativelink/commit/4ef4c34e34d5e0f72f806533df58ec4879d4f2cd))
+
 ## [1.7.4](https://github.com/TraceMachina/nativelink/compare/v1.7.3..v1.7.4) - 2026-10-05
 
 
