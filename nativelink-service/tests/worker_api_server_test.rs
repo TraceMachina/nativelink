@@ -823,6 +823,60 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
     Ok(())
 }
 
+/// A finished result still lands when the scheduler's wall clock has
+/// stepped backwards (NTP, VM time sync) since the worker's last
+/// message. The liveness refresh used to fail on the older timestamp and
+/// abort `inner_execution_response`, discarding a result the worker had
+/// already uploaded and stranding the operation in `Executing`.
+#[nativelink_test]
+pub async fn execution_response_lands_when_clock_steps_backwards_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
+    let now_timestamp_clone = now_timestamp.clone();
+    let test_context = setup_api_server(
+        BASE_WORKER_TIMEOUT_S,
+        Box::new(move || Ok(Duration::from_secs(*now_timestamp_clone.lock().unwrap()))),
+    )
+    .await?;
+    let operation_id = dispatch(&test_context, 7).await?;
+
+    // The worker's liveness was last refreshed at `BASE_NOW_S`; the
+    // scheduler's clock steps back before the result arrives.
+    *now_timestamp.lock().unwrap() = BASE_NOW_S - 2;
+
+    let result = ExecuteResult {
+        instance_name: "instance_name".to_string(),
+        operation_id: operation_id.to_string(),
+        result: Some(execute_result::Result::InternalError(ProtoStatus {
+            code: 13,
+            message: "worker hit an internal error".to_string(),
+            details: Vec::default(),
+        })),
+        resource_usage: None,
+    };
+    let (sent, (updated_operation_id, updated_worker_id, update)) = join!(
+        test_context
+            .worker_stream
+            .send(Update::ExecuteResult(result)),
+        test_context.state_manager.expect_update_operation(Ok(())),
+    );
+    sent.map_err(|e| make_err!(tonic::Code::Internal, "Error sending result {e}"))?;
+    assert_eq!(updated_operation_id, operation_id);
+    assert_eq!(updated_worker_id, test_context.worker_id);
+    assert!(
+        matches!(update, UpdateOperationType::UpdateWithError(_)),
+        "{update:?}"
+    );
+    assert!(
+        test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "a backwards clock step must not cost the worker its registration"
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::Error>> {
     let test_context =

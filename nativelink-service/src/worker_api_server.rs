@@ -418,8 +418,23 @@ impl WorkerConnection {
             .err_tip(|| "Could not refresh worker liveness")
     }
 
+    /// A liveness refresh is a side effect of the message, never the
+    /// point of it. A result or completion the worker already produced
+    /// must reach `update_action` even if the refresh fails, or the
+    /// operation is stranded in `Executing` with nothing left to finish
+    /// it.
+    async fn touch_liveness_best_effort(&self) {
+        if let Err(err) = self.touch_liveness().await {
+            warn!(
+                worker_id = %self.worker_id,
+                ?err,
+                "Could not refresh worker liveness; continuing to process the message",
+            );
+        }
+    }
+
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
-        self.touch_liveness().await?;
+        self.touch_liveness_best_effort().await;
         let operation_id = OperationId::from(execute_result.operation_id.clone());
 
         if let Some(resource_usage) = execute_result.resource_usage {
@@ -471,7 +486,8 @@ impl WorkerConnection {
             .worker_dispatch_accepted(&self.worker_id, &operation_id)
             .await
             .err_tip(|| format!("Failed to record acceptance of operation {operation_id}"))?;
-        self.touch_liveness().await
+        self.touch_liveness_best_effort().await;
+        Ok(())
     }
 
     async fn dispatch_declined(&self, execute_declined: ExecuteDeclined) -> Result<(), Error> {
@@ -489,11 +505,12 @@ impl WorkerConnection {
             .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb)
             .await
             .err_tip(|| format!("Failed to record decline of operation {operation_id}"))?;
-        self.touch_liveness().await
+        self.touch_liveness_best_effort().await;
+        Ok(())
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
-        self.touch_liveness().await?;
+        self.touch_liveness_best_effort().await;
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler
             .update_action(
