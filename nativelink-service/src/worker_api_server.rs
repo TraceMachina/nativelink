@@ -411,20 +411,20 @@ impl WorkerConnection {
     /// Only a keepalive carries a load report and lifts a pause; this
     /// refreshes the timestamp alone, so a decline cannot undo the pause
     /// it just took.
-    async fn touch_liveness(&self) -> Result<(), Error> {
-        self.scheduler
-            .worker_liveness_refreshed(&self.worker_id, (self.now_fn)()?.as_secs())
-            .await
-            .err_tip(|| "Could not refresh worker liveness")
-    }
-
-    /// A liveness refresh is a side effect of the message, never the
-    /// point of it. A result or completion the worker already produced
-    /// must reach `update_action` even if the refresh fails, or the
-    /// operation is stranded in `Executing` with nothing left to finish
-    /// it.
+    ///
+    /// The refresh is best-effort: it is a side effect of the message,
+    /// never the point of it. A result or completion the worker already
+    /// produced must reach `update_action` even if the refresh fails, or
+    /// the operation is stranded in `Executing` with nothing left to
+    /// finish it.
     async fn touch_liveness_best_effort(&self) {
-        if let Err(err) = self.touch_liveness().await {
+        let result = async {
+            self.scheduler
+                .worker_liveness_refreshed(&self.worker_id, (self.now_fn)()?.as_secs())
+                .await
+        }
+        .await;
+        if let Err(err) = result {
             warn!(
                 worker_id = %self.worker_id,
                 ?err,
