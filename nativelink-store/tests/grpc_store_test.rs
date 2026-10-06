@@ -42,7 +42,9 @@ use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
+use nativelink_util::proto_stream_utils::{
+    MAX_WRITE_REQUEST_DATA_BYTES, WriteRequestStreamWrapper,
+};
 use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
 use nativelink_util::telemetry::ClientHeaders;
 use opentelemetry::Context;
@@ -115,6 +117,9 @@ struct FakeStreamServer {
     drain_all: bool,
     committed_size_override: Option<i64>,
     fail_after_commit: Arc<Mutex<bool>>,
+    /// Take this many `WriteRequest`s of the next upload, then fail it, as a
+    /// server that restarts mid-upload does. Zero is off.
+    fail_mid_upload: Arc<Mutex<usize>>,
 }
 
 impl FakeStreamServer {
@@ -125,6 +130,7 @@ impl FakeStreamServer {
             drain_all: false,
             committed_size_override: None,
             fail_after_commit: Arc::new(Mutex::new(false)),
+            fail_mid_upload: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -188,6 +194,15 @@ impl ByteStream for FakeStreamServer {
         grpc_request: Request<Streaming<WriteRequest>>,
     ) -> Result<Response<WriteResponse>, Status> {
         let mut stream = grpc_request.into_inner();
+        let take = core::mem::take(&mut *self.fail_mid_upload.lock().await);
+        if take > 0 {
+            for _ in 0..take {
+                if let Some(req) = stream.next().await {
+                    self.write_requests.lock().await.push(req?);
+                }
+            }
+            return Err(Status::unavailable("simulated restart mid-upload"));
+        }
         if self.drain_all {
             let mut committed_size = 0i64;
             while let Some(req) = stream.next().await {
@@ -404,6 +419,45 @@ async fn event_sink_retry_preserves_upload_identity_after_lost_ack() -> Result<(
     assert_eq!(writes[0].write_offset, writes[1].write_offset);
     assert_eq!(writes[0].data, payload.as_slice());
     assert_eq!(writes[1].data, payload.as_slice());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn event_sink_retry_resends_a_multi_chunk_event_from_zero() -> Result<(), Error> {
+    let server = FakeStreamServer::new_draining();
+    // Cut off after three chunks: more than the two messages `write` caches
+    // to resume from, so resuming would start mid-event.
+    *server.fail_mid_upload.lock().await = 3;
+    let (server, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.store_type = StoreType::EventSink;
+    spec.retry.max_retries = 1;
+    let store = GrpcStore::new(&spec)?;
+    // Four WriteRequests of data.
+    let payload: Vec<u8> = (0..=3 * MAX_WRITE_REQUEST_DATA_BYTES)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    store
+        .update_oneshot(StoreKey::from("event-large"), payload.clone().into())
+        .await?;
+    let requests = server.write_requests.lock().await;
+    // The cut-off attempt delivered three chunks; the retry starts over.
+    let (cut_off, retry) = requests.split_at(3);
+    assert_eq!(cut_off[0].write_offset, 0);
+    assert_eq!(retry[0].write_offset, 0);
+    assert!(
+        retry
+            .iter()
+            .all(|request| request.resource_name == cut_off[0].resource_name)
+    );
+    assert_eq!(
+        retry
+            .iter()
+            .flat_map(|request| request.data.iter().copied())
+            .collect::<Vec<_>>(),
+        payload
+    );
+    assert!(retry.last().unwrap().finish_write);
     Ok(())
 }
 
