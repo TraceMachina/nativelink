@@ -1,91 +1,162 @@
 ---
-title: History
-description: Where NativeLink came from, what it replaces, and why it was built in Rust.
+title: History and licensing
+description: What NativeLink was built to replace, the three properties that drove the rewrite, and exactly how the source is licensed.
 ---
 
-NativeLink was born from operational frustration. The engineers who
-started it had spent years running build farms at companies whose
-names you'd recognise, and the existing options all had the same
-trade-off: choose one of (open source / fast / operable) and give up
-the other two.
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
 
-## The landscape, circa 2023
+**Who this is for:** anyone evaluating NativeLink against an existing build
+farm, and anyone who needs to answer a licensing question precisely. **What
+you'll have at the end:** the design pressures that produced the current
+system, and a file-by-file account of what license applies. **Time:** ten
+minutes.
 
-Three families of remote-execution backend were in common use:
+Remote build execution is not a new idea. Google shipped an internal version
+of it long before the
+[Remote Execution API](https://github.com/bazelbuild/remote-apis) was
+published, and by the early 2020s there were several open implementations of
+the published protocol. NativeLink started in December 2020 as a Rust
+implementation of the CAS half of that protocol (first called Rust CAS, then
+Turbo Cache from April 2022), was renamed to NativeLink in December 2023
+(the `cas` executable became `nativelink` at the same time), and cut its
+first tagged release, 0.1.0, on 2023-12-20. The
+argument for writing a new implementation rather than running an existing
+one is the one below: the protocol is narrow enough that a rewrite is
+tractable, and what was expensive in the existing options was the substrate.
 
-- **Java-based servers.** Mature, full-featured, slow. JVM warm-up
-  cost a few seconds on each pod restart; long-tail GC pauses showed
-  up as `p99` build latency spikes. Memory footprint was generous in a
-  way that made "scale horizontally" the only realistic answer.
-- **Go services.** Fast enough on the happy path. Predictable until a
-  single artifact got hot — then a goroutine pile-up on the shard
-  serving it would take the cluster sideways. Lock contention on the
-  control plane was a recurring incident class.
-- **Proprietary clouds.** Fast, well-operated, no open-source option
-  and an unappealing per-action pricing model.
+## What the existing options traded away [#what-the-existing-options-traded-away]
 
-NativeLink is what happens when you start from those constraints and
-write the whole stack in Rust.
+| Family | Strength | The recurring problem |
+| --- | --- | --- |
+| JVM-based servers | Mature, complete, well understood | Tail latency under GC pressure, and a memory footprint that makes horizontal scaling the only answer |
+| Go services | Fast on the happy path, straightforward to operate | Contention on hot artifacts and on control-plane locks, which shows up as a cluster-wide stall rather than a slow request |
+| Proprietary clouds | Fast, someone else operates it | No source access, and pricing that scales with the thing you are trying to do more of |
 
-## What changed in the rewrite
+Two of those three problems are runtime problems rather than design problems.
+That observation is the whole argument for the rewrite: the protocol was
+fine, the storage model was fine, and what was expensive was the substrate.
 
-The most important shifts:
+## The three properties that drove the design [#the-three-properties]
 
-- **No garbage collector.** Latency is predictable under load. The
-  `p99` lookup time on production NativeLink clusters runs under a
-  millisecond.
-- **Content-addressing all the way down.** No cache invalidation
-  logic, no eviction races, no "is this artifact stale?" checks.
-- **A single binary for every role.** CAS, AC, scheduler, worker —
-  the same executable, different config flags. Deployment is plain.
-- **Source-available, module-aware licensing.** You can read every
-  line that runs your builds. Most of the monorepo is
-  `FSL-1.1-Apache-2.0`; a small set of commercial modules, including
-  metrics and remote persistent workers, is licensed under the
-  Business Source License. See the
-  [license page](https://nativelink.com/license).
+**Predictable latency.** In a build system, the p99 is the number developers
+experience: a single stalled action blocks everything downstream of it in
+the graph. Removing the garbage collector removes a class of latency spike
+that is very hard to tune away rather than eliminate.
 
-## Adoption
+**Memory safety without a runtime.** A build cache that serves a *wrong*
+artifact is a far worse incident than one that serves *no* artifact: it is
+silent, and it propagates to everyone who pulls from the cache. Rust removes
+the memory-corruption path to that outcome at compile time, without adding a
+managed runtime back in.
 
-The early adopters that drove the design:
+**One binary, many roles.** CAS, action cache, scheduler and worker are the
+same executable with different configuration. It makes the small deployment
+trivial and the large deployment a scaling exercise rather than a
+re-architecture. [Architecture](/explanations/architecture) covers what that
+means in practice, and
+[the deep dive](/explanations/architecture-deep-dive) covers what the binary
+does with the config it is handed.
 
-- **LLVM contributors** running it under CMake + recc to cut clang
-  build times.
-- **Samsung Internet** — the Chromium-based browser team — using
-  NativeLink as their RBE backend for nightly builds.
-- **A handful of robotics and EDA teams** whose names live behind
-  non-disclosure agreements, but whose throughput requirements
-  (over a billion requests a month) shaped the scheduler design.
+A fourth property arrived with the project rather than driving it: because
+the toolchain definitions could be shared between the local machine and the
+remote workers, the same hermetic build could run in both places. That became
+[Local Remote Execution](/explanations/lre), and it is the part of NativeLink
+with no real equivalent elsewhere.
 
-Each of those workloads had a different bottleneck. The system as it
-stands is what survived collision with all of them.
+## Licensing, precisely [#licensing]
 
-## Why this site exists
+This question gets answered vaguely often enough to be worth stating exactly.
 
-The legacy docs were written when the project was three months old.
-This rewrite is intended to read like documentation for software that
-people actually run in production — fewer marketing claims, more
-working examples, a clear path from `setup` to `production`.
+The repository's root
+<SourceLink file="LICENSE" symbol="LICENSE" />
+is the **Functional Source License 1.1 with an Apache 2.0 future grant**
+(`FSL-1.1-Apache-2.0`). In practice that means two things. You may use, read,
+modify and deploy the software for any purpose *except* offering it to others
+as a competing commercial product or service. And each release converts to
+plain Apache 2.0 on the second anniversary of its publication; the grant is
+irrevocable and written into the license itself, not a promise made
+elsewhere.
 
-If you find a gap, the docs source lives in
-[`web/apps/docs/content/docs`](https://github.com/TraceMachina/nativelink)
-and PRs are welcome.
+Five files are **Business Source License** instead, and they are worth
+knowing by name because they are the ones an internal license review will
+flag:
 
-## FAQ
+| File or module | What it is |
+| --- | --- |
+| `nativelink-util/src/metrics.rs` | The metrics collection layer |
+| `nativelink-worker/src/persistent_worker/`: `mod.rs`, `pool.rs`, `live_worker.rs`, `protocol.rs` | Remote persistent workers |
+
+<Callout type="info" title="Copy the header, don't recall it">
+  When you add a file, copy the license header from the file next to it
+  rather than from memory. A new file under `persistent_worker/` needs the
+  BUSL header; a new file in the same crate's `src/` does not.
+</Callout>
+
+Nothing in the repository requires a contributor license agreement or a
+Developer Certificate of Origin sign-off. What it does require is
+cryptographically signed commits; see
+[the contribution guidelines](/contribute/guidelines).
+
+## Versioning [#versioning]
+
+NativeLink versions look like SemVer and are not.
+<SourceLink file="MODULE.bazel" symbol="module()" />
+declares `compatibility_level = 0`, which is Bazel's way of saying no
+compatibility promise is being made across versions. The config schema and
+the metrics surface have both changed in minor releases; the changelog marks
+such entries as breaking.
+
+The wire protocol is the exception, and it is the one that matters for most
+deployments: NativeLink implements the Remote Execution API, which is
+versioned upstream and changes slowly. A client that worked against one
+NativeLink release will keep working against the next.
+[Release and versioning](/contribute/release-versioning) is the page for
+the details.
+
+## Why these docs were rewritten [#why-these-docs-were-rewritten]
+
+The previous documentation accumulated during the period when the project
+was changing shape weekly. It described commands that no longer existed,
+components that had been renamed, and performance numbers with no source.
+This rewrite holds every page to the same contract: every command is run or
+schema-checked before it ships, every claim about the code links to the code,
+and pages that cannot meet that bar say what they do not know.
+
+The source lives in
+<SourceLink file="web/apps/docs/content/docs" dir symbol="content/docs/" />
+and corrections are the most welcome kind of pull request.
+[Working on documentation](/contribute/docs) is the how.
+
+## Common questions [#common-questions]
 
 <Accordions type="multiple">
-  <Accordion title="Why Rust and not Go or Java?" id="why-rust-and-not-go-or-java">
-    Three operational reasons: no GC pauses (tail latency comes from
-    network and storage, not the runtime), memory safety (a scheduler
-    memory bug could silently serve a wrong artifact org-wide — Rust
-    removes the class at compile time), and throughput (a single instance
-    sustains over a billion requests a month with sub-millisecond `p99`
-    lookups).
+  <Accordion title="Is NativeLink open source?" id="is-nativelink-open-source">
+    It is source-available today and open source on a timer. The FSL 1.1
+    grant permits everything except offering NativeLink itself as a
+    competing commercial service, and each release converts to Apache 2.0
+    two years after publication. If your concern is "can I read and modify
+    the code that runs my builds", the answer is yes, without qualification.
   </Accordion>
-  <Accordion title="What does Rust cost the project?" id="what-does-rust-cost-the-project">
-    Compile times — mitigated by sccache backed by NativeLink itself —
-    and a smaller hiring pool, which has hurt less than expected: the
-    people who write distributed-systems Rust tend to be exactly the
-    people you want writing distributed systems.
+  <Accordion title="Can I use it commercially?" id="can-i-use-it-commercially">
+    Yes. Running it to build your own software is a permitted purpose,
+    commercial or not. The restriction is on reselling NativeLink as a
+    competing product or service. The two BUSL modules are the ones to
+    check with counsel if you plan to redistribute.
+  </Accordion>
+  <Accordion title="Why Rust and not Go?" id="why-rust-and-not-go">
+    Predictable tail latency without a garbage collector, and memory safety
+    without a managed runtime. The cost is compile time and a smaller pool
+    of contributors, a real trade, made deliberately, for a component whose
+    worst failure mode is silently serving the wrong bytes.
+  </Accordion>
+  <Accordion title="Does the version number mean anything?" id="does-the-version-number-mean-anything">
+    Less than it looks like. `compatibility_level = 0` in `MODULE.bazel`
+    means no cross-version compatibility guarantee. Read the changelog
+    before upgrading, and pin the version in your deployment.
   </Accordion>
 </Accordions>
+
+<NextStep href="/explanations/lre" title="Local Remote Execution">
+  The idea that came out of the rewrite rather than driving it: the same
+  hermetic toolchain on your laptop and on the remote workers.
+</NextStep>

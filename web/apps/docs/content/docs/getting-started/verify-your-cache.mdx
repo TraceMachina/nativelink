@@ -1,0 +1,240 @@
+---
+title: Verify your cache
+description: Prove the cache is actually serving hits rather than quietly falling back to local work, using your build tool's own accounting, not a status page.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone who has pointed a build at NativeLink and wants
+evidence it is working, rather than the absence of an error. **What you'll
+have at the end:** a measurement you can repeat, a number you can put in a
+message to your team, and the ability to tell a cold cache from a broken one.
+**Time:** about ten minutes.
+
+<Prerequisites>
+  A running NativeLink and a build pointed at it. See the [Quickstart](/getting-started/quickstart) and [Connect your build](/getting-started/connect-your-build).
+</Prerequisites>
+
+A misconfigured remote cache almost never fails loudly. Bazel's default is to
+treat cache errors as soft: if the endpoint is unreachable, the digest function
+does not match, or the instance name is wrong, it logs a line you will not
+notice and builds everything locally. The build succeeds. It is just not
+using the cache.
+
+"No errors" proves nothing. What proves something is the client's own
+accounting of where each action's result came from.
+
+<Callout type="warn" title="There is no /metrics endpoint to curl">
+  NativeLink exports telemetry over OTLP and nothing else: there is no HTTP
+  metrics route in the binary, and the `/status` path a `health` service
+  mounts only reports whether the process is up and its stores pass a
+  self-check. It will happily return OK for a server no client is
+  successfully talking to. Use it as a liveness check and nothing more; see
+  <a href="/operate/observability">Observability</a> for the real telemetry
+  path.
+</Callout>
+
+## The measurement [#the-measurement]
+
+The test is a build, a clean, and the same build again. The first populates
+the cache; the second must not do the work.
+
+<Steps>
+
+<li>
+
+### Build once, cold [#build-once-cold]
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_instance_name=main
+```
+
+Read the last line of the output. It looks like this:
+
+```
+INFO: 1,284 processes: 81 internal, 1,203 linux-sandbox.
+```
+
+Every process is local, which is what you expect: nothing was in the cache
+yet. If this run reports remote cache hits, something built these outputs
+before. That is fine, but you are no longer measuring a cold start, so pick
+a target nobody has built or change a source file.
+
+</li>
+
+<li>
+
+### Discard the local results [#discard-the-local-results]
+
+```bash
+bazel clean
+```
+
+Not `bazel clean --expunge`, which also throws away the external repositories
+and turns the next step into a ten-minute fetch that tells you nothing about
+the cache.
+
+</li>
+
+<li>
+
+### Build again, warm [#build-again-warm]
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_instance_name=main
+```
+
+Now the same line should read differently:
+
+```
+INFO: 1,284 processes: 1,203 remote cache hit, 81 internal.
+```
+
+That number, `remote cache hit`, is the whole measurement. It is the count
+of actions Bazel did not run because NativeLink handed back a result.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- The second build's `processes:` line reports a non-zero `remote cache hit`
+  count.
+- The second build is substantially faster in wall time than the first.
+- The store's `content_path` on the server has grown; for the shipped
+  `basic_cas.json5` that is
+  `/tmp/nativelink/data-worker-test/content_path-cas` (inside the container
+  on the Docker path), and the action cache is beside it under
+  `content_path-ac`.
+- Stopping NativeLink and re-running the build makes the hits disappear. This
+  one matters more than it looks: it is the only check that proves the hits
+  were coming from *this* server rather than from a `--disk_cache` on the
+  client.
+
+</VerifyBlock>
+
+## Reading the number honestly [#reading-the-number-honestly]
+
+A hit rate below 100% on an unchanged tree is normal. Bazel counts several
+kinds of work in that line, and only some of it is cacheable:
+
+`internal` actions (symlink trees, file writes, workspace status) never go
+to a remote cache. They are cheap and they will always appear.
+
+Actions whose inputs genuinely changed are supposed to miss. If you edited a
+header between the two runs, everything downstream of it will rebuild, and
+that is the cache working correctly rather than failing.
+
+Actions that are not deterministic will miss forever. A rule that embeds a
+timestamp, an absolute path, or a hostname produces a different action digest
+on every machine and every run, so it can never hit. If your rate is stuck low
+on an unchanged tree, this is usually why, and
+[Correctness and hermeticity](/explanations/correctness-hermeticity) is the
+page that explains how to find them.
+
+What should worry you is *zero* hits on a second run of an unchanged tree.
+That is not a tuning problem; that is the cache not being used at all.
+
+## Getting more detail than the summary line [#getting-more-detail-than-the-summary-line]
+
+When the summary is not enough, ask Bazel for the per-action record:
+
+```bash
+bazel build //... \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_instance_name=main \
+  --execution_log_compact_file=/tmp/exec.log
+```
+
+The execution log records, for each action, whether it was a cache hit and
+what its digest was. It is the tool for answering "why did *this specific*
+action miss": compare the digest for the same action across two runs, and if
+it changed, the action's inputs or command line are not stable.
+
+For wire-level questions (is the client even reaching the server, is it
+calling `FindMissingBlobs`) turn on gRPC logging instead:
+
+```bash
+bazel build //... --remote_cache=grpc://127.0.0.1:50051 --remote_grpc_log=/tmp/grpc.log
+```
+
+An empty log means Bazel never opened a connection, which points at the flag
+rather than at the server.
+
+## Other build tools [#other-build-tools]
+
+The measurement is the same everywhere: build, clean, rebuild, and read the
+tool's own accounting. Only the vocabulary changes. Buck2 shows where each
+action ran in `buck2 log what-ran`; Pants counts remote cache requests in
+its end-of-run stats when `[stats].log` is on; recc logs an
+`Action Cache hit` line per compile with `RECC_LOG_LEVEL=info`. Look for
+whatever your tool calls a cache hit rather than for a NativeLink-side signal;
+the server cannot tell you whether the client asked it the right question.
+
+<Accordions type="multiple">
+
+<Accordion title="Zero cache hits, and no errors anywhere" id="zero-cache-hits-and-no-errors">
+The overwhelmingly common cause is `--remote_instance_name`. NativeLink
+registers services under the instance names its config lists, and the shipped
+`basic_cas.json5` registers each service twice, once under `""` and once
+under `"main"`, precisely so both work. A config that registers only `main`
+answers a client that sends the empty instance name with an error,
+`'instance_name' not configured for ''`; Bazel treats a cache error as a
+warning, prints it once, and builds locally, which reads as zero hits.
+<SourceLink file="nativelink-service/src/ac_server.rs" symbol="get_action_result" />
+
+Second most common: the two runs did not use the same digest function. Bazel
+sends SHA-256 by default; if you set `--digest_function=blake3` on one run and
+not the other, every digest differs and nothing can hit.
+</Accordion>
+
+<Accordion title="Hits on the second run, but not from a colleague's machine" id="hits-locally-but-not-from-another-machine">
+Two builds share cache entries only if they produce identical action digests,
+and the digest covers the full command line, the input file contents, *and*
+the platform properties. Different compiler versions, different absolute paths
+to the workspace, or a different `--platforms` value all produce different
+digests.
+
+This is the problem remote execution and toolchain pinning exist to solve, and
+[Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity)
+covers it properly. For a cache-only setup, the practical first step is making
+sure everyone builds with the same toolchain rather than the one on their
+`PATH`.
+</Accordion>
+
+<Accordion title="The second build is faster but reports no remote hits" id="faster-but-no-remote-hits">
+`bazel clean` removes the output tree but not the repository cache or a
+`--disk_cache` if you have one configured, and disk cache hits are counted
+separately from remote ones. A run that is fast with zero remote hits is
+being served locally. Stop NativeLink and run the build again: if it is
+still fast, you have been measuring Bazel's local caches the whole time.
+</Accordion>
+
+<Accordion title="Hits disappear after a while" id="hits-disappear-after-a-while">
+Eviction. The shipped example caps the CAS at 10 GB and the action cache at
+1 GB, and a filesystem store evicts least-recently-used content when it
+crosses the limit. On a real workload those limits are small.
+
+The failure mode worth knowing is that the two stores evict independently: a
+CAS eviction can leave an action cache entry pointing at blobs that no longer
+exist, so the client gets a hit and then fails to download it. That is what a
+completeness-checking store prevents, and
+[Scaling the CAS](/operate/scaling-cas) covers sizing.
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/getting-started/connect-your-build" title="Connect your build">
+  The flags for Bazel, Buck2, Pants, Siso, and CMake with recc, now that you
+  know how to tell whether they worked.
+</NextStep>
+
+<NextStep href="/remote-execution" kind="aside" title="Remote execution">
+  A cache serving hits is the prerequisite for running the actions themselves
+  somewhere else.
+</NextStep>

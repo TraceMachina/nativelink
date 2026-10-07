@@ -1,0 +1,149 @@
+---
+title: Configuration
+description: The config model on one page, so you can read and write a NativeLink config instead of copying one.
+---
+
+{/* archetype: explanation (waypoint), see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone running a cluster they got working by copying an
+example, who now needs to change it. **What you'll have at the end of this
+section:** the ability to read any NativeLink config and write one from an
+empty file. **Time:** an afternoon, most of it on the capstone.
+
+<Prerequisites>
+  A cluster you got running by copying an example, for instance from [Examples and templates](/remote-execution/examples-and-templates).
+</Prerequisites>
+
+## One file, six keys [#one-file-six-keys]
+
+A NativeLink deployment of any shape (one process on a laptop, a sharded
+fleet across three regions) is described by a single JSON5 file. It has
+exactly six top-level keys, and only two of them are required.
+
+| Key | Required | Shape | What it holds |
+| --- | --- | --- | --- |
+| `stores` | yes | array | Every storage backend this process can use, each with a name |
+| `servers` | yes | array | Listeners, and which services are exposed on each |
+| `schedulers` | no | array | Queues that match actions to workers |
+| `workers` | no | array | Executors that run actions, in this process |
+| `global` | no | object | Process-wide settings: file limits, default digest function |
+| `experimental_origin_events` | no | object | Event publishing, still experimental |
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="CasConfig" />
+
+`schedulers` and `workers` are optional because a cache-only deployment has
+neither. That's Getting started: a config with just `stores` and `servers` is a
+complete, valid NativeLink cache.
+
+## How a request traverses them [#how-a-request-traverses-them]
+
+<Mermaid>
+{`flowchart LR
+  client[Build client] -->|"gRPC :50051"| server[servers entry]
+  server --> svc{{services}}
+  svc -->|cas, ac, bytestream| store[(stores entry<br/>by name)]
+  svc -->|execution| sched[schedulers entry<br/>by name]
+  sched -->|assigns action| worker[workers entry]
+  worker -->|"worker_api :50061"| server2[a second servers entry]
+  server2 --> sched
+  worker --> store`}
+</Mermaid>
+
+Read that diagram as: **the `servers` array is the only entry point, and
+everything else is reached from it by name.** A service doesn't contain a
+store, it names one. A worker doesn't contain a scheduler, it dials one over
+the worker API. The names are the wiring.
+
+This is why the config can describe both a single process and a fleet without
+changing shape. Split the same file into three (one with `stores` and a CAS
+server, one with `schedulers` and an execution server, one with `workers`)
+and the names become network addresses instead of in-process references.
+Nothing else changes.
+
+## Everything is a named array [#everything-is-a-named-array]
+
+Every top-level collection is an **array of objects**, not a map keyed by
+name. Stores and schedulers carry their `name` beside the type key; workers
+carry it inside the `local` block; servers have an optional `name`:
+
+```json5
+schedulers: [
+  {
+    name: "MAIN_SCHEDULER",
+    simple: {
+      supported_platform_properties: { cpu_count: "minimum" },
+    },
+  },
+],
+```
+
+The `name` sits beside the type key rather than wrapping it, because the
+type-specific fields are flattened into the same object.
+
+<Callout type="warn" title="Older material shows these as maps">
+  You'll find configs written with the name as a key wrapping the body:
+  `schedulers` as an object mapping `MAIN_SCHEDULER` to its scheduler spec,
+  rather than as an array. That shape does not parse. If you copied one and
+  got an error mentioning `invalid type: map`, this is why.
+</Callout>
+
+## A typo is a startup error, not a silent default [#a-typo-is-a-startup-error-not-a-silent-default]
+
+Nearly every struct in the config crate is `#[serde(deny_unknown_fields)]`.
+Misspell a key and the process refuses to start and tells you which key it
+didn't recognise, rather than ignoring it and behaving strangely three hours
+later.
+
+This is worth knowing because it changes how you should edit configs: the
+fastest way to check a change is to start the binary. It parses the whole file
+before it binds a single socket.
+
+## The pages, in order [#the-pages-in-order]
+
+**Learn the mechanics**
+
+- [The config file](/configuration/config-file): JSON5, environment
+  substitution, how the binary finds the file, and how to check one before
+  you trust it.
+
+**Learn the four sections**
+
+- [Stores](/configuration/stores): declaring and naming stores, and the one
+  idea that unlocks the rest of the system: stores compose.
+- [Servers and services](/configuration/servers-and-services): listeners,
+  the eleven services, and the port split that keeps workers off the public
+  interface.
+- [Schedulers and workers](/configuration/scheduler-and-workers): the
+  minimum of each, and the properties contract between them.
+
+**Put it together**
+
+- [Your first full config](/configuration/your-first-full-config): an empty
+  file to a running cache-and-execution cluster, one block at a time.
+
+## Start here, or skip ahead [#start-here-or-skip-ahead]
+
+**Start here** if you have a cluster running from a copied example and want to
+understand what you copied.
+
+**Go back a section** if nothing is running yet.
+[Getting started](/getting-started) gets you a cache, and
+[Remote execution](/remote-execution) gets you workers; both hand you a
+working config you can then read here.
+
+**Skip ahead** to [How-to guides](/how-to) if you know exactly which backend or
+feature you want and just need the block that does it.
+
+**Skip ahead** to
+[Production configuration](/operate/production-config) if what you actually
+want is the shape a real fleet runs, rather than the model behind it.
+
+<NextStep href="/configuration/config-file" title="The config file">
+  JSON5, `${VAR:-default}` substitution, and how to find out a config is
+  wrong before it takes a cluster down with it.
+</NextStep>
+
+<NextStep href="/reference/nativelink-config" kind="aside" title="Configuration reference">
+  Generated from the Rust source: every field, every default, every
+  constraint. This section is for understanding; that one is for lookups.
+</NextStep>

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::sync::atomic::Ordering;
 use core::time::Duration;
 use std::collections::HashMap;
 #[cfg(target_family = "unix")]
@@ -34,14 +35,14 @@ use nativelink_config::cas_server::{EndpointConfig, LocalWorkerConfig, WorkerPro
 use nativelink_config::stores::{
     FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
 };
-use nativelink_error::{Code, Error, make_err, make_input_err};
+use nativelink_error::{Code, Error, ErrorContext, make_err, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::Platform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
-    UpdateForWorker, execute_result,
+    UpdateForWorker, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -52,16 +53,19 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, encode_stream_proto, fs, make_temp_path};
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::health_utils::{HealthStatus, HealthStatusIndicator};
 use nativelink_util::store_trait::Store;
+use nativelink_worker::capacity::{free_memory_kb, memory_is_limited};
 use nativelink_worker::local_worker::new_local_worker;
 #[cfg(target_family = "unix")]
 use nativelink_worker::local_worker::preconditions_met;
+use nativelink_worker::running_actions_manager::MISSING_INPUT_ERROR_TIP;
 use pretty_assertions::assert_eq;
 use prost::Message;
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
 use utils::local_worker_test_utils::{
-    setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
+    TestContext, setup_grpc_stream, setup_local_worker, setup_local_worker_with_config,
 };
 use utils::mock_running_actions_manager::MockRunningAction;
 
@@ -118,6 +122,7 @@ async fn platform_properties_smoke_test() -> Result<(), Error> {
                 }
             ],
             max_inflight_tasks: 0,
+            admits_when_idle: memory_is_limited(),
         }
     );
 
@@ -135,7 +140,13 @@ async fn reconnect_on_server_disconnect_test() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     // Disconnect our grpc stream.
@@ -148,7 +159,13 @@ async fn reconnect_on_server_disconnect_test() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     Ok(())
@@ -165,7 +182,13 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     // Handle registration (kill_all not called unless registered).
@@ -176,6 +199,8 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: "foobar".to_string(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -193,6 +218,94 @@ async fn kill_all_called_on_disconnect() -> Result<(), Error> {
     Ok(())
 }
 
+/// A disconnect that catches an action mid-handoff must still reconnect.
+/// Returning from the worker's main loop here aborts the process, so a
+/// scheduler blip that happened to land while an action was in transit took
+/// the whole worker down and every action it held had to run again elsewhere.
+#[nativelink_test]
+async fn reconnects_when_action_stuck_in_transit_on_disconnect() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let expected_worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: expected_worker_id.clone(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+
+    // Start an action, but deliberately never answer create_and_add_action.
+    // The action stays counted as in transit, so the drain wait on disconnect
+    // runs to its limit instead of settling.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::StartAction(StartExecute {
+                    request_metadata: None,
+                    execute_request: Some((&action_info).into()),
+                    operation_id: String::new(),
+                    queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: expected_worker_id,
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // Disconnect while that action is still in transit.
+    drop(tx_stream);
+
+    test_context.actions_manager.expect_kill_all().await;
+
+    // The worker must come back rather than exiting.
+    let (_, streaming_response) = setup_grpc_stream();
+    let props = test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert_eq!(
+        props,
+        ConnectWorkerRequest {
+            admits_when_idle: memory_is_limited(),
+            ..Default::default()
+        }
+    );
+
+    Ok(())
+}
+
 #[nativelink_test]
 async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
     let mut test_context = setup_local_worker(HashMap::new()).await;
@@ -204,7 +317,13 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -217,6 +336,8 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -235,6 +356,7 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
@@ -247,6 +369,7 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -285,7 +408,25 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn simple_worker_start_action_test() -> Result<(), Error> {
-    let mut test_context = setup_local_worker(HashMap::new()).await;
+    start_action_lifecycle_test(false).await
+}
+
+#[nativelink_test]
+async fn single_use_worker_rejects_second_action_and_waits_for_uploads() -> Result<(), Error> {
+    start_action_lifecycle_test(true).await
+}
+
+async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        single_use,
+        max_inflight_tasks: if single_use { 9 } else { 0 },
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
     let streaming_response = test_context.maybe_streaming_response.take().unwrap();
 
     {
@@ -294,7 +435,14 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                max_inflight_tasks: u64::from(single_use),
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -307,6 +455,8 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -325,6 +475,7 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -337,6 +488,7 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -381,6 +533,32 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
+    if single_use {
+        // Even a scheduler that sends more than our advertised capacity must
+        // not run a second action in this container.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
+                        execute_request: Some((&action_info).into()),
+                        operation_id: "second-action".to_string(),
+                        worker_id: expected_worker_id.clone(),
+                        ..Default::default()
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        let rejected = test_context.client.expect_execution_response(Ok(())).await;
+        assert_eq!(rejected.operation_id, "second-action");
+        let Some(execute_result::Result::InternalError(status)) = rejected.result else {
+            panic!("Second action must be rejected before execution");
+        };
+        assert_eq!(status.code, Code::ResourceExhausted as i32);
+    }
+
     // Now the RunningAction needs to send a series of state updates. This shortcuts them
     // into a single call (shortcut for prepare, execute, upload, collect_results, cleanup).
     running_action
@@ -395,6 +573,17 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
     assert_eq!(stored_digest, action_digest);
     assert_eq!(stored_result, action_result.clone());
     assert_eq!(digest_hasher, DigestHasherFunc::Sha256);
+    assert_eq!(
+        test_context.client.going_away_count.load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        test_context
+            .client
+            .execution_complete_count
+            .load(Ordering::Relaxed),
+        u64::from(!single_use)
+    );
 
     // Now our client should be notified that our runner finished.
     let execution_response = test_context.client.expect_execution_response(Ok(())).await;
@@ -411,6 +600,14 @@ async fn simple_worker_start_action_test() -> Result<(), Error> {
             resource_usage: None,
         }
     );
+
+    if single_use {
+        let going_away = test_context.client.going_away_count.clone();
+        tokio::time::timeout(Duration::from_secs(5), test_context.finish())
+            .await
+            .map_err(|_| make_input_err!("Single-use worker did not exit"))??;
+        assert_eq!(going_away.load(Ordering::Relaxed), 1);
+    }
 
     Ok(())
 }
@@ -572,7 +769,13 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -585,6 +788,8 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -603,6 +808,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -615,6 +821,7 @@ async fn experimental_precondition_script_fails() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -659,7 +866,13 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -672,6 +885,8 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -690,6 +905,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Blake3,
             digest: action_digest,
@@ -703,6 +919,7 @@ async fn kill_action_request_kills_action() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: operation_id.to_string(),
                         queued_timestamp: None,
@@ -756,7 +973,13 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -768,6 +991,8 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -786,6 +1011,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -797,6 +1023,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -818,14 +1045,17 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         .expect_create_and_add_action(Ok(running_action.clone()))
         .await;
 
-    // Simulate prepare_action failing with a CAS NotFound error containing the
-    // specific "not found in either fast or slow store" message. This is the exact
-    // condition that the code checks to decide whether to return FailedPrecondition.
+    // Simulate prepare_action failing the way the manager fails a missing
+    // input: NotFound tagged with the missing-input tip, whatever the store
+    // itself said.
+    let missing_input = make_err!(Code::NotFound, "Hash 0123456789abcdef not found")
+        .append(MISSING_INPUT_ERROR_TIP)
+        .with_context(ErrorContext::MissingDigest {
+            hash: "0123456789abcdef".to_string(),
+            size: 42,
+        });
     running_action
-        .expect_prepare_action(Err(make_err!(
-            Code::NotFound,
-            "Hash 0123456789abcdef not found in either fast or slow store"
-        )))
+        .expect_prepare_action(Err(missing_input.clone()))
         .await?;
 
     // Cleanup is still called even when prepare_action fails.
@@ -835,11 +1065,17 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
     // NOT an InternalError. This allows Bazel to re-upload the missing artifacts.
     let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
+    // The digest rides along as context, which the execute response turns
+    // into the PreconditionFailure detail Bazel re-uploads on.
     let expected_action_result = ActionResult {
-        error: Some(make_err!(
-            Code::FailedPrecondition,
-            "Hash 0123456789abcdef not found in either fast or slow store"
-        )),
+        error: Some(
+            make_err!(
+                Code::FailedPrecondition,
+                "{}",
+                missing_input.message_string()
+            )
+            .with_context(missing_input.context.clone()),
+        ),
         ..ActionResult::default()
     };
     assert_eq!(
@@ -867,7 +1103,13 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
             .client
             .expect_connect_worker(Ok(streaming_response))
             .await;
-        assert_eq!(props, ConnectWorkerRequest::default());
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
     }
 
     let expected_worker_id = "foobar".to_string();
@@ -879,6 +1121,8 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::ConnectionResult(ConnectionResult {
                         worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
                     })),
                 })
                 .unwrap(),
@@ -897,6 +1141,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
         load_timestamp: SystemTime::UNIX_EPOCH,
         insert_timestamp: SystemTime::UNIX_EPOCH,
         unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
             instance_name: INSTANCE_NAME.to_string(),
             digest_function: DigestHasherFunc::Sha256,
             digest: action_digest,
@@ -908,6 +1153,7 @@ async fn non_cas_not_found_returns_internal_error_test() -> Result<(), Error> {
             .send(Frame::data(
                 encode_stream_proto(&UpdateForWorker {
                     update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
                         execute_request: Some((&action_info).into()),
                         operation_id: String::new(),
                         queued_timestamp: None,
@@ -966,7 +1212,12 @@ async fn preconditions_met_extra_envs() -> Result<(), Error> {
     // So we have bash for nix cases, because the PATH gets reset
     extra_envs.insert("PATH".into(), env::var("PATH").unwrap());
 
-    preconditions_met(Some("bash -c \"echo $DEMO_ENV\"".to_string()), &extra_envs).await?;
+    preconditions_met(
+        Some("bash -c \"echo $DEMO_ENV\"".to_string()),
+        &extra_envs,
+        Duration::from_secs(30),
+    )
+    .await?;
     assert!(logs_contain("test_value_for_demo_env"));
     Ok(())
 }
@@ -990,7 +1241,13 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
         .client
         .expect_connect_worker(Ok(streaming_response))
         .await;
-    assert_eq!(props, ConnectWorkerRequest::default());
+    assert_eq!(
+        props,
+        ConnectWorkerRequest {
+            admits_when_idle: memory_is_limited(),
+            ..Default::default()
+        }
+    );
 
     // handle connection result to scheduler
     let tx_stream = test_context.maybe_tx_stream.take().unwrap();
@@ -999,6 +1256,8 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
             encode_stream_proto(&UpdateForWorker {
                 update: Some(Update::ConnectionResult(ConnectionResult {
                     worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
                 })),
             })
             .unwrap(),
@@ -1021,4 +1280,763 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
         Code::DeadlineExceeded,
         "Timed out looking for KeepAlive logs"
     ))
+}
+
+/// A keepalive that never completes does not end the connection by itself:
+/// a send waits behind whatever the scheduler is still processing, and the
+/// scheduler's liveness timeout is the clock. When the scheduler closes the
+/// stream, the loop sees it, the running actions are killed, and the worker
+/// registers again.
+#[nativelink_test]
+async fn a_hung_keepalive_waits_for_the_scheduler_to_close_the_stream() -> Result<(), Error> {
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(0.2),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    test_context
+        .client
+        .keep_alive_hangs
+        .store(true, Ordering::Release);
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // The first keepalive is held and stays held: no deadline on it ends the
+    // connection.
+    while test_context
+        .client
+        .keep_alives_hanging
+        .load(Ordering::Acquire)
+        == 0
+    {
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            test_context.actions_manager.expect_kill_all()
+        )
+        .await
+        .is_err(),
+        "a hung keepalive must not end the connection"
+    );
+
+    // The scheduler closes the stream (it evicted the worker): the loop sees
+    // it, the actions are killed, and the worker comes back to register.
+    drop(tx_stream);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        test_context.actions_manager.expect_kill_all().await;
+        let (tx_stream2, streaming_response2) = setup_grpc_stream();
+        test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response2))
+            .await;
+        drop(tx_stream2);
+    })
+    .await
+    .map_err(|_| make_err!(Code::DeadlineExceeded, "the worker did not reconnect"))?;
+    assert!(logs_contain(
+        "Worker disconnected from scheduler, reconnecting"
+    ));
+    Ok(())
+}
+
+/// The run loop is the only reader of the scheduler's stream, so no call to
+/// the scheduler is awaited inside it: a dispatch acknowledgement that hangs
+/// leaves the loop reading, and a kill that arrives next is still acted on.
+#[nativelink_test]
+async fn a_hung_acknowledgement_does_not_block_the_loop() -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        max_inflight_tasks: 2,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: worker_id.clone(),
+                    dispatch_ack: true,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Blake3,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+    // The dispatch's acknowledgement is never answered: the mock holds it.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::StartAction(StartExecute {
+                    request_metadata: None,
+                    execute_request: Some((&action_info).into()),
+                    operation_id: "first".to_string(),
+                    queued_timestamp: None,
+                    platform: Some(Platform::default()),
+                    worker_id: worker_id.clone(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // A kill for it arrives while the acknowledgement hangs; the loop reads
+    // it and passes it on.
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::KillOperationRequest(KillOperationRequest {
+                    operation_id: "first".to_string(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let killed = tokio::time::timeout(
+        Duration::from_secs(10),
+        test_context.actions_manager.expect_kill_operation(),
+    )
+    .await
+    .map_err(|_| make_err!(Code::DeadlineExceeded, "the loop never read the kill"))?;
+    assert_eq!(killed, OperationId::from("first"));
+    // The action waits on its acknowledgement; it has not started.
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(300),
+            test_context
+                .actions_manager
+                .expect_create_and_add_action_no_reply()
+        )
+        .await
+        .is_err(),
+        "the action must not start before its acknowledgement is sent"
+    );
+    Ok(())
+}
+
+/// An acknowledgement that fails leaves the action unstarted and a
+/// single-use worker unspent: the loop ends on the error, the worker
+/// registers again, and the next dispatch runs.
+#[nativelink_test]
+async fn a_failed_acknowledgement_leaves_a_single_use_worker_unspent() -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        single_use: true,
+        max_inflight_tasks: 1,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let worker_id = "foobar".to_string();
+    let connection_result = UpdateForWorker {
+        update: Some(Update::ConnectionResult(ConnectionResult {
+            worker_id: worker_id.clone(),
+            dispatch_ack: true,
+            memory_property: String::new(),
+        })),
+    };
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&connection_result).unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Blake3,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+    let start = |operation_id: &str| UpdateForWorker {
+        update: Some(Update::StartAction(StartExecute {
+            request_metadata: None,
+            execute_request: Some((&action_info).into()),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: None,
+            platform: Some(Platform::default()),
+            worker_id: worker_id.clone(),
+        })),
+    };
+
+    // The acknowledgement of the first dispatch is lost.
+    tx_stream
+        .send(Frame::data(encode_stream_proto(&start("first")).unwrap()))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let accepted = test_context
+        .client
+        .expect_execute_accepted(Err(make_err!(Code::Unavailable, "acknowledgement lost")))
+        .await;
+    assert_eq!(accepted.operation_id, "first");
+
+    // The loop ends on it and the worker, not spent, registers again.
+    let tx_stream2 = tokio::time::timeout(Duration::from_secs(10), async {
+        test_context.actions_manager.expect_kill_all().await;
+        let (tx_stream2, streaming_response2) = setup_grpc_stream();
+        test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response2))
+            .await;
+        tx_stream2
+    })
+    .await
+    .map_err(|_| make_err!(Code::DeadlineExceeded, "the worker did not reconnect"))?;
+    tx_stream2
+        .send(Frame::data(
+            encode_stream_proto(&connection_result).unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    // The next dispatch is acknowledged and is the first action to start.
+    tx_stream2
+        .send(Frame::data(encode_stream_proto(&start("second")).unwrap()))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let accepted = test_context.client.expect_execute_accepted(Ok(())).await;
+    assert_eq!(accepted.operation_id, "second");
+    let (_, started) = test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(Arc::new(MockRunningAction::new())))
+        .await;
+    assert_eq!(started.operation_id, "second");
+    assert!(logs_contain("Could not send ExecuteAccepted"));
+    Ok(())
+}
+
+/// Regression test: a disconnect from the scheduler while an action is still
+/// "in transit" (`StartAction` received, inputs still downloading) must lead to
+/// kill-all + reconnect like any other disconnect. It used to strand the
+/// `actions_in_transit` counter — the decrement lived inside the action
+/// future, which is aborted by the disconnect — so the drain loop always
+/// timed out and `LocalWorker::run` returned a fatal error that took down the
+/// whole process in colocated deployments.
+#[nativelink_test]
+async fn disconnect_with_action_in_transit_reconnects_test() -> Result<(), Error> {
+    disconnect_with_action_in_transit(false).await
+}
+
+#[nativelink_test]
+async fn single_use_worker_never_reconnects_after_accepting_an_action() -> Result<(), Error> {
+    disconnect_with_action_in_transit(true).await
+}
+
+async fn disconnect_with_action_in_transit(single_use: bool) -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        single_use,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+
+    {
+        // Ensure our worker connects and properties were sent.
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                max_inflight_tasks: u64::from(single_use),
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
+    }
+
+    let expected_worker_id = "foobar".to_string();
+
+    // Handle registration.
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    {
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::ConnectionResult(ConnectionResult {
+                        worker_id: expected_worker_id.clone(),
+                        dispatch_ack: false,
+                        memory_property: String::new(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    let action_digest = DigestInfo::new([3u8; 32], 10);
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Sha256,
+            digest: action_digest,
+        }),
+    };
+
+    {
+        // Send execution request.
+        tx_stream
+            .send(Frame::data(
+                encode_stream_proto(&UpdateForWorker {
+                    update: Some(Update::StartAction(StartExecute {
+                        request_metadata: None,
+                        execute_request: Some((&action_info).into()),
+                        operation_id: String::new(),
+                        queued_timestamp: None,
+                        platform: Some(Platform::default()),
+                        worker_id: expected_worker_id.clone(),
+                    })),
+                })
+                .unwrap(),
+            ))
+            .await
+            .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    }
+
+    // Wait until the action reaches create_and_add_action, but never answer:
+    // the action stays in transit, like an input download in progress.
+    test_context
+        .actions_manager
+        .expect_create_and_add_action_no_reply()
+        .await;
+
+    // Sever the scheduler connection while the action is still in transit.
+    drop(tx_stream);
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        // The worker must clean up...
+        test_context.actions_manager.expect_kill_all().await;
+
+        if single_use {
+            assert!(test_context.finish().await.is_err());
+            return;
+        }
+
+        // ...and auto reconnect, checking our properties again.
+        let (_, streaming_response) = setup_grpc_stream();
+        let props = test_context
+            .client
+            .expect_connect_worker(Ok(streaming_response))
+            .await;
+        assert_eq!(
+            props,
+            ConnectWorkerRequest {
+                admits_when_idle: memory_is_limited(),
+                ..Default::default()
+            }
+        );
+    })
+    .await
+    .map_err(|_| {
+        make_input_err!(
+            "Worker did not kill-all and reconnect after a disconnect with an action in transit"
+        )
+    })?;
+
+    Ok(())
+}
+
+/// With a scheduler that speaks the acknowledgement, a worker at its
+/// `max_inflight_tasks` declines the next dispatch instead of running it,
+/// and says why; the first dispatch was acknowledged before it ran.
+#[nativelink_test]
+async fn a_worker_at_capacity_declines_the_next_dispatch() -> Result<(), Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        max_inflight_tasks: 1,
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+
+    let worker_id = "foobar".to_string();
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: worker_id.clone(),
+                    dispatch_ack: true,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Blake3,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+    let start = |operation_id: &str| UpdateForWorker {
+        update: Some(Update::StartAction(StartExecute {
+            request_metadata: None,
+            execute_request: Some((&action_info).into()),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: None,
+            platform: Some(Platform::default()),
+            worker_id: worker_id.clone(),
+        })),
+    };
+
+    // The first dispatch is acknowledged, then runs (and stays running:
+    // nothing answers its prepare).
+    tx_stream
+        .send(Frame::data(encode_stream_proto(&start("first")).unwrap()))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let accepted = test_context.client.expect_execute_accepted(Ok(())).await;
+    assert_eq!(accepted.operation_id, "first");
+    let running_action = Arc::new(MockRunningAction::new());
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(running_action.clone()))
+        .await;
+
+    // The second finds the worker full and is declined with the reason.
+    tx_stream
+        .send(Frame::data(encode_stream_proto(&start("second")).unwrap()))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let declined = test_context.client.expect_execute_declined(Ok(())).await;
+    assert_eq!(declined.operation_id, "second");
+    assert_eq!(declined.reason, execute_declined::Reason::AtCapacity as i32);
+    assert_eq!(declined.detail, "1 of 1 in flight");
+    Ok(())
+}
+
+/// A worker connected to a scheduler that speaks the acknowledgement and
+/// reads memory reservations from `memory_kb`, as worker "foobar".
+async fn connect_memory_worker(config: LocalWorkerConfig) -> Result<TestContext, Error> {
+    let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(10000.),
+            ..Default::default()
+        },
+        ..config
+    })
+    .await;
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    send_update(
+        &test_context,
+        &UpdateForWorker {
+            update: Some(Update::ConnectionResult(ConnectionResult {
+                worker_id: "foobar".to_string(),
+                dispatch_ack: true,
+                memory_property: "memory_kb".to_string(),
+            })),
+        },
+    )
+    .await?;
+    Ok(test_context)
+}
+
+async fn send_update(test_context: &TestContext, update: &UpdateForWorker) -> Result<(), Error> {
+    test_context
+        .maybe_tx_stream
+        .as_ref()
+        .unwrap()
+        .send(Frame::data(encode_stream_proto(update).unwrap()))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))
+}
+
+/// A dispatch to worker "foobar" of `operation_id`, reserving `memory_kb`.
+fn start_reserving(operation_id: &str, memory_kb: u64) -> UpdateForWorker {
+    let action_info = ActionInfo {
+        command_digest: DigestInfo::new([1u8; 32], 10),
+        input_root_digest: DigestInfo::new([2u8; 32], 10),
+        timeout: Duration::from_secs(1),
+        platform_properties: HashMap::new(),
+        priority: 0,
+        load_timestamp: SystemTime::UNIX_EPOCH,
+        insert_timestamp: SystemTime::UNIX_EPOCH,
+        unique_qualifier: ActionUniqueQualifier::Uncacheable(ActionUniqueKey {
+            execution_scope: None,
+            instance_name: INSTANCE_NAME.to_string(),
+            digest_function: DigestHasherFunc::Blake3,
+            digest: DigestInfo::new([3u8; 32], 10),
+        }),
+    };
+    UpdateForWorker {
+        update: Some(Update::StartAction(StartExecute {
+            request_metadata: None,
+            execute_request: Some((&action_info).into()),
+            operation_id: operation_id.to_string(),
+            queued_timestamp: None,
+            platform: Some(Platform {
+                properties: vec![Property {
+                    name: "memory_kb".to_string(),
+                    value: memory_kb.to_string(),
+                }],
+            }),
+            worker_id: "foobar".to_string(),
+        })),
+    }
+}
+
+/// Under a cgroup memory limit an idle worker admits an action whatever it
+/// reads free: with nothing else in flight, waiting frees nothing, and a
+/// decline would have the scheduler wait for a figure the worker never
+/// reports. Once it holds an action, the same reservation is declined for
+/// load. Without a limit, free memory is the host's and can come back, so
+/// even an idle worker declines. With no free-memory reading at all (not
+/// Linux), nothing is ever refused for load, so there is nothing to see.
+#[nativelink_test]
+async fn an_idle_worker_under_a_limit_admits_what_a_busy_one_declines() -> Result<(), Error> {
+    if free_memory_kb().is_none() {
+        return Ok(());
+    }
+    let test_context = connect_memory_worker(LocalWorkerConfig::default()).await?;
+
+    // More memory than any machine has free.
+    send_update(&test_context, &start_reserving("idle", u64::MAX)).await?;
+    if !memory_is_limited() {
+        let declined = test_context.client.expect_execute_declined(Ok(())).await;
+        assert_eq!(declined.operation_id, "idle");
+        assert_eq!(declined.reason, execute_declined::Reason::Load as i32);
+        return Ok(());
+    }
+    // Idle: admitted, and it stays running (nothing answers its prepare).
+    let accepted = test_context.client.expect_execute_accepted(Ok(())).await;
+    assert_eq!(accepted.operation_id, "idle");
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(Arc::new(MockRunningAction::new())))
+        .await;
+
+    // Busy: the same reservation is declined for load.
+    send_update(&test_context, &start_reserving("busy", u64::MAX)).await?;
+    let declined = test_context.client.expect_execute_declined(Ok(())).await;
+    assert_eq!(declined.operation_id, "busy");
+    assert_eq!(declined.reason, execute_declined::Reason::Load as i32);
+    assert_eq!(declined.needed_kb, u64::MAX);
+    Ok(())
+}
+
+/// A single-use worker is always idle when its one action arrives, so
+/// under a memory limit, or with no free-memory reading, it admits that
+/// action whatever it reads free. Only a worker reading the host's memory
+/// still declines it, and a decline does not spend it: the next dispatch
+/// is still admitted.
+#[nativelink_test]
+async fn a_single_use_worker_admits_its_action_unless_host_memory_says_no() -> Result<(), Error> {
+    let test_context = connect_memory_worker(LocalWorkerConfig {
+        single_use: true,
+        ..Default::default()
+    })
+    .await?;
+
+    send_update(&test_context, &start_reserving("greedy", u64::MAX)).await?;
+    if free_memory_kb().is_some() && !memory_is_limited() {
+        let declined = test_context.client.expect_execute_declined(Ok(())).await;
+        assert_eq!(declined.operation_id, "greedy");
+        assert_eq!(declined.reason, execute_declined::Reason::Load as i32);
+        // Not spent: an action reserving nothing is admitted next.
+        send_update(&test_context, &start_reserving("modest", 0)).await?;
+        let accepted = test_context.client.expect_execute_accepted(Ok(())).await;
+        assert_eq!(accepted.operation_id, "modest");
+        test_context
+            .actions_manager
+            .expect_create_and_add_action(Ok(Arc::new(MockRunningAction::new())))
+            .await;
+        return Ok(());
+    }
+    let accepted = test_context.client.expect_execute_accepted(Ok(())).await;
+    assert_eq!(accepted.operation_id, "greedy");
+    test_context
+        .actions_manager
+        .expect_create_and_add_action(Ok(Arc::new(MockRunningAction::new())))
+        .await;
+    Ok(())
+}
+
+/// A precondition script that hangs is refused as backpressure after the
+/// timeout instead of holding the action forever.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn precondition_script_that_hangs_times_out() -> Result<(), Error> {
+    let extra_envs: HashMap<String, String> = HashMap::new();
+    // A busy loop rather than `sleep`: the script runs with a cleared
+    // environment, and in a build sandbox only `/bin/sh` is on any path.
+    let err = preconditions_met(
+        Some("/bin/sh -c 'while :; do :; done'".to_string()),
+        &extra_envs,
+        Duration::from_millis(200),
+    )
+    .await
+    .expect_err("a hanging script must not pass");
+    assert_eq!(err.code, Code::ResourceExhausted, "{err}");
+    assert!(err.to_string().contains("did not finish"), "{err}");
+    Ok(())
+}
+
+/// The readiness flag follows the registration: off until the scheduler's
+/// `ConnectionResult`, on after it, off again when the connection is lost.
+/// The lost state reads Initializing, not Failed, so only the readiness
+/// check drops and a liveness probe on the plain status stays green.
+#[nativelink_test]
+async fn registration_flag_follows_the_scheduler_connection() -> Result<(), Error> {
+    let mut test_context = setup_local_worker(HashMap::new()).await;
+    assert!(!test_context.registration.is_registered());
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    assert!(!test_context.registration.is_registered());
+
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+    let mut registered = false;
+    for _ in 0..1_000 {
+        if test_context.registration.is_registered() {
+            registered = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(registered, "registration flag never turned on");
+
+    drop(tx_stream);
+    test_context.actions_manager.expect_kill_all().await;
+    let mut lost = false;
+    for _ in 0..1_000 {
+        if !test_context.registration.is_registered() {
+            lost = true;
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        lost,
+        "registration flag never turned off after the disconnect"
+    );
+    match test_context.registration.check_health("".into()).await {
+        HealthStatus::Initializing { message, .. } => {
+            assert!(message.contains("reconnecting"), "{message}");
+        }
+        other => panic!("a lost registration must read Initializing, got {other:?}"),
+    }
+    Ok(())
 }

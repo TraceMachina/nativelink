@@ -53,6 +53,11 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error>;
     /// Provide result as action info. This behavior will not be supported by all implementations.
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error>;
+    /// When a client last checked in on this operation, where the
+    /// implementation tracks it. `None` where it does not.
+    async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
+        Ok(None)
+    }
 }
 
 /// The direction in which the results are ordered.
@@ -134,6 +139,36 @@ pub enum UpdateOperationType {
 
     /// Notification that the execution stage has completed and it's just IO happening now.
     ExecutionComplete,
+
+    /// The worker never ran the action: it declined the dispatch, the
+    /// dispatch never reached it, or it never acknowledged it. Requeue
+    /// without counting an attempt; nothing was tried.
+    UpdateWithDecline(Decline),
+
+    /// The worker killed the action for a resource it had declared too
+    /// little of; requeue it with a larger reservation, within the retry cap.
+    UpdateWithEscalation(Escalation),
+}
+
+/// Why a dispatched action is going back to the queue untried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decline {
+    pub reason: String,
+}
+
+/// A reservation to raise before an action runs again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Escalation {
+    /// The platform property carrying the reservation.
+    pub property: String,
+    /// The new value.
+    pub value: u64,
+    /// Why: the error the kill produced, kept for the client if the cap
+    /// ends the escalation.
+    pub reason: Error,
+    /// Set on the last step: the CPU property and the largest worker's
+    /// whole CPU, so the action runs alone there.
+    pub cpu: Option<(String, u64)>,
 }
 
 #[async_trait]
@@ -148,6 +183,14 @@ pub trait WorkerStateManager: Sync + Send + MetricsComponent {
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error>;
+
+    /// Whether the operation is still executing on this worker. False once
+    /// it has finished, been requeued or reassigned, or no longer exists.
+    async fn is_executing_on_worker(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+    ) -> Result<bool, Error>;
 }
 
 #[async_trait]
@@ -164,4 +207,13 @@ pub trait MatchingEngineStateManager: Sync + Send + MetricsComponent {
         operation_id: &OperationId,
         worker_id_or_reason_for_unassign: Result<&WorkerId, Error>,
     ) -> Result<(), Error>;
+
+    /// Completes a queued operation with `err`, without retrying it. Does
+    /// nothing if the operation is no longer queued. Returns whether the
+    /// operation was completed by this call.
+    async fn fail_queued_operation(
+        &self,
+        operation_id: &OperationId,
+        err: Error,
+    ) -> Result<bool, Error>;
 }

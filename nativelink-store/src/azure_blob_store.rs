@@ -104,7 +104,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
 {
-    pub async fn new(spec: &ExperimentalAzureSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
+    pub fn new(spec: &ExperimentalAzureSpec, now_fn: NowFn) -> Result<Arc<Self>, Error> {
         let jitter_fn = spec.common.retry.make_jitter_fn();
         let client = Self::build_container_client(spec)?;
         Self::new_with_client_and_jitter(spec, client, jitter_fn, now_fn)
@@ -206,7 +206,7 @@ where
             max_concurrent_uploads: spec
                 .common
                 .multipart_max_concurrent_uploads
-                .map_or(DEFAULT_MAX_CONCURRENT_UPLOADS, |v| v),
+                .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS),
         }))
     }
 
@@ -628,15 +628,38 @@ where
 
         let blob_path = self.make_blob_path(&key);
 
-        let range = match length {
-            Some(len) => Some(HttpRange::new(offset, len)),
-            None if offset == 0 => None,
-            None => Some(HttpRange::from_offset(offset)),
+        // How many bytes this read may yield. An explicit length wins; with
+        // none, a digest key still states its own size, and a CAS object is
+        // exactly that long. Bounding on it matters because the store must
+        // not hand the caller more than the digest promises: a blob that is
+        // longer than its digest, however it got that way, has the content
+        // as its prefix, and the rest is not ours to pass on. Without this
+        // the surplus travels to `verify_store`, which rejects the whole
+        // stream, and the read fails for a blob that was readable.
+        let size_from_key = match &key {
+            StoreKey::Digest(digest) => Some(digest.size_bytes()),
+            StoreKey::Str(_) => None,
+        };
+        let max_bytes = match length {
+            Some(len) => Some(len),
+            None => size_from_key.map(|size| size.saturating_sub(offset)),
         };
 
         self.retrier
             .retry(unfold(writer, move |writer| {
-                let range = range.clone();
+                // Resumes where the writer stopped, so a retry continues the
+                // read instead of starting it again and appending a second
+                // copy of what the consumer already has. The S3 store does
+                // the same; this one did not, and with a throttling account
+                // every retry doubled up.
+                let sent = writer.get_bytes_written();
+                let remaining = max_bytes.map(|max| max.saturating_sub(sent));
+                let range = match remaining {
+                    Some(0) => None,
+                    Some(rem) => Some(HttpRange::new(offset + sent, rem)),
+                    None if offset + sent == 0 => None,
+                    None => Some(HttpRange::from_offset(offset + sent)),
+                };
                 let client = Arc::clone(&self.client);
                 let blob_path = blob_path.clone();
                 async move {
@@ -680,9 +703,31 @@ where
                             if chunk.is_empty() {
                                 continue;
                             }
+                            // Trim the last chunk rather than forward it
+                            // whole. Azure hands back the block it read, so
+                            // the final one runs past the end of a blob whose
+                            // length is not a multiple of the block size.
+                            let chunk = match max_bytes {
+                                Some(max) => {
+                                    let sent = writer.get_bytes_written();
+                                    if sent >= max {
+                                        break;
+                                    }
+                                    let room = usize::try_from(max - sent).unwrap_or(usize::MAX);
+                                    if chunk.len() > room {
+                                        chunk.slice(..room)
+                                    } else {
+                                        chunk
+                                    }
+                                }
+                                None => chunk,
+                            };
                             writer.send(chunk).await.map_err(|e| {
                                 make_err!(Code::Aborted, "Failed to send data to writer: {e:?}")
                             })?;
+                            if max_bytes.is_some_and(|max| writer.get_bytes_written() >= max) {
+                                break;
+                            }
                         }
 
                         writer.send_eof().map_err(|e| {

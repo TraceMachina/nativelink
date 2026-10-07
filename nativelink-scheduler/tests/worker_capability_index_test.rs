@@ -14,7 +14,7 @@
 
 //! Tests for the worker capability index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nativelink_scheduler::worker_capability_index::WorkerCapabilityIndex;
 use nativelink_util::action_messages::WorkerId;
@@ -38,7 +38,7 @@ fn test_empty_index() {
     let index = WorkerCapabilityIndex::new();
     let props = make_properties(&[]);
     let result = index.find_matching_workers(&props, true);
-    assert!(result.is_empty());
+    assert_eq!(result, HashSet::new());
 
     assert!(logs_contain("No workers available to match!"));
 }
@@ -174,7 +174,7 @@ fn test_remove_worker() {
 
     let props = make_properties(&[("os", PlatformPropertyValue::Exact("linux".to_string()))]);
     let result = index.find_matching_workers(&props, true);
-    assert!(result.is_empty());
+    assert_eq!(result, HashSet::new());
 }
 
 #[test]
@@ -273,4 +273,50 @@ fn test_no_priority_property_match() {
     assert!(logs_contain(
         "No candidate workers due to a lack of key 'os'. Job asked for Priority(\"linux\")"
     ));
+}
+
+#[test]
+fn test_unknown_property_matches_declared_value_or_absent_key() {
+    let mut index = WorkerCapabilityIndex::new();
+
+    let worker1 = make_worker_id("worker1");
+    let worker2 = make_worker_id("worker2");
+    let worker3 = make_worker_id("worker3");
+
+    index.add_worker(
+        &worker1,
+        &make_properties(&[("gpu", PlatformPropertyValue::Unknown("a100".to_string()))]),
+    );
+    index.add_worker(
+        &worker2,
+        &make_properties(&[("gpu", PlatformPropertyValue::Unknown("v100".to_string()))]),
+    );
+    index.add_worker(&worker3, &make_properties(&[]));
+
+    // Workers that declare the key must match the value, workers that do not
+    // declare the key remain candidates.
+    let props = make_properties(&[("gpu", PlatformPropertyValue::Unknown("a100".to_string()))]);
+    let result = index.find_matching_workers(&props, true);
+    assert_eq!(result.len(), 2);
+    assert!(result.contains(&worker1));
+    assert!(result.contains(&worker3));
+}
+
+#[test]
+fn test_unknown_property_no_worker_declares_key() {
+    let mut index = WorkerCapabilityIndex::new();
+
+    let worker1 = make_worker_id("worker1");
+    index.add_worker(
+        &worker1,
+        &make_properties(&[("os", PlatformPropertyValue::Exact("linux".to_string()))]),
+    );
+
+    let props = make_properties(&[(
+        "InputRootAbsolutePath",
+        PlatformPropertyValue::Unknown("/some/path".to_string()),
+    )]);
+    let result = index.find_matching_workers(&props, true);
+    assert_eq!(result.len(), 1);
+    assert!(result.contains(&worker1));
 }

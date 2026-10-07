@@ -53,7 +53,7 @@ impl<S: SubscriptionManagerNotify> fmt::Debug for FakeRedisBackend<S> {
     }
 }
 
-const FAKE_SCRIPT_SHA: &str = "5148c724ce419ea27d1971dcb61c111dbbc6b63e";
+const FAKE_SCRIPT_SHA: &str = "d89e3573a1f9689c22115e8a41bd332d0c7c2643";
 
 impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
     pub fn new() -> Self {
@@ -166,20 +166,50 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                         );
                         let mut results = vec![Value::Int(0)];
 
+                        // `SORTBY <n> <@field> <ASC|DESC> ...`: honour the first
+                        // key so tests can assert the order the scheduler asks
+                        // for. Missing sort fields sort first, like RediSearch.
+                        let sort_spec = args
+                            .iter()
+                            .position(|a| matches!(a, OwnedFrame::BulkString(b) if b == b"SORTBY"))
+                            .and_then(|i| {
+                                let field = args.get(i + 2)?.as_bytes()?;
+                                let field = str::from_utf8(field).ok()?.trim_start_matches('@').to_string();
+                                let desc = matches!(args.get(i + 3), Some(OwnedFrame::BulkString(d)) if d == b"DESC");
+                                Some((field, desc))
+                            });
+                        let sorted = |mut rows: Vec<HashMap<String, Value>>| {
+                            if let Some((field, desc)) = &sort_spec {
+                                let key = |r: &HashMap<String, Value>| match r.get(field) {
+                                    Some(Value::BulkString(b)) => b.clone(),
+                                    _ => Vec::new(),
+                                };
+                                rows.sort_by_key(key);
+                                if *desc {
+                                    rows.reverse();
+                                }
+                            }
+                            rows
+                        };
+
                         if query == "*" {
                             // Wildcard query - return all records that have both data and version fields.
                             // Some entries (e.g., from HSET) may not have version field.
-                            for fields in self.table.lock().unwrap().values() {
-                                if let (Some(data), Some(version)) =
-                                    (fields.get("data"), fields.get("version"))
-                                {
-                                    results.push(Value::Array(vec![
-                                        Value::BulkString(b"data".to_vec()),
-                                        data.clone(),
-                                        Value::BulkString(b"version".to_vec()),
-                                        version.clone(),
-                                    ]));
-                                }
+                            let rows: Vec<_> = self
+                                .table
+                                .lock()
+                                .unwrap()
+                                .values()
+                                .filter(|f| f.contains_key("data") && f.contains_key("version"))
+                                .cloned()
+                                .collect();
+                            for fields in sorted(rows) {
+                                results.push(Value::Array(vec![
+                                    Value::BulkString(b"data".to_vec()),
+                                    fields["data"].clone(),
+                                    Value::BulkString(b"version".to_vec()),
+                                    fields["version"].clone(),
+                                ]));
                             }
                         } else {
                             // Field-specific query: @field:{ value }
@@ -191,16 +221,31 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                                 .strip_prefix("{ ")
                                 .and_then(|s| s.strip_suffix(" }"))
                                 .unwrap_or(value);
-                            for fields in self.table.lock().unwrap().values() {
-                                if let Some(key_value) = fields.get(field)
-                                    && *key_value == Value::BulkString(value.as_bytes().to_vec())
+                            let rows: Vec<_> = self
+                                .table
+                                .lock()
+                                .unwrap()
+                                .values()
+                                .filter(|f| {
+                                    f.get(field)
+                                        == Some(&Value::BulkString(value.as_bytes().to_vec()))
+                                })
+                                .cloned()
+                                .collect();
+                            for fields in sorted(rows) {
                                 {
-                                    results.push(Value::Array(vec![
+                                    let mut record = vec![
                                         Value::BulkString(b"data".to_vec()),
                                         fields.get("data").expect("No data field").clone(),
-                                        Value::BulkString(b"version".to_vec()),
-                                        fields.get("version").expect("No version field").clone(),
-                                    ]));
+                                    ];
+                                    // LOAD leaves out fields the hash does not
+                                    // have, so a non-versioned record comes
+                                    // back without a version.
+                                    if let Some(version) = fields.get("version") {
+                                        record.push(Value::BulkString(b"version".to_vec()));
+                                        record.push(version.clone());
+                                    }
+                                    results.push(Value::Array(record));
                                 }
                             }
                         }
@@ -316,11 +361,9 @@ impl<S: SubscriptionManagerNotify + Send + 'static + Sync> FakeRedisBackend<S> {
                             0,
                             "Non-even args for hmset: {args:?}"
                         );
-                        let chunks = args[1..].chunks_exact(2);
-                        for chunk in chunks {
-                            let [key, value] = chunk else {
-                                panic!("Uneven hmset args");
-                            };
+                        let (chunks, rest) = args[1..].as_chunks::<2>();
+                        assert_eq!(rest, [], "Uneven hmset args");
+                        for [key, value] in chunks {
                             let key_name: String =
                                 str::from_utf8(key.as_bytes().expect("Key argument is not bytes"))
                                     .expect("Unable to parse key as string")

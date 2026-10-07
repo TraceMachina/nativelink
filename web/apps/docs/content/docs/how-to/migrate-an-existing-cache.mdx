@@ -1,0 +1,292 @@
+---
+title: Migrate from another REAPI cache
+description: Put NativeLink in front of your existing cache as a read-only diode, let real builds warm it, and cut over when the hit rate says you can.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone running Buildbarn, Buildfarm, bazel-remote or a
+hosted REAPI cache who wants to move to NativeLink without a flag day. **What
+you'll have at the end:** NativeLink serving your builds, backed by the old
+cache, with a cutover you choose rather than one you're forced into. **Time:**
+an hour to set up; days to weeks of running both, at your pace.
+
+<Prerequisites>
+  A working NativeLink CAS. See [Getting started](/getting-started).
+</Prerequisites>
+
+The instinct is to copy the data across. Don't. A remote cache is not a
+database: every entry in it is derived, reproducible, and has a key that is a
+hash of its own contents. Copying terabytes to preserve something your build can
+regenerate is work you can skip.
+
+The move that works instead is to put NativeLink in front of the old cache and
+let it read through. Builds hit NativeLink; anything it doesn't have, it fetches
+from the old cache and keeps. Your hit rate never drops, the new cache warms
+itself on real traffic, and the old one is never written to again, so if you
+need to go back, it is exactly as you left it.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="GrpcSpec" />
+
+## The diode [#the-diode]
+
+A `fast_slow` store whose `slow` half points at the old cache, marked read-only:
+
+```json5
+stores: [
+  {
+    name: "OLD_CACHE",
+    grpc: {
+      instance_name: "",
+      store_type: "cas",
+      endpoints: [
+        {
+          address: "grpcs://old-cache.example.com:443",
+          tls_config: { use_native_roots: true },
+        },
+      ],
+      rpc_timeout_s: 0,
+    },
+  },
+  {
+    name: "CAS_MAIN_STORE",
+    fast_slow: {
+      fast: {
+        filesystem: {
+          content_path: "/data/cas/content",
+          temp_path: "/data/cas/tmp",
+          eviction_policy: { max_bytes: 500000000000 },
+        },
+      },
+      slow: { ref_store: { name: "OLD_CACHE" } },
+      slow_direction: "read_only",
+    },
+  },
+],
+```
+
+`slow_direction: "read_only"` is the whole trick, and it is a documented use of
+the field rather than a clever misuse: the source calls this shape a diode.
+Reads fall through to the old cache when NativeLink misses. Writes stop at
+NativeLink. The old cache is a source and never a destination.
+
+The `tls_config` block is required on any `grpcs://` address; the
+`use_native_roots` form is right for a hosted cache with a public certificate,
+and `ca_file` is the alternative for a private CA
+([TLS and authentication](/how-to/tls-and-auth) has both).
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="FastSlowSpec" />
+
+Do the same for the action cache with a second `grpc` store at
+`store_type: "ac"`. Action results are the entries that actually decide your hit
+rate; the CAS blobs they reference come along behind them.
+
+Leave `rpc_timeout_s` at `0`. It disables the per-RPC deadline, which matters
+because pulling a multi-gigabyte blob through the diode on a cold cache can take
+longer than any timeout you would have guessed. Dead connections are still
+caught by the HTTP/2 and TCP keepalives.
+
+## What crosses the boundary and what doesn't [#what-crosses-the-boundary-and-what-doesnt]
+
+**Digests must match.** If your old cache holds SHA-256 entries and your
+builds now ask for BLAKE3, nothing is found, not because of a bug but because
+the key of a blob is its hash, and you are asking a different question. The
+digest function is chosen by the client (Bazel's `--digest_function`, SHA-256
+unless you changed it); NativeLink's `global.default_digest_hash_function`,
+described in [Stores](/configuration/stores), only fills in when a client does
+not say. Keep the client, NativeLink and the old cache on the same function.
+This is the one incompatibility that cannot be worked around.
+
+**Instance names may need rewriting.** `instance_name` on the `grpc` store
+replaces the instance name on every proxied call, so an old cache that expects
+`main` while your clients send an empty instance is a one-field fix rather than
+a client migration.
+
+**Older backends want older resource names.** Modern REAPI resource names look
+like `{instance}/blobs/{digest_function}/{hash}/{size}`. Buildbarn before v0.3
+and other older servers expect the original `{instance}/blobs/{hash}/{size}`, and
+sending them the modern form produces `InvalidArgument: Unsupported digest
+function`. Set `use_legacy_resource_names: true` when you see that.
+
+**Credentials come with you.** A hosted cache that wants a token takes it via
+`headers`, and one that wants each developer's own token takes `forward_headers`
+to pass the client's credential upstream:
+
+```json5
+grpc: {
+  instance_name: "",
+  store_type: "cas",
+  endpoints: [
+    {
+      address: "grpcs://old-cache.example.com:443",
+      tls_config: { use_native_roots: true },
+    },
+  ],
+  headers: { authorization: "Bearer my-static-token" },
+},
+```
+
+Header values are sent verbatim: they are not `${VAR}`-expanded like most
+string fields, so the token lives in the config file and the file must be
+protected accordingly.
+
+**Remote execution does not transfer.** Workers, platform properties and queue
+state are per-system. A read-through migration moves your cache; the execution
+side is a separate build-out, and
+[Remote execution](/remote-execution) is where it happens.
+
+**Anything vendor-specific doesn't transfer either.** If you depend on a
+feature of your current system outside the REAPI surface (a custom HTTP
+interface, a proprietary authorization model, a bespoke admin API), that
+dependency is what you should be examining before the cache bytes.
+
+## Run both while you cut over [#run-both-while-you-cut-over]
+
+Nothing forces a single switch date. Give the two caches separate config groups
+in `.bazelrc`, so a build can pick:
+
+```
+build:oldcache --remote_cache=grpcs://old-cache.example.com:443
+build:nativelink --remote_cache=grpcs://nativelink.example.com:50051
+build --config=nativelink
+```
+
+Move CI first, because it is the highest-volume traffic and warms the new cache
+fastest, and because its failures are visible immediately rather than reported
+by a person mid-afternoon. Developers follow once CI has been steady for a week.
+
+<Callout type="info" title="The diode is not permanent">
+  Once NativeLink's own hit rate matches what the old cache was giving you, the
+  `slow` tier is doing nothing but adding a network hop on misses. Remove it,
+  and the `fast_slow` wrapper with it, leaving the filesystem store on its own.
+  Deciding to remove it is the actual end of the migration.
+</Callout>
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Confirm the digest function** your builds use, and set NativeLink's
+`default_digest_hash_function` to match. Everything downstream depends on this
+being right.
+
+</li>
+
+<li>
+
+**Stand up NativeLink normally**, with its own filesystem or object store, and
+check that a build against it works before the old cache is involved at all.
+
+</li>
+
+<li>
+
+**Add the diode**: `grpc` stores for CAS and AC pointing at the old cache,
+wrapped as the `slow` half of `fast_slow` with `slow_direction: "read_only"`.
+
+</li>
+
+<li>
+
+**Point CI at NativeLink** and watch the hit rate. It should start near what the
+old cache gave, because misses are being served through the diode, and it should
+stay there.
+
+</li>
+
+<li>
+
+**Move developers**, then wait. Give it long enough that a full build's worth of
+actions has passed through, typically a week or two of normal work.
+
+</li>
+
+<li>
+
+**Remove the diode** once misses are no longer being answered by the old cache,
+then decommission it.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- A build that got hits from the old cache gets hits from NativeLink on the
+  first run against it.
+- NativeLink's `content_path` grows during that run, because it is keeping what it
+  reads.
+- A second identical build is served entirely by NativeLink, with no traffic to
+  the old cache.
+- The old cache's storage stops growing, confirming nothing is writing to it.
+- Turning the old cache off entirely, at the end, changes nothing.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="Everything misses: the diode returns nothing" id="everything-misses--the-diode-returns-nothing">
+
+Check the digest function first; a mismatch produces exactly this and no error.
+Then check `instance_name`, since an old cache scoped to a named instance
+returns nothing for a differently-named one. Then confirm the address is
+reachable from the NativeLink process rather than from your laptop.
+
+</Accordion>
+
+<Accordion title="`InvalidArgument: Unsupported digest function`" id="invalidargument-unsupported-digest-function">
+
+The upstream is an older server that does not understand modern resource names.
+Set `use_legacy_resource_names: true` on the `grpc` store.
+
+</Accordion>
+
+<Accordion title="The old cache is getting writes" id="the-old-cache-is-getting-writes">
+
+`slow_direction` is not set to `read_only`, or it is set on the wrong store. It
+belongs on the `fast_slow` wrapper next to `slow`, not inside the `grpc` spec.
+Its default is `both`, which is a normal read-write tier.
+
+</Accordion>
+
+<Accordion title="Large blobs fail partway through the diode" id="large-blobs-fail-partway-through-the-diode">
+
+A per-RPC timeout. Set `rpc_timeout_s: 0` on the `grpc` store (the default),
+or raise it well past the worst-case transfer time. Multi-gigabyte blobs
+pulled cross-region are slower than any guess.
+
+</Accordion>
+
+<Accordion title="Hit rate is good but builds got slower" id="hit-rate-is-good-but-builds-got-slower">
+
+Every miss now costs a round trip to the old cache on top of the local lookup.
+That is the diode working as designed and it is temporary. If it is painful,
+raise the local store's `max_bytes` so fewer reads fall through, and check
+whether the old cache is in another region.
+
+</Accordion>
+
+<Accordion title="Should I ever actually copy the data?" id="should-i-ever-actually-copy-the-data">
+
+Rarely, and only when the old cache holds artifacts that are expensive or
+impossible to reproduce: a toolchain nobody can rebuild, or outputs from a
+source revision that no longer exists. That is a one-off copy of specific blobs,
+not a migration strategy. For everything a build can regenerate, the diode is
+both faster and safer.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  The wrapper vocabulary the diode is built from, and what else it can do.
+</NextStep>
+
+<NextStep href="/operate/production-config" kind="aside" title="Production configuration">
+  What to change once NativeLink is the cache rather than a proxy in front of
+  one.
+</NextStep>

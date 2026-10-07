@@ -37,10 +37,12 @@ writeShellScriptBin "local-image-test" ''
   #                    the moment this breaks lre-cc.
   CI=1 ${dive}/bin/dive ''${IMAGE_TARGET}
 
-  # TODO(palfrey): Keep monitoring this for better solutions to ratelimits:
-  #                    https://github.com/aquasecurity/trivy-action/issues/389
+  # Each of these registries rate-limits the vulnerability database on its
+  # own schedule, so trivy is given all three and falls through to the next
+  # when one answers TOOMANYREQUESTS. See
+  # https://github.com/aquasecurity/trivy-action/issues/389
   ${trivy}/bin/trivy image \
     ''${IMAGE_TARGET} \
     --timeout 15m \
-    --db-repository public.ecr.aws/aquasecurity/trivy-db:2
+    --db-repository mirror.gcr.io/aquasec/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2,public.ecr.aws/aquasecurity/trivy-db:2
 ''

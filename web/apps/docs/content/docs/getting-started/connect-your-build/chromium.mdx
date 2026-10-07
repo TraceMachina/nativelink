@@ -1,0 +1,147 @@
+---
+title: Chromium
+description: Building Chromium with NativeLink as the Siso backend, a worked example for the largest public consumer.
+---
+
+<Prerequisites>
+  A running NativeLink instance. If you don't have one, start with the [Quickstart](/getting-started/quickstart).
+</Prerequisites>
+
+Chromium's build system shells out to
+[Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md),
+which speaks the Remote Execution API. Pointing it at a NativeLink cluster is a
+configuration change, with no patches to the Chromium tree.
+
+The same pattern works for upstream Chromium and any Chromium-based
+browser.
+
+## Prerequisites [#prerequisites]
+
+- A NativeLink cluster reachable from your build machines. Cache-only
+  is fine to start; remote execution drops build times further.
+- A Chromium checkout with `depot_tools` on `$PATH`.
+- The Chromium source checkout (`fetch chromium`).
+
+## Configure Siso [#configure-siso]
+
+Siso reads its server settings from environment variables. Add
+to your build shell:
+
+```bash
+export SISO_REAPI_ADDRESS=cas.nativelink.internal:50051
+export SISO_REAPI_INSTANCE=main
+export RBE_service_no_security=false   # mTLS in production
+export RBE_tls_client_auth_cert=/etc/nativelink/tls/client.crt
+export RBE_tls_client_auth_key=/etc/nativelink/tls/client.key
+export RBE_tls_ca_cert=/etc/nativelink/tls/ca.crt
+```
+
+`SISO_REAPI_INSTANCE` must match an `instance_name` your NativeLink
+server exposes. The repository's own Chromium example uses the default
+empty instance name (`SISO_REAPI_INSTANCE=''`) and also sets
+`SISO_REAPI_CAS_ADDRESS` to the same endpoint:
+<SourceLink file="deploy/chromium-example/build_chromium_tests.sh" symbol="deploy/chromium-example/build_chromium_tests.sh" />.
+
+For local development against a non-TLS NativeLink:
+
+```bash
+export SISO_REAPI_ADDRESS=localhost:50051
+export SISO_REAPI_INSTANCE=main
+export RBE_service_no_security=true
+```
+
+## Generate Chromium build files [#generate-chromium-build-files]
+
+In your Chromium checkout:
+
+```bash
+gn gen out/Default --args='
+  use_remoteexec=true
+  use_siso=true
+'
+```
+
+`autoninja` reads `args.gn`; with `use_siso=true`, it invokes
+`siso ninja` for the build.
+
+## Build [#build]
+
+```bash
+autoninja -C out/Default chrome
+```
+
+Watch the build go. On a fresh cluster the first build will be
+mostly misses; subsequent builds hit the cache and run in a fraction
+of the time.
+
+## What good looks like [#what-good-looks-like]
+
+- **Cache hit rate**: on a warm cache the hit rate for an incremental
+  build should be high and climb from build to build; watch it in the
+  NativeLink cache metrics.
+- **Local fallback rate**: close to zero. Anything higher means workers
+  are rejecting actions (platform mismatch, capacity).
+- **Network errors**: zero. Anything else is a problem.
+
+## Worker requirements [#worker-requirements]
+
+Chromium's Siso config takes its remote platform properties from
+`build/config/siso/backend_config/backend.star` (copy `template.star`
+and edit it, or point the `reapi_backend_config_path` gclient custom
+var at your own file). Each platform entry names an `OSFamily` and a
+`container-image`, and every NativeLink worker that should run Chromium
+actions must advertise the same values, with the property key spelled
+`container-image` (hyphen).
+
+The repository ships a Chromium worker image built from Chromium's
+public `siso-chromium/linux` RBE image, and a kustomization that deploys
+it alongside a NativeLink cluster:
+
+- <SourceLink file="deploy/chromium-example" dir symbol="deploy/chromium-example/" />
+  for the deployment,
+- <SourceLink file="kubernetes/workers/siso-chromium/kustomization.yaml" symbol="kubernetes/workers/siso-chromium/kustomization.yaml" />
+  for the worker, which uses the shared worker config in
+  <SourceLink file="kubernetes/components/worker/worker.json5" symbol="kubernetes/components/worker/worker.json5" />
+  (`OSFamily: Linux`, `container-image` from the worker image, `cpu_count`
+  from `nproc`).
+
+## Troubleshooting [#troubleshooting]
+
+- **All actions falling back to local.** Likely a platform-property
+  mismatch. Compare what Chromium is requesting (in the siso
+  log) against what your workers advertise.
+- **Siso is not being selected.** If the output directory was already
+  generated for Ninja, run `gn clean out/Default`, regenerate with
+  `use_siso=true`, and build again.
+- **Cache writes succeed, reads always miss.** Almost always a
+  toolchain version mismatch between the action that wrote the
+  cache and the one trying to read.
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+  <Accordion title="Do I need to patch the Chromium tree?" id="do-i-need-to-patch-the-chromium-tree">
+    No. Pointing Siso at NativeLink is configuration only: GN args, the
+    Siso environment variables, and a local `backend.star` for the
+    platform properties. The same applies to Chromium forks.
+  </Accordion>
+  <Accordion title="Can I start cache-only?" id="can-i-start-cache-only">
+    Yes. A cache-only cluster already cuts incremental build times; add
+    remote execution later for the full win on link-heavy full builds.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/getting-started/shared-cache" title="Share the cache">
+  A Chromium build is where the difference between one machine's cache and
+  the team's is largest. This is how to make it the team's.
+</NextStep>
+
+<NextStep href="/remote-execution/persistent-workers" kind="aside" title="Persistent workers">
+  For the hot toolchain paths, where process startup is a measurable share of
+  the action.
+</NextStep>
+
+<NextStep href="/operate/observability" kind="aside" title="Observability">
+  Chromium builds produce a lot of telemetry; it is worth having the
+  dashboards before you need them.
+</NextStep>

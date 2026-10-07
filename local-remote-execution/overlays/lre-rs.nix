@@ -27,7 +27,6 @@
   systems = [
     "aarch64-darwin"
     "aarch64-linux"
-    "x86_64-darwin"
     "x86_64-linux"
   ];
   channels = [
@@ -177,15 +176,6 @@
     )
 
     platform(
-        name = "x86_64-apple-darwin",
-        exec_properties = {
-            # tag is from nix eval .#packages.x86_64-darwin.nativelink-worker-lre-rs.imageTag
-            "container-image": "ghcr.io/tracemachina/nativelink-worker-lre-rs:$(nix eval --raw .#packages.x86_64-darwin.nativelink-worker-lre-rs.imageTag)",
-        },
-        parents = ["@local-remote-execution//platforms:x86_64-darwin"],
-    )
-
-    platform(
         name = "x86_64-unknown-linux-gnu",
         constraint_values = ["@local-remote-execution//libc:glibc"],
         exec_properties = {
@@ -212,10 +202,6 @@
 
     cat > ''${SRC_ROOT}/rust/aarch64-linux.BUILD.bazel << EOF
     ${buildFile "aarch64-linux"}
-    EOF
-
-    cat > ''${SRC_ROOT}/rust/x86_64-darwin.BUILD.bazel << EOF
-    ${buildFile "x86_64-darwin"}
     EOF
 
     cat > ''${SRC_ROOT}/rust/x86_64-linux.BUILD.bazel << EOF

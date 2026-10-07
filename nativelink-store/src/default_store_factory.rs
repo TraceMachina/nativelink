@@ -73,7 +73,7 @@ pub fn store_factory<'a>(
                     GcsStore::new(gcs_config, SystemTime::now).await?
                 }
                 ExperimentalCloudObjectSpec::Azure(azure_config) => {
-                    AzureBlobStore::new(azure_config, SystemTime::now).await?
+                    AzureBlobStore::new(azure_config, SystemTime::now)?
                 }
                 ExperimentalCloudObjectSpec::R2(r2_config) => {
                     R2Store::new(r2_config, SystemTime::now).await?
@@ -125,7 +125,7 @@ pub fn store_factory<'a>(
                 store_factory(&spec.lower_store, store_manager, None).await?,
                 store_factory(&spec.upper_store, store_manager, None).await?,
             ),
-            StoreSpec::Grpc(spec) => GrpcStore::new(spec).await?,
+            StoreSpec::Grpc(spec) => GrpcStore::new(spec)?,
             StoreSpec::Noop(_) => NoopStore::new(),
             StoreSpec::ExperimentalMongo(spec) => ExperimentalMongoStore::new(spec.clone()).await?,
             StoreSpec::Shard(spec) => {

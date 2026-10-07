@@ -1,0 +1,85 @@
+---
+title: "The Inaugural RE API Fellow"
+tags: ["announcements", "remote-execution", "robotics", "biology", "semiconductors"]
+image: /assets/re-api-fellow-fig1-action-lifecycle.jpg
+slug: re-api-fellow
+pubDate: 2026-09-08
+readTime: 8 minutes
+---
+
+When people first see the open source [NativeLink repository](https://github.com/TraceMachina/nativelink) on GitHub, they think about CI: continuous integration, the practice of building and testing software every time someone pushes a change. It's a fair assumption. Most people associate us with [Bazel](https://bazel.build), and most Bazel users think CI when they think about what Bazel is for.
+
+The association was incomplete. When we started, before we had incorporated our scientific computing parent, Trace Machina, we only supported pure software teams, usually building browsers or applications. Shortly thereafter we started working with robotics, biology, and semiconductor teams, and they shared three characteristics that set them apart from our software customers:
+
+1. They came from heavy research backgrounds, usually academia, but also research groups inside industry.
+2. The access patterns, volumes, and modalities of their data exceeded what a typical software company would provision to get its work done.
+3. They had rarely, if ever, been urged to adopt a CI practice, especially given the constraints that traditional CI tooling would impose on workflows they had spent years refining.
+
+As our team and our parent work to refashion ourselves as a [Public Benefit Corporation](https://en.wikipedia.org/wiki/Public-benefit_corporation) on a mission to **accelerate human progress in the machine age**, we want to bridge the gap between the physical world and the digital world's most powerful building block of determinism: remote execution, formalized at Google as the [Remote Execution API](https://github.com/bazelbuild/remote-apis).
+
+In this essay we want to introduce the RE API and why it matters for innovation, explain why NativeLink matters in autonomous robotics, biology, and electrical engineering, and then ask for help.
+
+## The RE API
+
+The [Remote Execution API](https://github.com/bazelbuild/remote-apis) is a small, open protocol, built on gRPC and Protocol Buffers, that describes how a client hands a unit of work to a remote machine and gets the result back. The client describes an *action*: the command, the environment, and the exact inputs, each identified by the cryptographic hash of its content. The server checks whether it has already run that action. If it has, the result comes back from cache. If not, the server schedules the work, runs it, and stores the result against the hash. Same inputs, same outputs, every time, on any machine.
+
+<figure>
+  <img src="/assets/re-api-fellow-fig1-action-lifecycle.jpg" alt="The action lifecycle: a client sends a hashed action payload; a cache hit returns the stored result, a cache miss is scheduled, executed on a worker, stored against the digest, and returned" />
+  <figcaption>Fig. 1. The action lifecycle. The hash of the command, environment, and inputs decides whether the work runs or comes back from cache.</figcaption>
+</figure>
+
+Bazel and Buck2 use this to build large software fast, and NativeLink supports both, along with CMake, Siso, and BuildStream. But read the protocol again and you'll notice it never says "compiler." An action is any deterministic transformation of bytes into bytes. A physics simulation is an action. A protein-folding run is an action. A place-and-route job on a chip design is an action. Once work is described this way, it can be cached, distributed, deduplicated, and reproduced by anyone holding the same inputs. It is DRY (don't repeat yourself) applied to computation itself. That is what the RE API offers innovation: a way to make expensive computation cheap to repeat and straightforward to verify. Most of science is expensive to repeat, and a great deal of it has proven hard to reproduce.
+
+## Autonomous robotics
+
+Years ago one of us, Marcus, was nearly killed in a car crash. He has barely driven since, and a good deal of his working life has gone toward getting human drivers off the road. Around 1.19 million people die on the roads every year, according to the [WHO](https://www.who.int/news-room/fact-sheets/detail/road-traffic-injuries). Autonomy is the only approach we know of that could take that number to zero, and autonomy lives or dies on simulation.
+
+A robotics stack is a stew of C++, Python, CUDA, ROS packages, simulators, and firmware, and the test that matters is not a unit test. It is "run ten thousand scenarios and tell me the vehicle never hits the pedestrian." Every one of those scenarios is an action. NativeLink lets teams run them across a fleet of GPU workers, skip the ones whose inputs haven't changed, and prove which scenario, which sensor log, and which commit produced any given result. That is the difference between a demo and something you would let your family ride in.
+
+## Biology
+
+Trace Machina's CEO, Sumon, is an Oxford- and Imperial-trained Biochemist and computational biologist, so this is where the argument gets personal for a second time. The joke in every lab, wet or dry, is that a pipeline works until the postdoc who wrote it leaves. Sequencing runs, alignments, molecular dynamics, and now models that predict what happens when you perturb a protein all depend on exact versions of tools, reference data, and parameters. Change one, and the result quietly changes with it. Biology is also dynamic, and since lab work is so expensive having a model of the cell which takes into account experimental perturbations to make predictions wouldn't just make lab work reproducible but also simulatable.
+
+In Bioinformatics or perturbation modelling, Biology teams were never asked to adopt CI, and frankly, most CI tools would have wrecked their workflows. What they need is the property underneath CI, content-addressed and reproducible execution, applied to data sizes that make a software monorepo look small, like virtual cell artifacts. NativeLink's content-addressed storage and chunk-level deduplication were built for exactly that. When a lab can rerun an analysis from two years ago, bit for bit, and know the answer only changed because the biology changed, we have done our job.
+
+## Electrical engineering
+
+Google has spent years working to [democratize custom silicon](https://www.skywatertechnology.com/google-partners-with-skywater-and-efabless-to-enable-open-source-manufacturing-of-custom-asics/): open PDKs, open EDA flows, free shuttle runs, all on the theory that chips designed in code, tested like code, and iterated like code get better faster. We agree, and in late 2024 we wrote about [why NativeLink fits that flow](https://www.nativelink.com/resources/blog/semiconductors). Synthesis, simulation, timing analysis, and physical verification are enormous, mostly deterministic actions, and they get rerun far more often than they need to be.
+
+Since that post, we have developed a product in collaboration with several leading silicon teams that de-risks a design from first RTL through final sign-off, and in doing so lowers the cost of getting there and raises the speed at which a team can turn a design. The mechanism is the one every Bazel user already knows: you only pay for what changed.
+
+## Stewardship
+
+Every one of these segments depends on stewardship in the open source community. NativeLink is one implementation of the RE API. The protocol itself, the rulesets, the tooling around it, and the conversations that decide where it goes next belong to everyone.
+
+Here is our honest situation. We are seven people — and growing — across Taiwan, London, and San Francisco. Several of our customers are among the largest users of remote execution outside Alphabet, measured by data volume and by gRPC requests. Petabytes a day, in some cases — a workload MongoDB could not support, which is a big part of why Marcus went off to build new infrastructure technology in the first place. And because we worked early with those non-traditional customers and their massive artifacts, we have started to partner with the absolute largest of the traditional software companies too, in several instances in the last six months alone. We expect that trend to only accelerate as we bring more of these teams together. Serving that demand while also giving the RE ecosystem the attention it deserves is more than seven people can do. We need help, and we would rather ask for it plainly than pretend otherwise.
+
+## The Fellow
+
+That is why we are creating the RE API Fellowship. The fellow is not an intern and not a support engineer. They are the person we trust to represent NativeLink in the RE community and to carry the RE API into fields that have never heard of it. We need someone who can sit in a working-group discussion about schema design in the morning, talk with a fluid dynamics group about their solver in the afternoon, and see that those are the same conversation.
+
+<figure>
+  <img src="/assets/re-api-fellow-fig2-protocol-never-says-compiler.jpg" alt="Four columns for software, robotics, biology, and silicon, each with a command, inputs, and output, showing that any deterministic transformation of bytes into bytes is an action" />
+  <figcaption>Fig. 2. The protocol never says "compiler." Software, robotics, biology, and silicon are the same shape of action.</figcaption>
+</figure>
+
+The people we picture are unusual combinations. Someone who cares about the Navier–Stokes equations and dabbles in compilers. Someone who has worked on protein perturbation and on distributed systems. Someone who thinks about policy evaluation and about schema design. These are rarely the same person, and that is the point. If you are a current graduate student or a recent graduate and you recognize yourself in any of those pairings, we want to talk. Our only hard requirement is that you live, primarily, in one of the three places where we work: Taiwan, London, or San Francisco.
+
+<figure>
+  <img src="/assets/re-api-fellow-fig3-overlap-hiring.jpg" alt="Three Venn diagrams labeled Navier–Stokes and compilers, protein perturbation and distributed systems, and policy evaluation and schema design, with the caption that the fellow lives in the overlap" />
+  <figcaption>Fig. 3. The overlap we are hiring for. Three pairings we would take seriously; the fellow lives in the intersection.</figcaption>
+</figure>
+
+A few practical details. The fellowship is a one-year term, with an option to extend for a second year if you love the work. It is a paid position, and we will be paying an incredibly competitive stipend for the research fellow: we are asking for a rare person and intend to pay the price.
+
+As the fellow, you will:
+
+- **Publish research**, with our support and under your own name.
+- **Participate in RE community events**: working groups, conferences, and the meetings where the protocol evolves.
+- **Maintain [rules_omniverse](https://github.com/TraceMachina/rules_omniverse)**, our nascent Bazel ruleset for hermetic NVIDIA Omniverse simulation and inference builds. That includes transferring publishable abstractions from customer work into the ruleset, and contributing to other rulesets maintained by other members of the community.
+- **Join a lot of calls in European time zones.** We want to be upfront about that.
+- **Collaborate with users across industries** to bring NativeLink's open source remote execution into their work, so they reach breakthroughs faster.
+
+On that last point: the proliferation of AI is the most exciting thing to happen to science in our lifetimes. Models can now propose molecules, drive robots, and lay out circuits, and they get better every month. They are also stochastic by design. Ask twice, get two answers. That is a feature for exploration and a liability for engineering, and it means someone has to make sure the experiment that surrounds the model, whether a simulation, an assay, or a tape-out, runs the same way every time. Technologies like NativeLink and the RE protocol have a clear role to play in that future: determinism in a world of stochasticity.
+
+NativeLink is betting big on remote execution, far bigger than software alone, and we need to take a leading role in the ecosystem starting now. If this sounds like you, or like someone you know, email `marcus [at] tracemachina.com` and `sumon [at] tracemachina.com` and we will set up time to chat.

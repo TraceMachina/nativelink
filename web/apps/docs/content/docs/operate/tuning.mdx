@@ -1,0 +1,157 @@
+---
+title: Tuning
+description: "The lever table: the signal you observe, the knob that moves it, the direction to turn it, and what turning it costs."
+---
+
+{/* archetype: reference (lookup surface), see /web/apps/docs/templates/reference.mdx */}
+
+**Who this is for:** you have the
+[production shape](/operate/production-config) running and a number you don't
+like. **What you'll have at the end:** the specific knob for that number, and an
+honest account of what moving it costs.
+
+<Prerequisites>
+  The production shape running (see [Production configuration](/operate/production-config)), and a number you don't like.
+</Prerequisites>
+
+Tuning NativeLink is not a matter of turning up every dial. A small number of
+levers move real workloads; most of the config surface does not. Each row below
+starts from **a signal you can actually observe** (a metric, an error, a
+complaint), because starting from a knob and hoping is how afternoons disappear.
+
+<Callout type="info" title="Change one thing">
+  Every lever here has a cost column, and several of them trade against each
+  other. Move one, watch the signal it targets for a full build cycle, then
+  decide whether to move the next.
+</Callout>
+
+## Storage and the CAS path [#storage-and-the-cas-path]
+
+| Signal you see | Knob | Direction | Expected effect | Cost / risk |
+| --- | --- | --- | --- | --- |
+| Cache hit rate falling, disk has headroom | `max_bytes` in `eviction_policy` | Up | More of the working set stays resident; hits go up | Disk. Nothing else; it's a cache |
+| CAS read latency high, disk is the bottleneck | `content_path` / `temp_path` | Move to NVMe | Direct latency win on every blob | Cost of the disk; `temp_path` must be on the same filesystem as `content_path` |
+| Egress or storage bill dominated by blob volume | `compression` with `lz4` | Wrap the terminal store | Fewer bytes stored and sent | CPU on every read and write through that store |
+| Per-request object-store cost dominated by tiny blobs | `size_partitioning` | Split at ~64k to 1MB | Small blobs go to a cheap fast store, large ones to the object store | Two stores to size instead of one |
+| Existence checks (`FindMissingBlobs`) dominating CAS load | `existence_cache` | Wrap the backend | Repeat existence checks answered locally | Stale negatives if the backend is mutated out of band; needs its own `eviction_policy` or it grows without bound |
+| The same large artifacts uploaded repeatedly with small deltas | `dedup` | Wrap with an index store | Only changed chunks are stored | Chunk index store to run and size; more round trips per `get()` |
+| One backend at its throughput ceiling | `shard` | Add shards | Load spreads by digest across backends | Resharding changes which backend holds what; plan it as a migration |
+| Read latency high but the working set is small | `fast_slow` hot tier | Size `fast` to the 24 to 48h working set | Hot reads served locally, cold reads fall through | `fast_slow` never verifies the slow tier has everything; see the warning on [production config](/operate/production-config) |
+| Worker disk filling with blobs it only reads | `fast_direction: "get"` | Set it | Local tier caches inputs without being written through on upload | Outputs are not locally cached; they go straight to the CAS |
+| Page cache growth on a co-located filesystem-only deployment | `evict_page_cache` | **Almost always leave off** | Kernel drops this store's pages after each read and write | Severe on many-core hosts; see below |
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="StoreSpec" />
+
+### The `evict_page_cache` lever [#the-evict_page_cache-lever]
+
+The `filesystem` store has an opt-in `evict_page_cache` flag (default `false`).
+When enabled, after every blob it writes or reads it asks the kernel to drop that
+file's pages from the page cache (`posix_fadvise(POSIX_FADV_DONTNEED)`).
+
+Most production deployments should leave it **off**. The common enterprise
+topology (an object store with multiple CAS nodes) never benefits from it, and
+enabling it carries two costs.
+
+```json5
+stores: [{
+  name: "CAS_MAIN_STORE",
+  filesystem: {
+    content_path: "/var/lib/nativelink/content_path-cas",
+    temp_path: "/var/lib/nativelink/tmp_path-cas",
+    // Leave this off unless the narrow case below applies.
+    evict_page_cache: false,
+  },
+}],
+```
+
+<Callout type="warn" title="The cost grows with core count">
+  On a real filesystem (xfs/ext4), `POSIX_FADV_DONTNEED` takes the kernel's
+  `lru_add_drain_all()` path: it schedules and waits on a drain across **every
+  online CPU**, and concurrent callers serialize on a global lock. The per-call
+  cost therefore grows with the number of cores, and **adding workers or
+  concurrent actions cannot overcome it**: every caller converges on the same
+  serialized kernel path, so throughput is capped no matter how much parallelism
+  you add. On a many-core host this turns a busy store into a bottleneck while
+  CPU and disk sit near idle. (On `tmpfs` the call is a no-op, so this cost is
+  invisible in tmpfs-backed tests.)
+</Callout>
+
+The second cost: it evicts the page cache. A store kept on a fast local disk that
+relies on the page cache as its hot read tier loses that cache after every read
+and write.
+
+**When to enable it:** only for a filesystem-backed store on a low-core host
+where keeping this store's I/O out of the page cache is specifically desired (for
+example, to bound page-cache growth on a co-located filesystem-only deployment).
+It was originally added to relieve page-cache pressure that contributed to worker
+OOM-kills on such a deployment; note that page cache is reclaimable and the
+dominant OOM driver is a worker's anonymous memory (action processes and
+allocator retention), so this flag is a narrow mitigation, not a general OOM fix.
+Do **not** enable it on many-core hosts or object-store / multi-CAS deployments.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="FilesystemSpec" />
+
+## Workers [#workers]
+
+| Signal you see | Knob | Direction | Expected effect | Cost / risk |
+| --- | --- | --- | --- | --- |
+| Worker CPU idle while the queue is deep | `max_inflight_tasks` | Up, toward core count | More actions run concurrently per worker | Memory. Actions are real processes; oversubscribing invites the OOM killer. Default `0` means unlimited |
+| Workers OOM-killed under load | `max_inflight_tasks` | Down | Fewer concurrent action processes | Lower per-worker throughput; you need more workers |
+| Long link or EDA steps failing with a timeout | `max_action_timeout_s` | Up | Long actions get to finish | A genuinely hung action now holds a slot for longer. Default is 20 minutes |
+| Zombie or leaked processes after builds | `use_namespaces` + `use_mount_namespace` | On | Each action is contained and cleaned up | Linux only; the container needs privileges to create namespaces |
+| `work_directory` filling or slow | `work_directory` | Move to fast local disk, size for the largest action | Faster staging on every action | Never put it on network storage; it is the hot path of every action |
+| Actions never dispatched to the right hardware | worker `platform_properties` | Add the property | The scheduler can route on it | The scheduler must list it too, or it rejects the worker's registration with `Unknown platform property`; see below |
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="LocalWorkerConfig" />
+
+Worker count itself is not a lever on this page; it is a
+[scaling](/operate) decision driven by `nativelink:queue_depth`, not by
+worker CPU.
+
+## Scheduler [#scheduler]
+
+| Signal you see | Knob | Direction | Expected effect | Cost / risk |
+| --- | --- | --- | --- | --- |
+| Actions queued forever while workers sit idle | `supported_platform_properties` | Add the property the workers advertise | The scheduler can match them | A property listed here but absent on workers matches nothing; the two halves must agree |
+| Spot / preemptible workers causing failed builds | `max_job_retries` | Up from the default of 3 | Interrupted actions are retried elsewhere | A deterministically failing action is now retried that many times before the client sees it |
+| Healthy workers being dropped and re-registering | `worker_timeout_s` | Up from the default of 5 | Fewer false drops on a slow or busy network | A genuinely dead worker is noticed later, so its actions are re-queued later |
+| Actions stuck in `executing` on a wedged worker | `max_action_executing_timeout_s` | Set it (default `0` = disabled) | Wedged actions are reclaimed | Too low and long legitimate actions get killed mid-flight |
+| Clients giving up before the scheduler does | `client_action_timeout_s` | Align with client timeouts | Scheduler and client agree on how long is too long | Default is 60 seconds |
+
+<SourceLink file="nativelink-config/src/schedulers.rs" symbol="SimpleSpec" />
+
+## Process-level [#process-level]
+
+| Signal you see | Knob | Direction | Expected effect | Cost / risk |
+| --- | --- | --- | --- | --- |
+| Blob reads and writes stall under load, or `Too many open files` in the log | `global.max_open_files` | Up | More concurrent blobs in flight (the binary gates file opens on a semaphore sized to 80% of the achieved limit) | Capped by the hard `ulimit -n`; the binary defaults to 24576 when `global` is omitted |
+| Redis connection saturation | `connection_pool_size` on `redis_store` | Up from the default of 3 | More concurrent Redis commands | More connections against the Redis server's own limit |
+| Redis commands timing out | `command_timeout_ms` / `connection_timeout_ms` on `redis_store` | Up from 10000 / 3000 | Fewer spurious failures on a loaded Redis | Slower failure detection. Use these, not the deprecated `response_timeout_s` / `connection_timeout_s` |
+| High-latency links between clients and CAS | `advanced_http` HTTP/2 window and stream settings | Up | Better throughput on fat, long pipes | These are hyper's knobs and mostly should be left alone; the reference config sets them only under a `TODO` |
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="GlobalConfig" />
+<SourceLink file="nativelink-config/src/stores.rs" symbol="RedisSpec" />
+
+## What is not a lever [#what-is-not-a-lever]
+
+Worth stating, because each of these gets reached for and none of them helps:
+
+**Worker CPU utilization as a scaling signal.** A worker waiting on the CAS looks
+idle. Scale on `nativelink:queue_depth` instead.
+
+**Adding parallelism to work around `evict_page_cache`.** It cannot work; see the
+callout above.
+
+**A metrics port.** There isn't one. Telemetry is OTLP over gRPC via
+`NL_OTEL_ENDPOINT`, and cache metrics additionally require the `cache_metrics`
+store wrapper. [Observability](/operate/observability) has the pipeline.
+
+<NextStep href="/operate/runbooks" title="Runbooks" kind="aside">
+  Tuning is for a healthy system. When one of these signals is a symptom rather
+  than a preference, start here instead.
+</NextStep>
+
+<NextStep href="/operate/observability" title="Observability">
+  The OTLP to Prometheus to Grafana pipeline that produces every signal in the
+  left-hand column above.
+</NextStep>

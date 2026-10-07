@@ -1,0 +1,295 @@
+---
+title: Containers and images
+description: What the container-image property actually does (and doesn't), plus how to build worker images and keep what your build requests in sync with what your fleet advertises.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone whose actions need a specific environment, and
+anyone running more than one kind of worker image. **What you'll have at the
+end:** worker images that carry your toolchain, and a routing scheme that
+sends each action to the right one. **Time:** twenty minutes.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+## What `container-image` is not [#what-container-image-is-not]
+
+Start here, because the name is misleading and the misunderstanding is
+expensive.
+
+**NativeLink does not pull an image and launch a container for each action.**
+No code sits behind the `container-image` key. Search the source for it
+and you will find it in example configs, in the LRE platform definitions under
+`local-remote-execution/`, and in CI wiring; nothing in the scheduler or worker
+source reads it. It is an ordinary string platform property with an evocative
+name.
+
+What it actually expresses is: *this worker process is running inside this
+image*. The worker asserts a value, the build requests a value, and the
+scheduler matches them like any other `exact` or `priority` property. The
+environment is real; it's just established by how you *started the worker*,
+not by anything the scheduler does per action.
+
+<Callout type="warn" title="Byte-for-byte or nothing">
+  The repo's own CI action puts it plainly: the value you request "must
+  byte-for-byte match the `container-image` the claim's worker pool
+  advertises, or actions queue forever." No normalisation, no tag
+  resolution, no digest comparison. `debian:bookworm-slim` and
+  `docker.io/library/debian:bookworm-slim` are different strings and
+  therefore different pools.
+</Callout>
+
+That failure is the silent-queue failure from
+[Platform properties](/remote-execution/platform-properties), and it is by
+far the most common way a container-image scheme goes wrong.
+
+## The actual model [#the-actual-model]
+
+<Mermaid>
+{`flowchart LR
+    I["base image<br/>(your toolchain)"] -->|createWorker| WI["nativelink-worker-*<br/>image"]
+    WI -->|"docker run / k8s pod"| WP["worker process<br/>advertises container-image"]
+    WP -->|connect_worker| S[scheduler]
+    A["action<br/>requests container-image"] --> S
+    S -->|match| WP`}
+</Mermaid>
+
+One image per worker *pool*. Every action a given worker runs shares that
+worker's environment. Heterogeneity comes from running several pools and
+routing between them, not from varying the image per action.
+
+This has a consequence worth planning around: **image churn is a fleet
+operation.** Changing a toolchain means building a new image, rolling a pool
+onto it, and changing what builds request, in an order that doesn't strand
+actions in the queue. There's a safe sequence below.
+
+## Build a worker image [#build-a-worker-image]
+
+A NativeLink worker image is any image that contains your toolchain and can
+run the `nativelink` binary with a worker config. The repo's Nix helper,
+`createWorker`, turns a toolchain image into a `nativelink-worker-*` image:
+
+```nix
+nativelink-worker-lre-cc = createWorker pkgs.lre.lre-cc.image;
+nativelink-worker-lre-java = createWorker lre-java;
+nativelink-worker-lre-rs = createWorker pkgs.lre.lre-rs.image;
+nativelink-worker-siso-chromium = createWorker siso-chromium;
+nativelink-worker-toolchain-drake = createWorker toolchain-drake;
+nativelink-worker-toolchain-buck2 = createWorker toolchain-buck2;
+```
+
+<SourceLink file="tools/public/create-worker.nix" symbol="createWorker" />
+
+What it adds on top of the base image is small: a `nativelink` user (uid
+1000) and home directory, a world-writable `/tmp`, `/usr/bin/env`, and
+`coreutils`, `bash` and `gnused` on `/bin`. It keeps the base image's tag so
+the worker image and the toolchain it wraps stay visibly paired. It does
+*not* bake the `nativelink` binary in, whatever its header comment says: the
+Kubernetes examples inject the binary at pod start with the
+`nativelink-worker-init` init container, which copies it into a shared
+volume, and the worker container then runs `/shared/nativelink /worker.json5`.
+That keeps the toolchain image and the NativeLink version independently
+upgradable.
+
+<SourceLink file="tools/nativelink-worker-init.nix" />
+<SourceLink file="kubernetes/components/worker/worker.yaml" />
+
+Push one to a registry the way the repo's own tooling does:
+
+```bash
+nix run .#nativelink-worker-lre-cc.copyTo docker://localhost:5001/nativelink-worker-lre-cc:latest
+```
+
+You do not have to use Nix for this. Any image that contains your toolchain
+and runs `nativelink` with a config is a valid worker image: a Dockerfile
+that starts `FROM your-toolchain-base`, copies in the binary, and sets the
+entrypoint works identically. Nix is how this repo gets *reproducible* images;
+it isn't a requirement of the worker protocol.
+
+## Wire up the routing [#wire-up-the-routing]
+
+<Steps>
+
+<li>
+
+### Declare the key on the scheduler [#declare-the-key-on-the-scheduler]
+
+```json5
+schedulers: [{
+  name: "MAIN_SCHEDULER",
+  simple: {
+    supported_platform_properties: {
+      cpu_count: "minimum",
+      OSFamily: "priority",
+      "container-image": "exact",
+    },
+  },
+}]
+```
+
+Use `exact` once you have more than one image. The examples ship `priority`,
+which matches any value: fine for a single-pool tutorial, useless as a
+routing mechanism.
+
+</li>
+
+<li>
+
+### Advertise it on each worker [#advertise-it-on-each-worker]
+
+```json5
+workers: [{
+  local: {
+    worker_api_endpoint: { uri: "grpc://scheduler.internal:50061" },
+    cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+    upload_action_result: { ac_store: "AC_MAIN_STORE" },
+    work_directory: "/tmp/nativelink/work",
+    platform_properties: {
+      cpu_count: { query_cmd: "nproc" },
+      OSFamily: { values: [""] },
+      "container-image": { values: ["ghcr.io/example/toolchain:2026-07-01"] },
+    },
+  },
+}]
+```
+
+Pin a tag you can change deliberately. `:latest` makes the advertised string
+stable while the actual contents drift, which defeats the entire point: the
+scheduler will keep matching, and your builds will silently change behaviour.
+
+Better still, template it from the deployment so the value can't disagree
+with the image that's actually running:
+
+```json5
+"container-image": { values: ["${NL_WORKER_IMAGE}"] },
+```
+
+</li>
+
+<li>
+
+### Request it from the build [#request-it-from-the-build]
+
+Globally, if your whole build wants one environment:
+
+```bash
+bazel build \
+  --remote_executor=grpc://scheduler.internal:50052 \
+  --remote_default_exec_properties=container-image=ghcr.io/example/toolchain:2026-07-01 \
+  //...
+```
+
+Or per target, when only some actions need it:
+
+```python
+cc_test(
+    name = "integration_test",
+    exec_properties = {
+        "container-image": "ghcr.io/example/toolchain:2026-07-01",
+    },
+    ...
+)
+```
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- The build reports actions as `remote` rather than sitting at `0s remote`.
+- Stopping the pool that advertises the requested image makes builds queue,
+  and starting it drains them. That's the proof the routing is real rather
+  than everything falling through to one pool.
+- With `exact`, requesting a *wrong* image string queues indefinitely. If it
+  succeeds instead, the key is still declared `priority` somewhere.
+
+</VerifyBlock>
+
+## Rolling an image without stranding actions [#rolling-an-image-without-stranding-actions]
+
+Order matters, because the two sides are matched on a literal string.
+
+1. **Bring up the new pool first**, advertising the new image string, while
+   the old pool keeps running and advertising the old one. Both are now
+   satisfiable.
+2. **Switch what builds request.** New builds land on the new pool;
+   in-flight ones finish on the old.
+3. **Drain and remove the old pool** once nothing requests it.
+
+Doing this in the other order (changing the request before the pool exists,
+or removing the pool before builds stop asking for it) produces a queue that
+never clears and no error anywhere.
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Everything queues after an image bump | Requested string doesn't match any advertised string | Compare them character by character; registry prefixes and tags both count |
+| `Property missing on worker property container-image` | A pool doesn't advertise the key at all | Add it to that pool's `platform_properties`, even with an empty value |
+| Routing "works" but actions land on the wrong pool | Key is declared `priority`, which matches any value | Change the scheduler's declaration to `exact` |
+| Builds change behaviour with no config change | Advertised tag is mutable (`:latest`) | Pin an immutable tag or digest |
+| Worker never joins the pool | Key not declared in `supported_platform_properties` | Look for `Bad Property during connect_worker()` in the worker log |
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+
+<Accordion title="Can a single worker serve multiple images?" id="can-a-single-worker-serve-multiple-images">
+Not meaningfully. A worker process runs in one environment; the property is
+an assertion about that environment. You can advertise several values for a
+`priority` key, but that's a routing label, not a second toolchain. Run one
+pool per image.
+</Accordion>
+
+<Accordion title="What if I want a real container per action?" id="what-if-i-want-a-real-container-per-action">
+The worker's `entrypoint` option lets you interpose a wrapper: the configured
+program is prepended to every action's command line as its first argument
+(the config comment says "command + arguments", but the code prepends the
+string as a single program path, so point it at one executable and let that
+executable take the action's command as its arguments), which makes a script
+that launches a container and forwards the command possible. If that wrapper
+enforces its own timeouts, set
+`timeout_handled_externally` so NativeLink doesn't also time the action out.
+This is a real deployment shape, but it is something you build, not something
+`container-image` gives you.
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="LocalWorkerConfig" />
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="inner_execute" />
+</Accordion>
+
+<Accordion title="Do I need containers at all?" id="do-i-need-containers-at-all">
+No. Workers run fine as plain processes on bare metal or a VM; the property
+is only a matching string, so a fleet that doesn't use containers
+doesn't declare the key.
+[Deploy on bare metal](/operate/deploy-bare-metal) covers that shape.
+</Accordion>
+
+<Accordion title="How does this relate to LRE?" id="how-does-this-relate-to-lre">
+They're the two answers to the same question. Images make the *fleet*
+reproducible: every action in a pool sees the same environment.
+[LRE](/remote-execution/toolchains-and-hermeticity) makes the *action*
+reproducible by pinning the toolchain into the action itself, which
+additionally lets a developer's laptop share cache entries with the fleet.
+They compose: the `lre-cc` and `lre-java` workers are container images whose
+contents are Nix-pinned.
+</Accordion>
+
+<Accordion title="Should the value be a tag or a digest?" id="should-the-value-be-a-tag-or-a-digest">
+A digest is stricter and safer; an immutable dated tag is easier to read in
+build logs and error messages. Either is fine. What matters is that the string
+changes when the contents change, so that a stale pool stops matching instead
+of silently serving the old environment.
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/remote-execution/persistent-workers" title="Persistent workers">
+  Keeping a warm process between actions, for toolchains where startup cost
+  dominates.
+</NextStep>
+
+<NextStep href="/how-to/run-multiple-workers" kind="aside" title="Run multiple workers">
+  Running several worker pools, each on its own image, as a real fleet.
+</NextStep>

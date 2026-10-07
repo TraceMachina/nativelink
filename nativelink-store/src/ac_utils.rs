@@ -85,11 +85,11 @@ pub async fn get_size_and_decode_digest<T: Message + Default + 'static>(
 /// Computes the digest of a message.
 pub fn message_to_digest(
     message: &impl Message,
-    mut buf: &mut BytesMut,
+    buf: &mut BytesMut,
     hasher: &mut impl DigestHasher,
 ) -> Result<DigestInfo, Error> {
     message
-        .encode(&mut buf)
+        .encode(buf)
         .err_tip(|| "Could not encode directory proto")?;
     hasher.update(buf);
     Ok(hasher.finalize_digest())

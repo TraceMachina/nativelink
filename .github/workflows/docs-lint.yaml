@@ -1,0 +1,171 @@
+---
+# The docs gates. Everything the rewrite made true about the corpus, kept true
+# by a machine rather than by review attention.
+#
+# Five static lints run on every PR that touches the docs. They are fast, they
+# have no network dependency, and every failure names a file, a line and the
+# edit that fixes it, which is the bar for a gate that blocks merges.
+#
+# External link reachability is deliberately NOT here. It fails for reasons a
+# contributor cannot fix (rate limits, transient outages, sites that block CI),
+# and a required check that goes red for reasons outside the PR is a check
+# people learn to click past. It runs on a schedule instead, in the job below,
+# where a failure is a docs-maintenance task rather than a merge blocker.
+name: Docs lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/apps/docs/**'
+      - '.github/workflows/docs-lint.yaml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'web/apps/docs/**'
+      - '.github/workflows/docs-lint.yaml'
+  # Weekly external link sweep. Thursday 05:17, arbitrary, spread away from
+  # the other scheduled jobs.
+  schedule:
+    - cron: 17 5 * * THU
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Structure and links
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Install dependencies
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "bun install"
+
+      # The changelog page is generated from CHANGELOG.md at build time and is
+      # gitignored, so a fresh checkout does not have it. The link lint and
+      # the llms generator both expect it to exist, as it does in every dev
+      # and production build.
+      - name: Generate the changelog page
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "bun --filter @nativelink/docs gen:changelog"
+
+      # Each lint runs even if an earlier one failed, so a PR gets the whole
+      # list of problems in one pass rather than one problem per push.
+      - name: Anchors are explicit
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "
+            bun --filter @nativelink/docs lint:anchors
+          "
+
+      - name: Internal links resolve
+        if: always()
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "
+            bun --filter @nativelink/docs lint:links
+          "
+
+      - name: Config snippets match the schema
+        if: always()
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "
+            bun --filter @nativelink/docs lint:snippets
+          "
+
+      - name: No calls to action outside the boundary page
+        if: always()
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "
+            bun --filter @nativelink/docs lint:boundaries
+          "
+
+      - name: The reading path has no dead ends
+        if: always()
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "
+            bun --filter @nativelink/docs lint:navigation
+          "
+
+      # Generated surfaces must come from their generator. If regenerating
+      # changes anything, the committed copy was hand-edited or is stale, and
+      # the next real regeneration would silently revert the difference.
+      - name: Generated pages are not hand-edited
+        if: always()
+        working-directory: web
+        run: |
+          nix develop --impure --command bash -c "
+            bun --filter @nativelink/docs gen:llms
+          "
+          if ! git diff --quiet -- apps/docs; then
+            echo "::error::Regenerating changed committed files. Run the generator and commit the result, and do not hand-edit generated pages."
+            git diff --stat -- apps/docs
+            exit 1
+          fi
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+  external-links:
+    name: External links (weekly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      # lychee comes from the dev shell. `--exclude-path` skips the generated
+      # config reference, whose links are the generator's output rather than an
+      # author's, and whose volume would dominate the report.
+      - name: Sweep external links
+        run: |
+          nix develop --impure --command bash -c "
+            lychee \
+              --no-progress \
+              --max-concurrency 8 \
+              --accept 200,206,429 \
+              --exclude-path web/apps/docs/content/docs/reference/nativelink-config \
+              'web/apps/docs/content/docs/**/*.mdx'
+          "
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}

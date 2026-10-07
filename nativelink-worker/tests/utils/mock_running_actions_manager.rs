@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug)]
 enum RunningActionManagerCalls {
-    CreateAndAddAction((String, StartExecute)),
+    CreateAndAddAction(Box<(String, StartExecute)>),
     CacheActionResult(Box<(DigestInfo, ActionResult, DigestHasherFunc)>),
 }
 
@@ -93,7 +93,21 @@ impl MockRunningActionsManager {
             .send(RunningActionManagerReturns::CreateAndAddAction(result))
             .map_err(|_| make_input_err!("Could not send request to mpsc"))
             .unwrap();
-        req
+        *req
+    }
+
+    /// Waits for `create_and_add_action` to be invoked but never replies, so
+    /// the worker-side call stays pending and the action remains in transit.
+    pub(crate) async fn expect_create_and_add_action_no_reply(&self) -> (String, StartExecute) {
+        let mut rx_call_lock = self.rx_call.lock().await;
+        let RunningActionManagerCalls::CreateAndAddAction(req) = rx_call_lock
+            .recv()
+            .await
+            .expect("Could not receive msg in mpsc")
+        else {
+            panic!("Got incorrect call waiting for create_and_add_action")
+        };
+        *req
     }
 
     pub(crate) async fn expect_cache_action_result(
@@ -138,10 +152,10 @@ impl RunningActionsManager for MockRunningActionsManager {
         start_execute: StartExecute,
     ) -> Result<Arc<Self::RunningAction>, Error> {
         self.tx_call
-            .send(RunningActionManagerCalls::CreateAndAddAction((
+            .send(RunningActionManagerCalls::CreateAndAddAction(Box::new((
                 worker_id,
                 start_execute,
-            )))
+            ))))
             .expect("Could not send request to mpsc");
         let mut rx_resp_lock = self.rx_resp.lock().await;
         match rx_resp_lock

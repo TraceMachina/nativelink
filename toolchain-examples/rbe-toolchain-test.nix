@@ -1,8 +1,9 @@
 {
   nativelink,
   writeShellScriptBin,
-  bazelisk,
   jo,
+  bazel-retry,
+  bazel,
 }:
 writeShellScriptBin "rbe-toolchain-test" ''
   set -uo pipefail
@@ -17,7 +18,7 @@ writeShellScriptBin "rbe-toolchain-test" ''
 
   LLVM_PLATFORM="--config=llvm --platforms=@toolchains_llvm//platforms:linux-''${CPU_TYPE}"
   ZIG_PLATFORM="--config=zig-cc --platforms @zig_sdk//platform:linux_''${PLATFORM}"
-  RUST_ZIG_PLATFORM="--config=zig-cc --platforms=//platforms:linux_''${PLATFORM}_gnu_2_28 --host_platform=@rules_rs//:local_gnu_platform --extra_execution_platforms=@rules_rs//:local_gnu_platform"
+  RUST_PLATFORM="--platforms=//platforms:linux_''${PLATFORM}_gnu_2_28 --host_platform=@rules_rs//:local_gnu_platform --extra_execution_platforms=@rules_rs//:local_gnu_platform"
 
   # As per https://nativelink.com/docs/rbe/remote-execution-examples#minimal-example-targets
   declare -A COMMANDS
@@ -26,7 +27,7 @@ writeShellScriptBin "rbe-toolchain-test" ''
     [cpp-llvm]="test //cpp $LLVM_PLATFORM"
     [python]="test //python"
     [go]="test //go $ZIG_PLATFORM"
-    [rust]="test //rust $RUST_ZIG_PLATFORM"
+    [rust]="test //rust $RUST_PLATFORM"
     [java]="test //java:HelloWorld --config=java"
     [curl]="build @curl//... $ZIG_PLATFORM"
     [zstd]="build @zstd//... $ZIG_PLATFORM"
@@ -63,7 +64,7 @@ writeShellScriptBin "rbe-toolchain-test" ''
 
   run_cmd() {
     cmd=$1
-    FULL_CMD="${bazelisk}/bin/bazelisk $cmd $CORE_BAZEL_ARGS"
+    FULL_CMD="PATH=${bazel}/bin:$PATH ${bazel-retry}/bin/bazel-retry $cmd $CORE_BAZEL_ARGS"
     echo $FULL_CMD
     echo -e \\n$FULL_CMD\\n >> toolchain-examples/cmd.log
     cmd_output=$(cd toolchain-examples && eval "$FULL_CMD" 2>&1 | tee -ai cmd.log)

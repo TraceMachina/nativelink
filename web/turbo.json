@@ -15,7 +15,33 @@
       "outputs": [
         ".next/**",
         "!.next/cache/**",
-        "dist/**"
+        "dist/**",
+        "public/llms.txt",
+        "public/llms-small.txt",
+        "public/llms-full.txt"
+      ]
+    },
+    "@nativelink/web#build": {
+      "dependsOn": [
+        "^build"
+      ],
+      "env": [
+        "VERCEL_GIT_COMMIT_SHA"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/docs/content/**",
+        "$TURBO_ROOT$/apps/docs/scripts/gen-llms.mjs",
+        "$TURBO_ROOT$/apps/docs/scripts/gen-changelog.mjs",
+        "$TURBO_ROOT$/../CHANGELOG.md"
+      ],
+      "outputs": [
+        ".next/**",
+        "!.next/cache/**",
+        "dist/**",
+        "public/llms.txt",
+        "public/llms-small.txt",
+        "public/llms-full.txt"
       ]
     },
     "build": {

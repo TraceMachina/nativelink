@@ -1,3 +1,17 @@
+// Copyright 2026 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::collections::HashMap;
 use std::time::SystemTime;
 
@@ -15,6 +29,7 @@ use prost::Message as _;
 
 fn make_key() -> ActionUniqueKey {
     ActionUniqueKey {
+        execution_scope: None,
         instance_name: String::from("main"),
         digest_function: DigestHasherFunc::Sha256,
         digest: DigestInfo::new(
@@ -44,6 +59,29 @@ fn old_unique_qualifier_uncachable_works() {
     assert_eq!(
         action_info.unique_qualifier,
         ActionUniqueQualifier::Uncacheable(make_key())
+    );
+}
+
+#[nativelink_test]
+fn execution_scope_survives_serialization_and_changes_the_scheduler_index() {
+    let unscoped = ActionUniqueQualifier::Cacheable(make_key());
+    let mut key = make_key();
+    key.execution_scope = Some("invocation-one".to_string());
+    let first = ActionUniqueQualifier::Cacheable(key.clone());
+    key.execution_scope = Some("invocation-two".to_string());
+    let second = ActionUniqueQualifier::Cacheable(key);
+    assert_ne!(first, second);
+    assert_ne!(first.to_string(), second.to_string());
+    assert_ne!(first.to_string(), unscoped.to_string());
+    assert_eq!(first.digest(), second.digest());
+    assert_eq!(
+        first,
+        serde_json::from_str(&serde_json::to_string(&first).unwrap()).unwrap()
+    );
+    assert!(
+        !serde_json::to_string(&unscoped)
+            .unwrap()
+            .contains("execution_scope")
     );
 }
 
@@ -179,6 +217,6 @@ fn to_execute_response_emits_default_status_when_no_error() {
     let resp = to_execute_response(action_result_with_error(None));
     let status = resp.status.expect("status must be set");
     assert_eq!(status.code, 0);
-    assert!(status.details.is_empty());
-    assert!(status.message.is_empty());
+    assert_eq!(status.details, vec![]);
+    assert_eq!(status.message, "");
 }

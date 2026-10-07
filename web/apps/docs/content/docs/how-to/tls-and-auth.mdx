@@ -1,0 +1,389 @@
+---
+title: TLS and authentication
+description: Put TLS on the listeners clients reach, use mutual TLS as the access control, and understand exactly what NativeLink does and does not authenticate.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone about to expose NativeLink beyond a single trusted
+network. **What you'll have at the end:** encrypted listeners, client
+certificates as the gate, and an accurate picture of what is still unguarded.
+**Time:** an hour, most of it spent on certificates.
+
+<Prerequisites>
+  A running deployment you can restart. See [Production configuration](/operate/production-config).
+</Prerequisites>
+
+Start with the honest version, because it changes what you build.
+
+NativeLink has no user accounts, no password, no token check and no
+authorization rules. Nothing in the binary decides whether a
+particular caller is allowed to read a particular blob. The access control you
+get is **mutual TLS** (the listener refuses connections from clients that
+cannot present a certificate signed by a CA you name) plus whatever your
+network already does. Everything past the handshake is trusted equally.
+
+That is a coherent security model, and it is the one to build. It is not the
+model you would get from a system with a user table, so it pays to be explicit
+about it before you plan around a feature that does not exist.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="TlsConfig" />
+
+## The three listeners have different trust levels [#the-three-listeners-have-different-trust-levels]
+
+A production deployment exposes three surfaces, and they do not want the same
+treatment.
+
+The **CAS and AC** listener, conventionally `:50051`, is what every developer's
+Bazel talks to. It is the widest surface and the one that needs TLS.
+
+The **execution** listener, conventionally `:50052`, carries the same client
+traffic for remote execution. Treat it identically to the CAS.
+
+The **worker API**, conventionally `:50061`, is not a client API. Workers dial
+it, and a caller who reaches it can register as a worker and be handed your
+builds to execute. It belongs on a private interface or inside a private
+network, and no amount of TLS makes it safe to expose publicly. Bind it to an
+internal address, and keep it on a separate `servers` entry from anything a
+client touches so that the two cannot be confused.
+[Run multiple workers](/how-to/run-multiple-workers) covers why that listener
+exists and who dials it.
+
+[Servers and services](/configuration/servers-and-services) covers how those
+listeners are declared; this page is about what to put on them.
+
+## Turn on TLS [#turn-on-tls]
+
+Every entry in `servers` may carry a `tls` block on its `listener.http`:
+
+```json5
+servers: [
+  {
+    name: "public_cas",
+    listener: {
+      http: {
+        socket_address: "0.0.0.0:50051",
+        tls: {
+          cert_file: "/etc/nativelink/tls/server.crt",
+          key_file: "/etc/nativelink/tls/server.key",
+        },
+      },
+    },
+    services: {
+      cas: [{ cas_store: "CAS_MAIN_STORE" }],
+      ac: [{ ac_store: "AC_MAIN_STORE" }],
+      capabilities: [{}],
+      bytestream: [{ cas_store: "CAS_MAIN_STORE" }],
+    },
+  },
+],
+```
+
+Both paths are PEM files read at startup. The certificate file may hold a full
+chain. The key may be PKCS8, SEC1 or PKCS1 (all three are accepted), but it
+must contain **exactly one** key, and a file with two will fail startup rather
+than pick one.
+
+Once TLS is on, the listener negotiates ALPN `h2`, and clients must address it
+as `grpcs://` rather than `grpc://`. That scheme change is the single most
+common reason a first TLS rollout fails: a `grpc://` client sends plaintext
+into the handshake, the server logs `Failed to accept tls stream` and drops the
+connection, and the client sees a connection error that says nothing about
+TLS.
+
+<SourceLink file="src/bin/nativelink.rs" symbol="TlsAcceptor" />
+
+<Callout type="warn" title="The example certificates are examples">
+  `deployment-examples/docker-compose/` ships
+  `example-do-not-use-in-prod-key.pem` and
+  `example-do-not-use-in-prod-rootca.crt`. The names are the documentation.
+  Their private key is in the public repository, so anything they protect is
+  protected from nobody.
+</Callout>
+
+## Make the client prove who it is [#make-the-client-prove-who-it-is]
+
+Adding `client_ca_file` changes the listener from encrypted to gated:
+
+```json5
+tls: {
+  cert_file: "/etc/nativelink/tls/server.crt",
+  key_file: "/etc/nativelink/tls/server.key",
+  client_ca_file: "/etc/nativelink/tls/clients-ca.crt",
+  client_crl_file: "/etc/nativelink/tls/clients.crl",
+},
+```
+
+Now every connecting client must present a certificate signed by that CA. This
+is the access control. No optional or opportunistic mode exists: set
+`client_ca_file` and client certificates are required, leave it unset and no
+client certificate is ever examined.
+
+`client_crl_file` is a PEM certificate revocation list, and it is how a leaked
+client key stops working before its expiry. It is worth setting up on day one
+even if the list is empty, because the moment you need it is the moment you do
+not want to be learning how it is wired.
+
+What you get from this is coarse: a client either holds a valid certificate or
+it does not. NativeLink does not read the subject, does not map it to an
+identity, and does not vary permissions by it. Issuing per-team or per-developer
+certificates is still worth doing, because it lets you revoke one without
+reissuing all of them, but the difference is visible to your CA, not to
+NativeLink.
+
+## Point clients at the new scheme [#point-clients-at-the-new-scheme]
+
+Bazel needs the CA that signed the server certificate, and its own certificate
+if you turned on mutual TLS:
+
+```sh
+build --remote_cache=grpcs://cache.example.com:50051
+build --remote_executor=grpcs://cache.example.com:50052
+build --tls_certificate=/etc/nativelink/tls/ca.crt
+build --tls_client_certificate=/etc/nativelink/tls/client.crt
+build --tls_client_key=/etc/nativelink/tls/client.key
+```
+
+NativeLink is also a client of itself: a worker dials the scheduler, and a
+`grpc` store dials an upstream CAS. Those connections carry their own
+`tls_config`, with a different shape from the listener's:
+
+```json5
+{
+  name: "GRPC_CAS",
+  grpc: {
+    instance_name: "",
+    store_type: "cas",
+    endpoints: [
+      {
+        address: "grpcs://cas.internal.example.com:50051",
+        tls_config: {
+          ca_file: "/etc/nativelink/tls/ca.crt",
+          cert_file: "/etc/nativelink/tls/client.crt",
+          key_file: "/etc/nativelink/tls/client.key",
+        },
+      },
+    ],
+  },
+},
+```
+
+`ca_file` validates the remote. `cert_file` and `key_file` are what the remote
+sees when it demands a client certificate, so they are only needed against a
+listener with `client_ca_file` set (setting one without the other is a startup
+error). Setting `use_native_roots: true` instead of `ca_file` uses the
+operating system's trust store, which is what you want against a public CA and
+not what you want against your own; when it is set, `ca_file` is ignored with
+a warning. The scheme and the block go together: a `grpcs://` address with no
+`tls_config` is rejected at startup, and so is a `tls_config` on a `grpc://`
+address.
+
+<SourceLink file="nativelink-util/src/tls_utils.rs" symbol="endpoint_from" />
+
+The worker's `worker_api_endpoint` takes the same block:
+
+```json5
+worker_api_endpoint: {
+  uri: "grpcs://scheduler.internal.example.com:50061",
+  tls_config: {
+    ca_file: "/etc/nativelink/tls/ca.crt",
+    cert_file: "/etc/nativelink/tls/worker.crt",
+    key_file: "/etc/nativelink/tls/worker.key",
+  },
+},
+```
+
+## What `experimental_identity_header` actually does [#what-experimental_identity_header-actually-does]
+
+You will find this on `ServerConfig`, and its name invites a wrong conclusion:
+
+```json5
+experimental_identity_header: {
+  header_name: "x-identity",
+  required: true,
+},
+```
+
+Two things are true about it. The first is that it is not authentication: the
+value it gates on is caller-supplied and never verified against anything, so any
+client can claim any identity. The second is that it does not read the header
+you name. `required` is passed to the telemetry layer, which looks for an
+OpenTelemetry **Baggage** entry named `enduser.id`, and rejects the request with
+`FAILED_PRECONDITION` when that entry is absent:
+
+```
+NativeLink instance configured to require this OpenTelemetry Baggage header:
+
+    `Baggage: enduser.id=YOUR_IDENTITY`
+```
+
+`header_name` is not read anywhere in the codebase.
+
+`required: true` is useful for exactly one thing: making sure your traces and
+logs can attribute a request to a person or a CI job, by refusing traffic that
+would be unattributable. That is a real operational need. Just do not put it in
+the column marked access control.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="IdentityHeaderSpec" />
+
+## Credentials to an upstream service [#credentials-to-an-upstream-service]
+
+When NativeLink proxies to something that does want a token (a hosted REAPI
+cache, a gateway in front of one), a `grpc` store can attach headers:
+
+```json5
+grpc: {
+  instance_name: "",
+  store_type: "cas",
+  endpoints: [
+    {
+      address: "grpcs://upstream.example.com:443",
+      tls_config: { use_native_roots: true },
+    },
+  ],
+  headers: { authorization: "Bearer my-static-token" },
+},
+```
+
+`headers` are static and sent on every request. Note that, unlike most string
+fields in the config, header values are not run through `${VAR}` expansion:
+the value in the file is sent verbatim, so a secret placed here lives in the
+file and the file needs to be protected accordingly. `forward_headers` takes a
+list of header names to copy from the incoming client request instead, which is
+how a client's own credential reaches the upstream without NativeLink holding
+one. Forwarding is incompatible with `experimental_read_batching`, and a store
+that configures both is rejected at startup.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="GrpcSpec" />
+
+## Steps [#steps]
+
+<Steps>
+
+<li>
+
+**Decide the boundary.** Which listeners are reachable from where. If the
+worker API is reachable from anywhere a developer is, stop and fix that first.
+It is a bigger hole than plaintext.
+
+</li>
+
+<li>
+
+**Issue certificates** from a CA you control: one server certificate per
+listener hostname, one client certificate per team or per CI system. Keep the
+CA key somewhere the build system cannot read.
+
+</li>
+
+<li>
+
+**Add `tls` to the client-facing listeners** with `cert_file` and `key_file`
+only. Restart, and confirm a `grpcs://` client works before adding anything
+else.
+
+</li>
+
+<li>
+
+**Add `client_ca_file` and `client_crl_file`** to those same listeners, and
+distribute client certificates. Every client breaks at this step until it has
+one, so do it deliberately rather than at the end of the day.
+
+</li>
+
+<li>
+
+**Update the internal hops** (worker to scheduler, `grpc` stores to upstream)
+to `grpcs://` with a matching `tls_config`.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- A build against `grpcs://` succeeds and populates the cache.
+- The same build against `grpc://` on the same port fails rather than silently
+  falling back.
+- With `client_ca_file` set, a client with no certificate is rejected at the
+  handshake, not after.
+- Revoking a client certificate and adding it to the CRL locks that client out
+  after a restart.
+- `openssl s_client -connect host:50051 -alpn h2` shows your chain and
+  negotiates `h2`.
+
+</VerifyBlock>
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions>
+
+<Accordion title="`InvalidArgument: Expected 1 key in file`" id="invalidargument-expected-1-key-in-file">
+
+The key file holds more than one key (a file with none fails earlier, with
+`Could not extract key(s) from file`). A concatenated bundle is the usual cause.
+Split it, and leave the chain in `cert_file` where multiple PEM blocks are fine.
+
+</Accordion>
+
+<Accordion title="Clients get connection errors and the server logs `Failed to accept tls stream`" id="clients-hang-instead-of-failing">
+
+Almost always `grpc://` against a TLS listener. The client sends plaintext HTTP/2
+into a socket waiting for a handshake, the handshake fails, and the server drops
+the connection. Check the scheme everywhere: Bazel flags, `grpc` store
+addresses, `worker_api_endpoint.uri`, and any healthcheck.
+
+</Accordion>
+
+<Accordion title="The client rejects the server certificate" id="certificate-signature-verify-failed-from-a-client">
+
+The client does not trust the CA that signed the server certificate. Point it at
+the right `ca_file`, or `--tls_certificate` for Bazel. When the client is
+NativeLink itself (a `grpc` store or a worker) the error reads `invalid peer
+certificate: UnknownIssuer`. If the server certificate was issued by an
+intermediate, `cert_file` must contain the full chain, leaf first, because
+clients will not fetch a missing intermediate for you.
+
+</Accordion>
+
+<Accordion title="`peer sent no certificates` after adding `client_ca_file`" id="peer-did-not-return-a-certificate-after-adding-client_ca_file">
+
+The listener now requires client certificates and this client has none. The
+server logs it as `Failed to accept tls stream` with that reason, and the client
+sees the handshake aborted. That includes clients you may have forgotten are
+clients: workers dialing the scheduler, `grpc` stores, and anything probing a
+health endpoint.
+
+</Accordion>
+
+<Accordion title="Certificates renewed but the old ones are still in use" id="certificates-renewed-but-the-old-ones-are-still-in-use">
+
+Server certificates and a `grpc` store's client certificates are read once at
+startup, and a worker re-reads its client files only when it reconnects to the
+scheduler. Renewal means restarting the process. Plan for it, because a
+cert-manager rotation that nothing restarts will quietly expire.
+
+</Accordion>
+
+<Accordion title="How do I give different teams different access?" id="how-do-i-give-different-teams-different-access">
+
+You can't, inside NativeLink. It has no per-caller permissions. The
+approaches that work are running separate instances with separate stores for
+separate trust domains, or putting an authorizing proxy in front and letting
+NativeLink trust everything the proxy passes through. If you take the second
+route, the worker API must not be behind the same proxy.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/operate/production-config" title="Production configuration">
+  The rest of what changes between the example configs and something you run for
+  other people.
+</NextStep>
+
+<NextStep href="/configuration/servers-and-services" kind="aside" title="Servers and services">
+  How listeners and service blocks fit together, and why splitting them by trust
+  level is the shape to start from.
+</NextStep>

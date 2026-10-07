@@ -1,9 +1,26 @@
 import { Button, Eyebrow, Reveal, Section, cn } from "@nativelink/ui";
 import { Fragment } from "react";
 
-export const metadata = { title: "Pricing" };
+export const metadata = {
+  title: "Pricing",
+  description:
+    "Self-host NativeLink for free, or talk to us about Enterprise. Pricing is a conversation: email contact@tracemachina.com.",
+};
 
-const tiers = [
+const PRICING_EMAIL = "contact@tracemachina.com";
+const PRICING_MAILTO = `mailto:${PRICING_EMAIL}?subject=${encodeURIComponent("NativeLink pricing")}`;
+
+interface Tier {
+  name: string;
+  price: string;
+  cadence: string;
+  tagline: string;
+  features: string[];
+  cta: { label: string; href: string; external?: boolean };
+  secondary?: { label: string; href: string };
+}
+
+const tiers: Tier[] = [
   {
     name: "Open Source",
     price: "Free",
@@ -16,7 +33,7 @@ const tiers = [
       "All build systems (Bazel, Buck2, Siso, Pants)",
       "All major cloud providers",
     ],
-    cta: { label: "Get started", href: "/docs" },
+    cta: { label: "Get started", href: "/docs", external: true },
   },
   {
     name: "Enterprise",
@@ -31,7 +48,11 @@ const tiers = [
       "Procurement support",
       "Priority feature requests",
     ],
-    cta: { label: "Subscribe now", href: "https://enterprise.nativelink.com" },
+    cta: { label: "Email us about pricing", href: PRICING_MAILTO },
+    secondary: {
+      label: "Already decided? Subscribe now",
+      href: "https://enterprise.nativelink.com",
+    },
   },
 ];
 
@@ -124,6 +145,16 @@ export default function PricingPage() {
                 Self-host for free, or let us run your build farm. Two tiers that grow with your
                 team — no hidden fees, no per-user pricing.
               </p>
+              <p className="mx-auto mt-4 max-w-[640px] text-[15px] leading-relaxed text-muted-foreground">
+                Enterprise pricing is a conversation, not a number on a page. Email{" "}
+                <a
+                  href={PRICING_MAILTO}
+                  className="font-mono text-brand underline-offset-4 hover:underline"
+                >
+                  {PRICING_EMAIL}
+                </a>{" "}
+                and an engineer will walk you through it.
+              </p>
             </div>
           </Reveal>
         </Section>
@@ -164,12 +195,24 @@ export default function PricingPage() {
                   <Button asChild size="lg" variant="outline" className="w-full">
                     <a
                       href={tier.cta.href}
-                      target={tier.cta.label === "Get started" ? "_blank" : undefined}
-                      rel={tier.cta.label === "Get started" ? "noreferrer" : undefined}
+                      target={tier.cta.external ? "_blank" : undefined}
+                      rel={tier.cta.external ? "noreferrer" : undefined}
                     >
                       {tier.cta.label}
                     </a>
                   </Button>
+                  {tier.secondary ? (
+                    <p className="mt-3 text-center text-sm text-muted-foreground">
+                      <a
+                        href={tier.secondary.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-brand underline-offset-4 hover:underline"
+                      >
+                        {tier.secondary.label}
+                      </a>
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </Reveal>
@@ -249,14 +292,16 @@ export default function PricingPage() {
       <Section width="narrow" className="border-t border-border/60 py-24 text-center">
         <Reveal>
           <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-            Have a question?
+            Want to talk numbers?
           </h2>
           <p className="mx-auto mt-5 max-w-[560px] text-base leading-relaxed text-muted-foreground md:text-lg">
-            Our team is happy to walk through pricing for your team or workload.
+            Don't price your build farm off a website. Email{" "}
+            <span className="font-mono text-foreground">{PRICING_EMAIL}</span> and the engineers who
+            build NativeLink will walk through pricing for your team and workload.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <Button size="lg" asChild>
-              <a href="mailto:contact@tracemachina.com">Talk to sales</a>
+              <a href={PRICING_MAILTO}>Email us about pricing</a>
             </Button>
             <Button size="lg" variant="outline" asChild>
               <a href="/community">Join community</a>

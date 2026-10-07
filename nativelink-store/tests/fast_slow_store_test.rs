@@ -20,17 +20,20 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::join_all;
-use nativelink_config::stores::{FastSlowSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec};
-use nativelink_error::{Code, Error, ResultExt, make_err};
+use nativelink_config::stores::{
+    FastSlowSpec, FilesystemSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec,
+};
+use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
 use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::noop_store::NoopStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
-use nativelink_util::common::DigestInfo;
+use nativelink_util::common::{DigestInfo, fs, make_temp_path};
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
@@ -92,6 +95,50 @@ async fn check_data(
 }
 
 const VALID_HASH: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+
+#[nativelink_test]
+async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Result<(), Error> {
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        block_size: 1,
+        ..Default::default()
+    };
+    let filesystem = FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?;
+    let fast = Store::new(filesystem.clone());
+    let slow = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(filesystem_spec),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast.clone(),
+        slow.clone(),
+    ));
+    let content = Bytes::from_static(b"recover the missing fast-tier file");
+    let digest = DigestInfo::try_new(VALID_HASH, content.len())?;
+    store.update_oneshot(digest, content.clone()).await?;
+
+    for recover_by_read in [false, true] {
+        filesystem
+            .get_file_entry_for_digest(&digest)
+            .await?
+            .get_file_path_locked(|path| async move { fs::remove_file(path).await })
+            .await?;
+        assert_eq!(fast.has(digest).await?, Some(content.len() as u64));
+        if recover_by_read {
+            assert_eq!(store.get_part_unchunked(digest, 0, None).await?, content);
+        } else {
+            store.update_oneshot(digest, content.clone()).await?;
+        }
+        assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, content);
+        assert_eq!(slow.get_part_unchunked(digest, 0, None).await?, content);
+    }
+    Ok(())
+}
 
 #[nativelink_test]
 async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {
@@ -1972,9 +2019,12 @@ async fn get_part_falls_through_to_slow_on_stale_fast_map_entry() -> Result<(), 
     Ok(())
 }
 
-/// `NotFound` after partial bytes must propagate, not retry (would corrupt).
+/// `NotFound` after partial bytes of a digest is a resume: the bytes the
+/// fast store sent are a correct prefix of an immutable blob, so the slow
+/// store serves the rest from where the fast one stopped and the caller
+/// sees the whole blob.
 #[nativelink_test]
-async fn get_part_propagates_not_found_after_partial_fast_read() -> Result<(), Error> {
+async fn get_part_resumes_from_slow_after_partial_fast_read() -> Result<(), Error> {
     let original_data = make_random_data(MEGABYTE_SZ);
     let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
     let (fast_slow_store, slow_store, fast_get_part_calls) =
@@ -1984,18 +2034,155 @@ async fn get_part_propagates_not_found_after_partial_fast_read() -> Result<(), E
         .update_oneshot(digest, original_data.clone().into())
         .await?;
 
-    let result = fast_slow_store.get_part_unchunked(digest, 0, None).await;
+    let served = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .err_tip(|| "a short fast read of a digest must resume from the slow store")?;
 
-    let err = result.expect_err("partial fast read then NotFound must not fall through");
-    assert_eq!(
-        err.code,
-        Code::NotFound,
-        "original NotFound must propagate, got: {err:?}"
-    );
+    // The stale fast store sends sixteen zero bytes and stops; the slow
+    // store has to have served everything after them.
+    assert_eq!(served.len(), original_data.len());
+    assert_eq!(&served[16..], &original_data[16..]);
     assert_eq!(
         fast_get_part_calls.load(Ordering::Acquire),
         1,
         "fast store get_part must be attempted exactly once"
+    );
+
+    // A range read resumes within the range.
+    let served = fast_slow_store
+        .get_part_unchunked(digest, 100, Some(1000))
+        .await?;
+    assert_eq!(served.len(), 1000);
+    assert_eq!(&served[16..], &original_data[116..1100]);
+
+    Ok(())
+}
+
+/// A key that is not a digest could hold different content in each tier,
+/// so a short read of one stays an error rather than splicing the tiers.
+#[nativelink_test]
+async fn get_part_propagates_not_found_after_partial_fast_read_of_a_plain_key() -> Result<(), Error>
+{
+    let original_data = make_random_data(MEGABYTE_SZ);
+    let key = StoreKey::new_str("some-action-cache-entry");
+    let (fast_slow_store, slow_store, fast_get_part_calls) =
+        make_stores_with_stale_fast(original_data.len() as u64, 16);
+
+    slow_store
+        .update_oneshot(key.borrow(), original_data.clone().into())
+        .await?;
+
+    let err = fast_slow_store
+        .get_part_unchunked(key.borrow(), 0, None)
+        .await
+        .expect_err("a short fast read of a plain key must not resume");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert_eq!(fast_get_part_calls.load(Ordering::Acquire), 1);
+
+    Ok(())
+}
+
+/// A slow store that sends part of a blob and then loses it, the way an
+/// evicting tier behind a gRPC store does.
+#[derive(MetricsComponent)]
+struct PartialThenGoneStore {
+    bytes_before_error: usize,
+}
+
+#[async_trait]
+impl StoreDriver for PartialThenGoneStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for (key, result) in keys.iter().zip(results.iter_mut()) {
+            *result = match key {
+                StoreKey::Digest(d) => Some(d.size_bytes()),
+                StoreKey::Str(_) => None,
+            };
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        reader.drain().await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        writer
+            .send(Bytes::from(vec![1u8; self.bytes_before_error]))
+            .await?;
+        Err(make_err!(Code::NotFound, "the key is gone under the read"))
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(PartialThenGoneStore);
+
+/// A `NotFound` the slow store raises under the read names the digest, the
+/// way one for a blob that was never there does, so the worker reports the
+/// missing input and the client re-uploads exactly that blob.
+#[nativelink_test]
+async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH, 4096).unwrap();
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(Arc::new(PartialThenGoneStore {
+            bytes_before_error: 1024,
+        })),
+    ));
+
+    let err = fast_slow_store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("the slow store lost the blob under the read");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert_eq!(
+        err.context,
+        ErrorContext::MissingDigest {
+            hash: digest.packed_hash().to_string(),
+            size: 4096,
+        },
+        "{err:?}"
     );
 
     Ok(())

@@ -1,0 +1,347 @@
+---
+title: Stores
+description: "Declaring stores, naming them, and the idea that unlocks the rest of the config: stores compose, and one store refers to another by name."
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone who has seen a NativeLink config with a store
+nested five levels deep and wanted to know why. **What you'll know at the
+end:** how to declare a store, how to name one, how composition works, and
+which layers are worth reaching for. **Time:** thirty minutes.
+
+<Prerequisites>
+  The config model from [The config file](/configuration/config-file).
+</Prerequisites>
+
+## A store is one entry in an array [#a-store-is-one-entry-in-an-array]
+
+The `stores` array holds every storage backend the process can use. Each entry
+is an object with a `name` and exactly one type key:
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    memory: {
+      eviction_policy: { max_bytes: 1000000000 }, // 1 GB
+    },
+  },
+  {
+    name: "AC_MAIN_STORE",
+    memory: {
+      eviction_policy: { max_bytes: 100000000 }, // 100 MB
+    },
+  },
+],
+```
+
+That's a complete, working cache backend pair: a content-addressable store for
+blobs and an action cache for results. Everything lives in RAM, so a restart
+wipes it, which is exactly right for a demo or a short-lived CI runner, and
+exactly wrong for anything else.
+
+The name is arbitrary. `CAS_MAIN_STORE` and `AC_MAIN_STORE` are conventions
+the shipped examples use, not keywords; the services in your `servers` block
+will refer to whatever names you pick.
+
+## Backing it with disk [#backing-it-with-disk]
+
+Swap the type key and the same two stores survive a restart:
+
+```json5
+stores: [
+  {
+    name: "CAS_MAIN_STORE",
+    filesystem: {
+      content_path: "/var/lib/nativelink/cas",
+      temp_path: "/var/lib/nativelink/tmp",
+      eviction_policy: { max_bytes: 50000000000 }, // 50 GB
+    },
+  },
+  {
+    name: "AC_MAIN_STORE",
+    filesystem: {
+      content_path: "/var/lib/nativelink/ac",
+      temp_path: "/var/lib/nativelink/tmp",
+      eviction_policy: { max_bytes: 500000000 }, // 500 MB
+    },
+  },
+],
+```
+
+`content_path` is where the bulk of the data lives. `temp_path` is a staging
+area for in-flight writes and deletes, and it must be **on the same block
+device** as `content_path` so a completed write can be moved into place
+atomically rather than copied. Everything in `temp_path` is deleted on every
+startup.
+
+On boot, `content_path` is scanned and every file found is added back to the
+cache; that scan is what makes the store durable across restarts.
+
+<Callout type="warn" title="Set an eviction policy or the store grows forever">
+  `eviction_policy` is optional in the schema and unbounded when omitted. A
+  store without one never removes anything, which for a `memory` store means
+  the process grows until the kernel kills it, and for a `filesystem` store
+  means the disk fills. Set `max_bytes` on every store you declare.
+</Callout>
+
+<Callout type="info" title="Pick a filesystem that handles many small files">
+  CAS blobs are typically small: function-level outputs, header files, link
+  arguments. Default ext4 works fine; a filesystem tuned for many small files
+  degrades more gracefully under load.
+</Callout>
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="FilesystemSpec" />
+
+## Stores compose [#stores-compose]
+
+Here is the idea the rest of this page is about. **Most store types don't
+store anything.** They wrap another store and change its behaviour, and the
+store they wrap is written inline, as a full store spec:
+
+```json5
+{
+  name: "CAS_MAIN_STORE",
+  compression: {
+    compression_algorithm: { lz4: {} },
+    backend: {
+      filesystem: {
+        content_path: "/var/lib/nativelink/cas",
+        temp_path: "/var/lib/nativelink/tmp",
+        eviction_policy: { max_bytes: 100000000000 }, // 100 GB
+      },
+    },
+  },
+},
+```
+
+`compression` has no storage of its own. It compresses on write, decompresses
+on read, and hands the bytes to whatever is in `backend`. The client sees raw
+bytes either way. Build artifacts are usually highly compressible, so this
+saves disk in exchange for CPU; the only algorithm offered is `lz4`, which is
+fast and gives up early on data that won't compress.
+
+Because the wrapped store is a full spec rather than a reference to a type,
+wrappers nest arbitrarily. A `verify` around a `size_partitioning` whose upper
+half is a `dedup` whose index is a `fast_slow` of memory-over-disk is not an
+exotic config; it's `nativelink-config/examples/filesystem_cas.json5`, and
+each layer is doing one comprehensible job.
+
+## `ref_store`: naming instead of nesting [#ref_store-naming-instead-of-nesting]
+
+Nesting alone can't express *sharing*. If two stores should write to the same
+place, inlining the backend twice gives you two independent stores that
+happen to have identical settings.
+
+`ref_store` is the escape hatch. It's a store type whose entire body is the
+name of another top-level store:
+
+```json5
+stores: [
+  {
+    name: "FS_CONTENT_STORE",
+    filesystem: {
+      content_path: "/var/lib/nativelink/content",
+      temp_path: "/var/lib/nativelink/tmp",
+      eviction_policy: { max_bytes: 2000000000 },
+    },
+  },
+  {
+    name: "CAS_MAIN_STORE",
+    size_partitioning: {
+      size: 262144, // 256 KB
+      lower_store: { ref_store: { name: "FS_CONTENT_STORE" } },
+      upper_store: { ref_store: { name: "FS_CONTENT_STORE" } },
+    },
+  },
+],
+```
+
+Both halves now land in the same physical store. Swap either `ref_store` for
+an inline spec and they diverge.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="RefSpec" />
+
+Two properties of `ref_store` are worth knowing before you use it:
+
+**Order doesn't matter.** A store can reference a name declared later in the
+array. `nativelink-config/examples/redis.json5` has `AC_MAIN_STORE` referring
+to `CAS_MAIN_STORE`, which is declared below it. References are resolved in a
+post-init pass after every store has been constructed.
+
+**A typo is not a parse error.** `deny_unknown_fields` catches a misspelled
+*field*, but `ref_store: { name: "CAS_MAIN_STROE" }` is structurally valid;
+the failure surfaces in that post-init pass (`Failed to find store
+'CAS_MAIN_STROE' in StoreManager in RefStore`), still at startup and still
+before any socket is bound, but after the parse itself has succeeded.
+
+<SourceLink file="nativelink-store/src/ref_store.rs" symbol="post_init" />
+
+## The layers worth knowing [#the-layers-worth-knowing]
+
+You don't need all eighteen store types to write a good config. These are the
+ones that appear in nearly every non-trivial one:
+
+| Type | What it does | Why you'd add it |
+| --- | --- | --- |
+| `filesystem` | Stores blobs on disk | Durability across restarts |
+| `memory` | Stores blobs in RAM | Speed, for small hot data |
+| `compression` | Compresses around a backend | Disk savings on build artifacts |
+| `dedup` | Splits blobs into chunks, stores each once | Large, similar artifacts |
+| `fast_slow` | Reads from `fast`, falls back to `slow` | A RAM tier over a disk tier |
+| `size_partitioning` | Routes by blob size to two stores | Keep small objects out of an index |
+| `verify` | Checks hash and size on write | Catch corruption at the boundary |
+| `completeness_checking` | Rejects AC entries whose blobs are gone | Correct action-cache results |
+| `existence_cache` | Remembers what the backend already has | Skip redundant existence checks |
+| `ref_store` | Names another top-level store | Sharing, instead of duplicating |
+| `shard` | Spreads across weighted backends | Horizontal capacity |
+| `noop` | Discards everything | A required slot you don't want to fill |
+
+Two of these are load-bearing for correctness rather than performance.
+**`verify`** with `verify_hash: true` catches a blob whose content doesn't
+match the digest it was uploaded under. **`completeness_checking`** wraps an
+action cache and checks the CAS still holds every blob a cached result refers
+to; without it, an eviction in the CAS turns cached results into builds that
+fail on a missing output.
+
+That's why most of the shipped backend examples (`filesystem_cas.json5`,
+`s3_backend_with_local_fast_cas.json5`, and the other object-storage examples)
+wrap the CAS in `verify`, why `redis.json5` wraps the AC in
+`completeness_checking`, and why you should do both.
+
+The full list, with every field and default, is in the
+[store reference](/reference/nativelink-config/store-overview). Recipes for
+specific backends (object storage, Redis, OCI registries) live in
+[How-to guides](/how-to).
+
+<Callout type="warn" title="There is no `s3` store type">
+  Cloud object storage is one store type, `experimental_cloud_object_store`,
+  with a `provider` field selecting between `aws`, `gcs`, `azure`, `ontap`,
+  `r2`, and `oci`. Configs and older docs showing a top-level `s3` key predate
+  that consolidation and will not parse.
+</Callout>
+
+## What keys the store [#what-keys-the-store]
+
+A store is content-addressed, so what goes in a key is the digest, and every
+server, worker, and build client sharing a cache must compute that digest the
+same way. SHA-256 and BLAKE3 produce different keys for identical bytes, so
+uploads made under one function are cache *misses* for clients using the
+other.
+
+NativeLink defaults to SHA-256. Declare it explicitly anyway, in the `global`
+block, so the file says what it depends on:
+
+```json5
+{
+  global: {
+    max_open_files: 24576,
+    default_digest_hash_function: "sha256",
+  },
+  // ... stores, servers, schedulers, workers ...
+}
+```
+
+Then match it on the client. For Bazel, in `.bazelrc`:
+
+```text
+startup --digest_function=sha256
+```
+
+NativeLink accepts uploads whose client-declared digest function differs from
+the server default, but logs a warning the first time it sees each mismatch:
+mixed digest functions divide the cache and reduce shared hits.
+
+<SourceLink file="nativelink-service/src/bytestream_server.rs" symbol="reported_digest_function_mismatches" />
+
+`max_open_files` is in that block for a related reason: a `filesystem` store
+holds file descriptors. At startup NativeLink tries to raise its own soft
+`nofile` limit to this value (default 24576) and sizes an internal semaphore
+from whatever the kernel actually granted, so if the hard limit is lower the
+effective value is lower too, and a warning is logged.
+
+<SourceLink file="nativelink-util/src/fs.rs" symbol="set_open_file_limit" />
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="GlobalConfig" />
+
+### Which function to pick [#which-function-to-pick]
+
+We compared both algorithms on an Apple M2 Max with 12 CPU cores and 32 GB of
+memory, running macOS 15.6 and Bazel 9.1.1. Each of two alternating runs built
+`//:nativelink` against a fresh local NativeLink filesystem cache with hash and
+size verification enabled. Uploads were synchronous, and the Bazel output and
+NativeLink cache directories were isolated by algorithm.
+
+| Phase | SHA-256 runs | SHA-256 mean | BLAKE3 runs | BLAKE3 mean |
+| --- | --- | ---: | --- | ---: |
+| Compile and populate an empty cache | 179.90 s, 180.18 s | 180.04 s | 181.56 s, 185.57 s | 183.57 s |
+| Rebuild from the populated cache | 6.39 s, 5.93 s | 6.16 s | 6.74 s, 6.41 s | 6.58 s |
+
+Both population builds performed 2,620 actions. Each cached rebuild reported
+1,458 remote cache hits. SHA-256 was 1.9% faster while populating the cache and
+6.3% faster on the cached rebuild in this test, so SHA-256 remains the default.
+
+These are whole-build measurements from one macOS machine, not a universal
+hashing benchmark; compilation, storage, scheduling, and operating-system
+caching dominate much of the elapsed time. Measure your own representative
+workload before changing algorithms. Keeping every participant aligned matters
+far more than a small isolated timing difference.
+
+## FAQ [#faq]
+
+<Accordions>
+
+<Accordion title="What happens when a store fills up?" id="what-happens-when-a-store-fills-up">
+
+`eviction_policy.max_bytes` caps it, and once full the least-recently-used
+entries are evicted to make room. An evicted CAS entry is just a future cache
+miss; the client rebuilds and re-uploads. An evicted entry that a cached
+action result still points at is the problem `completeness_checking` exists to
+solve.
+
+</Accordion>
+
+<Accordion title="Do I need a separate store for the CAS and the action cache?" id="do-i-need-a-separate-store-for-the-cas-and-the-action-cache">
+
+Yes, and the config loader enforces it: if a `cas` and an `ac` entry with the
+same `instance_name` name the same store, startup fails with `CAS and AC use
+the same store '...' in the config`. Beyond that check, they have very
+different shapes. The CAS holds many large-ish blobs and wants compression and
+deduplication; the AC holds small metadata records, wants none of that, and
+wants `completeness_checking`.
+
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="check_store_conflict" />
+
+</Accordion>
+
+<Accordion title="Why is `fast_slow` required for workers?" id="why-is-fast_slow-required-for-workers">
+
+A worker materialises action inputs onto disk by hard-linking out of its
+store, which only works if the store is filesystem-backed. `fast_slow` with a
+`filesystem` fast tier gives it that, and lets the slow tier be a shared
+remote CAS, or a `noop`, when the fast tier *is* the storage. `basic_cas.json5`
+takes the second option.
+
+</Accordion>
+
+<Accordion title="Can two NativeLink processes share one filesystem store?" id="can-two-nativelink-processes-share-one-filesystem-store">
+
+No. A `filesystem` store owns its directories: it scans them at boot and
+manages eviction against its own view of what's there. Two processes pointed
+at the same paths will evict each other's data. Share by putting a real shared
+backend behind them (object storage, Redis) or by having one process serve the
+CAS over gRPC to the others.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/configuration/servers-and-services" title="Servers and services">
+  Listeners, the eleven services, and the port split that keeps the worker API
+  off your public interface.
+</NextStep>
+
+<NextStep href="/reference/nativelink-config/store-overview" kind="aside" title="Store reference">
+  All eighteen store types, every field, every default.
+</NextStep>

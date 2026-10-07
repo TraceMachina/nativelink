@@ -58,6 +58,40 @@ fn make_cache_scheduler() -> Result<TestContext, Error> {
 }
 
 #[nativelink_test]
+async fn different_invocations_share_completed_cache_results() -> Result<(), Error> {
+    let context = make_cache_scheduler()?;
+    let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::new([42; 32], 123));
+    let result = ProtoActionResult::try_from(ActionResult::default())?;
+    context
+        .ac_store
+        .update_oneshot(action_info.digest(), result.encode_to_vec().into())
+        .await?;
+    for scope in ["invocation-one", "invocation-two"] {
+        let mut scoped_action = action_info.clone();
+        let ActionUniqueQualifier::Cacheable(key) =
+            &mut Arc::make_mut(&mut scoped_action).unique_qualifier
+        else {
+            panic!("Expected cacheable action");
+        };
+        key.execution_scope = Some(scope.to_string());
+        // No mock scheduler response: a regression that rekeys the cache would
+        // delegate to execution and fail this bounded wait.
+        let listener = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            context
+                .cache_scheduler
+                .add_action(OperationId::default(), scoped_action),
+        )
+        .await
+        .expect("Completed cache entry must be reusable across invocations")?;
+        let (state, _) = listener.as_state().await?;
+        assert_eq!(state.action_digest, action_info.digest());
+        assert_eq!(state.stage, ActionStage::CompletedFromCache(result.clone()));
+    }
+    Ok(())
+}
+
+#[nativelink_test]
 async fn add_action_handles_skip_cache() -> Result<(), Error> {
     let context = make_cache_scheduler()?;
     let action_info = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());

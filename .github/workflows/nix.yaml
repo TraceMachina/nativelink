@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26]
+        os: [ubuntu-24.04]
     name: Bazel Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -49,11 +49,23 @@ jobs:
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
                 || secrets.NATIVELINK_STAGING_API_KEY_RO }}
           mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+          # Remote execution only on Linux; the action hard-fails exec on
+          # non-Linux runners, so macOS lanes fall back to cache.
+          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
       - name: Invoke Bazel build in Nix shell
         run: |
+          # --config=nl-toolchain pins the hermetic LLVM + downloaded Rust
+          # toolchain identity. Without it, compiles inside `nix develop`
+          # resolve the nix-store default toolchain, baking /nix/store/<hash>
+          # paths into every action key — which is why this lane previously got
+          # 0 remote cache hits against a cache warmed off a non-nix toolchain.
+          # Pinning the hermetic identity makes this lane's action digests match
+          # a warm writer that uses the same identity. No remote executor is
+          # added here: this is cache-read keyed by a stable toolchain, not RBE.
           nix develop --impure --command \
             bazel-retry test //... \
+              --config=nl-toolchain \
               --verbose_failures \
               --lockfile_mode=error \
 
@@ -67,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-26]
+        os: [ubuntu-24.04]
     name: Cargo Dev / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -84,6 +96,9 @@ jobs:
       - name: Rust cache
         uses: >- # v2.9.1
           Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+
+      - name: Set up Azurite test runner
+        uses: ./.github/actions/setup-azurite-test-runner
 
       - name: Invoke Cargo build in Nix shell
         run: >
@@ -102,7 +117,6 @@ jobs:
       matrix:
         os:
           - ubuntu-24.04
-          - macos-26
     name: Installation / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -131,7 +145,7 @@ jobs:
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
-          test-name: [buildstream, buck2, mongo]
+        test-name: [buildstream, buck2, mongo]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -180,7 +194,7 @@ jobs:
     name: rbe ${{ matrix.command}}
     needs: [generate-rbe-commands]
     strategy:
-        matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
+      matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

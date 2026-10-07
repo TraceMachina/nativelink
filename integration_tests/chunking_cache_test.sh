@@ -22,13 +22,33 @@ if [[ $UNDER_TEST_RUNNER -ne 1 ]]; then
     echo "This script should be run under run_integration_tests.sh"
     exit 1
 fi
+
+# This test uploads a locally-built output to exercise the chunked write path
+# (see CHUNKING_FLAGS below), which the repo-wide
+# --remote_upload_local_results=false disables. To keep that anti-poisoning
+# default intact for PR/developer lanes, this test runs only where local
+# uploads are explicitly enabled: merges to main and the scheduled canary set
+# NL_LOCAL_UPLOADS=1 (see main.yaml / nativelink-cloud-canary.yaml).
+if [[ ${NL_LOCAL_UPLOADS:-0} != "1" ]]; then
+    echo "Skipping $(basename "$0"): requires local cache uploads (main/canary lanes only)."
+    exit 0
+fi
 set -x
 
 # Bazel uploads cache entries in the background by default
 # (--remote_cache_async, on since Bazel 8), so a build can return before the
 # chunked upload and SpliceBlob complete. Force synchronous uploads so the
 # chunk-index assertions below cannot race the upload.
-CHUNKING_FLAGS=(--config self_test --experimental_remote_cache_chunking --remote_cache_async=false)
+#
+# nativelink.bazelrc sets `build --remote_upload_local_results=false`
+# repo-wide, and CI's setup-nativelink-cloud action writes the same into
+# user.bazelrc for read-mode lanes. That suppresses the upload of this
+# locally-built genrule output, so the server never registers a chunk layout
+# and the index assertion below fails. Re-enable uploads for this test only
+# (a command-line flag overrides the rc default); this is independent of the
+# digest function -- chunking works under both sha256 and blake3.
+CHUNKING_FLAGS=(--config self_test --experimental_remote_cache_chunking
+    --remote_cache_async=false --remote_upload_local_results=true)
 EXPECTED_SHA=$(seq 1 1000000 | sha256sum | awk '{print $1}')
 # The test runner's working directory is not the workspace root, so resolve
 # the output location through bazel itself.

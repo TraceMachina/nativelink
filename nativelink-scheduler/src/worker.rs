@@ -13,20 +13,22 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectionResult, StartExecute, UpdateForWorker, update_for_worker,
+    ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
+    WorkerLoad, update_for_worker,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId, WorkerId};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime, FuncCounterWrapper};
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::error::TrySendError;
 
 pub type WorkerTimestamp = u64;
 
@@ -51,17 +53,40 @@ pub struct ActionInfoWithProps {
 /// Notifications to send worker about a requested state change.
 #[derive(Debug)]
 pub enum WorkerUpdate {
-    /// Requests that the worker begin executing this action.
-    RunAction(Box<(OperationId, ActionInfoWithProps)>),
+    /// Requests that the worker begin executing this action, dispatched at
+    /// this scheduler time.
+    RunAction(Box<(OperationId, ActionInfoWithProps, WorkerTimestamp)>),
 
     /// Request that the worker is no longer in the pool and may discard any jobs.
     Disconnect,
+
+    /// Requests that the worker stop executing this operation.
+    KillOperation(OperationId),
 }
 
 #[derive(Debug, MetricsComponent)]
 pub struct PendingActionInfoData {
     #[metric]
     pub action_info: ActionInfoWithProps,
+    /// When the worker was told to kill this operation, recorded as the
+    /// worker's last-seen timestamp at send time; keepalives keep that
+    /// within the worker timeout of now, so a deadline computed from it
+    /// fires at most one worker timeout late, never early. `None` until a
+    /// kill is sent. The operation's later report then only settles the
+    /// worker's own bookkeeping.
+    #[metric(help = "When the worker was asked to kill this operation.")]
+    pub kill_requested_at: Option<WorkerTimestamp>,
+    /// The worker's last-seen timestamp when the dispatch was sent.
+    #[metric(help = "When this operation was dispatched to the worker.")]
+    pub dispatched_at: WorkerTimestamp,
+    /// The worker said it took the action. A worker that does not speak
+    /// the acknowledgement never sets this, which is why the
+    /// unacknowledged sweep is opt-in.
+    #[metric(help = "Whether the worker acknowledged the dispatch.")]
+    pub accepted: bool,
+    /// The last resource usage the worker reported for this operation; it
+    /// arrives just before the result and says whether the result is a kill.
+    pub last_usage: Option<ActionResourceUsage>,
 }
 
 /// Represents a connection to a worker and used as the medium to
@@ -76,15 +101,16 @@ pub struct Worker {
     #[metric(group = "platform_properties")]
     pub platform_properties: PlatformProperties,
 
+    /// The properties the worker registered with. `platform_properties` is
+    /// reduced while actions run; this is what the worker offers when idle.
+    pub total_platform_properties: PlatformProperties,
+
     /// Channel to send commands from scheduler to worker.
-    pub tx: UnboundedSender<UpdateForWorker>,
+    pub tx: Sender<UpdateForWorker>,
 
     /// The action info of the running actions on the worker.
     #[metric(group = "running_action_infos")]
     pub running_action_infos: HashMap<OperationId, PendingActionInfoData>,
-
-    /// If the properties were restored already then it's added to this set.
-    pub restored_platform_properties: HashSet<OperationId>,
 
     /// Timestamp of last time this worker had been communicated with.
     // Warning: Do not update this timestamp without updating the placement of the worker in
@@ -96,6 +122,23 @@ pub struct Worker {
     #[metric(help = "If the worker is paused.")]
     pub is_paused: bool,
 
+    /// Set when the pause came from a decline for load: it lifts only on a
+    /// keepalive whose free memory covers this much, not on any keepalive.
+    #[metric(help = "Free memory in KiB the worker must report before it is unpaused.")]
+    pub pause_needs_kb: Option<u64>,
+
+    /// The worker said on connection that it admits any action while it
+    /// holds nothing else, so a decline for load from it comes from a busy
+    /// worker even when this scheduler thinks it idle.
+    pub admits_when_idle: bool,
+
+    /// The smallest reservation this worker declined for load while it held
+    /// nothing else, from a worker that does not admit when idle (an older
+    /// one, or one with no cgroup limit). It is not offered that much or
+    /// more until a keepalive reports that much free.
+    #[metric(help = "Smallest reservation in KiB the worker declined while idle.")]
+    pub idle_declined_kb: Option<u64>,
+
     /// Whether the worker is draining.
     #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
@@ -104,17 +147,49 @@ pub struct Worker {
     #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
     pub max_inflight_tasks: u64,
 
+    /// What the worker last reported having to spare, from its keepalive;
+    /// `None` until it reports, and for workers that never do.
+    pub last_load: Option<WorkerLoad>,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
 }
 
+/// Messages the channel holds beyond the worker's own concurrency: kills,
+/// keepalives and the disconnect, which arrive alongside the dispatches.
+const CHANNEL_HEADROOM: usize = 16;
+/// A worker that set no `max_inflight_tasks` gets this much queue.
+const DEFAULT_CHANNEL_DISPATCHES: usize = 256;
+
+/// How many messages the worker's channel holds: what its concurrency
+/// allows in flight plus the headroom. Bounded so that a worker that has
+/// stopped reading cannot be handed work without limit; a full channel is
+/// `ResourceExhausted` on the send, and the caller requeues.
+pub fn channel_capacity(max_inflight_tasks: u64) -> usize {
+    let ceiling = DEFAULT_CHANNEL_DISPATCHES * 4;
+    let dispatches = match usize::try_from(max_inflight_tasks) {
+        Ok(0) => DEFAULT_CHANNEL_DISPATCHES,
+        Ok(n) if n <= ceiling => n,
+        _ => ceiling,
+    };
+    dispatches + CHANNEL_HEADROOM
+}
+
 fn send_msg_to_worker(
-    tx: &UnboundedSender<UpdateForWorker>,
+    tx: &Sender<UpdateForWorker>,
     msg: update_for_worker::Update,
 ) -> Result<(), Error> {
-    tx.send(UpdateForWorker { update: Some(msg) })
-        .map_err(|err| Error::from_std_err(Code::Internal, &err).append("Worker disconnected"))
+    match tx.try_send(UpdateForWorker { update: Some(msg) }) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(_)) => Err(Error::new(
+            Code::ResourceExhausted,
+            "Worker channel full".to_string(),
+        )),
+        Err(err @ TrySendError::Closed(_)) => {
+            Err(Error::from_std_err(Code::Internal, &err).append("Worker disconnected"))
+        }
+    }
 }
 
 /// Reduces the platform properties available on the worker based on the platform properties provided.
@@ -128,8 +203,8 @@ fn reduce_platform_properties(
     for (property, prop_value) in &reduction_props.properties {
         if let PlatformPropertyValue::Minimum(value) = prop_value {
             let worker_props = &mut parent_props.properties;
-            if let &mut PlatformPropertyValue::Minimum(worker_value) =
-                &mut worker_props.get_mut(property).unwrap()
+            if let PlatformPropertyValue::Minimum(worker_value) =
+                worker_props.get_mut(property).unwrap()
             {
                 *worker_value -= value;
             }
@@ -141,20 +216,24 @@ impl Worker {
     pub fn new(
         id: WorkerId,
         platform_properties: PlatformProperties,
-        tx: UnboundedSender<UpdateForWorker>,
+        tx: Sender<UpdateForWorker>,
         timestamp: WorkerTimestamp,
         max_inflight_tasks: u64,
     ) -> Self {
         Self {
             id,
+            total_platform_properties: platform_properties.clone(),
             platform_properties,
             tx,
             running_action_infos: HashMap::new(),
-            restored_platform_properties: HashSet::new(),
             last_update_timestamp: timestamp,
             is_paused: false,
+            pause_needs_kb: None,
+            admits_when_idle: false,
+            idle_declined_kb: None,
             is_draining: false,
             max_inflight_tasks,
+            last_load: None,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -164,17 +243,28 @@ impl Worker {
                 run_action: AsyncCounterWrapper::default(),
                 keep_alive: FuncCounterWrapper::default(),
                 notify_disconnect: CounterWithTime::default(),
+                kill_operation: CounterWithTime::default(),
+                keep_alives_dropped: CounterWithTime::default(),
             }),
         }
     }
 
     /// Sends the initial connection information to the worker. This generally is just meta info.
     /// This should only be sent once and should always be the first item in the stream.
-    pub fn send_initial_connection_result(&mut self) -> Result<(), Error> {
+    /// `memory_property` is the platform property the scheduler vetoes
+    /// placement on; the worker declines for load against the same one, so
+    /// the two sides cannot disagree. None means the worker never declines
+    /// for load.
+    pub fn send_initial_connection_result(
+        &mut self,
+        memory_property: Option<&str>,
+    ) -> Result<(), Error> {
         send_msg_to_worker(
             &self.tx,
             update_for_worker::Update::ConnectionResult(ConnectionResult {
                 worker_id: self.id.clone().into(),
+                dispatch_ack: true,
+                memory_property: memory_property.unwrap_or_default().to_string(),
             }),
         )
         .err_tip(|| format!("Failed to send ConnectionResult to worker : {}", self.id))
@@ -184,29 +274,112 @@ impl Worker {
     pub async fn notify_update(&mut self, worker_update: WorkerUpdate) -> Result<(), Error> {
         match worker_update {
             WorkerUpdate::RunAction(action) => {
-                let (operation_id, action_info) = *action;
-                self.run_action(operation_id, action_info).await
+                let (operation_id, action_info, dispatched_at) = *action;
+                self.run_action(operation_id, action_info, dispatched_at)
+                    .await
             }
             WorkerUpdate::Disconnect => {
                 self.metrics.notify_disconnect.inc();
                 send_msg_to_worker(&self.tx, update_for_worker::Update::Disconnect(()))
             }
+            WorkerUpdate::KillOperation(operation_id) => {
+                let last_seen = self.last_update_timestamp;
+                let pending_action_info = self
+                    .running_action_infos
+                    .get_mut(&operation_id)
+                    .err_tip(|| {
+                        format!(
+                            "Worker {} asked to kill operation {operation_id} that is not running on it",
+                            self.id
+                        )
+                    })?;
+                // Set before the send so a racing update_action cannot slip
+                // through in between.
+                pending_action_info.kill_requested_at = Some(last_seen);
+                self.metrics.kill_operation.inc();
+                send_msg_to_worker(
+                    &self.tx,
+                    update_for_worker::Update::KillOperationRequest(KillOperationRequest {
+                        operation_id: operation_id.to_string(),
+                    }),
+                )
+            }
         }
+    }
+
+    /// Tells the worker to stop an operation this scheduler no longer holds
+    /// for it: a late acknowledgement of a dispatch the sweep already took
+    /// back means the worker is about to run an action that now belongs
+    /// elsewhere. Nothing to book, since the operation is not on the ledger.
+    pub(crate) fn kill_unknown_operation(&self, operation_id: &OperationId) -> Result<(), Error> {
+        self.metrics.kill_operation.inc();
+        send_msg_to_worker(
+            &self.tx,
+            update_for_worker::Update::KillOperationRequest(KillOperationRequest {
+                operation_id: operation_id.to_string(),
+            }),
+        )
+    }
+
+    /// Forgets a kill request whose message never reached the worker, so
+    /// the next revoked-operation sweep sends it again.
+    pub(crate) fn clear_kill_request(&mut self, operation_id: &OperationId) {
+        if let Some(pending_action_info) = self.running_action_infos.get_mut(operation_id) {
+            pending_action_info.kill_requested_at = None;
+        }
+    }
+
+    /// Whether the worker has been told to kill this operation.
+    pub(crate) fn is_kill_requested(&self, operation_id: &OperationId) -> bool {
+        self.running_action_infos
+            .get(operation_id)
+            .is_some_and(|pending_action_info| pending_action_info.kill_requested_at.is_some())
     }
 
     pub fn keep_alive(&mut self) -> Result<(), Error> {
         let tx = &mut self.tx;
         let id = &self.id;
+        let dropped = &self.metrics.keep_alives_dropped;
         self.metrics.keep_alive.wrap(move || {
-            send_msg_to_worker(tx, update_for_worker::Update::KeepAlive(()))
-                .err_tip(|| format!("Failed to send KeepAlive to worker : {id}"))
+            match send_msg_to_worker(tx, update_for_worker::Update::KeepAlive(())) {
+                // A worker that is not reading has a full queue of work
+                // ahead of the keepalive; skipping one costs nothing.
+                Err(err) if err.code == Code::ResourceExhausted => {
+                    dropped.inc();
+                    Ok(())
+                }
+                other => other.err_tip(|| format!("Failed to send KeepAlive to worker : {id}")),
+            }
         })
+    }
+
+    /// The worker said it took this operation. False when the operation is
+    /// not on this worker, which a late acknowledgement can cause.
+    pub fn mark_accepted(&mut self, operation_id: &OperationId) -> bool {
+        match self.running_action_infos.get_mut(operation_id) {
+            Some(pending) => {
+                pending.accepted = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Operations dispatched at or before `cutoff` that the worker never
+    /// acknowledged.
+    pub fn unacknowledged(&self, cutoff: WorkerTimestamp) -> Vec<OperationId> {
+        self.running_action_infos
+            .iter()
+            .filter(|(_, pending)| !pending.accepted && pending.dispatched_at <= cutoff)
+            .map(|(operation_id, _)| operation_id.clone())
+            .collect()
     }
 
     async fn run_action(
         &mut self,
         operation_id: OperationId,
         action_info: ActionInfoWithProps,
+        dispatched_at: WorkerTimestamp,
     ) -> Result<(), Error> {
         let tx = &mut self.tx;
         let worker_platform_properties = &mut self.platform_properties;
@@ -223,44 +396,46 @@ impl Worker {
                     queued_timestamp: Some(action_info.inner.insert_timestamp.into()),
                     platform: Some((&action_info.platform_properties).into()),
                     worker_id,
+                    request_metadata: action_info.origin_metadata.bazel_metadata.clone(),
                 };
+                // Send first: a channel that will not take the message
+                // leaves the ledger untouched, and the caller requeues.
+                send_msg_to_worker(tx, update_for_worker::Update::StartAction(start_execute))?;
                 reduce_platform_properties(
                     worker_platform_properties,
                     &action_info.platform_properties,
                 );
-                running_action_infos.insert(operation_id, PendingActionInfoData { action_info });
-
-                send_msg_to_worker(tx, update_for_worker::Update::StartAction(start_execute))
+                running_action_infos.insert(
+                    operation_id,
+                    PendingActionInfoData {
+                        action_info,
+                        kill_requested_at: None,
+                        dispatched_at,
+                        accepted: false,
+                        last_usage: None,
+                    },
+                );
+                Ok(())
             })
             .await
     }
 
-    pub(crate) fn execution_complete(&mut self, operation_id: &OperationId) {
-        if let Some((operation_id, pending_action_info)) =
-            self.running_action_infos.remove_entry(operation_id)
-        {
-            self.restored_platform_properties
-                .insert(operation_id.clone());
-            self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
-            self.running_action_infos
-                .insert(operation_id, pending_action_info);
-        }
-    }
-
-    pub(crate) async fn complete_action(
-        &mut self,
-        operation_id: &OperationId,
-    ) -> Result<(), Error> {
+    /// Releases everything the action reserved. This is the only place the
+    /// `Minimum` budget comes back: the worker's `ExecuteComplete` used to
+    /// restore it when the process exited, but the action is still resident
+    /// through output upload, which is where its memory peaks (output buffers,
+    /// the upload fan-out), so handing the budget back then admitted new work
+    /// onto a worker at its fullest.
+    pub(crate) fn complete_action(&mut self, operation_id: &OperationId) -> Result<(), Error> {
         let pending_action_info = self.running_action_infos.remove(operation_id).err_tip(|| {
             format!(
                 "Worker {} tried to complete operation {} that was not running",
                 self.id, operation_id
             )
         })?;
-        if !self.restored_platform_properties.remove(operation_id) {
-            self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
-        }
+        self.restore_platform_properties(&pending_action_info.action_info.platform_properties);
         self.is_paused = false;
+        self.pause_needs_kb = None;
         self.metrics.actions_completed.inc();
         Ok(())
     }
@@ -317,4 +492,8 @@ struct Metrics {
     keep_alive: FuncCounterWrapper,
     #[metric(help = "The number of notify_disconnect sent to this worker.")]
     notify_disconnect: CounterWithTime,
+    #[metric(help = "The number of kill_operation sent to this worker.")]
+    kill_operation: CounterWithTime,
+    #[metric(help = "Keepalives not sent because the worker's channel was full.")]
+    keep_alives_dropped: CounterWithTime,
 }

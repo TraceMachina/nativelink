@@ -33,6 +33,7 @@ use nativelink_util::buf_channel::{
 };
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::metrics::{record_store_tier_io, record_store_tier_read};
 use nativelink_util::store_trait::{
     RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, StoreOptimizations, UploadSizeInfo,
     slow_update_store_with_file,
@@ -40,6 +41,8 @@ use nativelink_util::store_trait::{
 use parking_lot::Mutex;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, trace, warn};
+
+use crate::filesystem_store::FilesystemStore;
 
 // TODO(palfrey) This store needs to be evaluated for more efficient memory usage,
 // there are many copies happening internally.
@@ -211,6 +214,32 @@ impl FastSlowStore {
         &self.slow_store
     }
 
+    /// Returns the filesystem-backed tiers that can evict a digest.
+    ///
+    /// The worker's fast store is normally a `FilesystemStore`, while the slow
+    /// store may be one behind a `RefStore`. `Store::downcast_ref` follows
+    /// wrappers that delegate `inner_store`; transforming wrappers intentionally
+    /// keep themselves visible because their digest-to-bytes mapping may differ,
+    /// so they are not recursively inspected here.
+    pub fn get_filesystem_stores(&self) -> Vec<Arc<FilesystemStore>> {
+        let mut stores = Vec::with_capacity(2);
+        for store in [&self.fast_store, &self.slow_store] {
+            let Some(filesystem_store) = store
+                .downcast_ref::<FilesystemStore>(None)
+                .and_then(FilesystemStore::get_arc)
+            else {
+                continue;
+            };
+            if !stores
+                .iter()
+                .any(|existing| Arc::ptr_eq(existing, &filesystem_store))
+            {
+                stores.push(filesystem_store);
+            }
+        }
+        stores
+    }
+
     pub fn get_arc(&self) -> Option<Arc<Self>> {
         self.weak_self.upgrade()
     }
@@ -247,6 +276,19 @@ impl FastSlowStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
+        // A `NotFound` for a digest key carries the digest as typed
+        // context, so the worker can report it as the missing input and the
+        // client re-uploads exactly that blob; see `ErrorContext`.
+        fn name_missing_digest(err: Error, key: &StoreKey<'_>) -> Error {
+            if let StoreKey::Digest(d) = key {
+                err.with_context(ErrorContext::MissingDigest {
+                    hash: d.packed_hash().to_string(),
+                    size: d.size_bytes().try_into().unwrap_or(i64::MAX),
+                })
+            } else {
+                err
+            }
+        }
         let reader_stream_size = if self
             .slow_store
             .inner_store(Some(key.borrow()))
@@ -265,20 +307,15 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to run has() on slow store")?
                     .ok_or_else(|| {
-                        let err = make_err!(
-                            Code::NotFound,
-                            "Object {} not found in either fast or slow store. \
-                                If using multiple workers, ensure all workers share the same CAS storage path.",
-                            key.as_str()
-                        );
-                        if let StoreKey::Digest(d) = key.borrow() {
-                            err.with_context(ErrorContext::MissingDigest {
-                                hash: d.packed_hash().to_string(),
-                                size: d.size_bytes().try_into().unwrap_or(i64::MAX),
-                            })
-                        } else {
-                            err
-                        }
+                        name_missing_digest(
+                            make_err!(
+                                Code::NotFound,
+                                "Object {} not found in either fast or slow store. \
+                                    If using multiple workers, ensure all workers share the same CAS storage path.",
+                                key.as_str()
+                            ),
+                            &key,
+                        )
                     })?
             )
         };
@@ -308,6 +345,7 @@ impl FastSlowStore {
                     self.metrics
                         .slow_store_hit_count
                         .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("slow", "hit");
                     counted_hit = true;
                 }
 
@@ -316,6 +354,7 @@ impl FastSlowStore {
                 self.metrics
                     .slow_store_downloaded_bytes
                     .fetch_add(output_buf_len, Ordering::Acquire);
+                record_store_tier_io("slow", "read", output_buf_len);
 
                 let writer_fut = Self::calculate_range(
                     &(bytes_received..bytes_received + output_buf_len),
@@ -356,7 +395,12 @@ impl FastSlowStore {
                 )
             }
             Err(err) => match slow_res {
-                Err(slow_err) if slow_err.code == Code::NotFound => Err(slow_err),
+                // The slow store lost the blob under the read (an evicting
+                // tier behind a gRPC store, say): the same missing input as
+                // a blob that was never there.
+                Err(slow_err) if slow_err.code == Code::NotFound => {
+                    Err(name_missing_digest(slow_err, &key))
+                }
                 _ => fast_res.merge(slow_res).merge(Err(err)),
             },
         }
@@ -434,6 +478,18 @@ impl StoreDriver for FastSlowStore {
             self.slow_store.clone().into_inner().post_init()
         )?;
         Ok(())
+    }
+
+    /// Both tiers drop their copy: the fast one is the cache this store
+    /// keeps, the slow one may be a cache of its own.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let fast = self
+            .fast_store
+            .as_store_driver_pin()
+            .remove(key.borrow())
+            .await?;
+        let slow = self.slow_store.as_store_driver_pin().remove(key).await?;
+        Ok(fast || slow)
     }
 
     async fn has_with_results(
@@ -768,8 +824,21 @@ impl StoreDriver for FastSlowStore {
     ) -> Result<(), Error> {
         // `has()` can report a stale map entry whose file is gone, so
         // get_part may still return NotFound; fall through to the slow
-        // store unless we have already streamed bytes to the caller.
-        if self.fast_store.has(key.borrow()).await?.is_some() {
+        // store. With bytes already streamed to the caller that is a resume:
+        // a digest names an immutable blob, so what the fast tier sent is a
+        // correct prefix and the slow store serves the rest from there (a
+        // Redis tier evicting the key under a read is the live case). Any
+        // other key could hold different content in each tier, so a short
+        // read there stays an error.
+        // One existence check, reused: this is the hot read path and `has()`
+        // on a filesystem fast store is a syscall.
+        let mut offset = offset;
+        let mut length = length;
+        let in_fast_store = self.fast_store.has(key.borrow()).await?.is_some();
+        if !in_fast_store {
+            record_store_tier_read("fast", "miss");
+        }
+        if in_fast_store {
             let bytes_before = writer.get_bytes_written();
             match self
                 .fast_store
@@ -783,6 +852,8 @@ impl StoreDriver for FastSlowStore {
                     self.metrics
                         .fast_store_downloaded_bytes
                         .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                    record_store_tier_read("fast", "hit");
+                    record_store_tier_io("fast", "read", writer.get_bytes_written());
                     return Ok(());
                 }
                 Err(e)
@@ -791,8 +862,31 @@ impl StoreDriver for FastSlowStore {
                     self.metrics
                         .fast_store_stale_map_falls_through
                         .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("fast", "stale");
                     warn!(%key, ?e, "Stale fast-store map entry; falling through to slow store");
                     // fall through to populate path
+                }
+                Err(e) if e.code == Code::NotFound && matches!(key, StoreKey::Digest(_)) => {
+                    let sent = writer.get_bytes_written() - bytes_before;
+                    if let Some(wanted) = length {
+                        let rest = wanted.saturating_sub(sent);
+                        if rest == 0 {
+                            return Ok(());
+                        }
+                        length = Some(rest);
+                    }
+                    offset += sent;
+                    self.metrics
+                        .fast_store_short_reads_resumed
+                        .fetch_add(1, Ordering::Acquire);
+                    record_store_tier_read("fast", "short");
+                    warn!(
+                        %key,
+                        sent,
+                        ?e,
+                        "Fast store ended short; resuming from the slow store"
+                    );
+                    // fall through to populate path, from the next byte
                 }
                 Err(e) => return Err(e),
             }
@@ -815,6 +909,8 @@ impl StoreDriver for FastSlowStore {
             self.metrics
                 .slow_store_downloaded_bytes
                 .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            record_store_tier_read("slow", "hit");
+            record_store_tier_io("slow", "read", writer.get_bytes_written());
             return Ok(());
         }
 
@@ -835,6 +931,8 @@ impl StoreDriver for FastSlowStore {
             self.metrics
                 .slow_store_downloaded_bytes
                 .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+            record_store_tier_read("slow", "hit");
+            record_store_tier_io("slow", "read", writer.get_bytes_written());
             return Ok(());
         }
 
@@ -953,6 +1051,10 @@ struct FastSlowStoreMetrics {
     huge_blob_dedup_bypasses: AtomicU64,
     #[metric(help = "Stale fast-store map entries that fell through to the slow store")]
     fast_store_stale_map_falls_through: AtomicU64,
+    #[metric(
+        help = "Reads of a digest the fast store ended short, resumed from the slow store at the byte it stopped"
+    )]
+    fast_store_short_reads_resumed: AtomicU64,
 }
 
 /// Maximum time a follower will wait on the leader-populator before

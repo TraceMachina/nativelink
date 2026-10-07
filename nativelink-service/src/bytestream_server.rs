@@ -1327,7 +1327,7 @@ impl ByteStreamServer {
             .err_tip(|| {
                 format!(
                     "'instance_name' not configured for '{}'",
-                    &resource_info.instance_name
+                    resource_info.instance_name
                 )
             })?;
         let store_clone = instance.store.clone();

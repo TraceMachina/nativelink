@@ -1,10 +1,10 @@
 {
   "pages": [
-    "intro",
-    "basic",
-    "production",
-    "chunking",
-    "compression"
+    "config-file",
+    "stores",
+    "servers-and-services",
+    "scheduler-and-workers",
+    "your-first-full-config"
   ],
-  "title": "Configuring NativeLink"
+  "title": "Configuration"
 }

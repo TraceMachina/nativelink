@@ -29,9 +29,6 @@ jobs:
           - os: ubuntu-24.04
             bazel_version: 9.1.1
             check_name: ubuntu-24.04
-          - os: macos-26
-            bazel_version: 9.1.1
-            check_name: macos-26
           # Deterministic Bazel compatibility lane. Randomizing Bazel versions
           # makes failures harder to reproduce. Bazel 8 cannot read the
           # Bazel 9 lockfile format, so this lane tests source compatibility
@@ -52,15 +49,8 @@ jobs:
       - name: Free disk space
         uses: ./.github/actions/free-disk
 
-      - name: Setup Bazel
-        uses: >- # v0.19.0
-          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-bazel-${{ matrix.bazel_version }}
-
       - name: Setup NativeLink Cloud
+        id: setup-nativelink-cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -71,6 +61,19 @@ jobs:
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
                 || secrets.NATIVELINK_STAGING_API_KEY_RO }}
           mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+          # Remote execution only on Linux; the action hard-fails exec on
+          # non-Linux runners, so macOS lanes fall back to cache.
+          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+
+      - name: Setup Bazel
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          # Only enable when we don't have remote cache, otherwise it just gets very slow
+          # and enormous
+          disk-cache: ${{ steps.setup-nativelink-cloud.outputs.enabled == 'false'}}
 
       - name: Show Bazel version
         run: bazel --version
@@ -119,15 +122,8 @@ jobs:
         with:
           compose-file: src/bin/docker-compose.store-tester.yaml
 
-      - name: Setup Bazel
-        uses: >- # v0.19.0
-          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: ${{ github.workflow }}-ubuntu-24.04
-
       - name: Setup NativeLink Cloud
+        id: setup-nativelink-cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -138,6 +134,19 @@ jobs:
                 && secrets.NATIVELINK_STAGING_API_KEY_RW
                 || secrets.NATIVELINK_STAGING_API_KEY_RO }}
           mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+          # Remote execution only on Linux; the action hard-fails exec on
+          # non-Linux runners, so macOS lanes fall back to cache.
+          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+
+      - name: Setup Bazel
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          # Only enable when we don't have remote cache, otherwise it just gets very slow
+          # and enormous
+          disk-cache: ${{ steps.setup-nativelink-cloud.outputs.enabled == 'false'}}
 
       - name: Run Store tester with sentinel
         run: |

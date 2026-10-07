@@ -1,4 +1,5 @@
 import { source } from "@/lib/source";
+import { GoogleTagManager } from "@next/third-parties/google";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import { GeistMono } from "geist/font/mono";
@@ -11,9 +12,9 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: {
     default: "NativeLink Docs",
-    template: "%s — NativeLink Docs",
+    template: "%s | NativeLink Docs",
   },
-  description: "Documentation for NativeLink — high-performance remote build cache & execution.",
+  description: "Documentation for NativeLink, a high-performance remote build cache and execution service.",
   metadataBase: new URL("https://docs.nativelink.com"),
 };
 
@@ -24,6 +25,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       suppressHydrationWarning
       className={`${GeistSans.variable} ${GeistMono.variable}`}
     >
+      <GoogleTagManager gtmId="GTM-NNLLRWGB" />
       <body className="flex min-h-screen flex-col bg-background text-foreground antialiased">
         {/* RootProvider configures the theme via next-themes. Setting BOTH
          * "class" and "data-theme" attributes is intentional:

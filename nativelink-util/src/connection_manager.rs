@@ -27,6 +27,7 @@ use tonic::transport::{Channel, Endpoint, channel};
 use tracing::{debug, error, info, warn};
 
 use crate::background_spawn;
+use crate::metrics::record_connection_acquired;
 use crate::retry::{self, Retrier, RetryResult};
 
 /// A helper utility that enables management of a suite of connections to an
@@ -102,6 +103,10 @@ struct ConnectionManagerWorker {
     /// round-trip that could be lost on tonic transport errors or task
     /// aborts.
     available_connections: Arc<Semaphore>,
+
+    /// Whether `available_connections` reflects a configured limit. When the
+    /// pool is unlimited its permit count is a sentinel, not a measurement.
+    bounded_connections: bool,
     /// Channels that are currently being connected.
     connecting_channels: FuturesUnordered<Pin<Box<dyn Future<Output = IndexedChannel> + Send>>>,
     /// Connected channels that are available for use.
@@ -140,6 +145,10 @@ impl ConnectionManager {
             .map(|endpoint| (0, endpoint))
             .collect();
 
+        // Zero means unlimited, which becomes a semaphore holding
+        // Semaphore::MAX_PERMITS. That is a sentinel, not a free-slot count,
+        // so remember which case this is and report no figure when unbounded.
+        let bounded_connections = max_concurrent_requests != 0;
         if max_concurrent_requests == 0 {
             max_concurrent_requests = Semaphore::MAX_PERMITS;
         } else {
@@ -151,6 +160,7 @@ impl ConnectionManager {
         let worker = ConnectionManagerWorker {
             endpoints,
             available_connections: Arc::new(Semaphore::new(max_concurrent_requests)),
+            bounded_connections,
             connection_tx,
             connecting_channels: FuturesUnordered::new(),
             available_channels: VecDeque::new(),
@@ -314,6 +324,13 @@ impl ConnectionManagerWorker {
         }));
     }
 
+    /// Free slots, or `None` when the pool is unlimited and the permit count
+    /// is a sentinel rather than a measurement.
+    fn free_connection_slots(&self) -> Option<usize> {
+        self.bounded_connections
+            .then(|| self.available_connections.available_permits())
+    }
+
     // This must never be made async otherwise the select may cancel it.
     fn handle_worker(&mut self, reason: String, tx: oneshot::Sender<Connection>) {
         let maybe_permit = self.available_connections.clone().try_acquire_owned().ok();
@@ -321,6 +338,7 @@ impl ConnectionManagerWorker {
             && let Some(channel) = self.available_channels.pop_front()
         {
             debug!(reason, "ConnectionManager: request running");
+            record_connection_acquired("grpc", self.free_connection_slots(), false);
             self.provide_channel(channel, tx, permit);
         } else {
             debug!(
@@ -330,6 +348,7 @@ impl ConnectionManagerWorker {
                 reason,
                 "ConnectionManager: no connection available, request queued",
             );
+            record_connection_acquired("grpc", self.free_connection_slots(), true);
             self.waiting_connections.push_back((reason, tx));
         }
     }

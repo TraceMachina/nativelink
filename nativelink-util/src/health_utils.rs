@@ -1,4 +1,4 @@
-// Copyright 2024 The Native Link Authors. All rights reserved.
+// Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -25,6 +25,8 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::time::timeout;
 use tracing::warn;
+
+use crate::metrics::record_health_check;
 
 /// Struct name health indicator component.
 type StructName = str;
@@ -56,6 +58,19 @@ pub enum HealthStatus {
 }
 
 impl HealthStatus {
+    /// Stable label for metrics. Part of the wire contract, so dashboards
+    /// break if these strings change.
+    #[must_use]
+    pub const fn metric_label(&self) -> &'static str {
+        match self {
+            Self::Ok { .. } => "ok",
+            Self::Initializing { .. } => "initializing",
+            Self::Warning { .. } => "warning",
+            Self::Failed { .. } => "failed",
+            Self::Timeout { .. } => "timeout",
+        }
+    }
+
     pub fn new_ok(
         component: &(impl HealthStatusIndicator + ?Sized),
         message: Cow<'static, str>,
@@ -225,13 +240,15 @@ impl HealthStatusReporter for HealthRegistry {
                         indicator.check_health(namespace.clone()),
                     )
                     .await;
+                    let status = status_res.unwrap_or_else(|_| {
+                        let struct_name = indicator.struct_name();
+                        warn!(struct_name, "Timeout during health check");
+                        HealthStatus::Timeout { struct_name }
+                    });
+                    record_health_check(namespace, status.metric_label());
                     HealthStatusDescription {
                         namespace: namespace.clone(),
-                        status: status_res.unwrap_or_else(|_| {
-                            let struct_name = indicator.struct_name();
-                            warn!(struct_name, "Timeout during health check");
-                            HealthStatus::Timeout { struct_name }
-                        }),
+                        status,
                     }
                 },
             ))

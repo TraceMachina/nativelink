@@ -1,0 +1,289 @@
+---
+title: Your first remote action
+description: Run a scheduler and a worker on your own machine, point Bazel at them, and watch a build action execute somewhere other than where you typed the command.
+---
+
+{/* archetype: tutorial, see /web/apps/docs/templates/tutorial.mdx */}
+
+**Who this is for:** anyone with a working cache who wants to see remote
+execution actually run. **What you'll have at the end:** a build whose
+actions Bazel reports as `remote`, running against a scheduler and worker
+you started yourself. **Time:** about fifteen minutes.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+The goal here is deliberately small: prove the *protocol* works before you
+touch anything else. Everything runs on your machine, in one process, using
+the toolchain already on your `PATH`. No containers to build, no fleet to
+provision, no hermeticity questions yet; those come next, and they're much
+easier to debug once you know the wiring is sound.
+
+<Callout type="info" title="What you need">
+  A Bazel workspace you can build (any one will do; the NativeLink repo
+  itself works), and either Docker or Nix. Up to about 4 GB of free disk
+  under `/tmp` for the caches this creates (the three filesystem stores in
+  the config cap at 2 GB, 200 MB, and 2 GB).
+</Callout>
+
+## Get the config [#get-the-config]
+
+The repo ships a config that is exactly this tutorial: CAS, action cache,
+scheduler, and one worker, all in a single process on localhost.
+
+```bash
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/refs/tags/v1.6.5/nativelink-config/examples/local_rbe_self_test.json5
+```
+
+<SourceLink file="nativelink-config/examples/local_rbe_self_test.json5" />
+
+It is worth reading before you run it: it is short, and every section of it
+maps onto something you already know or are about to learn.
+
+<Steps>
+
+<li>
+
+### Start the cluster [#start-the-cluster]
+
+```bash
+nix run github:TraceMachina/nativelink ./local_rbe_self_test.json5
+```
+
+Or, if you'd rather use the container image, mount the config in and publish
+both ports:
+
+```bash
+docker run \
+  -v $(pwd)/local_rbe_self_test.json5:/config \
+  -p 50051:50051 -p 50061:50061 \
+  ghcr.io/tracemachina/nativelink:v1.6.5 config
+```
+
+Leave it running. You'll want its output visible; the scheduler logs here
+are the primary diagnostic for the rest of this page.
+
+</li>
+
+<li>
+
+### Confirm the worker registered [#confirm-the-worker-registered]
+
+The worker connects *outward* to the scheduler on `50061` a moment after
+startup. In the server's log you should see it announce itself before you
+run anything, at the default `INFO` level:
+
+```plaintext
+Worker registered with scheduler worker_id=...
+```
+
+<SourceLink file="nativelink-worker/src/local_worker.rs" symbol="LocalWorker::run" />
+
+If instead the log repeats `Error` with a connection failure every half
+second, the worker cannot reach the `worker_api` listener; check that the
+`servers` block in the config you downloaded still has the `50061` listener.
+NativeLink does not serve gRPC reflection, so `grpcurl ... list` is not a
+way to check which services are up; the config file is.
+
+</li>
+
+<li>
+
+### Point a build at it [#point-a-build-at-it]
+
+From any Bazel workspace:
+
+```bash
+bazel test \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1 \
+  //your:target
+```
+
+Both flags point at the same port here, because this config puts the cache
+and the execution service on the same listener. In a real deployment they're
+usually different processes and different ports; the flags don't change.
+
+`--remote_default_exec_properties=cpu_count=1` is worth passing even though
+this config would accept an action without it. The scheduler here declares
+`cpu_count` as a `minimum` property and the worker advertises exactly `1`;
+an action that asks for nothing matches any worker and consumes none of
+that capacity, which happens to work here, but declaring it explicitly is
+the habit that will save you on the next page.
+
+</li>
+
+<li>
+
+### Read the result [#read-the-result]
+
+Ask Bazel where each action ran rather than trusting the wall-clock number:
+
+```bash
+bazel test \
+  --remote_cache=grpc://127.0.0.1:50051 \
+  --remote_executor=grpc://127.0.0.1:50051 \
+  --remote_default_exec_properties=cpu_count=1 \
+  --nocache_test_results \
+  --build_event_json_file=/tmp/bep.json \
+  //your:target
+
+jq -r 'select(.id.testResult) | .testResult.executionInfo.strategy' /tmp/bep.json
+```
+
+```plaintext
+remote
+```
+
+That single word is the whole tutorial. `--nocache_test_results` forces the
+action to actually execute instead of being served from the action cache,
+which is what you want the first time; otherwise a cache hit will look
+like a success and tell you nothing about whether execution works.
+
+</li>
+
+</Steps>
+
+<VerifyBlock>
+
+- The server's log shows `Worker registered with scheduler` before you run
+  the build.
+- The build event log reports `strategy` as `remote`, not `local` or
+  `worker`.
+- The server's log shows `Executing command` from the in-process worker, so
+  the action left the queue rather than sitting in it.
+- Running the same build again *without* `--nocache_test_results` completes
+  near-instantly: the worker's output went into your action cache, so the
+  second run is a cache hit.
+
+</VerifyBlock>
+
+That last one is the point of the whole reading path in miniature: remote execution
+doesn't replace your cache, it *fills* it. Every action a worker completes
+becomes a hit for whoever asks next.
+
+## What just happened [#what-just-happened]
+
+Four processes' worth of work happened inside one:
+
+1. Bazel uploaded the action's inputs to the **CAS** and asked the
+   **execution service** to run it.
+2. The execution service handed the action to the **scheduler**, which
+   compared what the action asked for (`cpu_count=1`) against what the
+   registered worker advertised (`cpu_count: 1`) and found a match.
+3. The **worker** fetched the inputs from the CAS by digest, hardlinked them
+   into a sandbox under its `work_directory`, and ran the command.
+4. The worker uploaded the outputs back to the CAS and the result to the
+   **action cache**, and the scheduler streamed completion back to Bazel.
+
+Everything after this is that same loop with more machines in it.
+
+## When it doesn't work [#when-it-doesnt-work]
+
+<Accordions type="multiple">
+
+<Accordion title="The build hangs at &quot;0s remote&quot; and never progresses" id="the-build-hangs-at-0s-remote-and-never-progresses">
+Your action's platform properties don't match any registered worker, so the
+scheduler is holding it in the queue. This is the single most common
+first-run failure and it is silent by design: the scheduler keeps waiting
+in case a suitable worker shows up later.
+
+Check the server log for the scheduler's periodic match logging: `Property
+mismatch`, `No candidate workers due to a lack of key`, or `No workers
+available to match!` (that last one means the worker never registered).
+Either way,
+[Platform properties](/remote-execution/platform-properties) walks through
+reading the scheduler's own matching diagnostics.
+</Accordion>
+
+<Accordion title="FAILED_PRECONDITION: Action ... is missing from CAS" id="failed-precondition-action-is-missing-from-cas">
+The execution service looked up the action digest in its `cas_store` and
+did not find it, so the store Bazel uploaded to is not the store the
+`execution` service reads. The usual causes are `--remote_cache` and
+`--remote_executor` pointing at different deployments, or an `execution`
+entry whose `cas_store` is not the same store (or a `ref_store` to it) as
+the `cas` and `bytestream` services on the client listener. NativeLink
+returns the error with a `PreconditionFailure` detail so Bazel can re-upload
+the missing blobs and retry; if it keeps repeating, the two stores are not
+the same store.
+<SourceLink file="nativelink-service/src/execution_server.rs" symbol="missing_blobs_failed_precondition" />
+</Accordion>
+
+<Accordion title="The action runs but fails with &quot;command not found&quot; or a missing header" id="the-action-runs-but-fails-with-command-not-found">
+The worker executed your action in a sandbox that doesn't have something
+your local environment provides implicitly. This is remote execution doing
+its job: it converted an unstated dependency into a visible failure. It's
+also out of scope for this page:
+[Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity)
+is the fix.
+
+Note that on this config the worker runs as *you*, on *your* machine, with
+your `PATH`. If a command isn't found even here, the action is depending on
+something Bazel isn't declaring at all.
+</Accordion>
+
+<Accordion title="Bazel reports strategy as &quot;local&quot; even though the flags are set" id="bazel-reports-strategy-as-local">
+Some action types are excluded from remote execution by the workspace's own
+configuration; check for `--strategy` or `--spawn_strategy` settings in the
+workspace's `.bazelrc`, and for `no-remote` tags on the target. Try a
+different target before concluding the cluster is at fault.
+</Accordion>
+
+<Accordion title="Permission or namespace errors on startup" id="permission-or-namespace-errors-on-startup">
+This config leaves `use_namespaces` and `use_mount_namespace` at their
+`false` defaults precisely so it runs unprivileged and on macOS. If you
+enabled them, you now need Linux and the corresponding capabilities. Turn
+them back off for this tutorial.
+</Accordion>
+
+</Accordions>
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+
+<Accordion title="Why does this run the worker in the same process as the CAS?" id="why-does-this-run-the-worker-in-the-same-process-as-the-cas">
+Because it's the fewest moving parts that still exercises the real code
+paths: the worker here uses the same gRPC worker API, the same scheduler,
+and the same store implementations a production cluster does. Splitting into
+separate processes changes the deployment, not the protocol. See
+[Production configuration](/operate/production-config) for the split
+version.
+</Accordion>
+
+<Accordion title="Can I keep using this for day-to-day local builds?" id="can-i-keep-using-this-for-day-to-day-local-builds">
+You can, and some people do; a single-process cluster is a reasonable way
+to get sandboxed, cached builds on one machine. But it gives you no
+parallelism beyond one worker's `cpu_count`, and the filesystem stores are
+pointed at `/tmp`. [Local testing](/remote-execution/local-testing) covers
+the longer-lived version of this setup.
+</Accordion>
+
+<Accordion title="What if I'm not using Bazel?" id="what-if-im-not-using-bazel">
+The cluster is build-tool agnostic: it speaks the Remote Execution API, and
+Buck2, Siso, Pants, and recc all connect to the same endpoints.
+[Connect your build](/getting-started/connect-your-build) has the flag
+equivalents. The verification step differs per tool; look for whatever your
+tool calls its execution strategy in its own logs.
+</Accordion>
+
+<Accordion title="Where did my data go, and how do I clean it up?" id="where-did-my-data-go-and-how-do-i-clean-it-up">
+Everything this config writes lives under
+`/tmp/nativelink-local-rbe-test/`: CAS content, action cache, the worker's
+fast store, and its work directory. Stop the server and delete that tree to
+start clean.
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/remote-execution/platform-properties" title="Platform properties">
+  How the scheduler decides which worker gets an action, and why a
+  mismatch queues forever instead of erroring.
+</NextStep>
+
+<NextStep href="/remote-execution/toolchains-and-hermeticity" kind="aside" title="Toolchains and hermeticity">
+  If your action ran but failed on a missing compiler, this is the page you
+  want.
+</NextStep>

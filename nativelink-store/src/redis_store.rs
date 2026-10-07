@@ -37,6 +37,7 @@ use nativelink_redis_tester::SubscriptionManagerNotify;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
+use nativelink_util::metrics::{record_connection_acquired, record_connection_reconnect};
 use nativelink_util::store_trait::{
     BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
@@ -68,6 +69,7 @@ use uuid::Uuid;
 use crate::cas_utils::is_zero_digest;
 use crate::redis_utils::{
     FtAggregateCursor, FtAggregateOptions, FtCreateOptions, SearchSchema, ft_aggregate, ft_create,
+    ft_info_indexing, ft_search_count,
 };
 
 /// The default size of the read chunk when reading data from Redis.
@@ -124,6 +126,16 @@ const DEFAULT_SCAN_COUNT: usize = 10_000;
 pub const DEFAULT_MAX_COUNT_PER_CURSOR: u64 = 1_500;
 
 const DEFAULT_CLIENT_PERMITS: usize = 500;
+
+/// Converts a TTL to the seconds `EXPIRE` takes.
+///
+/// Clamped to at least one second. Redis treats `EXPIRE` with a value of zero
+/// or less as "delete now", so a sub-second duration reaching here would
+/// destroy the value it was meant to protect. Config already rejects zero, so
+/// this only guards a future caller.
+fn ttl_seconds(key_ttl: Duration) -> i64 {
+    i64::try_from(key_ttl.as_secs()).unwrap_or(i64::MAX).max(1)
+}
 
 /// A wrapper around Redis to allow it to be reconnected.
 pub trait RedisManager<C>
@@ -304,6 +316,7 @@ impl RedisManager<ConnectionManager> for StandardRedisManager<ConnectionManager>
                 return Ok(guard.clone());
             }
         }
+        record_connection_reconnect("redis");
         let mut connection_manager = (self.connect_func)().await?;
         let new_uuid = Uuid::new_v4();
         self.configure(&mut connection_manager).await?;
@@ -400,6 +413,11 @@ where
 
     /// Per-call ceiling for `check_health` PING.
     health_check_timeout: Duration,
+
+    /// Expire keys this store writes after this long. `None` keeps them
+    /// forever, which is the default and what every store other than a BEP
+    /// store wants.
+    key_ttl: Option<Duration>,
 
     /// Have we done a subscribe for messages for `remove_callback` subscribes?
     has_remove_callback_subscribe: OnceCell<()>,
@@ -499,6 +517,7 @@ where
         max_client_permits: usize,
         max_count_per_cursor: u64,
         health_check_timeout: Duration,
+        key_ttl: Option<Duration>,
         subscriber_channel: UnboundedReceiver<PushInfo>,
         connection_manager: M,
     ) -> Result<Self, Error> {
@@ -526,14 +545,46 @@ where
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
             health_check_timeout,
+            key_ttl,
             has_remove_callback_subscribe: OnceCell::const_new(),
             remove_callbacks,
         })
     }
 
+    /// `STRLEN` of a key, retried on a transient error like the reads are.
+    async fn strlen(
+        &self,
+        client: &mut ClientWithPermit<C>,
+        encoded_key: &str,
+    ) -> Result<u64, Error> {
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            match redis::cmd("STRLEN")
+                .arg(encoded_key)
+                .query_async::<u64>(&mut client.connection_manager)
+                .await
+            {
+                Ok(v) => return Ok(v),
+                Err(err)
+                    if attempt < MAX_REDIS_RETRY_ATTEMPTS && is_retryable_redis_error(&err) =>
+                {
+                    client.reconnect(&self.connection_manager).await?;
+                    sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+                }
+                Err(err) => {
+                    return Err(Error::from(err).append("In RedisStore::get_part::strlen"));
+                }
+            }
+        }
+    }
+
     async fn get_client(&self) -> Result<ClientWithPermit<C>, Error> {
         let local_client_permits = self.client_permits.clone();
         let remaining = local_client_permits.available_permits();
+        // Zero here means every client is busy and this call is about to wait,
+        // which is the saturation signal worth alerting on.
+        record_connection_acquired("redis", Some(remaining), remaining == 0);
         let semaphore_permit = local_client_permits.acquire_owned().await?;
         trace!(remaining, "Got a client permit");
         let (connection_manager, uuid) = self.connection_manager.get_connection().await?;
@@ -684,6 +735,7 @@ impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
             spec.max_client_permits,
             spec.max_count_per_cursor,
             Duration::from_millis(spec.health_check_timeout_ms),
+            (spec.key_ttl_s > 0).then(|| Duration::from_secs(spec.key_ttl_s)),
             subscriber_channel,
             ClusterRedisManager::new(client.get_async_connection().await?).await?,
         )
@@ -757,12 +809,12 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
                     .await?
                     .map_err(Into::<Error>::into),
                 }
-                .err_tip_with_code(|_e| {
-                    (
-                        Code::InvalidArgument,
-                        format!("While connecting to redis with url: {local_addr}"),
-                    )
-                })
+                // Keep the underlying error's code rather than forcing
+                // InvalidArgument. Not every connect failure is a bad URL: a
+                // sentinel failover in progress reports the master as missing,
+                // which is transient and retryable, and overriding it to a
+                // permanent status made clients give up on a recoverable blip.
+                .err_tip(|| format!("While connecting to redis with url: {local_addr}"))
             }),
         )
         .await
@@ -811,6 +863,7 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
             spec.max_client_permits,
             spec.max_count_per_cursor,
             Duration::from_millis(spec.health_check_timeout_ms),
+            (spec.key_ttl_s > 0).then(|| Duration::from_secs(spec.key_ttl_s)),
             subscriber_channel,
             StandardRedisManager::new(Box::new(move || {
                 Box::pin(Self::connect(spec.clone(), tx.clone()))
@@ -1019,11 +1072,7 @@ where
         // The TL;DR is that if we're in cluster mode and the names hash differently, we can't use request
         // pipelining. By using these braces, we tell redis to only hash the part of the temporary key that's
         // identical to the final key -- so they will always hash to the same node.
-        let temp_key = format!(
-            "temp-{}-{{{}}}",
-            (self.temp_name_generator_fn)(),
-            &final_key
-        );
+        let temp_key = format!("temp-{}-{{{final_key}}}", (self.temp_name_generator_fn)());
 
         if is_zero_digest(key.borrow()) {
             let chunk = reader
@@ -1086,6 +1135,29 @@ where
                                 .messages
                                 .push(format!("While appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"));
                             return Err(error);
+                        }
+                    }
+                    // Guard the temp key as soon as it exists. An update that
+                    // dies anywhere after this — mid-upload, during the length
+                    // check, during the rename — would otherwise leave the
+                    // temp key behind forever, and nothing cleans those up.
+                    // EXPIRE on a key that does not exist yet is a no-op, so
+                    // this has to happen after the first chunk lands rather
+                    // than before the loop.
+                    if offset == 0 && let Some(key_ttl) = self.key_ttl {
+                        let ttl_secs = ttl_seconds(key_ttl);
+                        match connection_manager.expire::<_, ()>(temp_key_ref, ttl_secs).await {
+                            Ok(()) => {}
+                            Err(err) if is_retryable_redis_error(&err) => {
+                                let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
+                                connection_manager
+                                    .expire::<_, ()>(temp_key_ref, ttl_secs)
+                                    .await
+                                    .err_tip(|| format!("(after reconnect) while setting TTL on temp key ({temp_key_ref}) in RedisStore::update"))?;
+                            }
+                            Err(err) => {
+                                return Err(Error::from(err).append(format!("While setting TTL on temp key ({temp_key_ref}) in RedisStore::update")));
+                            }
                         }
                     }
                     Ok::<u32, Error>(end_pos)
@@ -1176,6 +1248,43 @@ where
             }
         }
 
+        // The rename carries the temp key's TTL across, so the key is never
+        // unprotected. Re-setting it here restarts the window at completion
+        // rather than at the first byte, which matters for a large blob whose
+        // upload takes a noticeable slice of the TTL. Reconnect once on a
+        // transient failover error, the same as the rename above: a key that
+        // silently never expires is the bug this option exists to prevent.
+        if let Some(key_ttl) = self.key_ttl {
+            let ttl_secs = ttl_seconds(key_ttl);
+            match client
+                .connection_manager
+                .expire::<_, ()>(final_key.as_ref(), ttl_secs)
+                .await
+            {
+                Ok(()) => {}
+                Err(err) if is_retryable_redis_error(&err) => {
+                    let (connection_manager, uuid) =
+                        self.connection_manager.reconnect(client.uuid).await?;
+                    client.connection_manager = connection_manager;
+                    client.uuid = uuid;
+                    client
+                        .connection_manager
+                        .expire::<_, ()>(final_key.as_ref(), ttl_secs)
+                        .await
+                        .err_tip(|| {
+                            format!(
+                                "While setting TTL on {final_key} (after reconnect) in RedisStore::update()"
+                            )
+                        })?;
+                }
+                Err(err) => {
+                    return Err(Error::from(err).append(format!(
+                        "While setting TTL on {final_key} in RedisStore::update()"
+                    )));
+                }
+            }
+        }
+
         // If we have a publish channel configured, send a notice that the key has been set.
         if let Some(pub_sub_channel) = &self.pub_sub_channel {
             client
@@ -1227,6 +1336,7 @@ where
         );
 
         let mut client = self.get_client().await?;
+        let mut bytes_read: u64 = 0;
         loop {
             // getrange is position-based and idempotent, so re-resolve the
             // master and retry on a transient failover without re-sending
@@ -1266,12 +1376,30 @@ where
                         .send(chunk)
                         .await
                         .err_tip(|| "Failed to write data in RedisStore::get_part")?;
+                } else if bytes_read > 0 {
+                    // GETRANGE answers the same for a value that ends on a
+                    // chunk boundary and for a key removed between two
+                    // chunks (eviction under allkeys-lru). Handing the second
+                    // on as EOF is a truncated blob that every store above
+                    // caches as complete, so ask how long the value is now
+                    // and refuse anything but the end we stopped at.
+                    let value_len = self.strlen(&mut client, encoded_key).await?;
+                    let read_end = u64::try_from(data_start)
+                        .unwrap_or(0)
+                        .saturating_add(bytes_read);
+                    if value_len != read_end {
+                        return Err(make_err!(
+                            Code::NotFound,
+                            "Data for {key:?} changed under the read in the Redis store: read {bytes_read} bytes from offset {data_start}, the key now holds {value_len}"
+                        ));
+                    }
                 }
 
                 break; // No more data to read.
             }
 
             // We received a full chunk's worth of data, so write it...
+            bytes_read += chunk.len() as u64;
             writer
                 .send(chunk)
                 .await
@@ -1511,7 +1639,17 @@ local i
 local indexes = {{}}
 
 if new_version-1 ~= expected_version then
-    redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    local reverted = redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    -- HINCRBY creates the key before the version can be checked, so a
+    -- caller holding a stale version for a key that has since gone leaves
+    -- behind a hash with nothing in it but a zeroed version. It has no
+    -- data, no expiry and never gains either, yet it still matches the
+    -- index prefix, so it sits in the index as an empty document and
+    -- crowds every search that reads it. Only ever removes a key this
+    -- call brought into existence: a real record always carries data.
+    if reverted == 0 and redis.call('HEXISTS', key, '{DATA_FIELD_NAME}') == 0 then
+        redis.call('DEL', key)
+    end
     return {{ 0, new_version-1 }}
 end
 -- Skip first 3 argvs, as they are known inputs.
@@ -1532,6 +1670,42 @@ end
 return {{ 1, new_version }}
 "
 );
+
+/// How long a freshly created index is given to finish its background
+/// scan before a read goes ahead regardless, and how often it is asked.
+const INDEX_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const INDEX_READY_POLL: Duration = Duration::from_millis(50);
+
+/// Polls `FT.INFO` until the index reports `indexing 0`, the timeout
+/// passes, or the call fails; none of those stops the caller, which reads
+/// the index either way.
+async fn wait_for_index_ready<C>(connection_manager: C, index: &str)
+where
+    C: ConnectionLike + Send + Clone,
+{
+    let started = Instant::now();
+    loop {
+        match ft_info_indexing(connection_manager.clone(), index).await {
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(err) => {
+                warn!(
+                    ?err,
+                    index, "Could not read FT.INFO after creating the index; reading it now"
+                );
+                return;
+            }
+        }
+        if started.elapsed() >= INDEX_READY_TIMEOUT {
+            warn!(
+                index,
+                "Index still backfilling after {INDEX_READY_TIMEOUT:?}; reading it now"
+            );
+            return;
+        }
+        sleep(INDEX_READY_POLL).await;
+    }
+}
 
 /// This is the output of the calculations below hardcoded into the executable.
 const FINGERPRINT_CREATE_INDEX_HEX: &str = "3e762c15";
@@ -1774,22 +1948,29 @@ impl RedisSubscriptionManager {
                                                 continue;
                                             }
                                         };
-                                        if value == "evicted" {
-                                            trace!(?push_info, "Eviction event");
-                                            let eviction_key = if let Some(key) = push_info.data.get(1) {
+                                        // Redis reports maxmemory eviction as
+                                        // "evicted" and TTL expiry as "expired".
+                                        // Both mean the key is gone, so both have
+                                        // to invalidate anything caching its
+                                        // existence; treating only one as a removal
+                                        // leaves an ExistenceCacheStore claiming to
+                                        // hold a key that Redis has already dropped.
+                                        if value == "evicted" || value == "expired" {
+                                            trace!(?push_info, %value, "Key removal event");
+                                            let removed_key = if let Some(key) = push_info.data.get(1) {
                                                 if let Value::BulkString(s) = key {
                                                     String::from_utf8(s.clone()).expect("String message")
                                                 } else {
-                                                    error!(?push_info, "Eviction key wasn't bulk-string");
+                                                    error!(?push_info, "Removed key wasn't bulk-string");
                                                     continue;
                                                 }
                                             } else {
-                                                error!(?push_info, "No key in eviction event");
+                                                error!(?push_info, "No key in removal event");
                                                 continue;
                                             };
-                                            trace!(?eviction_key, "Eviction key");
-                                            let Some((_prefix, internal_key)) = eviction_key.split_once(':') else {
-                                                error!(?eviction_key, "Eviction key doesn't contain a colon");
+                                            trace!(?removed_key, "Removed key");
+                                            let Some((_prefix, internal_key)) = removed_key.split_once(':') else {
+                                                error!(?removed_key, "Removed key doesn't contain a colon");
                                                 continue;
                                             };
 
@@ -1900,13 +2081,16 @@ where
 {
     type SubscriptionManager = RedisSubscriptionManager;
 
-    async fn subscription_manager(&self) -> Result<Arc<RedisSubscriptionManager>, Error> {
-        if self.pub_sub_channel.is_none() {
-            return Err(make_input_err!(
+    fn subscription_manager(
+        &self,
+    ) -> impl Future<Output = Result<Arc<RedisSubscriptionManager>, Error>> {
+        std::future::ready(if self.pub_sub_channel.is_none() {
+            Err(make_input_err!(
                 "RedisStore must have a pubsub for Redis Scheduler if using subscriptions"
-            ));
-        }
-        Ok(self.subscription_manager.clone())
+            ))
+        } else {
+            Ok(self.subscription_manager.clone())
+        })
     }
 
     async fn update_data<T>(&self, data: T, expiry: Option<Duration>) -> Result<Option<i64>, Error>
@@ -2099,6 +2283,7 @@ where
                         max_idle: CURSOR_IDLE_MS,
                     },
                     sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
+                    sort_desc: K::SORT_DESCENDING,
                 },
             )
             .await
@@ -2136,7 +2321,7 @@ where
             // (Sentinel failover) — re-resolve it and retry rather than letting
             // the scheduler's matching loop spin on a stale handle. (A missing
             // index is not retryable here; it falls through to the create path
-            // below, which re-runs on the next matching cycle if needed.)
+            // below, which creates the index and retries the aggregate inline.)
             Err(err) if is_retryable_redis_error(&err) => {
                 let (connection_manager, _connect_id) =
                     self.connection_manager.reconnect(connect_id).await?;
@@ -2180,6 +2365,24 @@ where
                         })
                     }
                 });
+
+                // FT.CREATE returns before the index holds the keys that
+                // already exist; RediSearch scans them in the background.
+                // An aggregate in that window reads a partial index, and
+                // for the scheduler's queue that is a queue with actions
+                // missing, so wait for the scan to finish first. The wait
+                // is bounded; past it the aggregate runs anyway and the next
+                // pass re-reads.
+                if create_result.is_ok() {
+                    wait_for_index_ready(
+                        connection_manager.clone(),
+                        &format!(
+                            "{}",
+                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+                        ),
+                    )
+                    .await;
+                }
 
                 let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(
@@ -2281,6 +2484,52 @@ where
                     .err_tip(|| "In RedisStore::search_by_index_prefix::decode"),
             )
         }))
+    }
+
+    async fn count_by_index_prefix<K>(&self, index: K) -> Result<u64, Error>
+    where
+        K: SchedulerIndexProvider + Send,
+    {
+        let index_value = index.index_value();
+        try_sanitize(index_value.as_ref())
+            .then_some(())
+            .err_tip(|| {
+                format!("In RedisStore::count_by_index_prefix::try_sanitize - {index_value:?}")
+            })?;
+        let index_name = format!(
+            "{}",
+            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+        );
+        let query = if index_value.is_empty() {
+            "*".to_string()
+        } else {
+            format!("@{}:{{ {} }}", K::INDEX_NAME, index_value)
+        };
+
+        let (connection_manager, connect_id) = self.connection_manager.get_connection().await?;
+        // Same failover handling as search_by_index_prefix: a demoted master
+        // answers READONLY and a dead one drops the connection, both meaning the
+        // master moved. Unlike that path this never creates the index; counting
+        // is a read-only observer and the matching loop owns index creation.
+        match ft_search_count(connection_manager, index_name.clone(), query.clone()).await {
+            Err(err) if is_retryable_redis_error(&err) => {
+                let (connection_manager, _connect_id) =
+                    self.connection_manager.reconnect(connect_id).await?;
+                ft_search_count(connection_manager, index_name.clone(), query)
+                    .await
+                    .map_err(Error::from)
+                    .err_tip(|| {
+                        format!(
+                            "Error with reconnected ft_search_count in RedisStore::count_by_index_prefix({index_name})"
+                        )
+                    })
+            }
+            result => result.map_err(Error::from).err_tip(|| {
+                format!(
+                    "Error with ft_search_count in RedisStore::count_by_index_prefix({index_name})"
+                )
+            }),
+        }
     }
 
     async fn get_and_decode<K>(

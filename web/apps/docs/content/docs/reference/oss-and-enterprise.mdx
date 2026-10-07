@@ -1,0 +1,293 @@
+---
+title: Open source and Enterprise
+description: What the open-source distribution actually contains, which two modules are licensed differently, why nothing in the binary enforces that, and what the paid tiers are for.
+---
+
+{/* archetype: reference. See /web/apps/docs/templates/reference.mdx */}
+
+**Who this is for:** anyone who has to answer "are we allowed to run this?",
+and anyone deciding between self-hosting and NativeLink Enterprise. **What you'll
+have at the end:** an accurate picture of what is licensed how, what activates
+it, and what the open-source build does and does not restrict. **Time:** ten
+minutes.
+
+<Callout type="warn" title="This page describes the repository, not your legal position">
+  Everything below is checkable against the source tree at the commit you are
+  reading: file paths, licence headers, and the code that reaches them. None
+  of it is legal advice, and the operative text is the
+  [licence page](https://nativelink.com/license) and the `LICENSE` file in the
+  repository root, not this page. If your intended use is near a boundary,
+  read those and ask.
+</Callout>
+
+## The short version [#the-short-version]
+
+The whole of NativeLink is in the public repository. No separate
+"enterprise build", no stripped-down community edition, and no compile-time
+feature flag that divides them. What differs between the free and paid product
+is the *licence you hold*, not the *code you run*.
+
+Two modules inside that one codebase carry a different licence from the rest.
+Both are compiled into every binary, both are active by default, and nothing
+checks whether you are entitled to them.
+
+| Question | Answer |
+| --- | --- |
+| What licence covers most of the code? | `FSL-1.1-Apache-2.0`, the Functional Source License, converting to Apache 2.0 two years after each version ships |
+| What covers the rest? | Business Source License 1.1, on two modules: metrics and persistent workers |
+| Does the binary enforce the split? | No. No licence key, no check, no gate, no feature flag |
+| Is the free build limited in size, workers, or team? | No |
+| Does it contact Trace Machina? | No |
+
+## Two licences, one repository [#two-licences-one-repository]
+
+The repository root carries `LICENSE`, the Functional Source License 1.1 with
+an Apache 2.0 future grant. Its restriction is narrower than most people
+expect on first reading: it permits everything except a **Competing Use**,
+which the licence defines as making the software available to others in a
+commercial product or service that substitutes for NativeLink, substitutes for
+something Trace Machina already offers using it, or offers substantially
+similar functionality.
+
+Named as explicitly permitted, in the licence text itself: internal use and
+access, non-commercial education, non-commercial research, and use in
+connection with professional services you provide to someone else who is
+themselves complying.
+
+The practical read for most readers is that running NativeLink as your own
+build farm (for a team, for a company, in production, commercially) is
+internal use, and internal use is permitted. Reselling a managed NativeLink
+service is what the licence is written to prevent.
+
+<Callout type="info" title="The Apache conversion clock is per version, not a single date">
+  The future grant is effective "on the second anniversary of the date we make
+  the Software available." That clock runs per released version, not once for
+  the project. Version 1.6.5 converts to Apache 2.0 two years after 1.6.5 was
+  published; a version released next month converts a month later. No
+  future date exists on which the whole repository becomes Apache; there is a rolling
+  two-year trailing edge.
+</Callout>
+
+## The Business Source Licensed modules [#the-business-source-licensed-modules]
+
+Five files in the tree carry a Business Source License 1.1 header instead of
+the repository licence. They form two modules:
+
+| Module | Files | What it is |
+| --- | --- | --- |
+| Metrics | `nativelink-util/src/metrics.rs` | Every OpenTelemetry instrument NativeLink declares: the cache counters and histograms, the execution stage and result metrics, and the attribute sets attached to them |
+| Persistent workers | `nativelink-worker/src/persistent_worker/{mod,pool,live_worker,protocol}.rs` | Bazel's persistent-worker protocol: keeping a compiler process warm across actions instead of starting one per action |
+
+Their headers say the same thing, verbatim:
+
+```text
+// Use of this module requires an enterprise license agreement, which can be
+// attained by emailing contact@nativelink.com or signing up for Nativelink
+// Cloud at app.nativelink.com.
+```
+
+(The header still names NativeLink Cloud, which is no longer offered; the
+managed option today is NativeLink Enterprise, and the email address is the
+route to either agreement.)
+
+The wording matters. It is a licence obligation attached to *use of the
+module*, which is a different question from whether you may run the binary at
+all. You may run the binary; whether you may exercise those two modules in a
+shared, production or commercial setting depends on a separate agreement.
+
+## Nothing in the binary enforces any of this [#nothing-in-the-binary-enforces-any-of-this]
+
+<Callout type="warn" title="No licence check exists anywhere in the codebase">
+  No licence key field exists in the configuration schema. No startup
+  validation reads one. No runtime gate wraps either module. Searching the
+  whole tree for enforcement turns up exactly five hits: the five header
+  comments listed above, and nothing else. Both modules are compiled
+  unconditionally and both run by default. **You can be out of compliance
+  without ever seeing an error, a warning, or a log line.** The boundary here
+  is legal, not technical, and the software will not help you find it.
+</Callout>
+
+This is not an oversight to route around. It is the reason this page exists:
+if you rely on the binary to tell you which features you are entitled to, it
+will tell you that you are entitled to everything.
+
+### Metrics are always on [#metrics-are-always-on]
+
+No configuration turns instrumentation off. The meter provider
+is constructed unconditionally during startup and installed globally, and the
+scheduler and store layers call into the licensed instruments on their normal
+paths: `simple_scheduler_state_manager.rs` records completed executions,
+`memory_awaited_action_db.rs` records stage transitions, and
+`cache_metrics_store.rs` records every cache operation.
+
+`NL_OTEL_ENDPOINT` is often mistaken for the switch. It is not. Setting it
+chooses a load-balanced gRPC channel for the OTLP exporters; leaving it unset
+means the exporter builds its own channel to the OTLP default instead. Either
+way the instruments are declared and recorded. What changes is where the
+export attempt goes, not whether measurement happens.
+
+The consequence for licensing is that "we don't use metrics" is not a
+configuration you can be in. What you can choose is whether you *consume*
+them: whether a collector is running, whether dashboards and alerts are built
+on them, whether they are part of how your team operates the cluster. That
+consumption is what the licence is about. See
+[Observability](/operate/observability) for the pipeline itself, and note that
+page's own [licence callout](/operate/observability#do-metrics-require-a-commercial-licence).
+
+### Persistent workers activate from the action, not from your config [#persistent-workers-activate-from-the-action-not-from-your-config]
+
+No `persistent_worker` key exists anywhere in the configuration schema;
+searching `nativelink-config` for it returns nothing at all. The module is
+reached entirely from the action's own platform properties:
+
+| Property | Values | Effect |
+| --- | --- | --- |
+| `supports-workers` | `1` activates; anything else, or absent, does not | The only trigger. The worker checks this before every action |
+| `requires-worker-protocol` | `proto` (default) or `json` | Wire format. Any other value (or a persistent worker that cannot be started) makes the worker log and fall back to ordinary one-shot execution of the action |
+
+Those properties come from your build tool. Bazel sets them on rules that
+declare worker support: Java and Scala compilation, TypeScript, and anything
+using `ctx.actions.run` with `execution_requirements` asking for workers.
+A Bazel build that already uses persistent workers locally will exercise
+the licensed module remotely the first time it runs an affected action, with
+no NativeLink-side opt-in and nothing in your configuration mentioning it.
+
+Because there is no config surface, the pool's behaviour is fixed at
+compile-time defaults:
+
+| Behaviour | Value | Tunable? |
+| --- | --- | --- |
+| Live workers per key | 4 (matching Bazel's `worker_max_instances` default) | No |
+| Idle shutdown | 5 minutes without a request | No |
+| Requests before recycling a worker | 200 | No |
+
+Two actions share a worker process when their *worker key* matches: same
+resolved executable, same startup-flag prefix (the arguments before the first
+`@response-file`), and same wire format. The full picture, including what
+isolation you give up, is on
+[Persistent workers](/remote-execution/persistent-workers).
+
+## What the open-source build does not limit [#what-the-open-source-build-does-not-limit]
+
+Nothing in the code artificially constrains scale. Specifically, there is no
+cap on cache size, stored object count, action throughput, connected worker
+count, or number of people using the cluster; no trial period, expiry date, or
+time-limited mode; and no registration, activation, or account required to
+start the binary.
+
+Nor does the binary report anything home. The only outbound HTTP clients in
+the tree belong to storage backends you configure yourself (the S3-compatible,
+GCS and Azure object stores), and the only other egress is to the other
+backends you configure (Redis, MongoDB, `grpc` stores), gRPC to the peers in
+your own cluster, and the OTLP exporters. Those exporters send to whatever endpoint you point
+them at, which is your collector; if you point them somewhere else, that is
+your configuration doing it, not a default.
+
+The limits you will actually hit are the operational ones (file descriptors,
+disk, memory, scheduler backpressure), and those are documented in
+[Troubleshooting](/operate/troubleshooting#limits-that-block-instead-of-erroring)
+and [Runbooks](/operate/runbooks).
+
+## What Enterprise adds [#what-cloud-and-enterprise-add]
+
+The honest answer, from inside this repository, is that the paid tier is not
+a different codebase, so this documentation cannot enumerate its feature list
+by reading the source. What can be said accurately:
+
+It carries the licence for the two Business Source modules in shared,
+production and commercial settings, which for most teams running metrics-driven
+operations is the substantive difference, since as shown above there is no way
+to run without touching that module.
+
+It removes the operational work. The whole of the
+[Operate](/operate) section (the deployment shape, the metrics
+pipeline, the eviction sizing, the incident runbooks) describes work that a
+managed tier does instead of you. That is the trade
+[Shared cache](/getting-started/shared-cache) frames as an operational-cost
+question (control-plane compute, CAS storage, worker compute, and the engineer
+hours to run it) rather than a licence question.
+
+For what Enterprise includes, its pricing, and what support attaches to it, the
+sources of truth are [nativelink.com/pricing](https://nativelink.com/pricing)
+and the [licence page](https://nativelink.com/license). Meaningful contributors
+to the project may be eligible for waivers on the Business Source modules;
+ask the maintainers before relying on one.
+
+## Telling what you are running [#telling-what-you-are-running]
+
+The binary is a [clap](https://docs.rs/clap) parser with `version` derived from
+the crate, so:
+
+```sh
+nativelink --version
+```
+
+prints the crate version (`1.6.5` at the time of writing) and exits. The
+container image is tagged with the same version prefixed by `v`
+(`ghcr.io/tracemachina/nativelink:v1.6.5`); pin that tag in production rather
+than a floating one. See
+[CLI and environment](/reference/cli-and-env) for the complete flag surface,
+which is `--help` and `--version` and nothing else, and
+[Upgrade versions](/how-to/upgrade-versions) for moving between them.
+
+No command prints licence status, because there is no licence
+status to print.
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+  <Accordion title="Can I run NativeLink commercially for free?" id="can-i-run-nativelink-commercially-for-free">
+    Running it as your own build infrastructure is internal use, which the
+    Functional Source License permits regardless of whether your company is
+    commercial. The separate question is the two Business Source modules:
+    metrics in a shared or production setting needs a licence, and metrics
+    cannot be switched off. Read the
+    [licence page](https://nativelink.com/license) against your actual
+    situation rather than inferring from this summary.
+  </Accordion>
+  <Accordion title="Can I fork it and remove the Business Source modules?" id="can-i-fork-it-and-remove-the-business-source-modules">
+    The Functional Source License permits modification and redistribution for
+    non-competing purposes, so a fork for your own use is within its terms.
+    Removing the metrics module is more invasive than it looks: the scheduler
+    and store layers call into it on their normal paths, so you are removing
+    instrumentation from the code that emits it, not deleting a plugin. The
+    Redistribution clause also requires you to carry the terms and keep the
+    copyright notices.
+  </Accordion>
+  <Accordion title="Does the free build phone home or collect telemetry?" id="does-the-free-build-phone-home-or-collect-telemetry">
+    No. The binary has no analytics client, no usage reporting, and no request to any
+    Trace Machina endpoint anywhere in the binary. The OTLP exporters send to
+    the endpoint you configure, which in every documented setup is a collector
+    you run.
+  </Accordion>
+  <Accordion title="When does NativeLink become Apache 2.0?" id="when-does-nativelink-become-apache-2-0">
+    Each released version does, two years after that version was made
+    available, a rolling edge rather than a single cutover date. The Business
+    Source modules are governed by their own headers and are not covered by the
+    repository licence's future grant.
+  </Accordion>
+  <Accordion title="Is there a feature I can only get by paying?" id="is-there-a-feature-i-can-only-get-by-paying">
+    Not in the binary. Every code path in the open-source distribution runs in
+    the open-source distribution; that is the point of the section above about
+    enforcement. What you buy is the entitlement to two of those paths in
+    settings the Business Source License restricts, plus the managed service
+    and support that sit outside the repository entirely.
+  </Accordion>
+</Accordions>
+
+<SourceLink file="LICENSE" symbol="Grant of Future License" />
+<SourceLink file="nativelink-util/src/metrics.rs" symbol="CACHE_METRICS" />
+<SourceLink file="nativelink-worker/src/running_actions_manager.rs" symbol="action_supports_persistent_workers" />
+
+<NextStep href="/getting-started/shared-cache" title="Shared cache">
+  The self-host-or-Enterprise decision worked through as an operational question
+  rather than a licensing one.
+</NextStep>
+
+<NextStep href="/remote-execution/persistent-workers" title="Persistent workers" kind="aside">
+  What the licensed module actually does, and the isolation it trades away.
+</NextStep>
+
+<NextStep href="/operate/observability" title="Observability" kind="aside">
+  The metrics pipeline the other licensed module feeds.
+</NextStep>

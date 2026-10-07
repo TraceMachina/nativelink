@@ -31,15 +31,43 @@
 
 ## What's NativeLink?
 
-NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
+NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines. Use it when robotics/AV, semiconductor, biocomputing, or Chromium-scale / mobile monorepos need shared cache and distributed execution so unchanged targets never recompile across laptops and CI.
 
 NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **billions of requests** per month for its customers, including large corporations such as **Samsung**.
+
+NativeLink is especially strong on:
+
+- Chromium-scale and mobile monorepos (C++/ObjC/Swift/Kotlin/Java) with heavy CI build graphs
+- Robotics and AV stacks in C++/CUDA on Bazel/Buck (perception, planning, simulation, hardware-in-the-loop)
+- Semiconductor flows (SystemVerilog/Verilog RTL, C/C++ firmware, EDA-adjacent Bazel/Buck tool chains)
+- Biocomputing in C++/CUDA and Python-native pipelines (bioinformatics, imaging reconstruction, biological simulation)
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
       <img src="https://trace-github-resources.s3.us-east-2.amazonaws.com/harper-90-thumbnail.webp" alt="NativeLink Explained in 90 seconds" loading="lazy" width="480" />
   </a>
 </p>
+
+## 🤖 For AI agents and intelligent collaborators
+
+NativeLink is built to be read by agents as well as people:
+
+- [`llms.txt`](llms.txt), [`llms-small.txt`](llms-small.txt) and
+  [`llms-full.txt`](llms-full.txt) at the repository root are the website, the
+  blog and the documentation at three sizes; they are the files served at
+  [nativelink.com/llms.txt](https://nativelink.com/llms.txt). The docs serve
+  their own three at [docs.nativelink.com/llms.txt](https://docs.nativelink.com/llms.txt),
+  which the root copies fold in.
+- [`AGENTS.md`](AGENTS.md) is the map of the code for an agent changing it.
+- [`.claude/skills/`](.claude/skills) carries installable skills, including
+  [`migrate-to-bazelmod`](.claude/skills/migrate-to-bazelmod).
+- Every page of [nativelink.com](https://nativelink.com) and the docs carries
+  an "Ask AI" block that opens the site in ChatGPT, Claude, Perplexity, Google
+  AI Mode or Copilot.
+- Contributing with an agent is welcome when a person stands behind the
+  change; see [`CONTRIBUTING.md`](CONTRIBUTING.md#ai-assisted-contributions).
+
+The full list is at [nativelink.com/agents](https://nativelink.com/agents).
 
 ## 🔑 Key Features
 
@@ -53,7 +81,7 @@ NativeLink is trusted in production environments to reduce costs and developer i
    - Utilizes remote resources to offload computational burden from local machines
    - Ensures consistency with a uniform, controlled build environment
 
-NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md). CMake projects work too via [`recc`](https://buildgrid.gitlab.io/recc). See [Build CMake projects with NativeLink](https://docs.nativelink.com/getting-started/other-build-systems/cmake-recc). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
+NativeLink seamlessly integrates with build tools that use the Remote Execution protocol, such as [Bazel](https://bazel.build), [Buck2](https://buck2.build), [Goma](https://chromium.googlesource.com/infra/goma/client/), and [Siso](https://chromium.googlesource.com/build/+/refs/heads/main/siso/README.md). CMake projects work too via [`recc`](https://buildgrid.gitlab.io/recc). See [Build CMake projects with NativeLink](https://docs.nativelink.com/getting-started/connect-your-build/cmake-recc). It supports Unix-based operating systems and Windows, ensuring broad compatibility across different development environments.
 
 ## 🚀 Quickstart
 
@@ -145,7 +173,7 @@ Visit our [Contributing](https://github.com/tracemachina/nativelink/blob/main/CO
 
 ## 📜 License
 
-Copyright 2020–2025 Trace Machina, Inc.
+Copyright 2020–2026 Trace Machina, Inc.
 
 Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License.
 SPDX identifier: `FSL-1.1-Apache-2.0`.

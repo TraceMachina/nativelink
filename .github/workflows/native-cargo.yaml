@@ -21,6 +21,10 @@ concurrency:
 
 env:
   RUSTFLAGS: -Dwarnings
+  # aws-lc-sys (JWT signing for GCS auth) assembles with NASM on x86_64
+  # Windows, which the runner image does not ship. Use the prebuilt objects
+  # the crate carries instead; the variable is ignored on every other target.
+  AWS_LC_SYS_PREBUILT_NASM: 1
 
 jobs:
   cargo-native:
@@ -52,6 +56,9 @@ jobs:
 
       - name: Build on ${{ runner.os }}
         run: cargo build --all --profile=smol
+
+      - name: Set up Azurite test runner
+        uses: ./.github/actions/setup-azurite-test-runner
 
       - name: Test on ${{ runner.os }}
         run: cargo test --all --profile=smol

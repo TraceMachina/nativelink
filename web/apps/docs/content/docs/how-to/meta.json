@@ -1,0 +1,10 @@
+{
+  "pages": [
+    "stores",
+    "run-multiple-workers",
+    "tls-and-auth",
+    "upgrade-versions",
+    "migrate-an-existing-cache"
+  ],
+  "title": "How-to guides"
+}

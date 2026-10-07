@@ -1,0 +1,214 @@
+---
+title: Repository and crate map
+description: What every crate and top-level directory in the NativeLink repository is for, and which one your change belongs in.
+---
+
+{/* archetype: explanation. See /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone opening the NativeLink repository for the first
+time and trying to work out where their change goes. **What you'll have at
+the end:** the crate layering, the size of each piece, the directories that
+are not crates, and the half-dozen places where the first guess is wrong.
+**Time:** fifteen minutes.
+
+NativeLink is one Cargo workspace of twelve crates plus a root binary, and
+the layering is strict enough that you can usually name the crate a change
+belongs in before you open an editor. The exceptions are worth learning
+early, because two of them put code in a crate whose name actively points
+somewhere else.
+
+## The workspace has no members list [#the-workspace-has-no-members-list]
+
+The root
+<SourceLink file="Cargo.toml" symbol="Cargo.toml" />
+declares `[workspace]` with only `exclude` and `resolver`. It has no
+`members` key. Membership is inferred from the path dependencies of the root
+`[package]`, which means **adding a crate to the workspace happens by
+depending on it**, not by editing a list.
+
+Three directories are explicitly excluded and build on their own:
+`nativelink-config/generate-stores-config`, `nativelink-test/fuzz`, and
+`tools/generate-bazel-rc`.
+
+<Callout type="info" title="The root Cargo.toml is a package, not just a workspace">
+  The version at the top of the root manifest is a `[package]` version, not
+  a `[workspace.package]` version. Nothing inherits it; every crate carries
+  its own copy, which is why a release bump edits the version in fourteen
+  files (seventeen once the two lock files and the changelog are counted).
+  See [releases and versioning](/contribute/release-versioning).
+</Callout>
+
+## The crates [#the-crates]
+
+Source sizes exclude each crate's `tests/` directory; the test column counts
+files directly under `tests/`.
+
+| Crate | Source | Tests | What lives here |
+| --- | --- | --- | --- |
+| `nativelink` (root `src/`) | 3 files, ~1.4k lines | none | `main()`, runtime setup, service wiring, TLS and listener construction; also the `redis_store_tester` and `cas_speed_check` binaries |
+| `nativelink-store` | 39 files, ~18.4k | 28 | Every store implementation and the composition machinery |
+| `nativelink-util` | 29 files, ~11.9k | 20 | The shared hub: store traits, scheduler traits, task spawning, fs, health, telemetry |
+| `nativelink-worker` | 12 files, ~9.0k | 7 | The worker runtime: action execution, materialization, upload |
+| `nativelink-scheduler` | 20 files, ~8.3k | 10 | Queueing, matching, state managers, worker bookkeeping |
+| `nativelink-service` | 13 files, ~5.4k | 13 | The gRPC service implementations |
+| `nativelink-config` | 7 files, ~4.7k | 3 | The config schema, the source of truth for the generated reference, plus the `build-schema` binary |
+| `nativelink-proto` | 20 files, ~18.3k | none | Vendored protos and their **checked-in** generated Rust |
+| `nativelink-redis-tester` | 5 files, ~0.9k | none | Fake Redis, mock pub-sub, read-only Redis |
+| `nativelink-error` | 1 file, ~0.6k | 2 | `Error`, `Code`, `ResultExt`, the error macros |
+| `nativelink-metric` (with the nested `nativelink-metric-macro-derive`) | 2 files, ~0.8k | none | The `MetricsComponent` trait, its derive, and the `publish!`/`group!` macros |
+| `nativelink-macro` | 1 file, 99 lines | none | `#[nativelink_test]` |
+
+## The layering [#the-layering]
+
+Every internal dependency points down this stack. It has no cycles, and
+the shape is worth memorising because it tells you what a change can reach.
+
+<Mermaid>{`graph TD
+  proto["nativelink-proto"]
+  macroderive["nativelink-metric-macro-derive"]
+  metric["nativelink-metric"]
+  error["nativelink-error"]
+  config["nativelink-config"]
+  util["nativelink-util<br/>the hub"]
+  redis["nativelink-redis-tester"]
+  store["nativelink-store"]
+  sched["nativelink-scheduler"]
+  worker["nativelink-worker"]
+  service["nativelink-service"]
+  bin["nativelink<br/>root binary"]
+  macroderive --> metric
+  proto --> error
+  metric --> error
+  error --> config
+  config --> util
+  proto --> util
+  metric --> util
+  redis --> store
+  util --> redis
+  util --> store
+  store --> sched
+  store --> worker
+  sched --> service
+  store --> service
+  sched --> bin
+  service --> bin
+  worker --> bin
+`}</Mermaid>
+
+`nativelink-util` is the hub. Almost every trait that two crates need to
+agree on lives there rather than in the crate that looks like it owns the
+concept: `Store` and `StoreDriver` are in `nativelink-util`, not
+`nativelink-store`, and the four scheduler state-manager traits are in
+`nativelink-util`, not `nativelink-scheduler`. This is deliberate: the
+implementations depend on the traits, and the traits must not depend on the
+implementations.
+
+<Callout type="warn" title="`nativelink-redis-tester` is a production dependency">
+  Its name says test utility; `nativelink-store` depends on it in
+  `[dependencies]`, not `[dev-dependencies]`. Treat changes to it as changes
+  to shipping code.
+</Callout>
+
+## Where the first guess is wrong [#where-the-first-guess-is-wrong]
+
+Six of these, and each one has cost somebody an afternoon.
+
+**Worker bookkeeping lives in the scheduler.** `worker.rs`,
+`worker_registry.rs` and `api_worker_scheduler.rs` are in
+`nativelink-scheduler`. The scheduler's *model* of a worker (its
+properties, its consumed resources, its liveness) belongs to the scheduler.
+`nativelink-worker` is only the runtime that executes actions.
+
+**`nativelink-test/` contains only `fuzz/`.** The `#[nativelink_test]`
+attribute macro is in `nativelink-macro`. The directory name is a leftover.
+
+**`nativelink-metric` does not depend on `nativelink-error`.** It cannot;
+`nativelink-error` depends on `nativelink-metric`, and the source carries a
+comment explaining that the direction was chosen to break the cycle. A
+metrics change that wants to return a `nativelink_error::Error` is a change
+that needs rethinking.
+
+**Generated proto code is checked in.** `nativelink-proto/genproto/` holds
+committed Rust, and the `[lib]` path points at it. You do not need `protoc`
+to build; you do need to regenerate and commit when a proto changes. See
+[how to extend](/contribute/how-to-extend#adding-a-grpc-service).
+
+**Store composition is not in one file.** A `verify` store wrapping a
+`fast_slow` over a `filesystem` is three files in `nativelink-store`, and
+the thing that decides what wraps what is
+`default_store_factory.rs`. [The store model](/explanations/store-model)
+explains the semantics.
+
+**Two metric systems coexist.** Which one you want depends on whether you
+are introspecting structure or graphing a number. See
+[codebase internals](/contribute/codebase-internals#two-metric-systems).
+
+## Directories that are not crates [#directories-that-are-not-crates]
+
+| Directory | What it is |
+| --- | --- |
+| `deploy/` | Kustomize overlays (`dev`, `kubernetes-example`, `lre-manual`, `chromium-example`) that assemble the pieces under `kubernetes/` |
+| `deployment-examples/` | Reference deployments you copy and adapt: `docker-compose`, `metrics`, `persistent-workers`, `rhel` |
+| `kubernetes/` | The Kustomize building blocks (`components/`, `resources/`, `workers/`) the overlays reference; Kubernetes deployments proper, including the Helm charts, ship with [NativeLink Enterprise](https://enterprise.nativelink.com) |
+| `integration_tests/` | Shell-driven end-to-end suites plus BuildStream, Buck2 and Mongo harnesses |
+| `local-remote-execution/` | The Nix-based LRE toolchain generation; see [LRE](/explanations/lre) |
+| `toolchain-examples/`, `templates/` | Starting points for downstream projects; both are `.bazelignore`d |
+| `tools/` | Nix modules, pre-commit hooks, toolchain definitions, CI helpers |
+| `web/` | The docs and marketing sites: Bun workspace, **not** part of the Bazel build |
+| `assets/` | The logo SVGs |
+
+<Callout type="info" title="`deploy/`, `deployment-examples/` and `kubernetes/` are three different things">
+  They are not alternative spellings of each other. `deploy/` is the
+  overlays, `deployment-examples/` is copyable manifests, and `kubernetes/`
+  is the building blocks the overlays compose.
+</Callout>
+
+## Conventions you will notice immediately [#conventions-you-will-notice-immediately]
+
+Every manifest except the nested macro-derive crate's starts with
+`#:schema tools/cargo-with-detailed-deps.json`, which is what gives you
+completion and validation in a TOML-aware editor.
+
+Every crate except `nativelink-proto` (generated code) and
+`nativelink-metric-macro-derive` has `lints.workspace = true` and no lint
+configuration of its own; all of it is centralised in the root
+`[workspace.lints]`.
+
+Three license headers are in use. FSL-1.1-Apache-2.0 is the default and
+covers the overwhelming majority of files; a handful are Apache-2.0; and two
+areas are **Business Source License**:
+`nativelink-util/src/metrics.rs` and all of
+`nativelink-worker/src/persistent_worker/`. Copy the header from the file
+next to the one you are creating rather than from memory.
+
+## Common questions [#common-questions]
+
+<Accordions type="multiple">
+  <Accordion title="I want to add a store. Which crates do I touch?" id="which-crates-for-a-store">
+    Two, plus a Bazel file: the spec goes in `nativelink-config`, the
+    implementation and its factory arm go in `nativelink-store`, and the new
+    file has to be added to `nativelink-store/BUILD.bazel`. The step-by-step
+    is in [how to extend](/contribute/how-to-extend#adding-a-store).
+  </Accordion>
+  <Accordion title="Why is there no `members` list in the workspace?" id="no-members-list">
+    Membership is derived from the root package's path dependencies. It
+    works, and it means the dependency graph and the workspace definition
+    cannot drift apart, but it does mean a crate nothing depends on is
+    silently not in the workspace.
+  </Accordion>
+  <Accordion title="Can I build without Bazel?" id="build-without-bazel">
+    Yes. `cargo build --all` builds the whole workspace. CI runs Bazel as
+    well, and a few checks exist only there, so run `bazel test //...` before
+    submitting. See [the testing guide](/contribute/testing-guide).
+  </Accordion>
+  <Accordion title="Where does `main()` live?" id="where-is-main">
+    `src/bin/nativelink.rs`, in the root package. It builds the Tokio runtime
+    by hand, constructs the stores, then assembles the gRPC routes. It is the
+    single best file to read first if you want to see how the pieces connect.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/contribute/codebase-internals" title="Codebase internals">
+  The traits, the error model, the async rules and the two metric systems:
+  the conventions that a reviewer will expect you to already know.
+</NextStep>

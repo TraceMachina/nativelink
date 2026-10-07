@@ -329,21 +329,55 @@ impl From<std::io::Error> for Error {
 impl From<redis::RedisError> for Error {
     fn from(error: redis::RedisError) -> Self {
         use redis::ErrorKind::{
-            AuthenticationFailed, InvalidClientConfig, Io as IoError, Parse as ParseError,
+            AuthenticationFailed, ClusterConnectionNotFound, EmptySentinelList,
+            InvalidClientConfig, Io as IoError, MasterNameNotFoundBySentinel,
+            NoValidReplicasFoundBySentinel, Parse as ParseError, RESP3NotSupported, Server,
             UnexpectedReturnType,
+        };
+        use redis::ServerErrorKind::{
+            BusyLoading, ClusterDown, MasterDown, NoPerm, ReadOnly, TryAgain,
         };
 
         // Conversions here are based on https://grpc.github.io/grpc/core/md_doc_statuscodes.html.
+        //
+        // The distinction that matters most is retryable vs not. These statuses
+        // reach REAPI clients directly, and Bazel treats INVALID_ARGUMENT as
+        // permanent: it fails the build instantly rather than retrying. So
+        // anything caused by the state of the Redis deployment — a failover in
+        // progress, a dropped connection, a node still loading its dataset —
+        // must NOT land there, or a routine blip becomes a failed CI run.
         let code = match error.kind() {
-            AuthenticationFailed => Code::PermissionDenied,
-            ParseError | UnexpectedReturnType | InvalidClientConfig => Code::InvalidArgument,
+            AuthenticationFailed | Server(NoPerm) => Code::PermissionDenied,
+
+            // Topology in flux. Sentinel failover makes these normal and
+            // brief: the master moved and the client has not caught up yet.
+            // Surfacing MasterNameNotFoundBySentinel as INVALID_ARGUMENT is
+            // what turned a 1-2 minute sentinel failover into a dead build.
+            MasterNameNotFoundBySentinel
+            | NoValidReplicasFoundBySentinel
+            | ClusterConnectionNotFound
+            | Server(ClusterDown | MasterDown | TryAgain | BusyLoading | ReadOnly) => {
+                Code::Unavailable
+            }
+
+            // A timeout is worth distinguishing from a dead connection, but
+            // both are transient and both are retryable.
             IoError => {
                 if error.is_timeout() {
                     Code::DeadlineExceeded
                 } else {
-                    Code::Internal
+                    Code::Unavailable
                 }
             }
+
+            // Genuine misconfiguration by the operator — retrying cannot help.
+            InvalidClientConfig | EmptySentinelList | RESP3NotSupported => Code::InvalidArgument,
+
+            // Server-side or protocol faults. Not the caller's argument, so
+            // not InvalidArgument: a malformed reply is our problem or the
+            // server's, and it is at least worth a retry.
+            ParseError | UnexpectedReturnType => Code::Internal,
+
             _ => Code::Unknown,
         };
 

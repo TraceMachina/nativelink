@@ -6,3 +6,4 @@ target/
 .git
 deployment-examples
 bazel-*
+user.bazelrc

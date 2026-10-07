@@ -116,7 +116,7 @@ async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert!(err.message().is_empty());
+    assert_eq!(err.message(), "");
 
     Ok(())
 }
@@ -161,7 +161,7 @@ async fn single_item_wrong_digest_size() -> Result<(), Box<dyn core::error::Erro
 
     let err = raw_response.unwrap_err();
     assert_eq!(err.code(), Code::NotFound);
-    assert!(err.message().is_empty());
+    assert_eq!(err.message(), "");
     Ok(())
 }
 

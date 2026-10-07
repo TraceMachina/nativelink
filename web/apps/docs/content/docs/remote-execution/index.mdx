@@ -1,0 +1,112 @@
+---
+title: Remote execution
+description: Workers that run the actions your cache misses.
+---
+
+{/* archetype: explanation (waypoint), see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone with a working cache who wants the misses to stop
+running locally. **What you'll have at the end of this section:** a scheduler,
+at least one worker, and a build whose cache misses execute on the farm
+instead of on your machine. **Time:** an hour for the first remote action,
+longer if your toolchain isn't hermetic yet.
+
+<Prerequisites>
+  A cache serving hits to your build. If you don't have one yet, start with [Getting started](/getting-started).
+</Prerequisites>
+
+## What this section adds [#what-this-rung-adds]
+
+A cache answers the question "has this exact action already been run?" When
+the answer is no, something still has to run it, and with caching alone,
+that something is your laptop. Remote execution changes the answer to that
+second question.
+
+Three things are new in the deployment: a **scheduler** that decides which
+worker gets which action, at least one **worker** that actually runs it, and
+the **execution service** on the server. One thing is new in your build
+invocation: you tell the build tool where the executor is, and you declare
+what kind of machine your actions need. One thing is deliberately *not* new:
+your CAS and action cache are exactly the ones Getting started left you with. That's
+why the sections are in this order.
+
+[From cache to execution](/remote-execution/from-cache-to-execution) is the
+long version of that paragraph, and it's the page to read first.
+
+## What to expect the first time [#what-to-expect-the-first-time]
+
+The first remote action almost never works on the first try, and it's nearly
+always one of two walls.
+
+**Platform properties.** The scheduler only hands an action to a worker whose
+advertised properties satisfy what the action asked for. When they don't line
+up, nothing errors: actions queue, indefinitely, which reads like a hang
+rather than a misconfiguration.
+
+**Toolchain hermeticity.** An action that runs on your machine because your
+machine happens to have the right compiler will not run on a worker that
+doesn't. Remote execution turns every implicit dependency on the local
+environment into a failure, which is uncomfortable the first time and
+extremely valuable afterwards.
+
+Both walls get their own page here rather than a footnote, because everyone
+hits them.
+
+## The pages, in order [#the-pages-in-order]
+
+**Understand the change**
+
+- [From cache to execution](/remote-execution/from-cache-to-execution):
+  what execution adds on top of a working cache, what's new in the
+  deployment and the build invocation, and what stays the same.
+
+**Get it running**
+
+- [Your first remote action](/remote-execution/first-remote-action): a
+  scheduler and one worker on your own machine, and a build you can watch
+  execute on them.
+
+**Get past the two walls**
+
+- [Platform properties](/remote-execution/platform-properties): the
+  matching contract, why a mismatch queues forever, and the scheduler's own
+  diagnostics.
+- [Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity):
+  pinning the toolchain so local and remote actions hash identically.
+- [Containers and images](/remote-execution/containers-and-images): the
+  other answer to the same problem, and what `container-image` really does.
+
+**Go further**
+
+- [Persistent workers](/remote-execution/persistent-workers): pooled
+  long-lived worker processes for toolchains with a startup tax.
+- [Local testing](/remote-execution/local-testing): keeping a local cluster
+  as a test fixture, in the two shapes the repo itself uses.
+- [Examples and templates](/remote-execution/examples-and-templates):
+  configs, deployment topologies, and project scaffolds to copy.
+
+## Start here, or skip ahead [#start-here-or-skip-ahead]
+
+**Start here** if you have a cache serving hits and haven't run anything
+remotely yet.
+
+**Go back to Getting started** if you don't have a cache serving hits yet.
+[Getting started](/getting-started) is the precondition for every page in
+this section, and pages here will fail in confusing ways without it.
+
+**Skip ahead** to [Configuration](/configuration) if you already have
+workers running and what you actually want is to understand the config file
+you copy-pasted to get here.
+
+**Jump straight to [Platform properties](/remote-execution/platform-properties)**
+if you have workers and your build is stuck at `0s remote`. That's the page.
+
+<NextStep href="/remote-execution/from-cache-to-execution" title="From cache to execution">
+  What changes when the misses stop running on your laptop: in the
+  deployment, in the build invocation, and in what breaks first.
+</NextStep>
+
+<NextStep href="/configuration" kind="aside" title="Configuration">
+  Once actions are executing, the config file is the next thing worth
+  actually understanding rather than copying.
+</NextStep>

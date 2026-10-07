@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// The worker's action future is a long chain of combinators; proving it
+// Send for the spawn walks the whole chain, and the default limit of 128 is
+// a few steps short of it on the sanitizer toolchain.
+#![recursion_limit = "256"]
+
 use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
@@ -44,7 +49,7 @@ use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::fetch_server::FetchServer;
-use nativelink_service::health_server::HealthServer;
+use nativelink_service::health_server::{HealthServer, health_paths};
 use nativelink_service::push_server::PushServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_service::worker_api_server::WorkerApiServer;
@@ -63,7 +68,7 @@ use nativelink_util::store_trait::{
 use nativelink_util::task::TaskExecutor;
 use nativelink_util::telemetry::init_tracing;
 use nativelink_util::{background_spawn, fs, spawn};
-use nativelink_worker::local_worker::new_local_worker;
+use nativelink_worker::local_worker::{WorkerRegistration, new_local_worker};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
 use tokio::net::{TcpListener, TcpSocket};
@@ -87,7 +92,6 @@ static GLOBAL: MiMalloc = MiMalloc;
 const DEFAULT_ADMIN_API_PATH: &str = "/admin";
 
 // Note: This must be kept in sync with the documentation in `HealthConfig::path`.
-const DEFAULT_HEALTH_STATUS_CHECK_PATH: &str = "/status";
 
 // Note: This must be kept in sync with the documentation in
 // `OriginEventsConfig::max_event_queue_size`.
@@ -191,6 +195,16 @@ macro_rules! service_setup {
     }};
 }
 
+/// A JSON body with its content type, for the admin API's listings.
+const fn json_response(
+    body: String,
+) -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+}
+
 async fn inner_main(
     cfg: CasConfig,
     shutdown_tx: broadcast::Sender<ShutdownGuard>,
@@ -205,6 +219,7 @@ async fn inner_main(
 
     let health_registry_builder =
         Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
+    let mut worker_registrations: Vec<Arc<WorkerRegistration>> = Vec::new();
 
     let store_manager = Arc::new(StoreManager::new());
     {
@@ -222,9 +237,34 @@ async fn inner_main(
                 .err_tip(|| format!("Failed to add store '{name}'"))?;
         }
         store_manager.run_post_init().await?;
+
+        // Workers start after the listeners are up, but the health registry
+        // is built with the listeners, so their registration flags are
+        // made and registered here and handed to the workers later.
+        let mut workers_health = health_registry_lock.sub_builder("workers");
+        for (i, worker_cfg) in cfg.workers.iter().flatten().enumerate() {
+            let WorkerConfig::Local(local_worker_cfg) = worker_cfg;
+            let name = if local_worker_cfg.name.is_empty() {
+                format!("worker_{i}")
+            } else {
+                local_worker_cfg.name.clone()
+            };
+            let registration = WorkerRegistration::new(&name);
+            workers_health
+                .sub_builder(&name)
+                .register_indicator(registration.clone());
+            worker_registrations.push(registration);
+        }
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
+    let (single_use_complete_tx, single_use_complete_rx) = oneshot::channel();
+    let mut single_use_complete_tx = Some(single_use_complete_tx);
+    let single_use_enabled = cfg.workers.as_ref().is_some_and(|workers| {
+        workers.iter().any(|worker| match worker {
+            WorkerConfig::Local(worker) => worker.single_use,
+        })
+    });
 
     let maybe_origin_event_tx = cfg
         .experimental_origin_events
@@ -402,12 +442,15 @@ async fn inner_main(
                 ));
 
         if let Some(health_cfg) = services.health {
-            let path = if health_cfg.path.is_empty() {
-                DEFAULT_HEALTH_STATUS_CHECK_PATH
-            } else {
-                &health_cfg.path
-            };
-            svc = svc.route_service(path, HealthServer::new(health_registry, &health_cfg));
+            let (path, readiness_path) = health_paths(&health_cfg)?;
+            svc = svc.route_service(
+                &path,
+                HealthServer::new(health_registry.clone(), &health_cfg),
+            );
+            svc = svc.route_service(
+                &readiness_path,
+                HealthServer::readiness(health_registry, &health_cfg),
+            );
         }
 
         if let Some(admin_config) = services.admin {
@@ -417,9 +460,51 @@ async fn inner_main(
                 &admin_config.path
             };
             let worker_schedulers = Arc::new(worker_schedulers.clone());
+            let listing_worker_schedulers = worker_schedulers.clone();
+            let listing_action_schedulers = Arc::new(action_schedulers.clone());
+            // Read-only views for the provisioner and operators: what the
+            // scheduler has connected and what it has queued, with the
+            // reservations the queued actions carry.
+            let admin_router = Router::new()
+                .route(
+                    "/scheduler/{instance_name}/workers",
+                    axum::routing::get(move |params: axum::extract::Path<String>| async move {
+                        let instance_name = params.0;
+                        let Some(scheduler) = listing_worker_schedulers.get(&instance_name) else {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                format!("No scheduler named '{instance_name}'"),
+                            ));
+                        };
+                        let workers = scheduler.worker_snapshot().await;
+                        nativelink_scheduler::admin::workers_json(&workers)
+                            .map(json_response)
+                            .map_err(|e| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:?}"))
+                            })
+                    }),
+                )
+                .route(
+                    "/scheduler/{instance_name}/demand",
+                    axum::routing::get(move |params: axum::extract::Path<String>| async move {
+                        let instance_name = params.0;
+                        let Some(scheduler) = listing_action_schedulers.get(&instance_name) else {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                format!("No scheduler named '{instance_name}'"),
+                            ));
+                        };
+                        nativelink_scheduler::admin::queued_demand_json(scheduler.as_ref())
+                            .await
+                            .map(json_response)
+                            .map_err(|e| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:?}"))
+                            })
+                    }),
+                );
             svc = svc.nest_service(
                 path,
-                Router::new().route(
+                admin_router.route(
                     "/scheduler/{instance_name}/set_drain_worker/{worker_id}/{is_draining}",
                     axum::routing::post(
                         move |params: axum::extract::Path<(String, String, String)>| async move {
@@ -440,8 +525,7 @@ async fn inner_main(
                                     .get(&instance_name)
                                     .err_tip(|| {
                                         format!(
-                                            "Can not get an instance with the name of '{}'",
-                                            &instance_name
+                                            "Can not get an instance with the name of '{instance_name}'",
                                         )
                                     })?
                                     .clone()
@@ -692,6 +776,11 @@ async fn inner_main(
         for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
             let spawn_fut = match worker_cfg {
                 WorkerConfig::Local(local_worker_cfg) => {
+                    let completion_tx = if local_worker_cfg.single_use {
+                        single_use_complete_tx.take()
+                    } else {
+                        None
+                    };
                     let fast_slow_store = store_manager
                         .get_store(&local_worker_cfg.cas_fast_slow_store)
                         .err_tip(|| {
@@ -731,7 +820,8 @@ async fn inner_main(
                         historical_store,
                     )
                     .await
-                    .err_tip(|| "Could not make LocalWorker")?;
+                    .err_tip(|| "Could not make LocalWorker")?
+                    .with_registration(worker_registrations[i].clone());
 
                     let name = if local_worker.name().is_empty() {
                         format!("worker_{i}")
@@ -749,7 +839,17 @@ async fn inner_main(
                     let shutdown_rx = shutdown_tx.subscribe();
                     let fut = trace_span!("worker_ctx", worker_name = %name)
                         .in_scope(|| local_worker.run(shutdown_rx));
-                    spawn!("worker", fut, ?name)
+                    spawn!(
+                        "worker",
+                        async move {
+                            fut.await?;
+                            if let Some(completion_tx) = completion_tx {
+                                let _ = completion_tx.send(());
+                            }
+                            Ok::<(), Error>(())
+                        },
+                        ?name
+                    )
                 }
             };
             root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
@@ -768,7 +868,13 @@ async fn inner_main(
         Ok(())
     }));
 
-    if let Err(e) = try_join_all(root_futures).await {
+    let result = select! {
+        result = try_join_all(root_futures) => result.map(|_| ()),
+        result = single_use_complete_rx, if single_use_enabled => {
+            result.map_err(|err| make_err!(Code::Internal, "Single-use worker completion channel closed: {err}"))
+        },
+    };
+    if let Err(e) = result {
         panic!("{e:?}");
     }
 
@@ -839,33 +945,33 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
     #[cfg(target_family = "unix")]
     let mut shutdown_guard = ShutdownGuard::default();
 
-    #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
-    runtime.spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen to SIGINT");
-        eprintln!("User terminated process via SIGINT");
-        std::process::exit(130);
-    });
-
     #[allow(unused_variables)]
     let (scheduler_shutdown_tx, scheduler_shutdown_rx) = oneshot::channel();
 
+    // SIGINT takes the SIGTERM path: a worker stopped from a terminal
+    // drains like one stopped by its supervisor. A second SIGINT during
+    // the drain exits at once, for the operator who meant it.
     #[cfg(target_family = "unix")]
     #[expect(clippy::disallowed_methods, reason = "signal handler on main runtime")]
     runtime.spawn(async move {
-        signal(SignalKind::terminate())
-            .expect("Failed to listen to SIGTERM")
-            .recv()
-            .await;
-        warn!("Process terminated via SIGTERM");
+        let mut sigterm = signal(SignalKind::terminate()).expect("Failed to listen to SIGTERM");
+        let mut sigint = signal(SignalKind::interrupt()).expect("Failed to listen to SIGINT");
+        let exit_code = tokio::select! {
+            _ = sigterm.recv() => { warn!("Process terminated via SIGTERM"); 143 }
+            _ = sigint.recv() => { warn!("Process terminated via SIGINT, draining; send it again to exit at once"); 130 }
+        };
+        tokio::spawn(async move {
+            sigint.recv().await;
+            eprintln!("User terminated process via second SIGINT");
+            std::process::exit(130);
+        });
         drop(shutdown_tx_clone.send(shutdown_guard.clone()));
         scheduler_shutdown_rx
             .await
             .expect("Failed to receive scheduler shutdown");
         let () = shutdown_guard.wait_for(Priority::P0).await;
         warn!("Successfully shut down nativelink.");
-        std::process::exit(143);
+        std::process::exit(exit_code);
     });
 
     #[expect(clippy::disallowed_methods, reason = "waiting on everything to finish")]

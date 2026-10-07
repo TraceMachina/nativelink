@@ -20,6 +20,9 @@
       url = "github:nlewo/nix2container/76be9608a7f4d6c985d28b0e7be903ae2547df3e";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    flake-root = {
+      url = "github:srid/flake-root";
+    };
   };
 
   outputs = inputs @ {
@@ -39,6 +42,7 @@
       ];
       imports = [
         inputs.git-hooks.flakeModule
+        inputs.flake-root.flakeModule
         ./local-remote-execution/flake-module.nix
         ./tools/darwin/flake-module.nix
         ./tools/nixos/flake-module.nix
@@ -98,7 +102,7 @@
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
           filter = path: type:
-            (builtins.match "^.*(tests/.+\.json5|examples/.+\.json5|data/.+|nativelink-config/README\.md)" path != null)
+            (builtins.match "^.*(tests/.+\.json5|examples/.+\.json5|data/.+|nativelink-config/README\.md|nativelink-store/aws_lc_musl_shims\.c)" path != null)
             || ((craneLibFor pkgs).filterCargoSources path type);
         };
 
@@ -171,6 +175,60 @@
         cargoArtifactsFor = p: (craneLibFor p).buildDepsOnly (commonArgsFor p);
         nightlyCargoArtifactsFor = p: (nightlyCraneLibFor p).buildDepsOnly (commonArgsFor p);
 
+        # Darwin binaries link against Nix's `libiconv`, which records an
+        # absolute `/nix/store/...` install name. That path only exists on the
+        # machine that built the binary, so the published macOS tarball failed
+        # to launch anywhere else with a dyld "Library not loaded" error.
+        #
+        # Nix's darwin `libiconv` is Apple's own libiconv and exports the same
+        # symbols as the copy macOS keeps in the dyld shared cache, so pointing
+        # the install name at `/usr/lib` is ABI-safe and leaves the binary with
+        # no Nix store references at all.
+        #
+        # See https://github.com/TraceMachina/nativelink/issues/2727.
+        darwinSystemDylibArgs = p: {
+          # `install_name_tool` invalidates the ad-hoc signature that arm64
+          # macOS requires. This hook re-signs during fixup, i.e. after the
+          # `preFixup` rewrite below.
+          nativeBuildInputs =
+            (commonArgsFor p).nativeBuildInputs
+            ++ [p.darwin.autoSignDarwinBinariesHook];
+
+          preFixup = ''
+            for binary in "$out"/bin/*; do
+              [ -f "$binary" ] || continue
+
+              # Skip anything that isn't a Mach-O image, such as wrapper scripts.
+              linkage="$(otool -L "$binary" 2>/dev/null)" || continue
+
+              printf '%s\n' "$linkage" | tail -n +2 | awk '{print $1}' \
+              | while read -r dylib; do
+                case "$dylib" in
+                  /nix/store/*/lib/libiconv*.dylib | /nix/store/*/lib/libcharset*.dylib)
+                    echo "relocating $dylib -> /usr/lib/''${dylib##*/} in $binary"
+                    install_name_tool \
+                      -change "$dylib" "/usr/lib/''${dylib##*/}" "$binary"
+                    ;;
+                esac
+              done
+
+              remaining="$(
+                otool -L "$binary" | tail -n +2 | awk '{print $1}' \
+                | grep '^/nix/store' || true
+              )"
+              if [ -n "$remaining" ]; then
+                echo "error: $binary still links against Nix store libraries:" >&2
+                echo "$remaining" >&2
+                echo "Those paths do not exist on machines without Nix, so the" >&2
+                echo "released binary would fail to launch. Either relocate the" >&2
+                echo "library to its /usr/lib equivalent above, or link it" >&2
+                echo "statically." >&2
+                exit 1
+              fi
+            done
+          '';
+        };
+
         nativelinkFor = p:
           (craneLibFor p).buildPackage ((commonArgsFor p)
             // {
@@ -178,7 +236,8 @@
               # If you're testing Nativelink locally, doing a dev profile will
               # massively speedup build times. Just don't commit/push anything build with dev!
               # CARGO_PROFILE = "dev";
-            });
+            }
+            // pkgs.lib.optionalAttrs p.stdenv.targetPlatform.isDarwin (darwinSystemDylibArgs p));
 
         nativeTargetPkgs =
           if pkgs.stdenv.hostPlatform.system == "x86_64-linux"
@@ -204,6 +263,12 @@
           ./deploy/chromium-example/build_chromium_tests.sh;
 
         docs = pkgs.callPackage ./tools/docs.nix {rust = pkgs.lre.stable-rust;};
+
+        bazel = pkgs.writeShellScriptBin "bazel" ''
+          unset TMPDIR TMP
+          exec ${pkgs.bazelisk}/bin/bazelisk "$@"
+        '';
+        bazel-retry = pkgs.writeScriptBin "bazel-retry" (builtins.readFile ./tools/bazel-retry.sh);
 
         inherit (nix2container.packages.${system}.nix2container) pullImage;
         inherit (nix2container.packages.${system}.nix2container) buildImage;
@@ -258,7 +323,7 @@
         createWorker = pkgs.nativelink-tools.lib.createWorker self;
 
         buck2-toolchain = let
-          buck2-nightly-rust-version = "2026-03-24";
+          buck2-nightly-rust-version = "2026-08-26";
           buck2-nightly-rust = pkgs.rust-bin.nightly.${buck2-nightly-rust-version};
           buck2-rust = buck2-nightly-rust.default.override {extensions = ["rust-src"];};
         in
@@ -351,7 +416,7 @@
               '';
               doInstallCargoArtifacts = false;
               pnameSuffix = "-llvm-cov";
-              nativeBuildInputs = [(p.callPackage ./tools/cargo-llvm-cov/package.nix {})];
+              nativeBuildInputs = [p.cargo-llvm-cov];
 
               cargoArtifacts = nightlyCargoArtifactsFor p;
               preConfigurePhases = ["tempHome"];
@@ -437,7 +502,7 @@
               inherit nativelink mongodb wait4x bazelisk;
             };
             rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
-              inherit nativelink bazelisk;
+              inherit nativelink bazel-retry bazel;
             };
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
               inherit nativelink buck2;
@@ -470,15 +535,16 @@
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
+            flake-root = config.flake-root.package;
           };
         };
         lre = {
           Env = with pkgs.lre;
-            if pkgs.stdenv.isDarwin
+            if pkgs.stdenv.hostPlatform.isDarwin
             then lre-rs.meta.Env # C++ doesn't support Darwin yet.
             else (lre-cc.meta.Env ++ lre-rs.meta.Env);
           prefix =
-            if pkgs.stdenv.isDarwin
+            if pkgs.stdenv.hostPlatform.isDarwin
             then "macos"
             else "linux";
         };
@@ -510,36 +576,7 @@
           "${gnused}/bin"
         ];
         devShells.default = pkgs.mkShell {
-          packages = let
-            bazel = pkgs.writeShellScriptBin "bazel" ''
-              unset TMPDIR TMP
-              exec ${pkgs.bazelisk}/bin/bazelisk "$@"
-            '';
-            bazel-retry = pkgs.writeShellScriptBin "bazel-retry" ''
-              set -o pipefail
-              BAZEL_LOG=$(mktemp -t)
-              unset TMPDIR TMP
-              # Bazel's downloader retry only covers truncated downloads, not HTTP 5xx/403 failures,
-              # so a flaky fetch aborts the build with no retry. We retry the download in this case.
-              delay=5
-              for attempt in 1 2 3; do
-                if exec ${pkgs.bazelisk}/bin/bazelisk "$@" | tee ''${BAZEL_LOG}; then
-                  exit 0
-                fi
-                grep -E '^ERROR:' ''${BAZEL_LOG} \
-                  | grep -Eq 'GET returned (403|429|5[0-9][0-9])|Bad Gateway|Connection (reset|timed out)|read timed out|Could not resolve host' || {
-                  echo "Bazel failed (non-transient); not retrying"
-                  exit 1
-                }
-                [ "$attempt" -lt 3 ] || break
-                echo "Transient fetch error (attempt ''${attempt}); retrying in ''${delay}s..."
-                sleep "$delay"
-                delay=$((delay * 2))
-              done
-              echo "Bazel still failing after 3 attempts."
-              exit 1
-            '';
-          in
+          packages =
             [
               # Development tooling
               pkgs.git
@@ -595,7 +632,7 @@
               pkgs.nativelink-tools.create-multi-arch-image
               pkgs.attic-client
             ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
               pkgs.apple-sdk_14
               pkgs.libiconv
             ];

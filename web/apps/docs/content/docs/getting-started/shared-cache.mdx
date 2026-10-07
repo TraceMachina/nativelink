@@ -1,0 +1,172 @@
+---
+title: Shared cache
+description: Self-host NativeLink on hardware you control, with the operational checklist a team rollout actually needs.
+---
+
+<Prerequisites>
+  A cache working on your own machine. The [Quickstart](/getting-started/quickstart) gets you there.
+</Prerequisites>
+
+The source-available release of NativeLink is designed to run on your
+own infrastructure. This page covers what changes between the
+[10-minute quickstart](/getting-started/quickstart) and a deployment that
+serves your team without 3 AM pages.
+
+## When to self-host [#when-to-self-host]
+
+Pick on-prem when one of these is true:
+
+- **Data residency.** Build artifacts can carry source code,
+  toolchains, even credentials. Self-hosting keeps them in whatever
+  region or boundary you need (EU GDPR, US FedRAMP boundaries,
+  air-gapped corp networks).
+- **Specialised hardware.** GPU workers, ARM cross-compile fleets,
+  in-house silicon. On-prem lets you use anything that can run a
+  Linux binary.
+- **You already operate stateful services.** If your team owns
+  Kubernetes, Postgres, S3-compatible storage, adding NativeLink is
+  marginal work.
+
+If you'd rather not run it yourself, Enterprise offers a managed
+deployment; see [Open source and Enterprise](/reference/oss-and-enterprise).
+
+## What ships in the box [#what-ships-in-the-box]
+
+A NativeLink deployment is composed of four roles. The same binary
+serves all of them; the JSON5 config decides which subset to run.
+
+| Role             | What it does                                              | Statefulness       |
+| ---------------- | --------------------------------------------------------- | ------------------ |
+| **CAS server**   | Stores and serves content-addressed blobs.                | Stateful           |
+| **AC server**    | Maps `Action` digests to `ActionResult`s.                 | Stateful           |
+| **Scheduler**    | Receives `Execute` calls, dispatches to workers.          | Queue in memory by default, or in Redis |
+| **Worker**       | Runs the action in a per-action work directory, uploads outputs to CAS. | Stateless          |
+
+A single binary can run all four. For anything beyond a single
+developer, run them on separate processes so you can scale and restart
+each independently.
+
+## The rollout checklist [#the-rollout-checklist]
+
+<Steps>
+  <li>
+    **Pick the storage backend.** The quickstart's `basic_cas.json5` keeps
+    everything under `/tmp` on one machine, which is fine for a 10-minute
+    demo and useless for a team. Pick one before rolling out:
+    - **Filesystem**: single-node clusters, sub-100GB caches.
+    - **Cloud object storage**: anything multi-node. The
+      `experimental_cloud_object_store` has providers for S3, R2, GCS,
+      Azure Blob, ONTAP S3 and OCI; see
+      [S3 and compatible](/how-to/stores/s3-and-compatible).
+    - **Redis**: hot-key acceleration in front of the durable store.
+      Optional but cheap latency wins.
+  </li>
+  <li>
+    **Pick the deployment substrate.** Most teams land on one of:
+    - **Kubernetes**: Helm charts for Kubernetes ship with
+      [NativeLink Enterprise](https://enterprise.nativelink.com); the `kubernetes/`
+      directory in this repository holds only Kustomize building blocks used
+      by its own examples.
+    - **Bare VMs**: `systemd` units, one binary per role, with a load
+      balancer in front. See [Deploy on bare metal](/operate/deploy-bare-metal).
+    - **Docker Compose**: a reasonable starting point for a handful of
+      developers. See [Deploy with Docker Compose](/operate/deploy-docker-compose).
+  </li>
+  <li>
+    **Plan capacity.** Heuristics from production clusters:
+    - CAS storage: 5 to 20 GB per active developer, depending on
+      language. C++ skews high; Go skews low.
+    - Worker CPU: 1 vCPU per concurrent action. Headroom matters more
+      than peak.
+    - Network: cache reads are the hot path. Provision at least 1 Gbps
+      between workers and CAS.
+  </li>
+  <li>
+    **Set up TLS.** TLS on every listener, and client certificates where
+    the network is not trusted. The
+    [Production configuration](/operate/production-config) page has the
+    certificate layout and [TLS and auth](/how-to/tls-and-auth) the
+    per-hop settings.
+  </li>
+  <li>
+    **Wire up metrics.** NativeLink pushes OTLP metrics; there is no
+    Prometheus scrape endpoint. Send them to an OpenTelemetry Collector
+    and let Prometheus and Grafana read from there. See
+    [Observability](/operate/observability).
+  </li>
+</Steps>
+
+## Container registry [#container-registry]
+
+Official images are published to GitHub Container Registry. Pull a
+specific version tag; there is no `latest` tag to fall back on, and
+pinning is what you want in production anyway.
+
+```bash
+docker pull ghcr.io/tracemachina/nativelink:v1.6.5
+```
+
+The [`/pkgs/container/nativelink`](https://github.com/TraceMachina/nativelink/pkgs/container/nativelink)
+page lists every published tag.
+
+## Backups & recovery [#backups--recovery]
+
+The CAS is the only stateful piece you can't trivially rebuild from
+clients. Snapshot strategy depends on the backend:
+
+- **Filesystem**: `rsync` or your filesystem's snapshot facility
+  (ZFS, Btrfs). Restore by stopping the CAS, swapping the directory,
+  starting again.
+- **S3-compatible**: versioning + lifecycle policies handle the
+  primary copy. For DR, cross-region replication.
+- **Redis**: treat as ephemeral. Loss is a cache miss, not data loss.
+
+The Action Cache can be wiped without data loss; you'll re-execute
+everything until it warms back up.
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+  <Accordion title="Is self-hosting free?" id="is-self-hosting-free">
+    Yes, for permitted use. Most of the monorepo is
+    `FSL-1.1-Apache-2.0`: internal use, modification, and redistribution
+    for non-competing purposes are allowed. Metrics and remote persistent
+    workers are Business Source License modules: fine for an individual
+    developer's cache, but shared, production, or commercial use of those
+    modules needs NativeLink Enterprise or an intentionally
+    inexpensive commercial license. Meaningful contributors may be
+    eligible for waivers; contact the maintainers before relying on one.
+    [Open source and Enterprise](/reference/oss-and-enterprise) works through which files
+    carry which licence and why nothing in the binary tells you; the operative
+    text is the [license page](https://nativelink.com/license).
+  </Accordion>
+  <Accordion title="What am I actually paying for when I self-host?" id="what-am-i-actually-paying-for-when-i-self-host">
+    Compute for the control plane (a few small VMs), CAS storage (the
+    dominant cost in a healthy cluster), worker compute, and the engineer
+    hours to run it all. Which of those dominates depends on your fleet and
+    your build, and the honest answer is that you will not know the shape of
+    the bill until you have run it for a quarter.
+    [Open source and Enterprise](/reference/oss-and-enterprise) sets out what the
+    managed Enterprise tier does instead of you.
+  </Accordion>
+  <Accordion title="Does the free version limit cache or team size?" id="does-the-free-version-limit-cache-or-team-size">
+    No. Nothing artificially limits cache size, action count,
+    worker count, or team size: the self-hosted build is the same
+    codebase run in production, subject to each module's license, minus
+    the operational tooling and support the paid tiers add.
+  </Accordion>
+</Accordions>
+
+<NextStep href="/remote-execution" title="Run actions remotely">
+  A cache your whole team hits is the prerequisite for the next section: having
+  the actions themselves run somewhere other than a laptop.
+</NextStep>
+
+<NextStep href="/operate/production-config" kind="aside" title="Production configuration">
+  The JSON5 shape for a real cluster, and the settings that only start to
+  matter under load.
+</NextStep>
+
+<NextStep href="/operate/deploy-bare-metal" kind="aside" title="Deploy on bare metal">
+  One binary per role under systemd, if that is where this is going to live.
+</NextStep>

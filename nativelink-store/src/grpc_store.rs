@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
@@ -32,7 +32,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
     BatchUpdateBlobsResponse, FindMissingBlobsRequest, FindMissingBlobsResponse,
     GetActionResultRequest, GetTreeRequest, GetTreeResponse, SpliceBlobRequest, SpliceBlobResponse,
-    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, compressor,
+    SplitBlobRequest, SplitBlobResponse, UpdateActionResultRequest, batch_update_blobs_request,
+    compressor,
 };
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::{
@@ -47,7 +48,8 @@ use nativelink_util::connection_manager::ConnectionManager;
 use nativelink_util::digest_hasher::{DigestHasherFunc, default_digest_hasher_func};
 use nativelink_util::health_utils::HealthStatusIndicator;
 use nativelink_util::proto_stream_utils::{
-    FirstStream, WriteRequestStreamWrapper, WriteState, WriteStateWrapper,
+    FirstStream, MAX_WRITE_REQUEST_DATA_BYTES, WriteRequestStreamWrapper, WriteState,
+    WriteStateWrapper,
 };
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
@@ -211,6 +213,40 @@ const fn is_retryable_code(code: Code) -> bool {
 // This store is usually a pass-through store, but can also be used as a CAS store. Using it as an
 // AC store has one major side-effect... The has() function may not give the proper size of the
 // underlying data. This might cause issues if embedded in certain stores.
+/// Starting capacity for the stitched-together batch response. Only a hint:
+/// most batches are one chunk, and the vec grows if not.
+const MAX_BATCH_UPDATE_ENTRIES_HINT: usize = 256;
+
+/// Groups blobs so no single `BatchUpdateBlobs` RPC carries more than
+/// `MAX_WRITE_REQUEST_DATA_BYTES` of payload.
+///
+/// An entry larger than the cap on its own still goes out alone. Nothing can
+/// be done for it here, since a batch entry cannot be split across messages,
+/// and REAPI already tells clients to use `ByteStream` for blobs that size.
+fn split_batch_update_requests(
+    requests: Vec<batch_update_blobs_request::Request>,
+) -> Vec<Vec<batch_update_blobs_request::Request>> {
+    let mut chunks = Vec::new();
+    let mut current: Vec<batch_update_blobs_request::Request> = Vec::new();
+    let mut current_bytes = 0usize;
+
+    for request in requests {
+        let len = request.data.len();
+        if !current.is_empty() && current_bytes.saturating_add(len) > MAX_WRITE_REQUEST_DATA_BYTES {
+            chunks.push(core::mem::take(&mut current));
+            current_bytes = 0;
+        }
+        current_bytes = current_bytes.saturating_add(len);
+        current.push(request);
+    }
+    // An empty batch still needs one RPC: the caller expects the upstream's
+    // answer to an empty request, not a synthesised one.
+    if !current.is_empty() || chunks.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 #[derive(Debug, MetricsComponent)]
 pub struct GrpcStore {
     #[metric(help = "Instance name for the store")]
@@ -234,14 +270,21 @@ pub struct GrpcStore {
 }
 
 impl GrpcStore {
-    pub async fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
-        Self::new_with_jitter(spec, spec.retry.make_jitter_fn()).await
+    pub fn new(spec: &GrpcSpec) -> Result<Arc<Self>, Error> {
+        Self::new_with_jitter(spec, spec.retry.make_jitter_fn())
     }
 
-    pub async fn new_with_jitter(
+    pub fn new_with_jitter(
         spec: &GrpcSpec,
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
     ) -> Result<Arc<Self>, Error> {
+        error_if!(
+            matches!(
+                spec.store_type,
+                nativelink_config::stores::StoreType::EventSink
+            ) && spec.experimental_read_batching.is_some(),
+            "An event sink cannot batch reads"
+        );
         error_if!(
             spec.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
@@ -309,7 +352,7 @@ impl GrpcStore {
             rpc_timeout,
             use_legacy_resource_names: spec.use_legacy_resource_names,
             read_batcher,
-            remote_cache_compression_enabled: spec.experimental_remote_cache_compression,
+            remote_cache_compression_enabled: spec.remote_cache_compression_enabled(),
             headers,
             // We lowercase keys as HTTP headers are case-insensitive so we should match all cases
             forward_headers: spec
@@ -392,22 +435,40 @@ impl GrpcStore {
 
         let mut request = grpc_request.into_inner();
         request.instance_name.clone_from(&self.instance_name);
-        self.perform_request(request, |request| async move {
-            let channel = self
-                .connection_manager
-                .connection("batch_update_blobs".into())
-                .await
-                .err_tip(|| "in batch_update_blobs")?;
-            ContentAddressableStorageClient::new(channel)
-                .batch_update_blobs(enrich_request(
-                    Request::new(request),
-                    &self.headers,
-                    &self.forward_headers,
-                ))
-                .await
-                .err_tip(|| "in GrpcStore::batch_update_blobs")
-        })
-        .await
+
+        // A batch is one message, so an oversized one cannot be chunked the
+        // way a ByteStream write can; it has to become several RPCs. Split on
+        // the accumulated payload and stitch the responses back together in
+        // request order, which is what the caller matches results by.
+        let mut responses =
+            Vec::with_capacity(request.requests.len().min(MAX_BATCH_UPDATE_ENTRIES_HINT));
+        for chunk in split_batch_update_requests(core::mem::take(&mut request.requests)) {
+            let chunk_request = BatchUpdateBlobsRequest {
+                instance_name: request.instance_name.clone(),
+                requests: chunk,
+                digest_function: request.digest_function,
+            };
+            let response = self
+                .perform_request(chunk_request, |chunk_request| async move {
+                    let channel = self
+                        .connection_manager
+                        .connection("batch_update_blobs".into())
+                        .await
+                        .err_tip(|| "in batch_update_blobs")?;
+                    ContentAddressableStorageClient::new(channel)
+                        .batch_update_blobs(enrich_request(
+                            Request::new(chunk_request),
+                            &self.headers,
+                            &self.forward_headers,
+                        ))
+                        .await
+                        .err_tip(|| "in GrpcStore::batch_update_blobs")
+                })
+                .await?;
+            responses.extend(response.into_inner().responses);
+        }
+
+        Ok(Response::new(BatchUpdateBlobsResponse { responses }))
     }
 
     pub async fn batch_read_blobs(
@@ -803,6 +864,91 @@ impl GrpcStore {
         self.write_internal(stream, RESUMABLE).await
     }
 
+    /// Writes one event to an event sink. A sink takes an upload only from
+    /// offset zero, so where `write` resumes a retry from its last cached
+    /// messages (mid-event, for an event over one `WriteRequest`), this
+    /// resends the whole event on every attempt. Events are bounded, so the
+    /// event is held in memory for its retries.
+    async fn update_event(
+        &self,
+        resource_name: String,
+        mut reader: DropCloserReadHalf,
+        digest: DigestInfo,
+    ) -> Result<u64, Error> {
+        let size = digest.size_bytes();
+        let data = reader
+            .consume(Some(
+                usize::try_from(size).err_tip(|| "Event size in GrpcStore::update_event")?,
+            ))
+            .await
+            .err_tip(|| "In GrpcStore::update_event")?;
+        let response = self
+            .retrier
+            .retry(unfold((), move |()| {
+                let mut requests: Vec<WriteRequest> = data
+                    .chunks(MAX_WRITE_REQUEST_DATA_BYTES)
+                    .scan(0usize, |offset, chunk| {
+                        let start = *offset;
+                        *offset += chunk.len();
+                        Some(WriteRequest {
+                            resource_name: resource_name.clone(),
+                            write_offset: i64::try_from(start).unwrap_or(i64::MAX),
+                            finish_write: false,
+                            data: data.slice(start..*offset),
+                        })
+                    })
+                    .collect();
+                requests.push(WriteRequest {
+                    resource_name: resource_name.clone(),
+                    write_offset: i64::try_from(data.len()).unwrap_or(i64::MAX),
+                    finish_write: true,
+                    data: Bytes::new(),
+                });
+                async move {
+                    let rpc = self
+                        .connection_manager
+                        .connection("update_event".into())
+                        .and_then(|channel| async move {
+                            ByteStreamClient::new(channel)
+                                .write(enrich_request(
+                                    Request::new(futures::stream::iter(requests)),
+                                    &self.headers,
+                                    &self.forward_headers,
+                                ))
+                                .await
+                                .err_tip(|| "in GrpcStore::update_event")
+                        });
+                    let result = if self.rpc_timeout > Duration::ZERO {
+                        tokio::time::timeout(self.rpc_timeout, rpc)
+                            .await
+                            .unwrap_or_else(|_elapsed| {
+                                Err(make_err!(
+                                    Code::DeadlineExceeded,
+                                    "GrpcStore::update_event RPC timed out after {}s",
+                                    self.rpc_timeout.as_secs()
+                                ))
+                            })
+                    } else {
+                        rpc.await
+                    };
+                    if let Err(err) = &result {
+                        warn!(instance_name = %self.instance_name, ?err, "GrpcStore::update_event: RPC failed; a retry resends the whole event");
+                    }
+                    Some((result.map_or_else(RetryResult::Retry, RetryResult::Ok), ()))
+                }
+            }))
+            .await?;
+        if u64::try_from(response.get_ref().committed_size).ok() != Some(size) {
+            return Err(make_err!(
+                Code::DataLoss,
+                "Event sink acknowledged {} bytes; expected {}",
+                response.get_ref().committed_size,
+                size
+            ));
+        }
+        Ok(size)
+    }
+
     async fn write_internal<T, E>(
         &self,
         stream: WriteRequestStreamWrapper<T>,
@@ -1149,7 +1295,7 @@ impl GrpcStore {
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/uploads/{}/compressed-blobs/zstd/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 uuid,
                 digest.packed_hash(),
                 digest.size_bytes(),
@@ -1163,7 +1309,7 @@ impl GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/uploads/{}/compressed-blobs/zstd/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 uuid,
                 digest_function,
                 digest.packed_hash(),
@@ -1271,19 +1417,22 @@ impl GrpcStore {
                         ?err,
                         "Compressed upload encoder ended early after successful write"
                     );
+                    // The encoder stopped early, most likely because the
+                    // server completed the write while its response stream
+                    // was still being finalized. It has already released its
+                    // borrow of `reader`, so drain any raw input the producer
+                    // still has in flight. On a clean encode the reader is
+                    // already at EOF and draining would be a no-op, so the
+                    // happy path spawns nothing.
+                    background_spawn!("grpc_store_compressed_upload_drain", async move {
+                        if let Err(err) = reader.drain().await {
+                            debug!(
+                                ?err,
+                                "Compressed upload reader drain failed after early completion"
+                            );
+                        }
+                    });
                 }
-                // The encoder may have stopped because the server completed
-                // the write while its response stream was still being
-                // finalized. It has already released its borrow of `reader`,
-                // so drain any raw input the producer still has in flight.
-                background_spawn!("grpc_store_compressed_upload_drain", async move {
-                    if let Err(err) = reader.drain().await {
-                        debug!(
-                            ?err,
-                            "Compressed upload reader drain failed after early completion"
-                        );
-                    }
-                });
             }
         }
         Ok(digest.size_bytes())
@@ -1292,10 +1441,10 @@ impl GrpcStore {
     /// Reads all of `digest` as a REAPI `compressed-blobs/zstd` read,
     /// streaming decode into `writer` with size and digest verification at
     /// EOF. Returns `Ok(None)` on success. On a retryable transport failure
-    /// it returns `Ok(Some(n))` where `n` is the count of decoded bytes
-    /// already forwarded, so the caller can resume via the identity path at
-    /// uncompressed offset `n`. Terminal errors (including decode/digest
-    /// mismatches) propagate as `Err`.
+    /// before any decoded bytes were forwarded, it returns `Ok(Some(0))` so
+    /// the caller can restart through the identity path. Failures after any
+    /// output, and other terminal errors (including decode/digest mismatches),
+    /// propagate as `Err`.
     async fn get_part_compressed(
         self: Pin<&Self>,
         digest: DigestInfo,
@@ -1311,7 +1460,7 @@ impl GrpcStore {
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/compressed-blobs/zstd/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest.packed_hash(),
                 digest.size_bytes(),
             )
@@ -1324,7 +1473,7 @@ impl GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/compressed-blobs/zstd/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest_function,
                 digest.packed_hash(),
                 digest.size_bytes(),
@@ -1391,6 +1540,12 @@ impl GrpcStore {
             }
         };
         let forwarded = AtomicU64::new(0);
+        // Set once the decoder's EOF has been forwarded. The decoder only
+        // sends EOF after the whole blob passed its size and digest checks
+        // (and `buf_channel` reports a sender dropped without EOF as an error
+        // rather than as EOF), so this is a positive signal that the download
+        // completed and was verified.
+        let download_complete = AtomicBool::new(false);
         let pump_fut = async {
             loop {
                 let chunk = decoded_rx
@@ -1398,15 +1553,20 @@ impl GrpcStore {
                     .await
                     .err_tip(|| "in GrpcStore::get_part_compressed()")?;
                 if chunk.is_empty() {
-                    return writer
+                    writer
                         .send_eof()
-                        .err_tip(|| "in GrpcStore::get_part_compressed()");
+                        .err_tip(|| "in GrpcStore::get_part_compressed()")?;
+                    download_complete.store(true, Ordering::Relaxed);
+                    return Ok(());
                 }
-                forwarded.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                let chunk_len = chunk.len() as u64;
                 writer
                     .send(chunk)
                     .await
                     .err_tip(|| "in GrpcStore::get_part_compressed()")?;
+                // Only bytes accepted by the downstream writer are eligible
+                // to influence retry policy.
+                forwarded.fetch_add(chunk_len, Ordering::Relaxed);
             }
         };
 
@@ -1430,21 +1590,55 @@ impl GrpcStore {
 
         match result {
             Ok(((), (), ())) => Ok(None),
+            // The blob was fully delivered and verified before this error
+            // happened (for example a transport failure while the response
+            // trailer was being finalized). Falling back would re-read a
+            // range that has already been written, into a closed writer.
+            Err((stage, err)) if download_complete.load(Ordering::Relaxed) => {
+                debug!(
+                    ?stage,
+                    ?err,
+                    "Compressed read completed and verified before a late stage error"
+                );
+                Ok(None)
+            }
             Err((CompressedReadStage::Decode, err)) if err.code == Code::InvalidArgument => {
                 Err(err.append("in GrpcStore::get_part_compressed()"))
             }
-            Err((CompressedReadStage::Pump, err)) if !is_retryable_code(err.code) => Err(err),
+            // Pump failures are local delivery failures: either the
+            // downstream consumer went away or the decoded channel closed
+            // without EOF. An identity re-read helps in neither case, so
+            // never fall back — `buf_channel` reports a broken receiver as
+            // `Internal`, which `is_retryable_code` would otherwise classify
+            // as retryable.
+            Err((CompressedReadStage::Pump, err)) => {
+                Err(err.append("in GrpcStore::get_part_compressed()"))
+            }
             Err((CompressedReadStage::Feed, err)) if !is_retryable_code(err.code) => {
                 Err(err.append("in GrpcStore::get_part_compressed()"))
             }
-            Err((stage, err)) => {
-                debug!(?stage, ?err, "Compressed read interrupted");
+            // A clean identity restart is only safe before unverified decoded
+            // bytes have been exposed to the downstream consumer.
+            Err((stage, err)) if forwarded.load(Ordering::Relaxed) == 0 => {
                 warn!(
+                    ?stage,
+                    ?err,
+                    "Compressed read interrupted before forwarding data, falling back to \
+                     identity read"
+                );
+                Ok(Some(0))
+            }
+            Err((stage, err)) => {
+                debug!(
+                    ?stage,
                     ?err,
                     forwarded = forwarded.load(Ordering::Relaxed),
-                    "Compressed read interrupted, falling back to identity read"
+                    "Compressed read interrupted after forwarding unverified data"
                 );
-                Ok(Some(forwarded.load(Ordering::Relaxed)))
+                Err(err.append(
+                    "in GrpcStore::get_part_compressed(): refusing identity fallback after \
+                     forwarding unverified decoded data",
+                ))
             }
         }
     }
@@ -1463,6 +1657,15 @@ impl StoreDriver for GrpcStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            return Err(make_err!(
+                Code::Unimplemented,
+                "Event sinks do not support existence checks"
+            ));
+        }
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             keys.iter()
                 .zip(results.iter_mut())
@@ -1527,21 +1730,48 @@ impl StoreDriver for GrpcStore {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         reader: DropCloserReadHalf,
-        _size_info: UploadSizeInfo,
+        size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         struct LocalState {
             resource_name: String,
             reader: DropCloserReadHalf,
             did_error: bool,
             bytes_received: i64,
+            /// Remainder of a buffer too large to send as one `WriteRequest`.
+            pending: Bytes,
         }
 
-        let digest = key.into_digest();
+        let is_digest_key = matches!(key, StoreKey::Digest(_));
+        let mut digest = key.into_digest();
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            let UploadSizeInfo::ExactSize(size) = size_info else {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Event sinks require an exact upload size"
+                ));
+            };
+            if is_digest_key {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Event sinks require string keys"
+                ));
+            }
+            // String-key digests normally encode the key's length. Event bytes
+            // have a different length and must pass the stream size validator.
+            digest = DigestInfo::try_new(&digest.packed_hash().to_string(), size)?;
+        }
         if matches!(self.store_type, nativelink_config::stores::StoreType::Ac) {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
+        // Only real digest keys may take the compressed path: for a string key
+        // `into_digest()` hashes the key itself, so the remote's mandatory
+        // uncompressed-digest verification would reject the upload.
         if self.remote_cache_compression_enabled
+            && is_digest_key
             && digest.size_bytes() >= WIRE_COMPRESSION_MIN_SIZE_BYTES
         {
             return self.update_compressed(digest, reader).await;
@@ -1551,7 +1781,7 @@ impl StoreDriver for GrpcStore {
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/uploads/{}/blobs/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 Uuid::new_v4().hyphenated().encode_lower(&mut buf),
                 digest.packed_hash(),
                 digest.size_bytes(),
@@ -1565,7 +1795,7 @@ impl StoreDriver for GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/uploads/{}/blobs/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 Uuid::new_v4().hyphenated().encode_lower(&mut buf),
                 digest_function,
                 digest.packed_hash(),
@@ -1578,11 +1808,18 @@ impl StoreDriver for GrpcStore {
             digest_size = digest.size_bytes(),
             "GrpcStore::update: starting upload for digest",
         );
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            return self.update_event(resource_name, reader, digest).await;
+        }
         let local_state = LocalState {
             resource_name,
             reader,
             did_error: false,
             bytes_received: 0,
+            pending: Bytes::new(),
         };
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
@@ -1590,17 +1827,33 @@ impl StoreDriver for GrpcStore {
                 error!("GrpcStore::update() polled stream after error was returned");
                 return None;
             }
-            let data = match local_state
-                .reader
-                .recv()
-                .await
-                .err_tip(|| "In GrpcStore::update()")
-            {
-                Ok(data) => data,
-                Err(err) => {
-                    local_state.did_error = true;
-                    return Some((Err(err), local_state));
+            // Drain any remainder before reading more.
+            let data = if local_state.pending.is_empty() {
+                match local_state
+                    .reader
+                    .recv()
+                    .await
+                    .err_tip(|| "In GrpcStore::update()")
+                {
+                    Ok(data) => data,
+                    Err(err) => {
+                        local_state.did_error = true;
+                        return Some((Err(err), local_state));
+                    }
                 }
+            } else {
+                core::mem::take(&mut local_state.pending)
+            };
+
+            // `update_oneshot` writes a whole blob in one go, and a message
+            // over the receiver's decode limit is rejected outright rather
+            // than degrading, so split rather than forwarding it as-is.
+            let data = if data.len() > MAX_WRITE_REQUEST_DATA_BYTES {
+                let rest = data.slice(MAX_WRITE_REQUEST_DATA_BYTES..);
+                local_state.pending = rest;
+                data.slice(..MAX_WRITE_REQUEST_DATA_BYTES)
+            } else {
+                data
             };
 
             let write_offset = local_state.bytes_received;
@@ -1610,7 +1863,9 @@ impl StoreDriver for GrpcStore {
                 Ok(WriteRequest {
                     resource_name: local_state.resource_name.clone(),
                     write_offset,
-                    finish_write: data.is_empty(), // EOF is when no data was polled.
+                    // EOF is when no data was polled. A split always leaves a
+                    // non-empty remainder, so this cannot fire early.
+                    finish_write: data.is_empty(),
                     data,
                 }),
                 local_state,
@@ -1640,6 +1895,16 @@ impl StoreDriver for GrpcStore {
             writer: &'a mut DropCloserWriteHalf,
             read_offset: i64,
             read_limit: i64,
+        }
+
+        if matches!(
+            self.store_type,
+            nativelink_config::stores::StoreType::EventSink
+        ) {
+            return Err(make_err!(
+                Code::Unimplemented,
+                "Event sinks do not support reads"
+            ));
         }
 
         let is_digest_key = matches!(key, StoreKey::Digest(_));
@@ -1695,7 +1960,7 @@ impl StoreDriver for GrpcStore {
             }
         }
 
-        let mut offset = offset;
+        let mut length = length;
         if self.remote_cache_compression_enabled
             && is_digest_key
             && offset == 0
@@ -1704,16 +1969,26 @@ impl StoreDriver for GrpcStore {
         {
             match self.get_part_compressed(digest, writer).await? {
                 None => return Ok(()),
-                // Resume via the identity path from where the compressed
-                // read left off.
-                Some(forwarded) => offset = forwarded,
+                // Retryable failures before any compressed output restart
+                // through identity. Partial compressed reads are terminal and
+                // must never reach this branch with a nonzero offset.
+                Some(0) => {
+                    length = Some(digest.size_bytes());
+                }
+                Some(forwarded) => {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "Compressed identity fallback returned unsafe nonzero offset {}",
+                        forwarded
+                    ));
+                }
             }
         }
 
         let resource_name = if self.use_legacy_resource_names {
             format!(
                 "{}/blobs/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest.packed_hash(),
                 digest.size_bytes(),
             )
@@ -1726,7 +2001,7 @@ impl StoreDriver for GrpcStore {
                 .to_ascii_lowercase();
             format!(
                 "{}/blobs/{}/{}/{}",
-                &self.instance_name,
+                self.instance_name,
                 digest_function,
                 digest.packed_hash(),
                 digest.size_bytes(),

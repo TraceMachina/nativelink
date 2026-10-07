@@ -243,7 +243,11 @@ impl Display for ActionUniqueQualifier {
             unique_key.digest.packed_hash(),
             unique_key.digest.size_bytes(),
             if cacheable { 'c' } else { 'u' },
-        ))
+        ))?;
+        if let Some(scope) = &unique_key.execution_scope {
+            write!(f, "_scope_{scope}")?;
+        }
+        Ok(())
     }
 }
 
@@ -251,6 +255,10 @@ impl Display for ActionUniqueQualifier {
 /// `HashMap` without needing to construct an entire `ActionInfo`.
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize, Deserialize, MetricsComponent)]
 pub struct ActionUniqueKey {
+    /// Optional in-flight execution identity. This never changes the action
+    /// digest, instance, or completed action-cache lookup key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_scope: Option<String>,
     /// Name of instance group this action belongs to.
     #[metric(help = "Name of instance group this action belongs to.")]
     pub instance_name: String,
@@ -324,6 +332,7 @@ impl ActionInfo {
         queued_timestamp: SystemTime,
     ) -> Result<Self, Error> {
         let unique_key = ActionUniqueKey {
+            execution_scope: None,
             instance_name: execute_request.instance_name,
             digest_function: DigestHasherFunc::try_from(execute_request.digest_function)
                 .err_tip(|| format!("Could not find digest_function in try_from_action_and_execute_request {:?}", execute_request.digest_function))?,

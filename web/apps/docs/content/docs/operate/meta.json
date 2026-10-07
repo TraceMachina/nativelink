@@ -1,0 +1,16 @@
+{
+  "pages": [
+    "production-config",
+    "tuning",
+    "deploy-docker-compose",
+    "deploy-bare-metal",
+    "observability",
+    "security-hardening",
+    "scaling-workers",
+    "scaling-cas",
+    "autoscaling-reference",
+    "runbooks",
+    "troubleshooting"
+  ],
+  "title": "Operate"
+}

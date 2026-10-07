@@ -12,10 +12,11 @@
     "@nativelink/config": "workspace:*",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.0"
   },
   "exports": {
     ".": "./src/index.ts",
+    "./ask-ai": "./src/components/ask-ai.tsx",
     "./badge": "./src/components/badge.tsx",
     "./button": "./src/components/button.tsx",
     "./card": "./src/components/card.tsx",

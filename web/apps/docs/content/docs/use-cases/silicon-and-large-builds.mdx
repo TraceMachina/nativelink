@@ -1,0 +1,274 @@
+---
+title: Silicon and large builds
+description: "EDA flows, large C++ and LLVM trees, and ML graphs are the workloads remote execution was invented for: thousands of actions, hardware that differs from action to action, and a long tail that decides the wall clock."
+---
+
+{/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
+
+**Who this is for:** anyone whose build is measured in thousands of actions and
+tens of minutes, on hardware that isn't uniform. **What you'll have at the end:**
+an understanding of why these builds are the hard case, and how NativeLink routes
+actions to the machines that suit them. **Time:** about fifteen minutes.
+
+## What makes a build "large" in the way that matters [#what-makes-a-build-large-in-the-way-that-matters]
+
+Size in gigabytes is not the interesting axis. Three properties are, and a build
+that has all three is the shape remote execution was designed around.
+
+**Action count.** An EDA flow (synthesis, place-and-route, timing, DRC, LVS)
+or a full LLVM tree is tens of thousands of actions. At that count the graph is
+wide enough that the number of cores you can throw at it is the only thing
+setting the wall clock. A laptop has sixteen. A worker pool has however many you
+ask for.
+
+**Heterogeneity.** The actions are not interchangeable. A link step wants a
+machine with a great deal of memory and will use one core doing it. A thousand
+compiles want a thousand cores and very little memory each. A simulation wants a
+GPU. A vendor tool wants a specific OS, sometimes a specific kernel, and a
+license seat. Sizing one machine for all of that means sizing it for the worst
+case and wasting it on every other action.
+
+**The long tail.** Large graphs have a critical path, and near the end of the
+build most of the fleet is idle while a handful of long actions finish. The
+total is set by the longest chain, not by the sum of the work. That's why "add
+more cores" stops helping at a point, and why *which* machine runs the long
+actions matters more than how many machines you have.
+
+## Why caching alone runs out [#why-caching-alone-runs-out]
+
+On a small build, the cache is most of the story. On a build like this it is
+still enormously valuable (it is still the thing you deploy first, and Getting
+started is still where to start), but it stops being sufficient, for a specific reason.
+
+A cache helps with work somebody has already done. A large build has a long
+list of actions that nobody has done, because a real change in a low-level
+header invalidates a large subtree, and because verification runs are new by
+construction. Those actions have to execute. The question stops being "can we
+avoid this work" and becomes "where does this work run, and how much of it runs
+at once."
+
+That is the transition from Getting started to Remote execution, and this class of build is the
+clearest case for making it.
+
+## Routing actions to the hardware that fits [#routing-actions-to-the-hardware-that-fits]
+
+The mechanism is **platform properties**: key-value pairs an action declares as
+requirements, matched against properties a worker declares about itself. The
+scheduler will not assign an action to a worker that does not satisfy them.
+
+A worker declares its properties in its configuration, either as literal values
+or as a command run at startup whose output becomes the value, which is how a
+worker discovers, say, its own core count rather than having it hard-coded per
+host.
+
+<SourceLink file="nativelink-config/src/schedulers.rs" symbol="PropertyType" />
+
+The scheduler declares, separately, which property keys exist and how each one
+is matched. Four kinds exist and the differences are load-bearing:
+
+**`minimum`** compares numerically: the worker's value must be greater than or
+equal to the action's. It is also **consumable**: when an action requesting
+`cpu_count: 8` is assigned, eight is subtracted from that worker's available
+count and restored when the action completes. This is how a 64-core worker takes
+eight 8-core actions and not sixty-four of them.
+
+**`exact`** requires string equality. This is the one for OS, ISA, container
+image, or a GPU model, anything where "more" is meaningless.
+
+**`priority`** does not restrict anything by value. It requires only that the
+key be present. The behaviour its name suggests, preferring some workers over
+others, is an unimplemented TODO in the scheduler.
+
+**`ignore`** matches everything, and is the way to accept a property that
+clients send without letting it affect placement.
+
+<Callout type="warn" title="`priority` is not a constraint">
+  A key configured as `priority` will match a worker regardless of the value on
+  either side. If you use it for something that must actually be satisfied, the
+  action will happily land on a worker that cannot satisfy it. Use `minimum` for
+  quantities and `exact` for identities; reach for `priority` only when you mean
+  "record this, don't route on it."
+</Callout>
+
+An unknown property key is refused rather than silently matched: the scheduler
+logs `Unknown platform property` and the action stays queued, so a typo in a
+requirement stalls visibly instead of quietly sending a GPU action to a CPU
+worker.
+
+<SourceLink file="nativelink-scheduler/src/platform_property_manager.rs" symbol="make_prop_value" />
+
+[Platform properties](/remote-execution/platform-properties) is the reference
+for the mechanism.
+
+## Special hardware, and what NativeLink actually knows about it [#special-hardware-and-what-nativelink-actually-knows-about-it]
+
+NativeLink has no GPU support, and that phrasing is deliberate rather
+than a shortcoming. No GPU-aware code exists anywhere in the codebase: no
+CUDA integration, no device discovery, no special-cased scheduling. GPUs are
+routed the same way a specific kernel version or a licensed tool is: as plain
+platform properties that you name and the scheduler matches.
+
+The convention across the shipped example configurations is a pair:
+
+```json5
+"supported_platform_properties": {
+  "cpu_count": "minimum",
+  "memory_kb": "minimum",
+  "gpu_count": "minimum",
+  "gpu_model": "exact",
+}
+```
+
+`gpu_count` as `minimum` so it is both a threshold and consumable: a worker
+with four GPUs can hold four single-GPU actions. `gpu_model` as `exact` so an
+action needing a particular device does not land on a different one.
+
+<Callout type="warn" title="One shipped example gets this wrong">
+  The Kubernetes example config in `kubernetes/nativelink/nativelink-config.json5`
+  declares both `gpu_count` and `gpu_model` as `priority`, which, per the
+  section above, enforces nothing. An action requesting four GPUs will schedule
+  onto a worker with none. If you started from that file, change both.
+</Callout>
+
+The same pattern covers everything else that varies. An `os` and an `arch` key
+as `exact` give you cross-platform pools from one scheduler. A `license_seats`
+key as `minimum` makes a vendor tool's seat count a scheduling constraint rather
+than a race, because `minimum` is consumable: the seats are held for the duration
+of the action and released when it finishes. That last one is a genuinely useful
+trick for EDA flows and is not apparent from the config reference.
+
+## Running a heterogeneous fleet [#running-a-heterogeneous-fleet]
+
+The pool is not one shape of machine. It's several, each a worker process with
+its own configuration, all registering with the same scheduler.
+
+<Mermaid>
+{`flowchart TB
+  S["scheduler<br/>declares which keys exist<br/>and how each is matched"]
+  S -->|"cpu_count ≥ 4"| C["compile pool<br/>many small workers"]
+  S -->|"memory_kb ≥ 64000000"| L["link pool<br/>few large-memory workers"]
+  S -->|"gpu_count ≥ 1<br/>gpu_model = a100"| G["GPU pool"]
+  S -->|"os = windows"| O["platform pool"]`}
+</Mermaid>
+
+Nothing about this requires more than one scheduler, or a separate deployment
+per pool. Each worker announces what it is; the scheduler routes on that.
+[Run multiple workers](/how-to/run-multiple-workers) is the mechanics, and
+[tuning](/operate/tuning) covers sizing each pool once you're running them.
+
+The practical advice is to start with one pool and split it only when you can
+name the reason. Two pools with different properties is a real operational cost,
+and it pays for itself when a specific class of action is either starved of the
+hardware it needs or hogging hardware it doesn't.
+
+## Toolchains are the hard part, not the scheduling [#toolchains-are-the-hard-part-not-the-scheduling]
+
+For this class of build the routing is the straightforward half. The half that takes the
+time is making the actions hermetic enough to run somewhere else at all.
+
+Large old codebases accumulate assumptions: a compiler at an absolute path, a
+tool installed by the platform team years ago, an environment variable set in a
+shell profile, a vendor toolchain with a license daemon. All of that works
+locally and none of it exists on a worker. Getting a large build onto remote
+execution is mostly the work of finding those assumptions and declaring them.
+
+NativeLink's answer is **Local Remote Execution**: building the toolchain
+itself as a declared, reproducible artifact so that the environment a worker
+runs in is the same one you get locally, by construction rather than by
+convention. [Local Remote Execution](/explanations/lre) is the explanation, and
+[Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity) is
+the practical path.
+
+This is also the reason to be honest about sequencing. Getting started (caching) costs
+you a URL in a config file. Remote execution costs you a toolchain project. The payoff on
+a build of this size justifies it, but it is a project, and planning it as a
+config change is how these migrations stall.
+
+## What a build like this looks like when it works [#what-a-build-like-this-looks-like-when-it-works]
+
+One published account is worth reading rather than paraphrasing:
+[Reid Kleckner's write-up](https://reidkleckner.dev/posts/llvm-recc-nativelink/)
+describes building LLVM with `recc` executing remotely against NativeLink and
+taking a build from roughly seventeen minutes to roughly four. It is one
+person's measurement on their own hardware, with caveats the post itself spells
+out (precompiled headers disabled, a mixed home fleet, a wireless link), so
+treat it as an illustration of the shape rather than a number to plan against,
+but the shape is right. A wide graph of independent compiles is exactly the case
+where adding remote cores collapses the wall clock.
+
+The honest general statement is that speedups on this class of build vary by an
+order of magnitude between workloads, because they depend on how wide the graph
+is, how long the critical path is, and how much of the build was already
+cacheable. The way to find out is to measure your own.
+
+[CMake with recc](/getting-started/connect-your-build/cmake-recc) is the path
+for CMake-based C++ trees, which is what most large non-Bazel C++ projects are.
+
+## Common questions [#common-questions]
+
+<Accordions>
+
+<Accordion title="My build is CMake or Make, not Bazel. Is any of this available?" id="my-build-is-cmake-or-make-not-bazel-is-any-of-this-available">
+
+Partly. `recc` puts a CMake-based build on the remote cache by intercepting
+compiler invocations, and it's the documented path for large C++ trees. The
+setup in these docs is cache-only (`RECC_CACHE_ONLY=1`, so misses compile
+locally); recc can also forward compiles to remote workers once you have them,
+one compiler invocation at a time. Remote execution of the whole graph needs a
+build tool that describes every action's complete input set, which is what
+Bazel, Buck2, Siso and BuildStream do and what Make does not.
+
+</Accordion>
+
+<Accordion title="How do I stop huge link actions from crowding out compiles?" id="how-do-i-stop-huge-link-actions-from-crowding-out-compiles">
+
+Give them different properties and let `minimum` do the accounting. A link
+action declaring a large `memory_kb` only matches workers that have it, and
+because `minimum` is consumable, one such action occupies that worker's memory
+budget until it finishes rather than letting three more land on top of it. If
+they are still colliding, that's the signal to split the pool.
+
+</Accordion>
+
+<Accordion title="Can workers run different operating systems?" id="can-workers-run-different-operating-systems">
+
+Yes: a worker is a process, and pools are distinguished only by the properties
+they declare. Declare `os` as `exact` on the scheduler, have each worker declare
+its own, and one scheduler routes to all of them. The constraint is not
+NativeLink's; it's that the action's toolchain has to exist for the target
+platform.
+
+</Accordion>
+
+<Accordion title="Does a vendor tool's license server work with this?" id="does-a-vendor-tools-license-server-work-with-this">
+
+The tool still talks to the license server as it always did, so the worker
+needs network access to it. What changes is that seat exhaustion becomes a
+scheduling problem you can express: a `license_seats` key matched as `minimum`
+holds seats for the duration of an action and releases them after, which turns
+a race into a queue.
+
+</Accordion>
+
+<Accordion title="Is the cache still worth it if most of my actions are unique?" id="is-the-cache-still-worth-it-if-most-of-my-actions-are-unique">
+
+Usually yes, because "most actions are unique" is rarely true across a whole
+tree: the third-party dependencies, the toolchain, and everything below the
+change you made are shared. It stops being true for workloads that are
+genuinely new every run, and some ML training and fuzzing jobs are exactly that.
+For those, remote execution is the part that helps and the cache is close to
+free anyway.
+
+</Accordion>
+
+</Accordions>
+
+<NextStep href="/remote-execution/platform-properties" title="Platform properties">
+  The reference for the routing mechanism: how to declare properties on workers,
+  how to match them on the scheduler, and how each matching kind behaves.
+</NextStep>
+
+<NextStep href="/explanations/lre" kind="aside" title="Local Remote Execution">
+  The toolchain half of the problem: making the environment a worker builds in
+  reproducible rather than assumed.
+</NextStep>
