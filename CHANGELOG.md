@@ -3,6 +3,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.5](https://github.com/TraceMachina/nativelink/compare/v1.7.4..v1.7.5) - 2026-10-06
+
+
+
+### 🐛 Bug Fixes
+
+- Resend a retried event-sink write from offset zero ([#2906](https://github.com/TraceMachina/nativelink/issues/2906)) - ([417771e](https://github.com/TraceMachina/nativelink/commit/417771e8b590db5b3b3b75c226896e73aecd0f14))
+- Drop hint dimensions the ladder does not reserve ([#2903](https://github.com/TraceMachina/nativelink/issues/2903)) - ([b6f1b9b](https://github.com/TraceMachina/nativelink/commit/b6f1b9b520bdbb20ffb9118acbb2fff26e8fded4))
+
+### 🧪 Testing & CI
+
+- Check and fix license headers ([#2902](https://github.com/TraceMachina/nativelink/issues/2902)) - ([2921f75](https://github.com/TraceMachina/nativelink/commit/2921f751751f3278d0cd43a670eba185e796fb32))
+- Add Azurite test support for AzureBlobStore ([#2684](https://github.com/TraceMachina/nativelink/issues/2684)) - ([a347402](https://github.com/TraceMachina/nativelink/commit/a347402f906b41fe0919064650ccf5cf7e49ff0b))
+
+### ⬆️ Bumps & Version Updates
+
+- Update xxhash-rust to 0.8.19 ([#2895](https://github.com/TraceMachina/nativelink/issues/2895)) - ([4ef4c34](https://github.com/TraceMachina/nativelink/commit/4ef4c34e34d5e0f72f806533df58ec4879d4f2cd))
+
+## [1.7.4](https://github.com/TraceMachina/nativelink/compare/v1.7.3..v1.7.4) - 2026-10-05
+
+
+
+### 🐛 Bug Fixes
+
+- Let paused idle workers accept new work ([#2876](https://github.com/TraceMachina/nativelink/issues/2876)) - ([7d3d20c](https://github.com/TraceMachina/nativelink/commit/7d3d20ca83a9ed908bc20834747e6bf25b319369))
+- Change worker to consider reclaimable page cache as usable memory ([#2873](https://github.com/TraceMachina/nativelink/issues/2873)) - ([db375f0](https://github.com/TraceMachina/nativelink/commit/db375f00538d8af8ad7ef6fa3ae99078489634f8))
+- Azure store: bound a read to the bytes the digest declares and resume a retry ([#2872](https://github.com/TraceMachina/nativelink/issues/2872)) - ([83c1f81](https://github.com/TraceMachina/nativelink/commit/83c1f8126564b4cc40643b55f88578beef9d36a3))
+
+### 📚 Documentation
+
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2848](https://github.com/TraceMachina/nativelink/issues/2848)) - ([5aaf0f8](https://github.com/TraceMachina/nativelink/commit/5aaf0f88590517ff2e1750e090e164edad8258c1))
+
+### 🧪 Testing & CI
+
+- *(nix)* warm the Bazel Dev lane from the remote cache via hermetic toolchain identity ([#2874](https://github.com/TraceMachina/nativelink/issues/2874)) - ([5b75558](https://github.com/TraceMachina/nativelink/commit/5b7555861c60eb35e40d274a2d5a1e55020f725b))
+- skip the sanitizer lane on docs-only changes ([#2878](https://github.com/TraceMachina/nativelink/issues/2878)) - ([59d8ede](https://github.com/TraceMachina/nativelink/commit/59d8ede676731aae34b30460ace9b6686ad615c0))
+- build the OCI image on merge-to-main, not on every PR ([#2879](https://github.com/TraceMachina/nativelink/issues/2879)) - ([bb3ead5](https://github.com/TraceMachina/nativelink/commit/bb3ead580bcff39ca770366388b2051fa3250f18))
+- Disable Bazel disk cache when nativelink cloud cache is enabled ([#2864](https://github.com/TraceMachina/nativelink/issues/2864)) - ([b9a0b1e](https://github.com/TraceMachina/nativelink/commit/b9a0b1ed5f831913ad80720791b195e837223d87))
+
+### ⬆️ Bumps & Version Updates
+
+- *(deps)* update rust crate serial_test to v4 ([#2865](https://github.com/TraceMachina/nativelink/issues/2865)) - ([d54ab05](https://github.com/TraceMachina/nativelink/commit/d54ab0533ed0efd7cf71da7cf3a37c742114f97e))
+- *(deps)* update dependency typescript to v7 ([#2863](https://github.com/TraceMachina/nativelink/issues/2863)) - ([46539bd](https://github.com/TraceMachina/nativelink/commit/46539bd661846b740467768a8e32eb1766c9fcb7))
+
 ## [1.7.3](https://github.com/TraceMachina/nativelink/compare/v1.7.2..v1.7.3) - 2026-10-01
 
 

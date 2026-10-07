@@ -95,7 +95,13 @@ message ConnectWorkerRequest {
     /// The default (0) means unlimited.
     uint64 max_inflight_tasks = 3;
 
-    reserved 4; // NextId.
+    /// The worker admits any action while it holds nothing else, whatever
+    /// it reads free, rather than declining it for load. A scheduler can
+    /// then read a decline for load as coming from a busy worker. Absent
+    /// (false) from older workers.
+    bool admits_when_idle = 4;
+
+    reserved 5; // NextId.
 }
 
 /// The result of an ExecutionRequest.

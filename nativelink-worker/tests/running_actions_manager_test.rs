@@ -1,5 +1,3 @@
-#![recursion_limit = "256"]
-
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
@@ -13,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+#![recursion_limit = "256"]
 
 use serial_test::serial;
 

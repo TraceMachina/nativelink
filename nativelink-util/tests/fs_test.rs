@@ -1,3 +1,17 @@
+// Copyright 2026 The NativeLink Authors. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #![cfg(not(target_family = "windows"))]
 // Because windows does permissions differently
 
@@ -159,4 +173,34 @@ async fn freebind_allows_binding_unassigned_address() -> Result<(), Box<dyn core
     socket.bind(addr)?;
 
     Ok(())
+}
+
+// Regression test: `fs::read_dir` must complete with a single blocking-pool
+// thread. The pre-fix implementation `block_on`ed `tokio::fs::read_dir`
+// (itself a `spawn_blocking`) from inside a blocking-pool thread, so each
+// call needed two pool threads at once; enough concurrent callers parked
+// every thread on inner tasks that could never run, freezing all `fs::` ops
+// process-wide. On a one-thread pool the old code deadlocks and the timeout
+// below fires.
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test needs a runtime with a one-thread blocking pool; no util wrapper exposes max_blocking_threads"
+)]
+fn read_dir_needs_only_one_blocking_thread() -> Result<(), Box<dyn core::error::Error>> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let read_dir = tokio::time::timeout(
+            core::time::Duration::from_secs(5),
+            nativelink_util::fs::read_dir(env::temp_dir()),
+        )
+        .await
+        .expect("read_dir deadlocked: it required a second blocking-pool thread")?;
+        drop(read_dir);
+        Ok(())
+    })
 }
