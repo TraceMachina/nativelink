@@ -1527,7 +1527,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1581,7 +1581,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2001,9 +2001,9 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hickory-net"
-version = "0.26.1"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2295ed2f9c31e471e1428a8f88a3f0e1f4b27c15049592138d1eebe9c35b183"
+checksum = "c480823ed7c2c5d0f09c41020cb6b7c28029ce60ec42dc942158dcf22f8e0a4d"
 dependencies = [
  "async-trait",
  "cfg-if",
@@ -2025,9 +2025,9 @@ dependencies = [
 
 [[package]]
 name = "hickory-proto"
-version = "0.26.1"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bab31817bfb44672a252e97fe81cd0c18d1b2cf892108922f6818820df8c643"
+checksum = "12b92608f679a6fa515dd1d15c1ff89443026e391200a2c840c7afcba482893d"
 dependencies = [
  "data-encoding",
  "idna",
@@ -2045,9 +2045,9 @@ dependencies = [
 
 [[package]]
 name = "hickory-resolver"
-version = "0.26.1"
+version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0d58d28879ceecde6607729660c2667a081ccdc082e082675042793960f178c"
+checksum = "3f3da5255c95d5a716857d54b5b8f4e8d67c3484d3beaaaae2ce25063b3ba981"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -2250,7 +2250,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2926,7 +2926,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "async-lock",
  "axum",
@@ -2957,7 +2957,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -2976,7 +2976,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "base64 0.22.1",
  "mongodb",
@@ -3000,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3009,7 +3009,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3029,7 +3029,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "derive_more 2.1.0",
  "prost",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "either",
  "nativelink-util",
@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3091,7 +3091,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3152,6 +3152,7 @@ dependencies = [
  "byteorder",
  "bytes",
  "cc",
+ "chrono",
  "const_format",
  "dirs",
  "flate2",
@@ -3160,6 +3161,7 @@ dependencies = [
  "gcloud-auth",
  "gcloud-storage",
  "hex",
+ "hmac 0.12.1",
  "http 1.4.1",
  "http-body 1.0.1",
  "http-body-util",
@@ -3214,7 +3216,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3277,7 +3279,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.7.2"
+version = "1.7.5"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3341,7 +3343,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4209,7 +4211,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4266,7 +4268,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4525,9 +4527,9 @@ dependencies = [
 
 [[package]]
 name = "serial_test"
-version = "3.5.0"
+version = "4.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "699f4197115b8a7e7ff19c9a315a4bd6fffec26cc4626ef45ecaea389e081c6d"
+checksum = "a6df5ed973ad8d834e09f824f9e9f449af6b9a3745f78dec7cc752770bd3bf11"
 dependencies = [
  "futures-executor",
  "futures-util",
@@ -4538,13 +4540,13 @@ dependencies = [
 
 [[package]]
 name = "serial_test_derive"
-version = "3.5.0"
+version = "4.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94e153fc76e1c6a068703d6d29c508a0b15c061c4b7e43da59cc097bc342673c"
+checksum = "a22144e767da4ddd8416dbf383700542ffd8a5dc493dfecedfe1fe3ad03c98ae"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn 3.0.1",
 ]
 
 [[package]]
@@ -4700,7 +4702,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4855,7 +4857,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5713,7 +5715,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6159,9 +6161,9 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xxhash-rust"
-version = "0.8.15"
+version = "0.8.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3"
+checksum = "550a2b930b62486a393c52d5c3b84bff264b28aa437ed64694d31e93b1757af7"
 
 [[package]]
 name = "yansi"

@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// The worker's action future is a long chain of combinators; proving it
+// Send for the spawn walks the whole chain, and the default limit of 128 is
+// a few steps short of it on the sanitizer toolchain.
+#![recursion_limit = "256"]
+
 use core::net::SocketAddr;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet};
@@ -253,7 +258,7 @@ async fn inner_main(
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
-    let (single_use_complete_tx, single_use_complete_rx) = tokio::sync::oneshot::channel();
+    let (single_use_complete_tx, single_use_complete_rx) = oneshot::channel();
     let mut single_use_complete_tx = Some(single_use_complete_tx);
     let single_use_enabled = cfg.workers.as_ref().is_some_and(|workers| {
         workers.iter().any(|worker| match worker {

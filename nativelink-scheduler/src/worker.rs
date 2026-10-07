@@ -127,6 +127,18 @@ pub struct Worker {
     #[metric(help = "Free memory in KiB the worker must report before it is unpaused.")]
     pub pause_needs_kb: Option<u64>,
 
+    /// The worker said on connection that it admits any action while it
+    /// holds nothing else, so a decline for load from it comes from a busy
+    /// worker even when this scheduler thinks it idle.
+    pub admits_when_idle: bool,
+
+    /// The smallest reservation this worker declined for load while it held
+    /// nothing else, from a worker that does not admit when idle (an older
+    /// one, or one with no cgroup limit). It is not offered that much or
+    /// more until a keepalive reports that much free.
+    #[metric(help = "Smallest reservation in KiB the worker declined while idle.")]
+    pub idle_declined_kb: Option<u64>,
+
     /// Whether the worker is draining.
     #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
@@ -217,6 +229,8 @@ impl Worker {
             last_update_timestamp: timestamp,
             is_paused: false,
             pause_needs_kb: None,
+            admits_when_idle: false,
+            idle_declined_kb: None,
             is_draining: false,
             max_inflight_tasks,
             last_load: None,

@@ -4,13 +4,14 @@
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
     "turbo": "^2.3.0",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.0"
   },
   "engines": {
     "node": ">=20"
   },
   "overrides": {
     "baseline-browser-mapping": "2.11.0",
+    "dompurify": "^3.4.16",
     "postcss": "^8.5.23",
     "sharp": "^0.35.4"
   },

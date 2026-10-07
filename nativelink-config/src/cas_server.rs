@@ -877,9 +877,34 @@ pub struct EndpointConfig {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub uri: String,
 
-    /// Timeout in seconds that a request should take.
+    /// Timeout in seconds for connecting to the endpoint and for a request
+    /// to be answered. The worker's messages to the scheduler (keepalives,
+    /// acknowledgements, results) ride on the one `ConnectWorker` stream
+    /// opened at registration, which this does not bound; the `GoingAway`
+    /// sent at shutdown is bounded by it, so a stalled connection cannot
+    /// hold a pod past its grace period. A keepalive goes out every half of
+    /// it.
     /// Default: 5 seconds
     pub timeout: Option<f32>,
+
+    /// TCP keepalive interval (seconds), probing the socket under the
+    /// scheduler connection so a dead peer is noticed at the OS level.
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub tcp_keepalive_s: u64,
+
+    /// HTTP/2 keepalive interval (seconds): PING frames on the scheduler
+    /// connection, so one that has gone dead underneath fails instead of
+    /// hanging every message on it.
+    /// If not set or 0, defaults to 30 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub http2_keepalive_interval_s: u64,
+
+    /// HTTP/2 keepalive timeout (seconds): a PING unanswered for this long
+    /// ends the connection, and the worker reconnects.
+    /// If not set or 0, defaults to 20 seconds.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub http2_keepalive_timeout_s: u64,
 
     /// The TLS configuration to use to connect to the endpoint.
     pub tls_config: Option<ClientTlsConfig>,

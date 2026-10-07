@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.7.2"
+version = "1.7.5"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -105,7 +105,7 @@ opentelemetry-proto = { version = "0.32.0", default-features = false, features =
   "gen-tonic",
   "metrics",
 ] }
-serial_test = { version = "3.2.0", features = [
+serial_test = { version = "4.0.0", features = [
   "async",
 ], default-features = false }
 

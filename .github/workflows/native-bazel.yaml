@@ -49,15 +49,8 @@ jobs:
       - name: Free disk space
         uses: ./.github/actions/free-disk
 
-      - name: Setup Bazel
-        uses: >- # v0.19.0
-          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-bazel-${{ matrix.bazel_version }}
-
       - name: Setup NativeLink Cloud
+        id: setup-nativelink-cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -72,6 +65,16 @@ jobs:
           # non-Linux runners, so macOS lanes fall back to cache.
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
+      - name: Setup Bazel
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          # Only enable when we don't have remote cache, otherwise it just gets very slow
+          # and enormous
+          disk-cache: ${{ steps.setup-nativelink-cloud.outputs.enabled == 'false'}}
+
       - name: Show Bazel version
         run: bazel --version
 
@@ -80,12 +83,12 @@ jobs:
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
             if [ "${{ matrix.bazel_version }}" == "8.7.0" ]; then
               # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
-              bazel test //... \
+              ./tools/bazel-retry.sh test //... \
                 --lockfile_mode=off \
                 --extra_toolchains=@rust_toolchains//:all \
                 --verbose_failures
             else
-              bazel test //... \
+              ./tools/bazel-retry.sh test //... \
                 --lockfile_mode=error \
                 --extra_toolchains=@rust_toolchains//:all \
                 --verbose_failures
@@ -119,15 +122,8 @@ jobs:
         with:
           compose-file: src/bin/docker-compose.store-tester.yaml
 
-      - name: Setup Bazel
-        uses: >- # v0.19.0
-          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          disk-cache: ${{ github.workflow }}-ubuntu-24.04
-
       - name: Setup NativeLink Cloud
+        id: setup-nativelink-cloud
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -142,9 +138,19 @@ jobs:
           # non-Linux runners, so macOS lanes fall back to cache.
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
+      - name: Setup Bazel
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          # Only enable when we don't have remote cache, otherwise it just gets very slow
+          # and enormous
+          disk-cache: ${{ steps.setup-nativelink-cloud.outputs.enabled == 'false'}}
+
       - name: Run Store tester with sentinel
         run: |
-          bazel run //:redis_store_tester \
+          ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode sentinel --mode sequential
@@ -155,7 +161,7 @@ jobs:
 
       - name: Run Store tester with standard
         run: |
-          bazel run //:redis_store_tester \
+          ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode standard --mode sequential
@@ -166,7 +172,7 @@ jobs:
 
       - name: Run Store tester with cluster
         run: |
-          bazel run //:redis_store_tester \
+          ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
             --verbose_failures -- --redis-mode cluster --mode sequential

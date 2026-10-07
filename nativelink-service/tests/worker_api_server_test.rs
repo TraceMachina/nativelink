@@ -823,6 +823,127 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
     Ok(())
 }
 
+/// A finished result still lands when the scheduler's wall clock has
+/// stepped backwards (NTP, VM time sync) since the worker's last
+/// message. The liveness refresh used to fail on the older timestamp and
+/// abort `inner_execution_response`, discarding a result the worker had
+/// already uploaded and stranding the operation in `Executing`.
+#[nativelink_test]
+pub async fn execution_response_lands_when_clock_steps_backwards_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let now_timestamp = Arc::new(Mutex::new(BASE_NOW_S));
+    let now_timestamp_clone = now_timestamp.clone();
+    let test_context = setup_api_server(
+        BASE_WORKER_TIMEOUT_S,
+        Box::new(move || Ok(Duration::from_secs(*now_timestamp_clone.lock().unwrap()))),
+    )
+    .await?;
+    let operation_id = dispatch(&test_context, 7).await?;
+
+    // The worker's liveness was last refreshed at `BASE_NOW_S`; the
+    // scheduler's clock steps back before the result arrives.
+    *now_timestamp.lock().unwrap() = BASE_NOW_S - 2;
+
+    let result = ExecuteResult {
+        instance_name: "instance_name".to_string(),
+        operation_id: operation_id.to_string(),
+        result: Some(execute_result::Result::InternalError(ProtoStatus {
+            code: 13,
+            message: "worker hit an internal error".to_string(),
+            details: Vec::default(),
+        })),
+        resource_usage: None,
+    };
+    let (sent, (updated_operation_id, updated_worker_id, update)) = join!(
+        test_context
+            .worker_stream
+            .send(Update::ExecuteResult(result)),
+        test_context.state_manager.expect_update_operation(Ok(())),
+    );
+    sent.map_err(|e| make_err!(tonic::Code::Internal, "Error sending result {e}"))?;
+    assert_eq!(updated_operation_id, operation_id);
+    assert_eq!(updated_worker_id, test_context.worker_id);
+    assert!(
+        matches!(update, UpdateOperationType::UpdateWithError(_)),
+        "{update:?}"
+    );
+    assert!(
+        test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "a backwards clock step must not cost the worker its registration"
+    );
+    Ok(())
+}
+
+/// The liveness refresh being best-effort must not widen what an evicted
+/// worker can do: its late `ExecuteResult` is refused by the ownership
+/// check in `ApiWorkerScheduler::update_action` and never reaches the
+/// state manager. The refresh failure is swallowed; the write is not.
+#[nativelink_test]
+pub async fn evicted_worker_late_result_never_reaches_state_manager_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let operation_id = dispatch(&test_context, 11).await?;
+
+    // Evict the worker while it holds the operation. The eviction itself
+    // reports the disconnect to the state manager; consume that call so
+    // anything received afterwards is attributable to the stale result.
+    let (eviction_call, _) = join!(
+        async {
+            test_context
+                .scheduler
+                .remove_worker(&test_context.worker_id)
+                .await
+                .expect("remove_worker succeeds");
+        },
+        test_context.state_manager.expect_update_operation(Ok(())),
+    );
+    let () = eviction_call;
+    assert!(
+        !test_context
+            .scheduler
+            .contains_worker_for_test(&test_context.worker_id)
+            .await,
+        "the worker must be gone after eviction"
+    );
+
+    // The evicted worker's connection task is still draining its stream
+    // and delivers a late result for the operation it no longer owns.
+    test_context
+        .worker_stream
+        .send(Update::ExecuteResult(ExecuteResult {
+            instance_name: "instance_name".to_string(),
+            operation_id: operation_id.to_string(),
+            result: Some(execute_result::Result::InternalError(ProtoStatus {
+                code: 13,
+                message: "stale result from an evicted worker".to_string(),
+                details: Vec::default(),
+            })),
+            resource_usage: None,
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending result {e}"))?;
+
+    // Give the connection task every chance to process the message, then
+    // prove the state manager was never called: the stale write is fenced
+    // out, it does not merely lose a race.
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    let no_update = tokio::time::timeout(
+        Duration::from_millis(100),
+        test_context.state_manager.expect_update_operation(Ok(())),
+    )
+    .await;
+    assert!(
+        no_update.is_err(),
+        "an evicted worker's late result must never reach the state manager, got {no_update:?}"
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::Error>> {
     let test_context =
@@ -1055,11 +1176,12 @@ async fn summary_after_report(test_context: &TestContext, free_kb: u64) -> Worke
 /// A decline pauses the worker. The liveness refresh the decline carries
 /// must not lift that pause, or the next matching pass hands the worker
 /// the same action straight back; only a keepalive reporting enough room
-/// resumes it.
+/// resumes it. The worker holds another action, so the room can come.
 #[nativelink_test]
 pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
 -> Result<(), Box<dyn core::error::Error>> {
     let test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let _resident = dispatch(&test_context, 8).await?;
     let operation_id = dispatch(&test_context, 9).await?;
 
     // The decline sends the action back through the state manager.
@@ -1174,5 +1296,72 @@ pub async fn a_full_channel_defers_the_kill_instead_of_evicting_test()
         Some(revoked.to_string()),
         "the deferred kill was never sent"
     );
+    Ok(())
+}
+
+/// A message the scheduler is slow to process must not stop it reading the
+/// worker's stream: the keepalives behind it still come off the wire (here,
+/// a one-slot channel the test could not fill otherwise), and are taken in,
+/// in order, once the slow one is done. Reading inline, the stream's
+/// flow-control window filled behind a slow result and the worker's
+/// keepalives never left it, so this scheduler evicted a worker that was
+/// only waiting for it.
+#[nativelink_test]
+pub async fn a_slow_result_does_not_stop_the_stream_reads_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let mut test_context = setup_api_server(BASE_WORKER_TIMEOUT_S, Box::new(static_now_fn)).await?;
+    let operation_id = dispatch(&test_context, 1).await?;
+    let update_for_worker = test_context
+        .connection_worker_stream
+        .next()
+        .await
+        .expect("Worker stream ended early")?
+        .update
+        .expect("Expected update field to be populated");
+    let update_for_worker::Update::StartAction(start_execute) = update_for_worker else {
+        panic!("Expected StartAction message");
+    };
+    assert_eq!(operation_id.to_string(), start_execute.operation_id);
+
+    // The result's store write is not answered yet: processing it blocks.
+    test_context
+        .worker_stream
+        .send(Update::ExecuteResult(ExecuteResult {
+            instance_name: "instance_name".to_string(),
+            operation_id: operation_id.to_string(),
+            result: Some(execute_result::Result::InternalError(
+                make_err!(tonic::Code::Internal, "the action failed").into(),
+            )),
+            resource_usage: None,
+        }))
+        .await?;
+
+    // The keepalives behind it are still read off the stream.
+    for free_memory_kb in 1..=8u64 {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            test_context
+                .worker_stream
+                .send(Update::KeepAliveRequest(KeepAliveRequest {
+                    load: Some(WorkerLoad { free_memory_kb }),
+                })),
+        )
+        .await
+        .map_err(|_| {
+            make_err!(
+                tonic::Code::DeadlineExceeded,
+                "the stream read stalled behind the result"
+            )
+        })??;
+    }
+
+    // Once the result is through, the keepalives are taken in after it.
+    let (operation_id_seen, worker_id, _) = test_context
+        .state_manager
+        .expect_update_operation(Ok(()))
+        .await;
+    assert_eq!(operation_id_seen, operation_id);
+    assert_eq!(worker_id, test_context.worker_id);
+    summary_after_report(&test_context, 8).await;
     Ok(())
 }

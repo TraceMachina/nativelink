@@ -110,6 +110,49 @@ fn reconnect_delay(attempt: u32) -> Duration {
 /// `cas_server.rs` must also be updated.
 const DEFAULT_ENDPOINT_TIMEOUT_S: f32 = 5.;
 
+/// Keepalive defaults for the scheduler connection, the same as a store's
+/// gRPC endpoint (`tls_utils::endpoint`).
+const DEFAULT_TCP_KEEPALIVE: Duration = Duration::from_secs(30);
+const DEFAULT_HTTP2_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+const DEFAULT_HTTP2_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A configured number of seconds, or the default when unset (0).
+const fn seconds_or(configured: u64, default: Duration) -> Duration {
+    if configured > 0 {
+        Duration::from_secs(configured)
+    } else {
+        default
+    }
+}
+
+/// Sends `GoingAway` within `deadline`. Logged rather than fatal: the stream
+/// close that follows is what removes the worker, this only says why.
+async fn send_going_away<T: WorkerApiClientTrait>(
+    grpc_client: &mut T,
+    drain: bool,
+    deadline: Duration,
+) -> Result<(), Error> {
+    match time::timeout(deadline, grpc_client.going_away(GoingAwayRequest { drain })).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => {
+            error!(?e, drain, "Failed to send GoingAwayRequest");
+            Err(e.append("Failed to send GoingAwayRequest"))
+        }
+        Err(_) => {
+            error!(
+                drain,
+                deadline_s = deadline.as_secs_f32(),
+                "GoingAwayRequest did not complete; the scheduler connection is stalled"
+            );
+            Err(make_err!(
+                Code::DeadlineExceeded,
+                "GoingAwayRequest did not complete within {}s",
+                deadline.as_secs_f32()
+            ))
+        }
+    }
+}
+
 /// Default maximum amount of time a task is allowed to run for.
 /// If this value gets modified the documentation in `cas_server.rs` must also be updated.
 const DEFAULT_MAX_ACTION_TIMEOUT: Duration = Duration::from_mins(20);
@@ -139,17 +182,26 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     // always be zero if there are no actions running and no actions being waited
     // on by the scheduler.
     actions_in_transit: Arc<AtomicU64>,
-    accepted_action: AtomicBool,
+    accepted_action: Arc<AtomicBool>,
     /// The scheduler said it understands `ExecuteAccepted` and
     /// `ExecuteDeclined`. Without it the worker runs whatever it is sent,
     /// as every earlier release did.
     dispatch_ack: bool,
+    memory: MemoryAdmission,
+    metrics: Arc<Metrics>,
+}
+
+/// What local admission needs to refuse an action for load.
+struct MemoryAdmission {
     /// The platform property the scheduler reads an action's memory
     /// reservation from, as it told us on connection; empty when it does
     /// not veto on memory. Read from the same property, a refusal for load
     /// here agrees with what the scheduler would have vetoed.
-    memory_property: String,
-    metrics: Arc<Metrics>,
+    property: String,
+    /// Whether this worker admits any action while it holds nothing else,
+    /// decided once at registration and sent to the scheduler then, so the
+    /// two never disagree.
+    admits_when_idle: bool,
 }
 
 /// Why this worker will not run an action it was just sent.
@@ -278,7 +330,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         grpc_client: T,
         worker_id: String,
         dispatch_ack: bool,
-        memory_property: String,
+        memory: MemoryAdmission,
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -287,14 +339,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             grpc_client,
             worker_id,
             dispatch_ack,
-            memory_property,
+            memory,
             running_actions_manager,
             // Number of actions that have been received in `Update::StartAction`, but
             // not yet processed by running_actions_manager's spawn. This number should
             // always be zero if there are no actions running and no actions being waited
             // on by the scheduler.
             actions_in_transit: Arc::new(AtomicU64::new(0)),
-            accepted_action: AtomicBool::new(false),
+            accepted_action: Arc::new(AtomicBool::new(false)),
             metrics,
         }
     }
@@ -307,10 +359,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         if max > 0 && in_flight >= max {
             return Some(Refusal::AtCapacity { in_flight, max });
         }
-        if let (Some(needed_kb), Some(free_kb)) = (
-            memory_reservation_kb(start_execute, &self.memory_property),
-            crate::capacity::free_memory_kb(),
-        ) && free_kb < needed_kb
+        // The cgroup is read only for an action that reserves memory.
+        let needed_kb = memory_reservation_kb(start_execute, &self.memory.property)?;
+        // With nothing else in flight under a cgroup limit, waiting frees
+        // nothing: what the worker reads free now is the most it will ever
+        // read, since its own process, its hot page cache and the kernel
+        // always count as used. Declining here would have the scheduler
+        // wait for a figure that never comes (the whole-worker escalation
+        // step asks for more than any worker reports free), so the action
+        // runs, and if it truly does not fit, the memory kill escalates or
+        // fails it. Without a limit, free memory is the host's, which other
+        // processes can give back, so waiting can help and the check stands.
+        if in_flight == 0 && self.memory.admits_when_idle {
+            return None;
+        }
+        if let Some(free_kb) = crate::capacity::free_memory_kb()
+            && free_kb < needed_kb
         {
             return Some(Refusal::Load { needed_kb, free_kb });
         }
@@ -319,13 +383,47 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
     /// Tells the scheduler the action is refused; only meaningful when it
     /// understands the message.
-    async fn decline(&self, operation_id: String, refusal: Refusal) -> Result<(), Error> {
+    /// The one message bounded by the endpoint timeout: `GoingAway` at
+    /// shutdown, so a stalled connection cannot hold a pod past its
+    /// termination grace. Everything else the worker sends rides on the
+    /// `ConnectWorker` stream unbounded, and the scheduler's liveness
+    /// timeout is the clock that evicts a worker it cannot hear.
+    fn going_away_deadline(&self) -> Duration {
+        Duration::from_secs_f32(
+            self.config
+                .worker_api_endpoint
+                .timeout
+                .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S),
+        )
+    }
+
+    /// A message to the scheduler the run loop does not wait for inline:
+    /// it rides in the loop's future set, so the loop keeps reading its
+    /// stream while the message waits its turn on the one-slot channel
+    /// feeding the `ConnectWorker` stream. No deadline on it: a message
+    /// waits behind whatever the scheduler is still processing, and a
+    /// scheduler that stops hearing this worker closes the stream, which
+    /// the loop now sees.
+    fn scheduler_send(
+        &self,
+        what: &'static str,
+        send: impl Future<Output = Result<(), Error>> + Send + 'static,
+    ) -> BoxFuture<'static, Result<(), Error>> {
+        async move { send.await.err_tip(|| format!("Could not send {what}")) }.boxed()
+    }
+
+    fn decline(
+        &self,
+        operation_id: String,
+        refusal: Refusal,
+    ) -> BoxFuture<'static, Result<(), Error>> {
         self.metrics.actions_declined.inc();
-        self.grpc_client
-            .clone()
-            .execute_declined(refusal.into_declined(operation_id))
-            .await
-            .err_tip(|| "Could not send ExecuteDeclined")
+        let mut grpc_client = self.grpc_client.clone();
+        self.scheduler_send("ExecuteDeclined", async move {
+            grpc_client
+                .execute_declined(refusal.into_declined(operation_id))
+                .await
+        })
     }
 
     /// Starts a background spawn/thread that will send a message to the server every `timeout / 2`.
@@ -412,11 +510,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             {
                 // The action, CAS/AC uploads, cleanup, and execution_response
                 // acknowledgment have all completed. This container is spent.
-                if let Err(err) = self
-                    .grpc_client
-                    .clone()
-                    .going_away(GoingAwayRequest { drain: false })
-                    .await
+                // Bounded: a stalled connection must not keep a spent
+                // container from exiting.
+                let mut grpc_client = self.grpc_client.clone();
+                if let Err(err) =
+                    send_going_away(&mut grpc_client, false, self.going_away_deadline()).await
                 {
                     warn!(?err, "Could not unregister completed single-use worker");
                 }
@@ -457,47 +555,62 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             if shutting_down || (self.config.single_use
                                 && self.accepted_action.load(Ordering::Acquire)) {
                                 if self.dispatch_ack {
-                                    self.decline(start_execute.operation_id, Refusal::ShuttingDown).await?;
+                                    futures.push(self.decline(start_execute.operation_id, Refusal::ShuttingDown));
                                 } else if let Some(instance_name) = start_execute.execute_request.map(|request| request.instance_name) {
-                                    self.grpc_client.clone().execution_response(
-                                        ExecuteResult{
-                                            instance_name,
-                                            operation_id: start_execute.operation_id,
-                                            result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
-                                            resource_usage: None,
-                                        }
-                                    ).await?;
+                                    let mut grpc_client = self.grpc_client.clone();
+                                    let operation_id = start_execute.operation_id;
+                                    futures.push(self.scheduler_send("ExecutionResponse", async move {
+                                        grpc_client.execution_response(
+                                            ExecuteResult{
+                                                instance_name,
+                                                operation_id,
+                                                result: Some(execute_result::Result::InternalError(make_err!(Code::ResourceExhausted, "Worker shutting down").into())),
+                                                resource_usage: None,
+                                            }
+                                        ).await
+                                    }));
                                 }
                                 continue;
                             }
 
                             // Admission, then the acknowledgement: what the
                             // scheduler charged on the send is confirmed or
-                            // handed back before anything runs. A scheduler
-                            // that does not speak the acknowledgement gets
-                            // the old behaviour, run whatever arrives.
-                            if self.dispatch_ack {
+                            // handed back, and a declined action never runs.
+                            // A scheduler that does not speak the
+                            // acknowledgement gets the old behaviour, run
+                            // whatever arrives. Neither message is awaited
+                            // here: this loop is the only reader of the
+                            // scheduler's stream, and a send that hangs on a
+                            // stalled connection would keep it from ever
+                            // seeing that stream close (the worker then sat
+                            // evicted and idle until the provisioner retired
+                            // it). The action starts once its acknowledgement
+                            // has gone out, so the scheduler hears the
+                            // acknowledgement before anything the run sends,
+                            // and one that fails leaves the action unstarted.
+                            let acknowledgement = if self.dispatch_ack {
                                 if let Some(refusal) = self.admission(
                                     &start_execute,
                                     actions_in_flight.load(Ordering::Acquire),
                                 ) {
-                                    self.decline(start_execute.operation_id, refusal).await?;
+                                    futures.push(self.decline(start_execute.operation_id, refusal));
                                     continue;
                                 }
-                                self.grpc_client
-                                    .clone()
-                                    .execute_accepted(ExecuteAccepted {
-                                        operation_id: start_execute.operation_id.clone(),
-                                    })
-                                    .await
-                                    .err_tip(|| "Could not send ExecuteAccepted")?;
-                            }
-                            // Admitted: a single-use worker is spent from
-                            // here. A decline above must not spend it, or
-                            // every dispatch it turns away costs a pod.
-                            if self.config.single_use {
-                                self.accepted_action.store(true, Ordering::Release);
-                            }
+                                let mut grpc_client = self.grpc_client.clone();
+                                let operation_id = start_execute.operation_id.clone();
+                                Some(self.scheduler_send("ExecuteAccepted", async move {
+                                    grpc_client
+                                        .execute_accepted(ExecuteAccepted { operation_id })
+                                        .await
+                                }))
+                            } else {
+                                None
+                            };
+                            // Admitted: a single-use worker is spent by this
+                            // action once it is acknowledged. A decline above
+                            // must not spend it, or every dispatch it turns
+                            // away costs a pod.
+                            let spent_mark = self.config.single_use.then(|| self.accepted_action.clone());
 
                             self.metrics.start_actions_received.inc();
 
@@ -636,12 +749,19 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                     ?e,
                                                     "Missing CAS inputs during prepare_action, returning FAILED_PRECONDITION"
                                                 );
+                                                // The context names the digest; the
+                                                // execute response turns it into the
+                                                // PreconditionFailure detail Bazel
+                                                // re-uploads and retries on.
                                                 let action_result = ActionResult {
-                                                    error: Some(make_err!(
-                                                        Code::FailedPrecondition,
-                                                        "{}",
-                                                        e.message_string()
-                                                    )),
+                                                    error: Some(
+                                                        make_err!(
+                                                            Code::FailedPrecondition,
+                                                            "{}",
+                                                            e.message_string()
+                                                        )
+                                                        .with_context(e.context.clone()),
+                                                    ),
                                                     ..ActionResult::default()
                                                 };
                                                 let action_stage = ActionStage::Completed(action_result);
@@ -667,46 +787,69 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
 
                             let add_future_channel = add_future_channel.clone();
 
-                            info_span!(
-                                "worker_start_action_ctx",
-                                operation_id = operation_id_to_log,
-                                digest_function = %digest_hasher.to_string(),
-                            ).in_scope(|| {
-                                let _guard = Context::current_with_value(digest_hasher)
-                                    .attach();
-
-                                let actions_in_flight = actions_in_flight.clone();
-                                let actions_notify = actions_notify.clone();
-                                let actions_in_flight_fail = actions_in_flight.clone();
-                                let actions_notify_fail = actions_notify.clone();
-                                actions_in_flight.fetch_add(1, Ordering::Release);
-
-                                futures.push(
-                                    spawn!("worker_start_action", start_action_fut).map(move |res| {
-                                        let res = res.err_tip(|| "Failed to launch spawn")?;
-                                        if let Err(err) = &res {
-                                            error!(?err, "Error executing action");
-                                        }
-                                        add_future_channel
-                                            .send(make_publish_future(res).then(move |res| {
-                                                actions_in_flight.fetch_sub(1, Ordering::Release);
-                                                actions_notify.notify_one();
-                                                core::future::ready(res)
-                                            }).boxed())
-                                            .map_err(|err|
-                                                Error::from_std_err(Code::Internal, &err).append("LocalWorker could not send future")
-                                                )?;
-                                        Ok(())
-                                    })
-                                    .or_else(move |err| {
-                                        // If the make_publish_future is not run we still need to notify.
-                                        actions_in_flight_fail.fetch_sub(1, Ordering::Release);
-                                        actions_notify_fail.notify_one();
-                                        core::future::ready(Err(err))
-                                    })
-                                    .boxed()
+                            // Boxed so the launch closure captures one
+                            // erased type, not the whole action future, and
+                            // the compiler's Send check does not overflow.
+                            let start_action_fut: BoxFuture<'static, Result<FinishedActionResult, Error>> =
+                                start_action_fut.boxed();
+                            let launch = {
+                                let span = info_span!(
+                                    "worker_start_action_ctx",
+                                    operation_id = operation_id_to_log,
+                                    digest_function = %digest_hasher.to_string(),
                                 );
-                            });
+                                move || {
+                                    span.in_scope(|| {
+                                        let _guard = Context::current_with_value(digest_hasher)
+                                            .attach();
+                                        spawn!("worker_start_action", start_action_fut)
+                                    })
+                                }
+                            };
+
+                            let actions_in_flight = actions_in_flight.clone();
+                            let actions_notify = actions_notify.clone();
+                            let actions_in_flight_fail = actions_in_flight.clone();
+                            let actions_notify_fail = actions_notify.clone();
+                            // Counted from the dispatch, so the next one is
+                            // admitted against this slot while the
+                            // acknowledgement is still on its way.
+                            actions_in_flight.fetch_add(1, Ordering::Release);
+
+                            futures.push(
+                                async move {
+                                    if let Some(acknowledgement) = acknowledgement {
+                                        acknowledgement.await?;
+                                    }
+                                    if let Some(accepted_action) = spent_mark {
+                                        accepted_action.store(true, Ordering::Release);
+                                    }
+                                    launch().await.err_tip(|| "Failed to launch spawn")
+                                }
+                                .map(move |res| {
+                                    let res = res?;
+                                    if let Err(err) = &res {
+                                        error!(?err, "Error executing action");
+                                    }
+                                    add_future_channel
+                                        .send(make_publish_future(res).then(move |res| {
+                                            actions_in_flight.fetch_sub(1, Ordering::Release);
+                                            actions_notify.notify_one();
+                                            core::future::ready(res)
+                                        }).boxed())
+                                        .map_err(|err|
+                                            Error::from_std_err(Code::Internal, &err).append("LocalWorker could not send future")
+                                            )?;
+                                    Ok(())
+                                })
+                                .or_else(move |err| {
+                                    // If the make_publish_future is not run we still need to notify.
+                                    actions_in_flight_fail.fetch_sub(1, Ordering::Release);
+                                    actions_notify_fail.notify_one();
+                                    core::future::ready(Err(err))
+                                })
+                                .boxed()
+                            );
                         }
                     }
                 },
@@ -723,21 +866,28 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                     let actions_in_flight = actions_in_flight.clone();
                     let actions_notify = actions_notify.clone();
                     let drain_on_shutdown = self.config.drain_on_shutdown;
+                    // The GoingAway messages below are bounded: a stalled
+                    // connection must not hold the pod past its grace
+                    // period. One that fails or misses is logged and the
+                    // shutdown goes on, the in-flight actions still drained;
+                    // the scheduler removes this worker when the stream
+                    // closes either way.
+                    let going_away_deadline = self.going_away_deadline();
                     let drain_deadline = if self.config.max_action_timeout_s == 0 {
                         DEFAULT_MAX_ACTION_TIMEOUT
                     } else {
                         Duration::from_secs(self.config.max_action_timeout_s as u64)
                     };
                     let shutdown_future = async move {
-                        if drain_on_shutdown {
-                            // Say so first, so nothing new is dispatched here
-                            // while the running actions finish; the scheduler
-                            // removes this worker when the stream closes.
-                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: true }).await {
-                                error!("Failed to send GoingAwayRequest: {e}",);
-                                return Err(e);
-                            }
-                        }
+                        // Said first on a drain, so nothing new is dispatched
+                        // here while the running actions finish; the
+                        // scheduler removes this worker when the stream
+                        // closes.
+                        let mut going_away_result = if drain_on_shutdown {
+                            send_going_away(&mut grpc_client, true, going_away_deadline).await
+                        } else {
+                            Ok(())
+                        };
                         // Wait for in-flight operations to be fully completed,
                         // for as long as one action is allowed to run.
                         let wait = async {
@@ -754,14 +904,11 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                         if !drain_on_shutdown {
                             // Sending this message immediately evicts all jobs from
                             // this worker, of which there should be none.
-                            if let Err(e) = grpc_client.going_away(GoingAwayRequest { drain: false }).await {
-                                error!("Failed to send GoingAwayRequest: {e}",);
-                                return Err(e);
-                            }
+                            going_away_result = send_going_away(&mut grpc_client, false, going_away_deadline).await;
                         }
                         // Allow shutdown to occur now.
                         drop(shutdown_guard);
-                        Ok::<(), Error>(())
+                        going_away_result
                     };
                     futures.push(shutdown_future.boxed());
                     shutting_down = true;
@@ -1163,7 +1310,23 @@ pub async fn new_local_worker(
                                 .append("Invalid URI for worker endpoint")
                         })?
                         .connect_timeout(timeout_duration)
-                        .timeout(timeout_duration);
+                        .timeout(timeout_duration)
+                        // Probes under and between the messages, so a
+                        // connection that has gone dead underneath fails
+                        // here instead of hanging every message on it.
+                        .tcp_keepalive(Some(seconds_or(
+                            config.worker_api_endpoint.tcp_keepalive_s,
+                            DEFAULT_TCP_KEEPALIVE,
+                        )))
+                        .http2_keep_alive_interval(seconds_or(
+                            config.worker_api_endpoint.http2_keepalive_interval_s,
+                            DEFAULT_HTTP2_KEEPALIVE_INTERVAL,
+                        ))
+                        .keep_alive_timeout(seconds_or(
+                            config.worker_api_endpoint.http2_keepalive_timeout_s,
+                            DEFAULT_HTTP2_KEEPALIVE_TIMEOUT,
+                        ))
+                        .keep_alive_while_idle(true);
 
                 let transport = endpoint.connect().await.map_err(|e| {
                     Error::from_std_err(Code::Internal, &e).append(format!(
@@ -1224,7 +1387,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
     async fn register_worker(
         &self,
         client: &mut T,
-    ) -> Result<(String, bool, String, Streaming<UpdateForWorker>), Error> {
+    ) -> Result<(String, bool, MemoryAdmission, Streaming<UpdateForWorker>), Error> {
         let mut extra_envs: HashMap<String, String> = HashMap::new();
         if let Some(ref additional_environment) = self.config.additional_environment {
             for (name, source) in additional_environment {
@@ -1254,6 +1417,9 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             crate::capacity::apply(capacity, memory_headroom_percent, &mut platform_properties)
                 .err_tip(|| "Advertising capacity from the cgroup")?;
         }
+        // Decided once, so what admission does and what the scheduler is
+        // told always agree.
+        let admits_when_idle = crate::capacity::memory_is_limited();
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
             &platform_properties,
@@ -1263,6 +1429,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             } else {
                 self.config.max_inflight_tasks
             },
+            admits_when_idle,
         )
         .await?;
         let mut update_for_worker_stream = client
@@ -1294,7 +1461,10 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         Ok((
             worker_id,
             dispatch_ack,
-            memory_property,
+            MemoryAdmission {
+                property: memory_property,
+                admits_when_idle,
+            },
             update_for_worker_stream,
         ))
     }
@@ -1344,13 +1514,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     (error_handler)(e).await;
                     continue; // Try to connect again.
                 }
-                Ok((worker_id, dispatch_ack, memory_property, update_for_worker_stream)) => (
+                Ok((worker_id, dispatch_ack, memory, update_for_worker_stream)) => (
                     LocalWorkerImpl::new(
                         &self.config,
                         client,
                         worker_id,
                         dispatch_ack,
-                        memory_property,
+                        memory,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
                     ),

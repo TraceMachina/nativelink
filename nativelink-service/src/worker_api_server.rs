@@ -212,13 +212,14 @@ impl WorkerApiServer {
                 connect_worker_request.worker_id_prefix,
                 Uuid::now_v6(&self.node_id).hyphenated()
             ));
-            let worker = Worker::new(
+            let mut worker = Worker::new(
                 worker_id.clone(),
                 platform_properties,
                 tx,
                 (self.now_fn)()?.as_secs(),
                 connect_worker_request.max_inflight_tasks,
             );
+            worker.admits_when_idle = connect_worker_request.admits_when_idle;
             self.scheduler
                 .add_worker(worker)
                 .await
@@ -303,19 +304,38 @@ impl WorkerConnection {
         };
 
         background_spawn!("worker_api", async move {
-            let mut had_going_away = false;
-            while let Some(maybe_update) = connection.next().await {
-                let update = match maybe_update.map(|u| u.update) {
-                    Ok(Some(update)) => update,
-                    Ok(None) => {
-                        tracing::warn!(worker_id=?instance.worker_id, "Empty update");
-                        continue;
-                    }
-                    Err(err) => {
-                        tracing::warn!(worker_id=?instance.worker_id, ?err, "Error from worker");
+            // The stream is read by a task of its own that only hands each
+            // message on; they are processed here, in order. Processing one
+            // inline in the reader (a result's store write, say) stopped the
+            // reads for its duration, and a worker that filled the stream's
+            // flow-control window in the meantime had nothing it was allowed
+            // to put on the wire: its keepalives waited behind the stall
+            // until this scheduler evicted it. The queue is unbounded on
+            // purpose: a worker's messages are bounded by its in-flight
+            // actions and its keepalive interval, and backpressure here is
+            // exactly the stall.
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let reader_worker_id = instance.worker_id.clone();
+            background_spawn!("worker_api_reader", async move {
+                while let Some(maybe_update) = connection.next().await {
+                    let update = match maybe_update.map(|u| u.update) {
+                        Ok(Some(update)) => update,
+                        Ok(None) => {
+                            tracing::warn!(worker_id=?reader_worker_id, "Empty update");
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(worker_id=?reader_worker_id, ?err, "Error from worker");
+                            break;
+                        }
+                    };
+                    if tx.send(update).is_err() {
                         break;
                     }
-                };
+                }
+            });
+            let mut had_going_away = false;
+            while let Some(update) = rx.recv().await {
                 let result = match update {
                     Update::ConnectWorkerRequest(_connect_worker_request) => Err(make_err!(
                         Code::Internal,
@@ -391,15 +411,30 @@ impl WorkerConnection {
     /// Only a keepalive carries a load report and lifts a pause; this
     /// refreshes the timestamp alone, so a decline cannot undo the pause
     /// it just took.
-    async fn touch_liveness(&self) -> Result<(), Error> {
-        self.scheduler
-            .worker_liveness_refreshed(&self.worker_id, (self.now_fn)()?.as_secs())
-            .await
-            .err_tip(|| "Could not refresh worker liveness")
+    ///
+    /// The refresh is best-effort: it is a side effect of the message,
+    /// never the point of it. A result or completion the worker already
+    /// produced must reach `update_action` even if the refresh fails, or
+    /// the operation is stranded in `Executing` with nothing left to
+    /// finish it.
+    async fn touch_liveness_best_effort(&self) {
+        let result = async {
+            self.scheduler
+                .worker_liveness_refreshed(&self.worker_id, (self.now_fn)()?.as_secs())
+                .await
+        }
+        .await;
+        if let Err(err) = result {
+            warn!(
+                worker_id = %self.worker_id,
+                ?err,
+                "Could not refresh worker liveness; continuing to process the message",
+            );
+        }
     }
 
     async fn inner_execution_response(&self, execute_result: ExecuteResult) -> Result<(), Error> {
-        self.touch_liveness().await?;
+        self.touch_liveness_best_effort().await;
         let operation_id = OperationId::from(execute_result.operation_id.clone());
 
         if let Some(resource_usage) = execute_result.resource_usage {
@@ -451,7 +486,8 @@ impl WorkerConnection {
             .worker_dispatch_accepted(&self.worker_id, &operation_id)
             .await
             .err_tip(|| format!("Failed to record acceptance of operation {operation_id}"))?;
-        self.touch_liveness().await
+        self.touch_liveness_best_effort().await;
+        Ok(())
     }
 
     async fn dispatch_declined(&self, execute_declined: ExecuteDeclined) -> Result<(), Error> {
@@ -469,11 +505,12 @@ impl WorkerConnection {
             .worker_dispatch_declined(&self.worker_id, &operation_id, why, needs_kb)
             .await
             .err_tip(|| format!("Failed to record decline of operation {operation_id}"))?;
-        self.touch_liveness().await
+        self.touch_liveness_best_effort().await;
+        Ok(())
     }
 
     async fn execution_complete(&self, execute_complete: ExecuteComplete) -> Result<(), Error> {
-        self.touch_liveness().await?;
+        self.touch_liveness_best_effort().await;
         let operation_id = OperationId::from(execute_complete.operation_id);
         self.scheduler
             .update_action(
