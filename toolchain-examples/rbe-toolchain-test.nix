@@ -58,7 +58,12 @@ writeShellScriptBin "rbe-toolchain-test" ''
 
   NO_COLOR=true ${nativelink}/bin/nativelink -- toolchain-examples/nativelink-config.json5 | tee -i toolchain-examples/nativelink.log &
 
-  CORE_BAZEL_ARGS="--check_direct_dependencies=error --remote_cache=grpc://localhost:50051 --remote_executor=grpc://localhost:50051"
+  # --noshow_progress / --show_result=0 quiet the per-action progress stream and
+  # the built-target listing so the RBE example logs stay scannable. Raw flags
+  # (not --config=nl-quiet) because these commands run in the toolchain-examples
+  # workspace, which does not define that config; and no --test_summary because
+  # some commands here are `build` (curl, zstd), where it is not a valid option.
+  CORE_BAZEL_ARGS="--check_direct_dependencies=error --remote_cache=grpc://localhost:50051 --remote_executor=grpc://localhost:50051 --noshow_progress --show_result=0"
 
   echo "" > toolchain-examples/cmd.log
 

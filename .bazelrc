@@ -48,6 +48,17 @@ build --@llvm//config:experimental_stub_libgcc_s=True
 build --@rules_cc//cc/toolchains/args/archiver_flags:use_libtool_on_macos=False
 build --@rules_rust//cargo/settings:experimental_symlink_execroot
 
+# The hermetic LLVM toolchain correctly scopes `--unwindlib=none` to link
+# actions only, but the clang++ driver still prints "argument unused during
+# compilation: '--unwindlib=none'" on the exec-config ([for tool]) link steps
+# where it is a no-op (process_wrapper, cargo_build_script_runner, the proc-
+# macro crates, ...). It is doing its job everywhere it matters; silence the
+# spurious driver warning. Unconditional (not scoped to a --config) so it also
+# covers the sanitizer and Bazel-Native lanes, which activate the same @llvm
+# clang via `--extra_toolchains` rather than --config=nl-toolchain.
+build --linkopt=-Wno-unused-command-line-argument
+build --host_linkopt=-Wno-unused-command-line-argument
+
 # Don't use legacy repository rules.
 build --incompatible_disable_native_repo_rules
 

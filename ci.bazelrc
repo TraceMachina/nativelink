@@ -79,5 +79,21 @@ common:nl-rbe --remote_download_toplevel
 common:nl-rbe --remote_retries=8
 common:nl-rbe --experimental_remote_cache_eviction_retries=5
 
+# --- Log legibility (CI presentation only) ---
+# Make CI logs scannable so a real warning or failure stands out instead of
+# being buried under per-action progress and per-test success chatter. This
+# group suppresses ONLY presentation noise; it never hides warnings, errors,
+# or the compiler output that precedes them. On the full //... suite this turns
+# a hundreds-of-lines log into tens (verified: the nativelink-store test suite
+# goes from 56 log lines to 10). Opt-in via --config=nl-quiet so local
+# interactive builds keep their live progress.
+# - noshow_progress: drop the "[N / M] Compiling ..." progress stream.
+# - show_result=0: don't list every built target's output path at the end.
+common:nl-quiet --noshow_progress
+common:nl-quiet --show_result=0
+# - test_summary=terse: print a summary line only for tests that did NOT pass,
+#   instead of one "PASSED in 0.Ns" line per test.
+test:nl-quiet --test_summary=terse
+
 # Endpoints deliberately do not appear in this file: the setup action derives
 # them from the claim-base repository secret at job time.

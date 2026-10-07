@@ -12,6 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// This test spins up multiple isolated tokio runtimes to simulate independent
+// worker processes, which legitimately needs the raw runtime/spawn APIs that
+// `src` forbids via `clippy::disallowed_methods`. It also declares test-local
+// constants mid-function and fills buffers with small truncating casts. Allow
+// the lints that fire on those intentional test-only patterns; `src` stays
+// strict.
+#![allow(clippy::disallowed_methods)]
+#![allow(clippy::items_after_statements)]
+#![allow(clippy::cast_possible_truncation)]
+
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -78,8 +88,7 @@ async fn test_multi_worker_isolated_cas_fails() -> Result<(), Error> {
     if let Err(e) = result {
         assert!(
             e.to_string().contains("not found") || e.to_string().contains("No such"),
-            "Expected 'not found' error, got: {}",
-            e
+            "Expected 'not found' error, got: {e}"
         );
     }
 
@@ -146,7 +155,7 @@ async fn test_multi_worker_shared_cas_works() -> Result<(), Error> {
 
 /// Stress test with many workers and concurrent actions
 #[tokio::test]
-#[ignore] // This is a longer-running test
+#[ignore = "longer-running stress test"]
 async fn stress_test_multi_worker_cas() -> Result<(), Error> {
     let temp_dir = std::env::temp_dir().join(format!("test-stress-cas-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
@@ -172,7 +181,7 @@ async fn stress_test_multi_worker_cas() -> Result<(), Error> {
             let data = vec![i as u8; FILE_SIZE];
             // Use a simple digest for testing (not a real hash)
             let digest = DigestInfo::try_new(
-                &format!("{:064}", i), // Create a 64-char hex string
+                &format!("{i:064}"), // Create a 64-char hex string
                 FILE_SIZE,
             )?;
             cas.update_oneshot(digest, data.into()).await?;
@@ -198,8 +207,7 @@ async fn stress_test_multi_worker_cas() -> Result<(), Error> {
                 assert_eq!(
                     data.len(),
                     FILE_SIZE,
-                    "Worker {} got wrong data size",
-                    worker_id
+                    "Worker {worker_id} got wrong data size"
                 );
             }
             Ok::<_, Error>(())
