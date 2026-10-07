@@ -10,7 +10,7 @@ BAZEL_LOG=$(mktemp -t)
 # ERROR patterns are retried too.
 delay=5
 for attempt in 1 2 3; do
-    if exec bazel "$@" 2>&1 | tee "${BAZEL_LOG}"; then
+    if bazel "$@" 2>&1 | tee "${BAZEL_LOG}"; then
         exit 0
     fi
     grep -E '^ERROR:' "${BAZEL_LOG}" |
