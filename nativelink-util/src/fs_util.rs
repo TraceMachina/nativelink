@@ -14,8 +14,10 @@
 
 use core::future::Future;
 use core::pin::Pin;
-use std::fs::Metadata;
-use std::path::{Path, PathBuf};
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::fs::FileType;
+use std::path::Path;
+use std::sync::Arc;
 
 use nativelink_error::{Code, Error, ResultExt, error_if, make_err};
 use tokio::fs;
@@ -78,7 +80,37 @@ pub enum CloneMethod {
 /// - Cross-filesystem materialization attempted and fallback also fails
 /// - Filesystem doesn't support hardlinks (Linux/Windows fallback)
 /// - Permission denied
+///
+/// # Blocking and cancellation
+/// The whole materialization (the existence checks, the `clonefile(2)`
+/// attempt and the per-file walk) runs as ONE task on tokio's blocking pool.
+/// Issuing a `tokio::fs` call per entry instead costs one blocking-pool
+/// handoff per file, and at high action concurrency on many-core hosts that
+/// handoff, not the filesystem, becomes the bottleneck.
+///
+/// A blocking task cannot be aborted once it has started, so dropping the
+/// returned future instead raises a cancel flag that the walk checks before
+/// every entry. An abandoned walk therefore stops after at most the entry
+/// in progress, rather than continuing to populate `dst_dir` while the
+/// caller cleans it up.
 pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<CloneMethod, Error> {
+    let src_dir = src_dir.to_path_buf();
+    let dst_dir = dst_dir.to_path_buf();
+    let (cancel, _cancel_on_drop) = cancel_flag();
+    crate::spawn_blocking!("hardlink_directory_tree", move || {
+        hardlink_directory_tree_blocking(&src_dir, &dst_dir, &cancel)
+    })
+    .await
+    .err_tip(|| "Failed to join hardlink_directory_tree blocking task")?
+}
+
+/// Synchronous body of [`hardlink_directory_tree`]. It runs on the blocking
+/// pool, so it calls `std::fs` directly.
+fn hardlink_directory_tree_blocking(
+    src_dir: &Path,
+    dst_dir: &Path,
+    cancel: &AtomicBool,
+) -> Result<CloneMethod, Error> {
     error_if!(
         !src_dir.exists(),
         "Source directory does not exist: {}",
@@ -95,11 +127,11 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
     {
         // clonefile(2) requires dst's parent to exist but dst itself must NOT
         // exist. Make sure the parent is present without creating dst. The
-        // non-macOS fallback path below creates dst (and any missing parents)
-        // itself via `fs::create_dir_all(dst_dir)`, so this pre-step is only
-        // needed for the clonefile case.
+        // per-file walk below creates dst (and any missing parents) itself
+        // via `create_dir_all(dst_dir)`, so this pre-step is only needed for
+        // the clonefile case.
         if let Some(parent) = dst_dir.parent() {
-            fs::create_dir_all(parent).await.err_tip(|| {
+            std::fs::create_dir_all(parent).err_tip(|| {
                 format!(
                     "Failed to create parent of destination: {}",
                     parent.display()
@@ -107,7 +139,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
             })?;
         }
 
-        match try_clonefile(src_dir, dst_dir).await {
+        match try_clonefile(src_dir, dst_dir) {
             Ok(()) => {
                 // `clonefile(2)` copies the source's modes verbatim. A
                 // directory cache entry locked down by
@@ -118,9 +150,7 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
                 // immutable. No per-directory chmod walk is needed. The root
                 // is still chmod'd here as a defensive guarantee for callers
                 // that pass a source whose root was not pre-marked writable.
-                chmod_dir_writable(dst_dir)
-                    .await
-                    .err_tip(|| "Failed to chmod cloned tree root")?;
+                chmod_dir_writable(dst_dir).err_tip(|| "Failed to chmod cloned tree root")?;
                 return Ok(CloneMethod::Clonefile);
             }
             Err(e) => {
@@ -132,23 +162,46 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
                 );
                 // clonefile(2) is atomic — on failure dst should not exist —
                 // but be defensive in case a partial tree was left behind.
-                let _cleanup = fs::remove_dir_all(dst_dir).await;
+                let _cleanup = std::fs::remove_dir_all(dst_dir);
             }
         }
     }
 
-    // Create the root destination directory
-    fs::create_dir_all(dst_dir).await.err_tip(|| {
-        format!(
-            "Failed to create destination directory: {}",
-            dst_dir.display()
-        )
-    })?;
-    chmod_dir_0o755(dst_dir).await?;
-
-    // Recursively hardlink the directory tree
-    hardlink_directory_tree_recursive(src_dir, dst_dir).await?;
+    hardlink_tree_by_walk(src_dir, dst_dir, cancel)?;
     Ok(CloneMethod::Hardlink)
+}
+
+/// Raises its flag when dropped. The async side of a blocking walk holds one
+/// across the `.await`, so dropping that future (cancellation) tells the walk
+/// to stop. `JoinHandle::abort` cannot do that: it has no effect on a
+/// `spawn_blocking` task that has already started running.
+#[derive(Debug)]
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Returns a cancel flag to move into a blocking walk, and the guard that
+/// raises it when the future awaiting the walk is dropped.
+fn cancel_flag() -> (Arc<AtomicBool>, CancelOnDrop) {
+    let flag = Arc::new(AtomicBool::new(false));
+    (Arc::clone(&flag), CancelOnDrop(flag))
+}
+
+/// Fails with `Code::Cancelled` once the walk rooted at `root` has been
+/// abandoned by its caller. The walks check this before every entry.
+fn check_not_cancelled(cancel: &AtomicBool, root: &Path) -> Result<(), Error> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(make_err!(
+            Code::Cancelled,
+            "Stopped walking {}: the caller dropped the future",
+            root.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Sets `dir` to mode 0o755 on unix; no-op elsewhere. The per-file hardlink
@@ -159,12 +212,11 @@ pub async fn hardlink_directory_tree(src_dir: &Path, dst_dir: &Path) -> Result<C
 /// are 0o755" invariant umask-independent. (The macOS `clonefile` path is
 /// unaffected: it copies the source's modes verbatim, and cache-entry
 /// sources are built at 0o755.)
-async fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
+fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
-            .await
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
             .err_tip(|| format!("Failed to set directory mode: {}", dir.display()))?;
     }
     #[cfg(not(unix))]
@@ -174,13 +226,14 @@ async fn chmod_dir_0o755(dir: &Path) -> Result<(), Error> {
 
 /// Recursively clones a directory tree using APFS `clonefile(2)`. On success
 /// the destination shares data blocks with the source via copy-on-write; the
-/// operation is O(1) in tree size regardless of file count.
+/// operation is O(1) in tree size regardless of file count. Blocking: call
+/// it only from the blocking task in [`hardlink_directory_tree`].
 ///
 /// Returns `Err` on EXDEV (cross-volume), ENOTSUP (filesystem doesn't support
 /// clones), or any other errno; callers are expected to fall back to per-file
 /// hardlinks.
 #[cfg(target_os = "macos")]
-async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
+fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
@@ -202,19 +255,15 @@ async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
         )
     })?;
 
-    crate::spawn_blocking!("clonefile", move || {
-        // SAFETY: clonefile(2) takes two NUL-terminated C strings and a flag
-        // word. Both CStrings are owned by this closure for the duration of
-        // the call, so the pointers stay valid.
-        let res = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), CLONE_NOFOLLOW) };
-        if res == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
-    })
-    .await
-    .map_err(std::io::Error::other)?
+    // SAFETY: clonefile(2) takes two NUL-terminated C strings and a flag
+    // word. Both CStrings live until the end of this function, so the
+    // pointers stay valid for the duration of the call.
+    let res = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), CLONE_NOFOLLOW) };
+    if res == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// Sets the directory `dir`'s mode to 0o755 so callers can create new
@@ -226,28 +275,41 @@ async fn try_clonefile(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// entries inside `dir` are intentionally left at their cloned perms — files
 /// stay read-only (the hermeticity contract), directories stay writable.
 #[cfg(target_os = "macos")]
-async fn chmod_dir_writable(dir: &Path) -> Result<(), Error> {
+fn chmod_dir_writable(dir: &Path) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
-        .await
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
         .err_tip(|| format!("Failed to chmod {} to 0o755", dir.display()))
 }
 
-/// Internal recursive function to hardlink directory contents
-fn hardlink_directory_tree_recursive<'a>(
-    src: &'a Path,
-    dst: &'a Path,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
-    Box::pin(async move {
-        let mut entries = fs::read_dir(src)
-            .await
-            .err_tip(|| format!("Failed to read directory: {}", src.display()))?;
+/// The per-file materialization: creates `dst_dir` (and any missing parents)
+/// at 0o755, then mirrors `src_dir` into it. Files are hardlinked, symlinks
+/// are recreated as symlinks, and directories are created fresh at 0o755.
+/// Used on Linux and Windows always, and on macOS when `clonefile(2)` fails.
+///
+/// The walk is iterative, with an explicit stack of directories still to
+/// visit, so a deep tree neither recurses nor holds a `ReadDir` handle open
+/// per level. Each entry is inspected with `DirEntry::file_type`, which does
+/// NOT traverse symlinks (it has `symlink_metadata`/lstat semantics) and on
+/// most filesystems comes straight from the directory entry (`d_type`), with
+/// no extra `stat` call per entry.
+fn hardlink_tree_by_walk(src_dir: &Path, dst_dir: &Path, cancel: &AtomicBool) -> Result<(), Error> {
+    // Create the root destination directory
+    std::fs::create_dir_all(dst_dir).err_tip(|| {
+        format!(
+            "Failed to create destination directory: {}",
+            dst_dir.display()
+        )
+    })?;
+    chmod_dir_0o755(dst_dir)?;
 
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .err_tip(|| format!("Failed to get next entry in: {}", src.display()))?
-        {
+    let mut pending = vec![(src_dir.to_path_buf(), dst_dir.to_path_buf())];
+    while let Some((src, dst)) = pending.pop() {
+        let read_dir = std::fs::read_dir(&src)
+            .err_tip(|| format!("Failed to read directory: {}", src.display()))?;
+        for entry in read_dir {
+            check_not_cancelled(cancel, dst_dir)?;
+            let entry =
+                entry.err_tip(|| format!("Failed to get next entry in: {}", src.display()))?;
             let entry_path = entry.path();
             let file_name = entry.file_name().into_string().map_err(|os_str| {
                 make_err!(
@@ -256,68 +318,57 @@ fn hardlink_directory_tree_recursive<'a>(
                     os_str
                 )
             })?;
-
             let dst_path = dst.join(&file_name);
-            // `DirEntry::metadata` does NOT traverse symlinks (it has
-            // `symlink_metadata`/lstat semantics), so `is_symlink()` below
-            // correctly identifies symlink entries and the symlink branch
-            // recreates them as symlinks rather than dereferencing them.
-            let metadata = entry
-                .metadata()
-                .await
+
+            let file_type = entry
+                .file_type()
                 .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
 
-            if metadata.is_symlink() {
+            if file_type.is_symlink() {
                 // Recreate the symlink as a symlink. Checked BEFORE `is_dir()`
                 // / `is_file()` so a symlink that resolves to a directory is
-                // never treated as a real directory and recursed *through*
+                // never treated as a real directory and walked *through*
                 // (which would dereference the link and potentially escape
                 // the tree).
-                let target = fs::read_link(&entry_path)
-                    .await
+                let target = std::fs::read_link(&entry_path)
                     .err_tip(|| format!("Failed to read symlink: {}", entry_path.display()))?;
 
                 #[cfg(unix)]
-                fs::symlink(&target, &dst_path)
-                    .await
+                std::os::unix::fs::symlink(&target, &dst_path)
                     .err_tip(|| format!("Failed to create symlink: {}", dst_path.display()))?;
 
                 #[cfg(windows)]
                 {
                     if target.is_dir() {
-                        fs::symlink_dir(&target, &dst_path).await.err_tip(|| {
+                        std::os::windows::fs::symlink_dir(&target, &dst_path).err_tip(|| {
                             format!("Failed to create directory symlink: {}", dst_path.display())
                         })?;
                     } else {
-                        fs::symlink_file(&target, &dst_path).await.err_tip(|| {
+                        std::os::windows::fs::symlink_file(&target, &dst_path).err_tip(|| {
                             format!("Failed to create file symlink: {}", dst_path.display())
                         })?;
                     }
                 }
-            } else if metadata.is_dir() {
-                // Create subdirectory and recurse
-                fs::create_dir(&dst_path)
-                    .await
+            } else if file_type.is_dir() {
+                // Create the subdirectory now; its contents are mirrored when
+                // it comes off the stack.
+                std::fs::create_dir(&dst_path)
                     .err_tip(|| format!("Failed to create directory: {}", dst_path.display()))?;
-                chmod_dir_0o755(&dst_path).await?;
-
-                hardlink_directory_tree_recursive(&entry_path, &dst_path).await?;
-            } else if metadata.is_file() {
+                chmod_dir_0o755(&dst_path)?;
+                pending.push((entry_path, dst_path));
+            } else if file_type.is_file() {
                 // Hardlink the file
-                fs::hard_link(&entry_path, &dst_path)
-                    .await
-                    .err_tip(|| {
-                        format!(
-                            "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
-                            entry_path.display(),
-                            dst_path.display()
-                        )
-                    })?;
+                std::fs::hard_link(&entry_path, &dst_path).err_tip(|| {
+                    format!(
+                        "Failed to hardlink {} to {}. This may occur if the source and destination are on different filesystems",
+                        entry_path.display(),
+                        dst_path.display()
+                    )
+                })?;
             }
         }
-
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// Locks down a directory tree as an immutable cache entry: every **file** is
@@ -349,11 +400,9 @@ fn hardlink_directory_tree_recursive<'a>(
 ///   writable.
 ///
 /// Symlink entries in the tree are skipped (their own mode is not meaningful
-/// and `chmod` would follow the link) - see `set_perms_recursive_impl`.
+/// and `chmod` would follow the link) - see `set_perms_walk`.
 pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
-
-    set_perms_recursive_impl(dir.to_path_buf(), set_readonly_one_path).await
+    set_perms_recursive(dir, set_readonly_one_path).await
 }
 
 /// Sets only the **directories** in a tree to writable for the current user,
@@ -374,164 +423,170 @@ pub async fn set_readonly_recursive(dir: &Path) -> Result<(), Error> {
 /// - Windows: Clears `FILE_ATTRIBUTE_READONLY` on directories only; files are NOT touched.
 ///
 /// Symlink entries in the tree are skipped (their own mode is not meaningful
-/// and `chmod` would follow the link) - see `set_perms_recursive_impl`.
+/// and `chmod` would follow the link) - see `set_perms_walk`.
 pub async fn set_dir_writable_recursive(dir: &Path) -> Result<(), Error> {
-    error_if!(!dir.exists(), "Directory does not exist: {}", dir.display());
-
-    set_perms_recursive_impl(dir.to_path_buf(), set_dir_writable_one_path).await
+    set_perms_recursive(dir, set_dir_writable_one_path).await
 }
 
-fn set_readonly_one_path(
-    path: PathBuf,
-    metadata: Metadata,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-    Box::pin(async move {
-        // Directories are left writable on purpose. They are not
-        // hardlink-shared between cache entries — only file content inodes
-        // are — so a writable directory mode cannot corrupt anything. Keeping
-        // them writable means the materialized destination tree already
-        // accepts the nested output files Bazel actions declare, with no
-        // separate per-materialization chmod walk.
-        if metadata.is_dir() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
+/// A per-entry permission change applied by [`set_perms_walk`]. Only ever
+/// called for real files and directories, never for symlinks.
+type PermsFn = fn(&Path, FileType) -> Result<(), Error>;
 
-                fs::set_permissions(&path, perms)
-                    .await
-                    .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
+/// Runs [`set_perms_walk`] over the tree rooted at `dir` as ONE blocking
+/// task, cancelled when the returned future is dropped. See
+/// [`hardlink_directory_tree`] for why the walk is batched this way.
+async fn set_perms_recursive(dir: &Path, perms_fn: PermsFn) -> Result<(), Error> {
+    let dir = dir.to_path_buf();
+    let (cancel, _cancel_on_drop) = cancel_flag();
+    crate::spawn_blocking!("set_perms_recursive", move || {
+        set_perms_walk(&dir, perms_fn, &cancel)
+    })
+    .await
+    .err_tip(|| "Failed to join set_perms_recursive blocking task")?
+}
+
+/// Synchronous body of [`set_perms_recursive`]: applies `perms_fn` to every
+/// file and directory in the tree rooted at `root`, skipping symlinks.
+///
+/// The root is inspected with `symlink_metadata` (lstat) rather than
+/// `metadata` (stat), and every entry with `DirEntry::file_type`, which has
+/// the same lstat semantics, so the walk sees the entry *itself*, never the
+/// target a symlink points at. This matters for input trees containing
+/// symlinks - e.g. `.venv/bin/python3` created by `rules_python` /
+/// `rules_apple` venv tooling. With plain `stat`, a symlink to a directory
+/// reports `is_dir() == true` and the walk would recurse *through* the link
+/// (escaping the tree, or descending into an unrelated directory), and a
+/// symlink to a file would have `chmod` applied to it - and `chmod` follows
+/// symlinks, so it mutates the target. A symlink whose target does not exist
+/// (a dangling link, common when a venv points outside the action's input
+/// set) then fails the whole walk with ENOENT - the cause of directory-cache
+/// actions falling back to the slow download path.
+///
+/// Each directory gets `perms_fn` before it is read. Both callers only ever
+/// make directories more permissive (0o755), so that order can only help the
+/// walk read them, and the end state is the same as a post-order walk.
+fn set_perms_walk(root: &Path, perms_fn: PermsFn, cancel: &AtomicBool) -> Result<(), Error> {
+    error_if!(
+        !root.exists(),
+        "Directory does not exist: {}",
+        root.display()
+    );
+
+    let root_type = std::fs::symlink_metadata(root)
+        .err_tip(|| format!("Failed to get metadata for: {}", root.display()))?
+        .file_type();
+
+    // Symlinks are skipped entirely: their own mode is not meaningful, a
+    // `chmod` on the link path would follow it and touch the target, and
+    // descending into a symlinked directory would walk outside the tree.
+    // The symlink entry itself is left exactly as created.
+    if root_type.is_symlink() {
+        return Ok(());
+    }
+    if !root_type.is_dir() {
+        return perms_fn(root, root_type);
+    }
+
+    let mut pending = vec![(root.to_path_buf(), root_type)];
+    while let Some((dir, dir_type)) = pending.pop() {
+        check_not_cancelled(cancel, root)?;
+        perms_fn(&dir, dir_type)?;
+        let read_dir = std::fs::read_dir(&dir)
+            .err_tip(|| format!("Failed to read directory: {}", dir.display()))?;
+        for entry in read_dir {
+            check_not_cancelled(cancel, root)?;
+            let entry =
+                entry.err_tip(|| format!("Failed to get next entry in: {}", dir.display()))?;
+            let entry_path = entry.path();
+            let file_type = entry
+                .file_type()
+                .err_tip(|| format!("Failed to get metadata for: {}", entry_path.display()))?;
+            if file_type.is_symlink() {
+                continue;
             }
-
-            // On Windows directories are already writable; clearing the
-            // read-only attribute here would be a no-op, so leave them alone.
-
-            return Ok(());
-        }
-
-        // Set the file to read-only.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = metadata.permissions();
-
-            // Files get r-xr-xr-x (0o555): read and execute for everyone,
-            // write for no one. Files use 0o555 rather than 0o444 so the
-            // execute bit survives on cached executables — a stripped +x bit
-            // makes an action's interpreter or wrapper script fail with
-            // EACCES once the tree is materialized into a workspace. The
-            // write bit stays cleared, so the hermeticity contract (inputs
-            // are immutable) is unchanged.
-            perms.set_mode(0o555);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(true);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        Ok(())
-    })
-}
-
-fn set_dir_writable_one_path(
-    path: PathBuf,
-    metadata: Metadata,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-    Box::pin(async move {
-        // Files are intentionally skipped here. They may be hardlinked into
-        // the CAS (FilesystemStore); chmoding them would corrupt the shared
-        // inode's mode for every other in-flight action.
-        if !metadata.is_dir() {
-            return Ok(());
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o755);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        #[cfg(windows)]
-        {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(false);
-
-            fs::set_permissions(&path, perms)
-                .await
-                .err_tip(|| format!("Failed to set permissions for: {}", path.display()))?;
-        }
-
-        Ok(())
-    })
-}
-
-fn set_perms_recursive_impl<'a, F>(
-    path: PathBuf,
-    perms_fn: F,
-) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>
-where
-    F: Fn(PathBuf, Metadata) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
-        + Send
-        + Copy
-        + 'a,
-{
-    Box::pin(async move {
-        // Use `symlink_metadata` (lstat) rather than `metadata` (stat) so the
-        // walk inspects the entry *itself*, never the target a symlink points
-        // at. This matters for input trees containing symlinks - e.g.
-        // `.venv/bin/python3` created by rules_python / rules_apple venv
-        // tooling. With plain `stat`, a symlink to a directory reports
-        // `is_dir() == true` and the walk would recurse *through* the link
-        // (escaping the tree, or descending into an unrelated directory), and
-        // a symlink to a file would have `chmod` applied to it - and `chmod`
-        // follows symlinks, so it mutates the target. A symlink whose target
-        // does not exist (a dangling link, common when a venv points outside
-        // the action's input set) then fails the whole walk with ENOENT -
-        // the cause of directory-cache actions falling back to the slow
-        // download path.
-        let metadata = fs::symlink_metadata(&path)
-            .await
-            .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?;
-
-        // Symlinks are skipped entirely: their own mode is not meaningful, a
-        // `chmod` on the link path would follow it and touch the target, and
-        // descending into a symlinked directory would walk outside the tree.
-        // The symlink entry itself is left exactly as created.
-        if metadata.is_symlink() {
-            return Ok(());
-        }
-
-        if metadata.is_dir() {
-            let mut entries = fs::read_dir(&path)
-                .await
-                .err_tip(|| format!("Failed to read directory: {}", path.display()))?;
-
-            while let Some(entry) = entries
-                .next_entry()
-                .await
-                .err_tip(|| format!("Failed to get next entry in: {}", path.display()))?
-            {
-                set_perms_recursive_impl(entry.path(), perms_fn).await?;
+            if file_type.is_dir() {
+                pending.push((entry_path, file_type));
+            } else {
+                perms_fn(&entry_path, file_type)?;
             }
         }
-        perms_fn(path, metadata).await
-    })
+    }
+    Ok(())
+}
+
+// Synchronous: runs inside the blocking walk in `set_perms_walk`, so it must
+// not await.
+fn set_readonly_one_path(path: &Path, file_type: FileType) -> Result<(), Error> {
+    // Directories are left writable on purpose. They are not
+    // hardlink-shared between cache entries — only file content inodes
+    // are — so a writable directory mode cannot corrupt anything. Keeping
+    // them writable means the materialized destination tree already
+    // accepts the nested output files Bazel actions declare, with no
+    // separate per-materialization chmod walk.
+    if file_type.is_dir() {
+        #[cfg(unix)]
+        set_mode(path, 0o755)?;
+
+        // On Windows directories are already writable; clearing the
+        // read-only attribute here would be a no-op, so leave them alone.
+
+        return Ok(());
+    }
+
+    // Set the file to read-only.
+    //
+    // On unix files get r-xr-xr-x (0o555): read and execute for everyone,
+    // write for no one. Files use 0o555 rather than 0o444 so the execute bit
+    // survives on cached executables — a stripped +x bit makes an action's
+    // interpreter or wrapper script fail with EACCES once the tree is
+    // materialized into a workspace. The write bit stays cleared, so the
+    // hermeticity contract (inputs are immutable) is unchanged.
+    #[cfg(unix)]
+    set_mode(path, 0o555)?;
+
+    #[cfg(windows)]
+    set_readonly_attribute(path, true)?;
+
+    Ok(())
+}
+
+// Synchronous: see `set_readonly_one_path`.
+fn set_dir_writable_one_path(path: &Path, file_type: FileType) -> Result<(), Error> {
+    // Files are intentionally skipped here. They may be hardlinked into
+    // the CAS (FilesystemStore); chmoding them would corrupt the shared
+    // inode's mode for every other in-flight action.
+    if !file_type.is_dir() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    set_mode(path, 0o755)?;
+
+    #[cfg(windows)]
+    set_readonly_attribute(path, false)?;
+
+    Ok(())
+}
+
+/// Sets `path`'s permission bits to exactly `mode`. The walk has already
+/// excluded symlinks, which matters because `chmod` follows them.
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))
+}
+
+/// Sets or clears `FILE_ATTRIBUTE_READONLY` on `path`, keeping its other
+/// attributes. The walk has already excluded symlinks.
+#[cfg(windows)]
+fn set_readonly_attribute(path: &Path, readonly: bool) -> Result<(), Error> {
+    let mut perms = std::fs::symlink_metadata(path)
+        .err_tip(|| format!("Failed to get metadata for: {}", path.display()))?
+        .permissions();
+    perms.set_readonly(readonly);
+    std::fs::set_permissions(path, perms)
+        .err_tip(|| format!("Failed to set permissions for: {}", path.display()))
 }
 
 /// Calculates the total size of a directory tree in bytes.
@@ -583,6 +638,8 @@ fn calculate_directory_size_impl<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use nativelink_macro::nativelink_test;
@@ -1139,6 +1196,264 @@ mod tests {
 
         let result = hardlink_directory_tree(&src_dir, &dst_dir).await;
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    /// Builds a tree with every entry kind the walks handle: files at several
+    /// depths (one executable), empty directories (one nested inside another
+    /// directory), a directory whose mode is not 0o755, and symlinks to a
+    /// file, to a directory and to nothing (dangling).
+    #[cfg(unix)]
+    fn create_nested_tree(root: &Path) -> Result<(), Error> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        for dir in ["a/b/c", "a/b/nested_empty", "empty", "private"] {
+            std::fs::create_dir_all(root.join(dir))?;
+        }
+        for (file, contents) in [
+            ("top.txt", "top"),
+            ("run.sh", "#!/bin/sh\n"),
+            ("a/a.txt", "a"),
+            ("a/b/c/deep.txt", "deep"),
+            ("private/secret.txt", "secret"),
+        ] {
+            std::fs::write(root.join(file), contents)?;
+        }
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o755))?;
+        std::fs::set_permissions(root.join("private"), std::fs::Permissions::from_mode(0o700))?;
+        symlink("../top.txt", root.join("a/link_to_top"))?;
+        symlink("a/b", root.join("link_to_dir"))?;
+        symlink("../does/not/exist", root.join("dangling"))?;
+        Ok(())
+    }
+
+    /// One entry of a tree as `lstat` sees it.
+    #[cfg(unix)]
+    #[derive(Debug, PartialEq, Eq)]
+    enum TreeEntry {
+        Dir,
+        File(Vec<u8>),
+        Symlink(PathBuf),
+    }
+
+    /// Maps every path under `root`, relative to it, to what is there. Does
+    /// not follow symlinks, so a symlinked directory appears once, as a
+    /// symlink, with no children.
+    #[cfg(unix)]
+    fn snapshot_tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeEntry>, Error> {
+        let mut snapshot = BTreeMap::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir)? {
+                let path = entry?.path();
+                let file_type = std::fs::symlink_metadata(&path)?.file_type();
+                let tree_entry = if file_type.is_symlink() {
+                    TreeEntry::Symlink(std::fs::read_link(&path)?)
+                } else if file_type.is_dir() {
+                    pending.push(path.clone());
+                    TreeEntry::Dir
+                } else {
+                    TreeEntry::File(std::fs::read(&path)?)
+                };
+                snapshot.insert(path.strip_prefix(root).unwrap().to_path_buf(), tree_entry);
+            }
+        }
+        Ok(snapshot)
+    }
+
+    /// Counts every entry under `root`; zero if `root` does not exist.
+    fn count_entries(root: &Path) -> usize {
+        let mut count = 0;
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            let Ok(read_dir) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in read_dir.flatten() {
+                count += 1;
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    pending.push(entry.path());
+                }
+            }
+        }
+        count
+    }
+
+    /// The per-file walk reproduces a nested tree exactly: the same paths,
+    /// file contents and symlink targets, with empty directories kept and the
+    /// symlinked directory recreated as a symlink rather than walked through.
+    /// Files are hardlinks of the source (same inode), not copies, and every
+    /// destination directory is 0o755 whatever its source mode. The walk is
+    /// called directly so that macOS, where `hardlink_directory_tree` clones
+    /// instead, covers it too.
+    #[cfg(unix)]
+    #[nativelink_test("crate")]
+    async fn test_hardlink_walk_reproduces_nested_tree() -> Result<(), Error> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp_dir = TempDir::new().err_tip(|| "Failed to create temp directory")?;
+        let src_dir = temp_dir.path().join("src");
+        create_nested_tree(&src_dir)?;
+        let dst_dir = temp_dir.path().join("dst");
+
+        hardlink_tree_by_walk(&src_dir, &dst_dir, &AtomicBool::new(false))?;
+
+        let src_tree = snapshot_tree(&src_dir)?;
+        assert_eq!(snapshot_tree(&dst_dir)?, src_tree);
+
+        let root_mode = std::fs::metadata(&dst_dir)?.permissions().mode() & 0o777;
+        assert_eq!(root_mode, 0o755, "destination root must be 0o755");
+        for (relative, tree_entry) in &src_tree {
+            let src_meta = std::fs::symlink_metadata(src_dir.join(relative))?;
+            let dst_meta = std::fs::symlink_metadata(dst_dir.join(relative))?;
+            match tree_entry {
+                TreeEntry::File(_) => assert_eq!(
+                    (dst_meta.dev(), dst_meta.ino()),
+                    (src_meta.dev(), src_meta.ino()),
+                    "{} must be a hardlink of the source file",
+                    relative.display()
+                ),
+                TreeEntry::Dir => assert_eq!(
+                    dst_meta.permissions().mode() & 0o777,
+                    0o755,
+                    "{} must be 0o755",
+                    relative.display()
+                ),
+                TreeEntry::Symlink(_) => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// `hardlink_directory_tree` reproduces the same nested tree end to end,
+    /// creating the destination's missing parent (the per-file walk on Linux,
+    /// `clonefile(2)` on macOS).
+    #[cfg(unix)]
+    #[nativelink_test("crate")]
+    async fn test_hardlink_directory_tree_reproduces_nested_tree() -> Result<(), Error> {
+        let temp_dir = TempDir::new().err_tip(|| "Failed to create temp directory")?;
+        let src_dir = temp_dir.path().join("src");
+        create_nested_tree(&src_dir)?;
+        let dst_dir = temp_dir.path().join("missing_parent/dst");
+
+        hardlink_directory_tree(&src_dir, &dst_dir).await?;
+
+        assert_eq!(snapshot_tree(&dst_dir)?, snapshot_tree(&src_dir)?);
+        Ok(())
+    }
+
+    /// A walk whose caller has gone away creates nothing more. Here the cancel
+    /// flag is raised before the walk starts, which keeps the test
+    /// deterministic; in production dropping the future raises it (see
+    /// `test_dropping_hardlink_future_stops_walk`).
+    #[nativelink_test("crate")]
+    async fn test_hardlink_walk_stops_when_cancelled() -> Result<(), Error> {
+        let (temp_dir, src_dir) = create_test_directory().await?;
+        let dst_dir = temp_dir.path().join("test_dst");
+
+        let err = hardlink_tree_by_walk(&src_dir, &dst_dir, &AtomicBool::new(true))
+            .expect_err("a cancelled walk must fail");
+        assert_eq!(err.code, Code::Cancelled, "{err:?}");
+        assert_eq!(
+            count_entries(&dst_dir),
+            0,
+            "a cancelled walk must not create entries"
+        );
+
+        Ok(())
+    }
+
+    /// Same as `test_hardlink_walk_stops_when_cancelled`, for the permission
+    /// walk: a cancelled walk changes no modes.
+    #[nativelink_test("crate")]
+    async fn test_set_perms_walk_stops_when_cancelled() -> Result<(), Error> {
+        let (_temp_dir, test_dir) = create_test_directory().await?;
+
+        let err = set_perms_walk(&test_dir, set_readonly_one_path, &AtomicBool::new(true))
+            .expect_err("a cancelled walk must fail");
+        assert_eq!(err.code, Code::Cancelled, "{err:?}");
+        for file in ["file1.txt", "subdir/file2.txt"] {
+            assert!(
+                !std::fs::metadata(test_dir.join(file))?
+                    .permissions()
+                    .readonly(),
+                "a cancelled walk must not chmod {file}"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Dropping the `hardlink_directory_tree` future stops the blocking walk
+    /// it started, instead of leaving it to populate the destination behind
+    /// the back of a caller that may already be deleting it. The future is
+    /// dropped as soon as the walk is observably running on a tree far too
+    /// large to finish in that window. Without the cancel flag the walk, a
+    /// single blocking task that `abort` cannot stop, would mirror the whole
+    /// tree. Not on macOS, where `clonefile(2)` materializes the tree in one
+    /// call.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[nativelink_test("crate")]
+    async fn test_dropping_hardlink_future_stops_walk() -> Result<(), Error> {
+        use core::time::Duration;
+        use std::time::Instant;
+
+        use futures::FutureExt;
+
+        const DIRS: usize = 40;
+        const FILES_PER_DIR: usize = 250;
+        const TOTAL_ENTRIES: usize = DIRS * (FILES_PER_DIR + 1);
+
+        let temp_dir = TempDir::new().err_tip(|| "Failed to create temp directory")?;
+        let src_dir = temp_dir.path().join("src");
+        for dir_index in 0..DIRS {
+            let dir = src_dir.join(format!("dir{dir_index}"));
+            std::fs::create_dir_all(&dir)?;
+            for file_index in 0..FILES_PER_DIR {
+                std::fs::write(dir.join(format!("file{file_index}")), b"")?;
+            }
+        }
+        let dst_dir = temp_dir.path().join("dst");
+
+        // One poll spawns the blocking walk, which then runs on its own.
+        let mut walk = Box::pin(hardlink_directory_tree(&src_dir, &dst_dir));
+        assert!(
+            (&mut walk).now_or_never().is_none(),
+            "the walk cannot finish on its first poll"
+        );
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while count_entries(&dst_dir) == 0 {
+            assert!(Instant::now() < deadline, "the walk never started");
+            std::thread::yield_now();
+        }
+        drop(walk);
+        let entries_at_drop = count_entries(&dst_dir);
+
+        // Wait for the destination to stop changing.
+        let mut entries = entries_at_drop;
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let now = count_entries(&dst_dir);
+            if now == entries {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the walk never stopped");
+            entries = now;
+        }
+
+        // The walk checks the flag before every entry, so after the drop it
+        // finishes at most the entry it was working on.
+        assert!(
+            entries <= entries_at_drop + 1,
+            "the walk kept creating entries after its future was dropped: \
+             {entries_at_drop} at drop, {entries} after"
+        );
+        assert!(
+            entries < TOTAL_ENTRIES,
+            "the walk mirrored the whole tree ({entries} entries) after its future was dropped"
+        );
 
         Ok(())
     }
