@@ -835,6 +835,32 @@ pub struct FilesystemSpec {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_writes: usize,
 
+    /// Maximum number of concurrent background file-deletion operations.
+    /// When an entry leaves the store, its backing file is unlinked by a
+    /// background task. Without a bound, an eviction storm (cache wipe or a
+    /// flood of overwrites) can spawn these without limit: memory grows with the
+    /// queued task frames and disk/inode reclamation lags behind what the async
+    /// runtime can schedule. Bounding it applies backpressure the same way
+    /// `max_concurrent_writes` does — once this many deletes are in flight, a
+    /// further delete runs synchronously inline in the evicting path instead of
+    /// spawning, which throttles eviction to delete throughput and never leaks
+    /// a file.
+    ///
+    /// Bounded by default, unlike `max_concurrent_writes`: an unbounded delete
+    /// backlog is a latent memory/inode blowup, and leaving the protection off
+    /// by default just moves that risk from a high-context code review to a
+    /// 4 AM config change nobody remembers to make. The default is generous
+    /// enough that normal steady-state eviction never reaches it (so the inline
+    /// path never fires in ordinary operation); it only engages under a genuine
+    /// storm, which is exactly when the backpressure is wanted.
+    /// A value of 0 is the explicit escape hatch for unlimited.
+    /// Default: 1024.
+    #[serde(
+        default = "default_max_concurrent_deletes",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub max_concurrent_deletes: usize,
+
     /// When true, advise the kernel to drop the page cache for each blob after
     /// it is written or read (`posix_fadvise` with `POSIX_FADV_DONTNEED`). On
     /// real filesystems this takes a globally serialized, all-CPU kernel path
@@ -1687,6 +1713,14 @@ const fn default_read_batching_max_batch_bytes() -> u64 {
 
 const fn default_read_batching_dispatch_slots() -> usize {
     4
+}
+
+/// Generous enough that normal eviction never reaches it (so the synchronous
+/// inline delete path never fires in ordinary operation), low enough that the
+/// in-flight backlog stays bounded to a few MB under a storm. Tune per
+/// deployment; 0 disables the bound. See `FilesystemSpec::max_concurrent_deletes`.
+const fn default_max_concurrent_deletes() -> usize {
+    1024
 }
 
 const fn default_read_batching_max_queued_bytes() -> u64 {
