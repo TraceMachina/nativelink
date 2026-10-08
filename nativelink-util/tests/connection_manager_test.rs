@@ -142,7 +142,7 @@ async fn aborted_caller_future_does_not_leak_permits() -> Result<(), Error> {
             // task abort; bare `let _ = ...` would drop it immediately
             // and defeat the test.
             let _conn = cm.connection(format!("aborted-{i}")).await;
-            futures::future::pending::<()>().await
+            futures::future::pending::<()>().await;
         }));
     }
     tokio::time::sleep(Duration::from_millis(100)).await;

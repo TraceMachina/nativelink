@@ -66,6 +66,7 @@ jobs:
           nix develop --impure --command \
             bazel-retry test //... \
               --config=nl-toolchain \
+              --config=nl-quiet \
               --verbose_failures \
               --lockfile_mode=error \
 
