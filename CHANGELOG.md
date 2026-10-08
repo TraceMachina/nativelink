@@ -3,6 +3,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.6](https://github.com/TraceMachina/nativelink/compare/v1.7.5..v1.7.6) - 2026-10-08
+
+
+
+### 🐛 Bug Fixes
+
+- *(scheduler)* tolerate backwards clock steps in worker liveness refresh ([#2900](https://github.com/TraceMachina/nativelink/issues/2900)) - ([76b1f93](https://github.com/TraceMachina/nativelink/commit/76b1f930755d7a199f1c8a8efeb8797c649d9c8c))
+- Pipeline BEP stream store writes so acks no longer wait one event at a time ([#2912](https://github.com/TraceMachina/nativelink/issues/2912)) - ([bc7ce7c](https://github.com/TraceMachina/nativelink/commit/bc7ce7c5c96a926e5172db3df1b62c1670691f38))
+- Fix a blocking-pool deadlock in `nativelink_util::fs::read_dir` ([#2647](https://github.com/TraceMachina/nativelink/issues/2647)) - ([f5ae69b](https://github.com/TraceMachina/nativelink/commit/f5ae69b7760d208ebfad4deffb0544e759d747b8))
+
+### 🧪 Testing & CI
+
+- retry transient remote-endpoint failures in the Bazel Native lanes ([#2897](https://github.com/TraceMachina/nativelink/issues/2897)) - ([bf4b3aa](https://github.com/TraceMachina/nativelink/commit/bf4b3aa8555fcce0a4436797735f6ca6d379267e))
+
+### ⬆️ Bumps & Version Updates
+
+- Bump hickory-resolver from 0.26.1 to 0.26.3 ([#2908](https://github.com/TraceMachina/nativelink/issues/2908)) - ([c924717](https://github.com/TraceMachina/nativelink/commit/c924717d3293e4623129fc72184f5dba8edca5c1))
+- Update next and dompurify for security issues ([#2898](https://github.com/TraceMachina/nativelink/issues/2898)) - ([698f084](https://github.com/TraceMachina/nativelink/commit/698f0843812b046ed05237d139db9c203b791509))
+
 ## [1.7.5](https://github.com/TraceMachina/nativelink/compare/v1.7.4..v1.7.5) - 2026-10-06
 
 
