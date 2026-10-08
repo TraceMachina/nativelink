@@ -105,7 +105,7 @@ const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
     UploadCacheResultsStrategy::FailuresOnly;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How many output files are open for upload at once, across the whole
@@ -213,7 +213,7 @@ async fn stop_action(
     why: &str,
 ) -> Fuse<BoxFuture<'static, ()>> {
     debug!(grace_ms = grace.as_millis(), why, "Stopping action");
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     if !grace.is_zero()
         && let Some(pgid) = child.id()
     {
@@ -254,16 +254,17 @@ const fn pod_memory_limit_kb() -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct ActionResourceUsageSampler {
     stop_tx: watch::Sender<bool>,
     handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
 /// What the sampler found over a ceiling, with the figure it saw. Only the
-/// Linux sampler sends one; the arm that receives it is built everywhere.
+/// Linux and macOS samplers send one; the arm that receives it is built
+/// everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 enum OverLimit {
     Memory(u64),
     Disk(u64),
@@ -275,7 +276,7 @@ enum OverLimit {
 /// `over_limit_tx` and the caller kills the action; nothing is sent when no
 /// ceiling is set, and the caller keeps the sender alive so the receiver
 /// stays pending.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct Ceilings {
     memory_limit_kb: Option<u64>,
     disk_limit_kb: Option<u64>,
@@ -285,10 +286,10 @@ struct Ceilings {
 /// One disk sample every this many memory samples: a walk of the action
 /// directory is a stat per file, so it runs every ten seconds, not four
 /// times a second.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const DISK_SAMPLE_EVERY: u32 = 40;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn start_action_resource_usage_sampler(
     pgid: u32,
     ceilings: Ceilings,
@@ -376,7 +377,7 @@ pub fn directory_stamp(_directory: &Path) -> Result<SystemTime, Error> {
 /// Starts a disk sample: the action's own files, walked on the blocking
 /// pool as a task of its own, so the memory samples carry on while a large
 /// tree is being walked. `None` when there is no directory to measure.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn start_disk_sample(
     directory: Option<&(PathBuf, SystemTime)>,
 ) -> Option<JoinHandleDropGuard<u64>> {
@@ -402,7 +403,7 @@ fn signal_process_group(pgid: u32, signal: i32) -> bool {
     unsafe { libc::killpg(pgid, signal) == 0 }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn finish_action_resource_usage_sampler(
     sampler: ActionResourceUsageSampler,
 ) -> Option<SampledResourceUsage> {
@@ -410,7 +411,7 @@ async fn finish_action_resource_usage_sampler(
     sampler.handle.await.ok()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
@@ -450,7 +451,7 @@ async fn sample_action_resource_usage(
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
         }
-        if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
+        if observed.is_none() && !group_leader_present(pgid) {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
             break;
@@ -554,6 +555,125 @@ fn ticks_to_millis(ticks: u64) -> u64 {
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
     let hz = if hz > 0 { hz as u64 } else { 100 };
     ticks.saturating_mul(1_000) / hz
+}
+
+/// Whether the group leader still exists, collected or not. A leader that
+/// has exited but not yet been waited on holds its pid, so the sampler keeps
+/// going until the wait in `inner_execute` has it.
+#[cfg(target_os = "linux")]
+fn group_leader_present(pgid: u32) -> bool {
+    Path::new(&format!("/proc/{pgid}")).exists()
+}
+
+#[cfg(target_os = "macos")]
+fn group_leader_present(pgid: u32) -> bool {
+    let Ok(leader) = i32::try_from(pgid) else {
+        return false;
+    };
+    // SAFETY: signal 0 checks that the process exists without sending anything.
+    if unsafe { libc::kill(leader, 0) } == 0 {
+        return true;
+    }
+    // EPERM still means the process is there, just not ours to signal.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Converts the per-pid CPU figures the macOS sampler keeps into
+/// milliseconds. `sample_process_group` on macOS stores nanoseconds, not
+/// clock ticks, so the shared sampler loop needs no platform arm.
+#[cfg(target_os = "macos")]
+const fn ticks_to_millis(nanoseconds: u64) -> u64 {
+    nanoseconds / 1_000_000
+}
+
+/// Converts mach absolute time units (the unit of `rusage_info` time fields
+/// on Apple Silicon; 1:1 with nanoseconds on Intel) to nanoseconds.
+#[cfg(target_os = "macos")]
+// libc points at the mach2 crate for this; one call is not worth a dependency.
+#[allow(deprecated)]
+fn mach_ticks_to_ns(ticks: u64) -> u64 {
+    static TIMEBASE: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+    let &(numer, denom) = TIMEBASE.get_or_init(|| {
+        let mut info = libc::mach_timebase_info { numer: 0, denom: 0 };
+        // SAFETY: `mach_timebase_info` fills the passed struct.
+        if unsafe { libc::mach_timebase_info(&raw mut info) } != 0 || info.denom == 0 {
+            return (1, 1);
+        }
+        (info.numer, info.denom)
+    });
+    u64::try_from(u128::from(ticks) * u128::from(numer) / u128::from(denom)).unwrap_or(u64::MAX)
+}
+
+/// The macOS counterpart of the `/proc` walk below: `proc_listpids` with
+/// `PROC_PGRP_ONLY` enumerates the group and `proc_pid_rusage` reads each
+/// member. Memory is the sum of resident sizes, which counts a page shared
+/// by N members N times where Linux's `Pss` counts it once, so a forking
+/// test runner reads high here; a memory ceiling on macOS should leave
+/// headroom for that. CPU is kept per pid in nanoseconds (see
+/// `mach_ticks_to_ns`), cumulative per process, so members that exit
+/// between samples keep their last figure in the total. Returns `None`
+/// when no member process can be read.
+#[cfg(target_os = "macos")]
+fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> Option<u64> {
+    /// From `libproc.h` (stable public API); not exposed by the libc crate.
+    const PROC_PGRP_ONLY: u32 = 2;
+    const MAX_GROUP_PIDS: usize = 4096;
+
+    let mut pids = [0i32; MAX_GROUP_PIDS];
+    let buffer_size_bytes = i32::try_from(size_of_val(&pids)).unwrap_or(i32::MAX);
+    // SAFETY: `proc_listpids` writes at most `buffer_size_bytes` bytes of
+    // pids into the buffer and returns the number of bytes written.
+    let bytes_written = unsafe {
+        libc::proc_listpids(
+            PROC_PGRP_ONLY,
+            pgid,
+            pids.as_mut_ptr().cast::<libc::c_void>(),
+            buffer_size_bytes,
+        )
+    };
+    let Ok(bytes_written) = usize::try_from(bytes_written) else {
+        return None;
+    };
+    let pid_count = (bytes_written / size_of::<i32>()).min(MAX_GROUP_PIDS);
+
+    let mut total_kb: u64 = 0;
+    let mut found_any_process = false;
+    for &member_pid in &pids[..pid_count] {
+        // The map is keyed the way the Linux walk keys it; a non-positive
+        // pid is padding in the buffer.
+        let Ok(member_key) = u32::try_from(member_pid) else {
+            continue;
+        };
+        if member_key == 0 {
+            continue;
+        }
+        let mut info = core::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+        // SAFETY: the `RUSAGE_INFO_V2` flavor fills exactly a
+        // `rusage_info_v2`.
+        let result = unsafe {
+            libc::proc_pid_rusage(
+                member_pid,
+                libc::RUSAGE_INFO_V2,
+                info.as_mut_ptr().cast::<libc::rusage_info_t>(),
+            )
+        };
+        if result != 0 {
+            // The process exited between listing and sampling.
+            continue;
+        }
+        // SAFETY: `proc_pid_rusage` returned success, so `info` is
+        // initialized.
+        let info = unsafe { info.assume_init() };
+        total_kb = total_kb.saturating_add(info.ri_resident_size / 1024);
+        // Monotonic per process, but a pid could in principle be reused
+        // within one action, so never let the figure go backwards.
+        let cpu_ns = mach_ticks_to_ns(info.ri_user_time)
+            .saturating_add(mach_ticks_to_ns(info.ri_system_time));
+        let entry = cpu_ticks_by_pid.entry(member_key).or_insert(0);
+        *entry = (*entry).max(cpu_ns);
+        found_any_process = true;
+    }
+    found_any_process.then_some(total_kb)
 }
 
 /// Sums the resident memory of every process in the action's process group.
@@ -2822,7 +2942,7 @@ impl RunningActionImpl {
         // Holds the sender when no ceiling is enforced, so the receiver
         // below stays pending instead of resolving closed.
         let mut over_limit_keepalive = Some(over_limit_tx);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
             let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
             let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
@@ -2847,7 +2967,7 @@ impl RunningActionImpl {
                 disk_directory,
             )
         });
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = &disk_enforcement;
         let mut over_limit_fut = over_limit_rx.fuse();
 
@@ -2869,6 +2989,12 @@ impl RunningActionImpl {
                     );
                     background_spawn!("running_actions_manager_kill_child_process", async move {
                         drop(child_process.kill().await);
+                        // The leader is gone; take its group with it so
+                        // helpers it forked do not outlive the action.
+                        #[cfg(target_family = "unix")]
+                        if let Some(pgid) = action_pgid {
+                            signal_process_group(pgid, libc::SIGKILL);
+                        }
                     });
                 }
             }
@@ -3071,14 +3197,14 @@ impl RunningActionImpl {
                         maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??,
                     );
 
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     let sampled_usage = match maybe_resource_usage_sampler.take() {
                         Some(sampler) => finish_action_resource_usage_sampler(sampler)
                             .await
                             .unwrap_or_default(),
                         None => SampledResourceUsage::default(),
                     };
-                    #[cfg(not(target_os = "linux"))]
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                     let sampled_usage = SampledResourceUsage::default();
 
                     let memory_limit_kb = memory_reservation
