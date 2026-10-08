@@ -90,6 +90,12 @@ where
         self.first_msg.as_ref().is_some_and(|msg| msg.finish_write)
     }
 
+    /// Returns the `write_offset` of the first message, if it has not been
+    /// consumed yet. A non-zero offset means the client is resuming an upload.
+    pub fn first_msg_write_offset(&self) -> Option<i64> {
+        self.first_msg.as_ref().map(|msg| msg.write_offset)
+    }
+
     fn enforce_wire_size_matches_digest_size(&self) -> bool {
         matches!(
             self.resource_info.compressor.as_deref(),
