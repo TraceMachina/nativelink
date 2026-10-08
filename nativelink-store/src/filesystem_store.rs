@@ -102,6 +102,17 @@ pub struct SharedContext {
     // deleted (similar to how it is done in tests).
     #[metric(help = "Number of active drop spawns")]
     pub active_drop_spawns: AtomicU64,
+    /// Count of deletes that ran synchronously inline because the delete
+    /// semaphore was saturated. A nonzero, growing value means eviction is
+    /// outrunning background delete throughput — the backpressure signal.
+    #[metric(help = "Number of deletes performed inline due to delete backpressure")]
+    pub inline_deletes: AtomicU64,
+    /// Bounds the number of in-flight background file deletions. `None` means
+    /// unlimited (the historical behavior). When the permits are exhausted,
+    /// a drop deletes its file synchronously inline instead of spawning, so
+    /// an eviction storm applies backpressure rather than spawning without
+    /// limit. See `FilesystemSpec::max_concurrent_deletes`.
+    delete_semaphore: Option<Arc<Semaphore>>,
     #[metric(help = "Path to the configured temp path")]
     temp_path: String,
     #[metric(help = "Path to the configured content path")]
@@ -187,6 +198,40 @@ impl Drop for EncodedFilePath {
 
         let file_path = self.get_file_path().to_os_string();
         let shared_context = self.shared_context.clone();
+
+        // Bound the number of in-flight background deletes. `drop` is sync, so
+        // we cannot `.await` a permit the way the write path does; instead we
+        // `try_acquire_owned` (never blocks) and, when the permits are
+        // exhausted, delete synchronously inline. That inline path is the
+        // backpressure: the evicting thread pays the unlink cost directly
+        // instead of queueing an unbounded number of tasks, and the file is
+        // always removed (never leaked). `None` keeps the historical
+        // unbounded-spawn behavior.
+        let delete_permit = match &shared_context.delete_semaphore {
+            Some(sem) => {
+                if let Ok(permit) = Arc::clone(sem).try_acquire_owned() {
+                    Some(permit)
+                } else {
+                    // Saturated: delete synchronously inline, which is the
+                    // backpressure, then bail out (no spawn).
+                    shared_context
+                        .inline_deletes
+                        .fetch_add(1, Ordering::Relaxed);
+                    match std::fs::remove_file(&file_path) {
+                        Ok(()) => {
+                            debug!(?file_path, "File deleted inline (delete backpressure)");
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                            debug!(?file_path, "File already gone, nothing to delete");
+                        }
+                        Err(err) => error!(?file_path, ?err, "Failed to delete file inline"),
+                    }
+                    return;
+                }
+            }
+            None => None,
+        };
+
         // .fetch_add returns previous value, so we add one to get approximate current value
         let current_active_drop_spawns = shared_context
             .active_drop_spawns
@@ -198,6 +243,9 @@ impl Drop for EncodedFilePath {
             "Spawned a filesystem_delete_file"
         );
         background_spawn!("filesystem_delete_file", async move {
+            // Hold the permit until the delete actually completes so the bound
+            // reflects deletes in flight, not merely scheduled.
+            let _delete_permit = delete_permit;
             match fs::remove_file(&file_path).await {
                 Ok(()) => debug!(?file_path, "File deleted"),
                 // The file already being gone is the desired end state of a
@@ -1433,8 +1481,15 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             enabled
         };
 
+        let delete_semaphore = if spec.max_concurrent_deletes > 0 {
+            Some(Arc::new(Semaphore::new(spec.max_concurrent_deletes)))
+        } else {
+            None
+        };
         let shared_context = Arc::new(SharedContext {
             active_drop_spawns: AtomicU64::new(0),
+            inline_deletes: AtomicU64::new(0),
+            delete_semaphore,
             temp_path: spec.temp_path.clone(),
             content_path: spec.content_path.clone(),
         });
