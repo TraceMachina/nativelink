@@ -24,6 +24,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::OriginEven
 use nativelink_store::redis_store::{RedisStore, StandardRedisManager};
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::ActiveCountAttributes;
 use redis::aio::ConnectionManager;
 use tokio::sync::{Notify, mpsc};
 
@@ -159,6 +160,9 @@ async fn simple_scheduler_factory(
             policy.percent
         ));
     }
+    let active_count_attrs =
+        ActiveCountAttributes::new(&spec.active_action_count_platform_properties)
+            .err_tip(|| "In simple scheduler 'active_action_count_platform_properties'")?;
     match spec
         .experimental_backend
         .as_ref()
@@ -170,6 +174,7 @@ async fn simple_scheduler_factory(
                 spec.retain_completed_for_s,
                 &task_change_notify,
                 SystemTime::now,
+                active_count_attrs,
             );
             let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
                 spec,
@@ -218,6 +223,7 @@ async fn simple_scheduler_factory(
                     spec.client_action_timeout_s
                 },
                 spec.enable_active_action_count_metric,
+                active_count_attrs,
             )
             .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
@@ -247,6 +253,7 @@ pub fn memory_awaited_action_db_factory<I, NowFn>(
     configured_retain_completed_for_s: u32,
     task_change_notify: &Arc<Notify>,
     now_fn: NowFn,
+    active_count_attrs: ActiveCountAttributes,
 ) -> MemoryAwaitedActionDb<I, NowFn>
 where
     I: InstantWrapper,
@@ -259,5 +266,6 @@ where
         },
         task_change_notify.clone(),
         now_fn,
+        active_count_attrs,
     )
 }

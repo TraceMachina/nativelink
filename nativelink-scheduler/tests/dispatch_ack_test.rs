@@ -38,6 +38,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, UpdateOperationType,
 };
@@ -70,7 +71,12 @@ fn make_scheduler(
     };
     SimpleScheduler::new_with_callback(
         &spec,
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify,
+            MockInstantWrapped::default,
+            ActiveCountAttributes::default(),
+        ),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
@@ -276,7 +282,12 @@ async fn a_decline_from_an_idle_worker_lifts_and_is_not_offered_again() -> Resul
     };
     let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
         &spec,
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify,
+            MockInstantWrapped::default,
+            ActiveCountAttributes::default(),
+        ),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
@@ -453,7 +464,12 @@ async fn the_veto_does_not_keep_actions_from_an_idle_worker_that_admits_them() -
         };
         let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
             &spec,
-            memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+            memory_awaited_action_db_factory(
+                0,
+                &task_change_notify,
+                MockInstantWrapped::default,
+                ActiveCountAttributes::default(),
+            ),
             || async move {},
             task_change_notify,
             MockInstantWrapped::default,

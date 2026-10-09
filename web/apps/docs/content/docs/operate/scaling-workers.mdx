@@ -125,9 +125,10 @@ an autoscaler needs answered.
 
 The signal is **queue depth**: actions in the `queued` stage rather than
 `executing`. NativeLink emits `execution.active.count` as an up-down counter
-attributed by `execution.stage`, which reaches Prometheus as
-`nativelink_execution_active_count` after the OTLP collector's Prometheus
-exporter adds its `nativelink` namespace.
+attributed by `execution.stage`, and by each platform property the
+scheduler's `active_action_count_platform_properties` lists, which reaches
+Prometheus as `nativelink_execution_active_count` after the OTLP collector's
+Prometheus exporter adds its `nativelink` namespace.
 
 <SourceLink file="nativelink-util/src/metrics.rs" symbol="EXECUTION_METRICS" />
 
@@ -162,11 +163,16 @@ records a per-worker sum, not an average. Scale on queue depth, which is
 unambiguous, and treat the utilization series as a dashboard aid rather than a
 control input.
 
-<Callout type="warn" title="The Redis scheduler backend emits no queue metric">
-  `execution.active.count` comes from the in-memory awaited-action store only.
-  If you have moved the scheduler to `experimental_backend` with Redis, the
-  signal this whole page depends on is not being emitted. Confirm which backend
-  you're on before you design an autoscaler around it.
+<Callout type="warn" title="The Redis scheduler backend emits the queue metric only when asked">
+  The in-memory awaited-action store always maintains `execution.active.count`.
+  With the scheduler on `experimental_backend` with Redis it is counted from
+  the store every 15 seconds, by every replica, and only when
+  `enable_active_action_count_metric` is on; aggregate it across replicas with
+  `max`, not `sum`. With `active_action_count_platform_properties` set, each
+  of those passes reads every action in every stage from Redis rather than
+  asking it for four totals: O(actions) every 15 seconds per replica, against
+  the store that serves scheduling. Confirm which backend you're on, and that
+  the metric is on, before you design an autoscaler around it.
 </Callout>
 
 ## Scaling out [#scaling-out]
@@ -342,9 +348,35 @@ series**, because `nativelink:queue_depth` groups by instance and priority, not
 by which pool could serve the work.
 
 If you scale a mixed fleet on one aggregate number, a backlog of GPU actions
-will scale up your compile pool and change nothing. Either split the recording
-rule by the property that distinguishes the pools, or run a scheduler instance
-per pool. The second is blunter and easier to reason about.
+will scale up your compile pool and change nothing. Split the recording rule by
+the property that distinguishes the pools: list it in the scheduler's
+`active_action_count_platform_properties` and it becomes a label on
+`nativelink_execution_active_count`, `execution_platform_<key>`, carrying each
+action's value. One scheduler serving a Linux pool and a macOS pool lists
+`OSFamily`, and each pool scales on its own series:
+
+```yaml
+- record: nativelink:queue_depth_by_pool
+  expr: |
+    sum by (instance_name, execution_platform_OSFamily) (
+      nativelink_execution_active_count{execution_stage="queued"}
+    )
+- record: nativelink:queue_depth:macos
+  expr: |
+    sum(nativelink:queue_depth_by_pool{execution_platform_OSFamily="macos"})
+      or vector(0)
+```
+
+Every series carries every listed key, so summing over the label still gives
+the scheduler-wide depth. A pool's series exists only once an action has
+carried its value: a pool that has had no action yet reads absent, not 0,
+which is the `or vector(0)` on the per-pool rule an HPA reads. The label name
+is the key with every character outside `[A-Za-z0-9_]` rewritten to `_` by
+the collector's Prometheus exporter, and the scheduler refuses two keys that
+would become one label. Each distinct value is a series for as long as the
+scheduler runs, so list a property with a handful of values (`OSFamily`, a
+pool name), never one that varies per action. The alternative is a scheduler
+instance per pool, which is blunter and easier to reason about.
 
 ## When it doesn't work [#when-it-doesnt-work]
 
