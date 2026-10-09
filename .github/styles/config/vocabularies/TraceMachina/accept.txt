@@ -11,6 +11,7 @@ Bazelisk
 Sigstore
 Cloudflare
 [Cc]oalescers?
+[Bb]ackfill(s|ing|ed)?
 Colab
 composable
 CPUs
@@ -59,6 +60,7 @@ Siso
 Rosetta
 [Rr]epository
 [Ss]harding
+Slurm
 SPDX
 Starlark
 Tokio

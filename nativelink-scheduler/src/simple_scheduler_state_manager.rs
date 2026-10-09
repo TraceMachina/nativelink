@@ -388,6 +388,23 @@ where
             awaited_action.maybe_origin_metadata().cloned(),
         ))
     }
+
+    /// One read of the record: on a store-backed queue each borrow is a
+    /// round trip, and the matching pass wants both.
+    async fn as_action_info_with_state(
+        &self,
+    ) -> Result<(Arc<ActionInfo>, Arc<ActionState>, Option<OriginMetadata>), Error> {
+        let awaited_action = self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::as_action_info_with_state")?;
+        Ok((
+            awaited_action.action_info().clone(),
+            awaited_action.state().clone(),
+            awaited_action.maybe_origin_metadata().cloned(),
+        ))
+    }
 }
 
 /// How often an action is queued again, by cause, before the scheduler

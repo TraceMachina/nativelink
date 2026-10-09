@@ -186,6 +186,29 @@ the parked actions a worker was actually told to run that way; a non-zero
 rate is normal on a busy fleet and means the head of the queue is being
 served.
 
+Order alone does not help an action larger than the room that ever opens.
+An eight-core action at the head of the queue needs eight free cores on one
+worker at once, and on a fleet busy with one-core actions no worker shows
+that: every core that frees is taken before the next pass. With
+**`head_of_line_reservation`** set, a pass that placed something queued
+after the first action still waiting, once that action has waited `after_s`
+since it was last queued, holds for it the busy worker closest to fitting it
+(among those that could take it once drained, by the same predicate the
+matcher will apply) and sends that worker nothing queued after the action
+until it is placed, so the worker drains to it while the rest of the fleet
+keeps backfilling. One hold at a time; it is part of the ledger, so no
+placement path dispatches around it. Actions queued before the held one may
+still use the held worker, in queue order, and one of them takes the hold
+only if the held worker could never run it. The hold lifts when the action
+is placed or leaves the queue; when the held worker can no longer be waited
+on (checked every time the pass meets the action, against the action's
+current properties: disconnected, draining, paused, declined it, refusing it
+idle, or outgrown by a requeue) it moves to another worker that qualifies or
+is dropped. The cost is the held worker's freed cores sitting idle until the
+action lands.
+[Scaling workers](/operate/scaling-workers#large-actions-starve-behind-small-ones)
+has the operator's view.
+
 When a worker reports an action killed for memory, by its own reservation
 enforcement or by the kernel near the limit, **`memory_escalation`** requeues
 the action with the reservation multiplied by `percent` (default 200) instead
