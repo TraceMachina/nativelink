@@ -78,6 +78,7 @@ rust_test_suite(
         "tests/escalation_test.rs",
         "tests/execution_active_count_test.rs",
         "tests/fleet_capabilities_test.rs",
+        "tests/head_of_line_reservation_test.rs",
         "tests/historical_resource_scheduler_test.rs",
         "tests/live_memory_veto_test.rs",
         "tests/liveness_clock_step_test.rs",

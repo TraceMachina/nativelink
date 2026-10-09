@@ -300,6 +300,55 @@ pub struct SimpleSpec {
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
 
+    /// Keep a large action from waiting forever behind a stream of small
+    /// ones. The matcher places whatever fits, so on a busy fleet a worker
+    /// never shows eight free cores at once when one-core actions take each
+    /// core the moment it frees, and an eight-core action at the head of
+    /// the queue sits there indefinitely while everything behind it runs
+    /// (`allocation_strategy: best_fit` only slows this down). With this
+    /// set, once the action at the head of the queue has waited `after_s`
+    /// since it was last queued and a matching pass places something
+    /// queued after it, the scheduler holds for it the busy worker closest
+    /// to fitting it (the fewest cores and KiB short, by share of what the
+    /// worker advertises, among those that could take it once drained) and
+    /// sends that worker nothing queued after the action until the action
+    /// is placed, so the worker drains to it; every other worker keeps
+    /// taking the small actions. This is the reservation of Slurm's
+    /// backfill scheduler, without the time estimate: nothing here knows
+    /// how long an action runs. A full fleet that places nothing holds
+    /// nothing, and neither does an action that is only next in line.
+    ///
+    /// One hold at a time, and it follows the queue: an action that sorts
+    /// before the held one (a higher priority, or an older action queued
+    /// again after its worker was lost) takes the held worker's room first,
+    /// in queue order, and takes the hold itself only if the held worker
+    /// could never run it. The hold is released when the action is placed,
+    /// on the held worker or on any other that has room first, and when
+    /// the action leaves the queue (cancelled, its client gone, finished
+    /// elsewhere). When the held worker can no longer be waited on (it
+    /// disconnects, drains, pauses, declines the action, reports too little
+    /// free memory even once drained, or a requeue raised what the action
+    /// asks past what it registered) the hold moves to another worker that
+    /// qualifies, or is dropped until the action is overtaken again; what a
+    /// worker reports free while idle caps what draining it is expected to
+    /// free, so one that refused the action drained is not held for it
+    /// again until an idle report shows more. Holds
+    /// are logged at `info` and counted by
+    /// `scheduler.head_of_line.reservations`.
+    ///
+    /// The cost is idle capacity, by design: every core the held worker
+    /// frees stays idle until the action lands, so one hold wastes up to
+    /// the action's size for as long as the longest action running on that
+    /// worker when it was held. On a two-worker fleet that is half the
+    /// fleet's backfilling for the length of that action, an hour for an
+    /// hour-long one. With a small `after_s` on a fleet where large
+    /// actions are common, some worker is held almost all the time. Watch
+    /// the `reserved` rate of the metric; a steady one means the fleet is
+    /// sized for the small actions and not for the large ones.
+    /// Default: unset (no reservation; a large action waits for room)
+    #[serde(default)]
+    pub head_of_line_reservation: Option<HeadOfLineReservationSpec>,
+
     /// The name of a `minimum` platform property, usually `memory_kb`, that
     /// the scheduler compares against the free memory each worker reports
     /// with its keepalive: a worker reporting less than the action asks for
@@ -475,6 +524,22 @@ fn default_historical_resource_cpu_property_name() -> String {
 
 fn default_historical_resource_memory_property_name() -> String {
     "memory_kb".to_string()
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct HeadOfLineReservationSpec {
+    /// How long the action at the head of the queue has waited, in
+    /// seconds, before a worker is held for it. Measured from the last
+    /// time the action was queued: its submission, or its requeue after a
+    /// worker was lost or declined it. Set it above the typical queue
+    /// wait, so a worker is only taken out of backfilling for an action
+    /// that is actually stuck: a few minutes on a fleet of long actions,
+    /// less on one of short ones. 0 holds on the first pass in which the
+    /// action is overtaken.
+    #[serde(deserialize_with = "convert_duration_with_shellexpand")]
+    pub after_s: u64,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

@@ -37,8 +37,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
-    record_execution_peak_memory, record_worker_connected, record_worker_disconnected,
-    record_worker_keepalive, record_worker_keepalive_gap, record_worker_state,
+    record_execution_peak_memory, record_head_of_line_reservation, record_worker_connected,
+    record_worker_disconnected, record_worker_keepalive, record_worker_keepalive_gap,
+    record_worker_state,
 };
 use nativelink_util::operation_state_manager::{
     Decline, Escalation, UpdateOperationType, WorkerStateManager,
@@ -95,6 +96,53 @@ fn fit_leftover_permille(action: &PlatformProperties, worker: &Worker) -> u64 {
         leftover += remaining.saturating_mul(1000) / total;
     }
     leftover
+}
+
+/// How far the worker is from fitting this action, summed over the action's
+/// `minimum` properties as a share of what the worker advertises, in
+/// thousandths: what must still free up before the action fits. Zero means
+/// it fits now (or asks for nothing). A dimension the worker does not
+/// advertise is ignored, as in `fit_leftover_permille`.
+fn shortfall_permille(action: &PlatformProperties, worker: &Worker) -> u64 {
+    let mut shortfall = 0u64;
+    for (name, value) in &action.properties {
+        let PlatformPropertyValue::Minimum(needed) = value else {
+            continue;
+        };
+        let (
+            Some(PlatformPropertyValue::Minimum(available)),
+            Some(PlatformPropertyValue::Minimum(total)),
+        ) = (
+            worker.platform_properties.properties.get(name),
+            worker.total_platform_properties.properties.get(name),
+        )
+        else {
+            continue;
+        };
+        if *total == 0 {
+            continue;
+        }
+        let missing = needed.saturating_sub(*available);
+        shortfall += missing.saturating_mul(1000) / total;
+    }
+    shortfall
+}
+
+/// A worker held for the action at the head of the queue: it takes nothing
+/// else until that action is placed, so it drains to the action instead of
+/// backfilling around it. See `SimpleSpec::head_of_line_reservation`.
+#[derive(Debug, Clone)]
+pub struct HeadOfLineReservation {
+    /// The action the worker is held for.
+    pub operation_id: OperationId,
+    /// The worker held.
+    pub worker_id: WorkerId,
+    /// What the action asked when the hold was made, so the hold can move
+    /// to another worker when this one is lost, drained or paused without
+    /// waiting for a pass. A requeue can raise what the action asks; the
+    /// pass checks the hold against the current properties when it meets
+    /// the action.
+    pub platform_properties: PlatformProperties,
 }
 
 /// How many property shapes `static_verdicts` holds before it is emptied.
@@ -259,6 +307,16 @@ struct ApiWorkerSchedulerImpl {
     /// depends only on what workers registered with, so it holds until the
     /// fleet changes, at which point the map is emptied.
     static_verdicts: HashMap<PropertyShape, Option<Arc<UnsatisfiableReason>>>,
+
+    /// The worker held for the action at the head of the queue, if one is.
+    /// Part of the ledger: every placement path reads it, so no action but
+    /// the reserved one (and the actions queued before it) lands on that
+    /// worker while it holds.
+    reservation: Option<HeadOfLineReservation>,
+
+    /// The action last found to have no worker that could be held for it,
+    /// so that is logged once per action rather than once per pass.
+    last_no_candidate: Option<OperationId>,
 }
 
 /// Whether peer-absence can be trusted to fail an action, given the census
@@ -333,6 +391,7 @@ impl ApiWorkerSchedulerImpl {
         load: Option<WorkerLoad>,
         keepalive: bool,
     ) -> Result<(), Error> {
+        let veto_property = self.live_memory_veto.clone();
         let worker = self.workers.0.peek_mut(worker_id).ok_or_else(|| {
             make_input_err!(
                 "Worker not found in worker map in refresh_lifetime() {}",
@@ -372,6 +431,22 @@ impl ApiWorkerSchedulerImpl {
                 .as_ref()
                 .is_none_or(|last| load.free_memory_kb > last.free_memory_kb);
             worker.last_load = Some(load);
+            // The report goes with what was lent at the time, so a drain
+            // can be projected from it; a report from a worker holding
+            // nothing is what a drain can be expected to free at most. See
+            // `reported_lent_kb` and `idle_free_kb`.
+            worker.reported_lent_kb = veto_property.as_deref().map_or(0, |property| {
+                let minimum =
+                    |properties: &PlatformProperties| match properties.properties.get(property) {
+                        Some(PlatformPropertyValue::Minimum(kb)) => *kb,
+                        _ => 0,
+                    };
+                minimum(&worker.total_platform_properties)
+                    .saturating_sub(minimum(&worker.platform_properties))
+            });
+            if worker.running_action_infos.is_empty() {
+                worker.idle_free_kb = Some(load.free_memory_kb);
+            }
             more
         });
         // A keepalive is the worker saying it is ready to be asked again,
@@ -479,8 +554,258 @@ impl ApiWorkerSchedulerImpl {
         self.fleet_changed();
         self.local_fleet_change_notify.notify_one();
 
+        // A hold on the departing worker moves to another worker for the
+        // same action, which is still the head of the queue, or is dropped
+        // when none can be held.
+        self.move_or_release_hold("worker_lost");
         self.capacity_changed();
         result
+    }
+
+    /// Whether the worker could take the action once what it runs has
+    /// finished: not draining or paused, registered with enough of every
+    /// property the action asks for, not having declined this much while
+    /// idle, and, under the live memory veto, reporting enough free memory
+    /// once what the ledger has lent to its running actions comes back.
+    /// The predicate behind a hold, checked when it is made and again every
+    /// time the pass meets the held action, since any of it can change
+    /// while the hold is on (a drain, a pause, a decline, a load report, a
+    /// requeue that raised the action's properties).
+    fn could_hold_for(
+        &self,
+        worker: &Worker,
+        platform_properties: &PlatformProperties,
+        needed_kb: Option<u64>,
+    ) -> bool {
+        if worker.is_draining || worker.is_paused {
+            return false;
+        }
+        if !platform_properties.is_satisfied_by(&worker.total_platform_properties, false) {
+            return false;
+        }
+        if let (Some(needed_kb), Some(declined_kb)) = (needed_kb, worker.idle_declined_kb)
+            && needed_kb >= declined_kb
+        {
+            return false;
+        }
+        // The veto the matcher will apply, projected to the drained worker:
+        // what it reported free plus what the ledger had lent to its
+        // running actions when it reported, which they give back as they
+        // finish, and never more than it last reported free while idle,
+        // since what its own process and page cache hold does not come back
+        // with a drain. A worker that would still report too little then
+        // is never going to take the action, and draining it would only
+        // prove that; without the idle cap two such workers were drained
+        // for one action in turn, for as long as their running actions kept
+        // the projection afloat. The whole-worker exemption is the
+        // matcher's.
+        if let (Some(property), Some(needed_kb), Some(load)) = (
+            self.live_memory_veto.as_deref(),
+            needed_kb,
+            worker.last_load,
+        ) && let Some(PlatformPropertyValue::Minimum(total_kb)) =
+            worker.total_platform_properties.properties.get(property)
+            && needed_kb < *total_kb
+        {
+            let lent_back = load.free_memory_kb.saturating_add(worker.reported_lent_kb);
+            let projected = worker
+                .idle_free_kb
+                .map_or(lent_back, |idle_kb| lent_back.min(idle_kb));
+            if needed_kb > projected {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The worker to hold for the action: the smallest shortfall (what the
+    /// action asks beyond what the worker has free, as a share of what it
+    /// advertises) among the busy workers `could_hold_for` accepts; ties go
+    /// to the fewest running actions, then the least recently used. An idle
+    /// worker is never held: one that could take the action would have, and
+    /// one that is idle and did not is refusing it for a reason no drain
+    /// will change. When no worker qualifies that is logged, once per
+    /// action, with the count each exclusion took.
+    fn pick_worker_to_hold(
+        &mut self,
+        operation_id: &OperationId,
+        platform_properties: &PlatformProperties,
+        waited: Duration,
+    ) -> Option<WorkerId> {
+        let needed_kb = self.live_memory_veto_kb(platform_properties);
+        let candidates = self
+            .capability_index
+            .find_matching_workers(platform_properties, false);
+        let (mut unfit, mut idle) = (0usize, 0usize);
+        let mut best: Option<(u64, usize, WorkerId)> = None;
+        // From the least recently used end, so `<` keeps that one on a tie.
+        for (worker_id, worker) in self.workers.iter().rev() {
+            if !candidates.contains(worker_id) {
+                continue;
+            }
+            if !self.could_hold_for(worker, platform_properties, needed_kb) {
+                unfit += 1;
+                continue;
+            }
+            if worker.running_action_infos.is_empty() {
+                idle += 1;
+                continue;
+            }
+            let key = (
+                shortfall_permille(platform_properties, worker),
+                worker.running_action_infos.len(),
+            );
+            if best
+                .as_ref()
+                .is_none_or(|(shortfall, running, _)| key < (*shortfall, *running))
+            {
+                best = Some((key.0, key.1, worker_id.clone()));
+            }
+        }
+        let Some((_, _, worker_id)) = best else {
+            if self.last_no_candidate.as_ref() != Some(operation_id) {
+                info!(
+                    %operation_id,
+                    waited_s = waited.as_secs(),
+                    workers = candidates.len(),
+                    unfit,
+                    idle,
+                    "No worker can be held for the action at the head of the queue: none is busy and able to take it once drained"
+                );
+                record_head_of_line_reservation("no_candidate");
+                self.last_no_candidate = Some(operation_id.clone());
+            }
+            return None;
+        };
+        self.last_no_candidate = None;
+        Some(worker_id)
+    }
+
+    /// Holds a worker for the action at the head of the queue, which has
+    /// waited `after_s` and been overtaken; see `pick_worker_to_hold` for
+    /// which. `None` when the hold already stands for this action, when a
+    /// hold for another action stands on a worker that could run this one
+    /// too (this action sorts before that one, so it takes that worker's
+    /// room first, and the drain serves both), or when no worker qualifies.
+    /// A hold for another action on a worker that could never run this one
+    /// is superseded: that action has lost its place to this one.
+    fn reserve_head_of_line(
+        &mut self,
+        operation_id: &OperationId,
+        platform_properties: &PlatformProperties,
+        waited: Duration,
+    ) -> Option<WorkerId> {
+        if let Some(reservation) = &self.reservation {
+            if reservation.operation_id == *operation_id {
+                return None;
+            }
+            let needed_kb = self.live_memory_veto_kb(platform_properties);
+            let held_could_run = self
+                .workers
+                .peek(&reservation.worker_id)
+                .is_some_and(|worker| self.could_hold_for(worker, platform_properties, needed_kb));
+            if held_could_run {
+                return None;
+            }
+            self.release_reservation("superseded");
+            self.capacity_changed();
+        }
+        let worker_id = self.pick_worker_to_hold(operation_id, platform_properties, waited)?;
+        info!(
+            %operation_id,
+            %worker_id,
+            waited_s = waited.as_secs(),
+            "Reserving worker for the action at the head of the queue; it takes nothing queued after the action until the action is placed"
+        );
+        record_head_of_line_reservation("reserved");
+        self.reservation = Some(HeadOfLineReservation {
+            operation_id: operation_id.clone(),
+            worker_id: worker_id.clone(),
+            platform_properties: platform_properties.clone(),
+        });
+        Some(worker_id)
+    }
+
+    /// Whether the reserved worker can still be waited on for the action,
+    /// given the action's current properties: it is there, not idle, and
+    /// `could_hold_for` still accepts it. An idle reserved worker that has
+    /// not taken the action is refusing it, and nothing further will free,
+    /// so the hold is pointless; what it reports free is remembered as the
+    /// most a drain can reach, so it is not held for the action again on
+    /// the strength of what its next running actions borrow.
+    fn reserved_worker_still_fits(&mut self, platform_properties: &PlatformProperties) -> bool {
+        let Some(reservation) = &self.reservation else {
+            return true;
+        };
+        let worker_id = reservation.worker_id.clone();
+        let needed_kb = self.live_memory_veto_kb(platform_properties);
+        let Some(worker) = self.workers.peek_mut(&worker_id) else {
+            return false;
+        };
+        if worker.running_action_infos.is_empty() {
+            if let Some(load) = worker.last_load {
+                worker.idle_free_kb = Some(load.free_memory_kb);
+            }
+            return false;
+        }
+        let worker = self.workers.peek(&worker_id).unwrap();
+        self.could_hold_for(worker, platform_properties, needed_kb)
+    }
+
+    /// When the held worker can no longer be waited on whatever the action
+    /// asks (it is draining, paused or gone), moves the hold to another
+    /// worker for the same action, which is still the head of the queue,
+    /// or drops it with `event` when none qualifies. Called wherever a
+    /// worker is drained, paused or removed.
+    fn move_or_release_hold(&mut self, event: &'static str) {
+        let Some(reservation) = &self.reservation else {
+            return;
+        };
+        let held_unfit = self
+            .workers
+            .peek(&reservation.worker_id)
+            .is_none_or(|worker| worker.is_draining || worker.is_paused);
+        if !held_unfit {
+            return;
+        }
+        let reservation = self.reservation.take().unwrap();
+        if let Some(worker_id) = self.pick_worker_to_hold(
+            &reservation.operation_id,
+            &reservation.platform_properties,
+            Duration::ZERO,
+        ) {
+            info!(
+                operation_id = %reservation.operation_id,
+                from = %reservation.worker_id,
+                to = %worker_id,
+                event,
+                "Moved the hold for the action at the head of the queue to another worker"
+            );
+            record_head_of_line_reservation("moved");
+            self.reservation = Some(HeadOfLineReservation {
+                worker_id,
+                ..reservation
+            });
+        } else {
+            self.reservation = Some(reservation);
+            self.release_reservation(event);
+        }
+        self.capacity_changed();
+    }
+
+    /// Lets the reserved worker take any action again. `event` is why:
+    /// `placed`, `gone`, `worker_lost`, `unfit` or `superseded`.
+    fn release_reservation(&mut self, event: &'static str) {
+        let Some(reservation) = self.reservation.take() else {
+            return;
+        };
+        info!(
+            operation_id = %reservation.operation_id,
+            worker_id = %reservation.worker_id,
+            event,
+            "Released the worker reserved for the action at the head of the queue"
+        );
+        record_head_of_line_reservation(event);
     }
 
     fn fleet_changed(&mut self) {
@@ -571,6 +896,7 @@ impl ApiWorkerSchedulerImpl {
             record_worker_state("draining", is_draining);
         }
         worker.is_draining = is_draining;
+        self.move_or_release_hold("unfit");
         self.capacity_changed();
         Ok(())
     }
@@ -666,9 +992,15 @@ impl ApiWorkerSchedulerImpl {
     }
 
     /// Finds an idle worker among `candidates` that can run the action now.
+    /// `operation_id` is the action's, when the caller knows it, and
+    /// `ahead_of_hold` says it sorts before the action a worker is held
+    /// for: the held worker takes only that action and the ones queued
+    /// before it, which is the order the queue would have served anyway.
     fn find_available_worker(
         &self,
         platform_properties: &PlatformProperties,
+        operation_id: Option<&OperationId>,
+        ahead_of_hold: bool,
         candidates: &HashSet<WorkerId>,
         full_worker_logging: bool,
     ) -> Option<WorkerId> {
@@ -676,7 +1008,20 @@ impl ApiWorkerSchedulerImpl {
         // The index only does presence checks for Minimum properties since their
         // values change dynamically as jobs are assigned to workers.
         let needed_kb = self.live_memory_veto_kb(platform_properties);
+        let reserved_for_other = |worker_id: &WorkerId| {
+            !ahead_of_hold
+                && self.reservation.as_ref().is_some_and(|reservation| {
+                    reservation.worker_id == *worker_id
+                        && operation_id != Some(&reservation.operation_id)
+                })
+        };
         let worker_matches = |(worker_id, w): &(&WorkerId, &Worker)| -> bool {
+            if reserved_for_other(worker_id) {
+                if full_worker_logging {
+                    info!("Worker {worker_id} is reserved for the action at the head of the queue");
+                }
+                return false;
+            }
             if !w.can_accept_work() {
                 if full_worker_logging {
                     info!(
@@ -780,6 +1125,8 @@ impl ApiWorkerSchedulerImpl {
     fn inner_find_worker_for_action(
         &mut self,
         platform_properties: &PlatformProperties,
+        operation_id: Option<&OperationId>,
+        ahead_of_hold: bool,
         full_worker_logging: bool,
         now: SystemTime,
     ) -> MatchOutcome {
@@ -798,9 +1145,13 @@ impl ApiWorkerSchedulerImpl {
             let candidates = self
                 .capability_index
                 .find_matching_workers(platform_properties, full_worker_logging);
-            if let Some(worker_id) =
-                self.find_available_worker(platform_properties, &candidates, full_worker_logging)
-            {
+            if let Some(worker_id) = self.find_available_worker(
+                platform_properties,
+                operation_id,
+                ahead_of_hold,
+                &candidates,
+                full_worker_logging,
+            ) {
                 return MatchOutcome::Matched(worker_id);
             }
             Some(candidates)
@@ -810,6 +1161,21 @@ impl ApiWorkerSchedulerImpl {
             }
             None
         };
+
+        // The action a worker is held for found no room, on that worker or
+        // any other. If the held worker can no longer be waited on for it
+        // (drained, paused, declined it, a requeue raised the action's
+        // properties past what the worker registered, or the worker is idle
+        // and still refusing it) the hold is dropped here, so the pass that
+        // is reading the action reserves another worker for it at once
+        // instead of waiting on this one forever.
+        if let (Some(operation_id), Some(reservation)) = (operation_id, &self.reservation)
+            && reservation.operation_id == *operation_id
+            && !self.reserved_worker_still_fits(platform_properties)
+        {
+            self.release_reservation("unfit");
+            self.capacity_changed();
+        }
 
         // Nothing can take the action now. Only then is it worth working out
         // whether anything ever could, so a match pays nothing for this.
@@ -1147,6 +1513,7 @@ impl ApiWorkerSchedulerImpl {
             complete_action_res
         };
 
+        self.move_or_release_hold("unfit");
         self.capacity_changed();
 
         update_operation_res.merge(complete_action_res)
@@ -1186,6 +1553,7 @@ impl ApiWorkerSchedulerImpl {
                         worker.is_paused = true;
                         record_worker_state("paused", true);
                     }
+                    self.move_or_release_hold("unfit");
                     self.worker_change_notify.notify_one();
                     return self
                         .worker_state_manager
@@ -1241,6 +1609,17 @@ impl ApiWorkerSchedulerImpl {
                     )
                     .await;
                 return Result::<(), _>::Err(err).merge(evicted).merge(requeued);
+            }
+            // The action the reservation was for is placed, here or on a
+            // worker that had room first; the reserved worker is open to
+            // everything again, which is room the fleet did not have.
+            if self
+                .reservation
+                .as_ref()
+                .is_some_and(|reservation| reservation.operation_id == operation_id)
+            {
+                self.release_reservation("placed");
+                self.capacity_changed();
             }
             Ok(())
         } else {
@@ -1346,6 +1725,7 @@ impl ApiWorkerSchedulerImpl {
                 worker.pause_needs_kb = needs_kb;
             }
         }
+        self.move_or_release_hold("unfit");
         Ok(true)
     }
 
@@ -1548,6 +1928,8 @@ impl ApiWorkerScheduler {
                 peer_fleet_last_refresh: None,
                 local_fleet_change_notify: local_fleet_change_notify.clone(),
                 static_verdicts: HashMap::new(),
+                reservation: None,
+                last_no_candidate: None,
             }),
             platform_property_manager,
             worker_timeout_s,
@@ -1702,6 +2084,43 @@ impl ApiWorkerScheduler {
         &self.local_fleet_change_notify
     }
 
+    /// The worker held for the action at the head of the queue, if any.
+    pub async fn head_of_line_reservation(&self) -> Option<HeadOfLineReservation> {
+        self.inner.lock().await.reservation.clone()
+    }
+
+    /// Holds a worker for the action at the head of the queue; see
+    /// `ApiWorkerSchedulerImpl::reserve_head_of_line`. Only ever asked for
+    /// the head of the queue, once it has waited `after_s` and been
+    /// overtaken. `waited` is how long it has, for the log.
+    pub async fn reserve_head_of_line(
+        &self,
+        operation_id: &OperationId,
+        platform_properties: &PlatformProperties,
+        waited: Duration,
+    ) -> Option<WorkerId> {
+        self.inner
+            .lock()
+            .await
+            .reserve_head_of_line(operation_id, platform_properties, waited)
+    }
+
+    /// Releases the reservation held for this action, if it still is: the
+    /// action left the queue unplaced (cancelled, its client gone, run by
+    /// a peer). The worker is open to everything again, which is room the
+    /// fleet did not have.
+    pub async fn release_reservation_for_gone(&self, operation_id: &OperationId) {
+        let mut inner = self.inner.lock().await;
+        if inner
+            .reservation
+            .as_ref()
+            .is_some_and(|reservation| reservation.operation_id == *operation_id)
+        {
+            inner.release_reservation("gone");
+            inner.capacity_changed();
+        }
+    }
+
     /// Attempts to find a worker that is capable of running this action.
     // TODO(palfrey) This algorithm is not very efficient. Simple testing using a tree-like
     // structure showed worse performance on a 10_000 worker * 7 properties * 1000 queued tasks
@@ -1712,19 +2131,30 @@ impl ApiWorkerScheduler {
         full_worker_logging: bool,
         now: SystemTime,
     ) -> MatchOutcome {
-        self.find_worker_for_action_observed(platform_properties, full_worker_logging, now)
-            .await
-            .0
+        self.find_worker_for_action_observed(
+            platform_properties,
+            None,
+            false,
+            full_worker_logging,
+            now,
+        )
+        .await
+        .0
     }
 
     /// `find_worker_for_action`, also returning the capacity generation read
     /// under the same lock as the placement. A pass compares it with the one
     /// it saw last: a change means a worker gained room since, and an older
     /// action that found none earlier in the pass should be offered that room
-    /// before this one takes it.
+    /// before this one takes it. `operation_id` is the action's when known,
+    /// and `ahead_of_hold` whether it sorts before the action a worker is
+    /// held for; the held worker takes only that action and those ahead of
+    /// it.
     pub async fn find_worker_for_action_observed(
         &self,
         platform_properties: &PlatformProperties,
+        operation_id: Option<&OperationId>,
+        ahead_of_hold: bool,
         full_worker_logging: bool,
         now: SystemTime,
     ) -> (MatchOutcome, u64) {
@@ -1735,8 +2165,13 @@ impl ApiWorkerScheduler {
 
         let mut inner = self.inner.lock().await;
         let worker_count = inner.workers.len() as u64;
-        let result =
-            inner.inner_find_worker_for_action(platform_properties, full_worker_logging, now);
+        let result = inner.inner_find_worker_for_action(
+            platform_properties,
+            operation_id,
+            ahead_of_hold,
+            full_worker_logging,
+            now,
+        );
         let generation = inner.capacity_generation.load(Ordering::Relaxed);
 
         // Track workers iterated (worst case is all workers)
@@ -2158,11 +2593,15 @@ impl WorkerScheduler for ApiWorkerScheduler {
                 .collect()
         }
         let inner = self.inner.lock().await;
+        let reservation = inner.reservation.as_ref();
         inner
             .workers
             .iter()
             .map(|(_, worker)| WorkerSummary {
                 id: worker.id.to_string(),
+                reserved_for_operation: reservation
+                    .filter(|reservation| reservation.worker_id == worker.id)
+                    .map(|reservation| reservation.operation_id.to_string()),
                 running_actions: u32::try_from(worker.running_action_infos.len())
                     .unwrap_or(u32::MAX),
                 max_inflight_tasks: worker.max_inflight_tasks,

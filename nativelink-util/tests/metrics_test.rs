@@ -21,10 +21,10 @@ use nativelink_util::metrics::{
     WORKER_METRICS, WorkerDisconnectReason, execution_output_bytes, make_execution_attributes,
     peak_memory_sample, pool_available_sample, record_cache_entries_delta,
     record_completed_execution_metrics, record_connection_acquired, record_connection_reconnect,
-    record_execution_cpu_time, record_execution_peak_memory, record_health_check,
-    record_matching_pass, record_rpc_served, record_store_tier_io, record_store_tier_read,
-    record_worker_connected, record_worker_disconnected, record_worker_keepalive,
-    record_worker_state, saturating_i64, split_grpc_path,
+    record_execution_cpu_time, record_execution_peak_memory, record_head_of_line_reservation,
+    record_health_check, record_matching_pass, record_rpc_served, record_store_tier_io,
+    record_store_tier_read, record_worker_connected, record_worker_disconnected,
+    record_worker_keepalive, record_worker_state, saturating_i64, split_grpc_path,
 };
 use opentelemetry::KeyValue;
 
@@ -346,6 +346,8 @@ fn test_new_metric_helpers_are_callable() {
     record_rpc_served("/pkg.Service/Method", 5, 1.5);
     record_matching_pass(0.002, true);
     record_matching_pass(0.002, false);
+    record_head_of_line_reservation("reserved");
+    record_head_of_line_reservation("placed");
     record_store_tier_read("fast", "hit");
     record_store_tier_read("slow", "hit");
     record_store_tier_io("fast", "read", 4096);

@@ -151,6 +151,20 @@ pub struct Worker {
     /// `None` until it reports, and for workers that never do.
     pub last_load: Option<WorkerLoad>,
 
+    /// What the ledger had lent to the worker's running actions, under the
+    /// live memory veto's property, when `last_load` was reported. What the
+    /// worker will have free once those finish is the report plus this,
+    /// whatever has finished since: a later finish does not make the stale
+    /// report less true.
+    pub reported_lent_kb: u64,
+
+    /// The free memory the worker last reported while holding nothing: the
+    /// most a drain can be expected to free, whatever the ledger lent to
+    /// its running actions since. Set by an idle keepalive, and by the
+    /// head-of-line hold when the worker, drained for an action, still
+    /// refused it. `None` until the worker has reported idle.
+    pub idle_free_kb: Option<u64>,
+
     /// Stats about the worker.
     #[metric]
     metrics: Arc<Metrics>,
@@ -234,6 +248,8 @@ impl Worker {
             is_draining: false,
             max_inflight_tasks,
             last_load: None,
+            reported_lent_kb: 0,
+            idle_free_kb: None,
             metrics: Arc::new(Metrics {
                 connected_timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)

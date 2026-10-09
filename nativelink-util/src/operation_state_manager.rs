@@ -53,6 +53,15 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error>;
     /// Provide result as action info. This behavior will not be supported by all implementations.
     async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error>;
+    /// The action info and its current state together. An implementation
+    /// that holds both serves them from one read; this default reads twice.
+    async fn as_action_info_with_state(
+        &self,
+    ) -> Result<(Arc<ActionInfo>, Arc<ActionState>, Option<OriginMetadata>), Error> {
+        let (action_info, origin_metadata) = self.as_action_info().await?;
+        let (action_state, _) = self.as_state().await?;
+        Ok((action_info, action_state, origin_metadata))
+    }
     /// When a client last checked in on this operation, where the
     /// implementation tracks it. `None` where it does not.
     async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
