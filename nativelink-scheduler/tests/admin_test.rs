@@ -37,6 +37,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
@@ -64,7 +65,12 @@ fn make_scheduler() -> Arc<SimpleScheduler> {
             client_action_timeout_s: 1_000_000,
             ..SimpleSpec::default()
         },
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify,
+            MockInstantWrapped::default,
+            ActiveCountAttributes::default(),
+        ),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,

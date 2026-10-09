@@ -14,10 +14,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::SystemTime;
 
-use opentelemetry::{InstrumentationScope, KeyValue, Value, global, metrics};
+use nativelink_error::{Error, make_input_err};
+use opentelemetry::{InstrumentationScope, Key, KeyValue, Value, global, metrics};
 
 use crate::action_messages::{ActionResult, ActionStage};
 
@@ -36,6 +38,18 @@ pub const EXECUTION_OUTCOME: &str = "execution.outcome";
 pub const EXECUTION_ACTION_MNEMONIC: &str = "execution.action_mnemonic";
 pub const EXECUTION_EXIT_CODE: &str = "execution.exit_code";
 pub const EXECUTION_ACTION_DIGEST: &str = "execution.action_digest";
+/// Prefix of the per-platform-property attributes on `execution.active.count`:
+/// a configured key `OSFamily` becomes the attribute `execution.platform.OSFamily`.
+pub const EXECUTION_PLATFORM_PREFIX: &str = "execution.platform.";
+
+/// The label name Prometheus will show for a platform property key: the
+/// collector's exporter replaces every character outside `[A-Za-z0-9_]`
+/// with `_`.
+fn prometheus_label(key: &str) -> String {
+    key.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
 
 // Metric attribute keys for gRPC serving, following OTel rpc semconv.
 pub const RPC_SERVICE: &str = "rpc.service";
@@ -154,7 +168,7 @@ impl From<CacheOperationResult> for Value {
 }
 
 /// Remote execution stages for metrics classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ExecutionStage {
     /// Unknown stage
     Unknown,
@@ -201,6 +215,96 @@ impl From<&ActionStage> for ExecutionStage {
             ActionStage::Executing => Self::Executing,
             ActionStage::Completed(_) | ActionStage::CompletedFromCache(_) => Self::Completed,
         }
+    }
+}
+
+/// The attributes `execution.active.count` is recorded with: the stage, then
+/// one `execution.platform.<key>` per configured platform property key, in
+/// configured order.
+///
+/// Built once from the configuration so that every add and subtract for one
+/// action is made with the same attribute set; a value that differed between
+/// the two would leave the gauge drifted for good. An action without a key
+/// carries `""` for it, which keeps that property too: the attribute set is
+/// fixed by the configuration, never by what an action happens to declare.
+#[derive(Debug, Default, Clone)]
+pub struct ActiveCountAttributes {
+    /// The attribute key and the platform property it is read from.
+    keys: Vec<(Key, String)>,
+}
+
+impl ActiveCountAttributes {
+    /// Builds the attribute set for `platform_property_keys`, in that order.
+    ///
+    /// Fails when two keys would be one label in Prometheus. The collector's
+    /// Prometheus exporter rewrites every character of a label name outside
+    /// `[A-Za-z0-9_]` to `_`, so `container-image` and `container.image` both
+    /// reach it as `execution_platform_container_image`, and one would
+    /// silently overwrite the other's value.
+    pub fn new(platform_property_keys: &[String]) -> Result<Self, Error> {
+        let mut seen: HashMap<String, &String> = HashMap::new();
+        for key in platform_property_keys {
+            if let Some(earlier) = seen.insert(prometheus_label(key), key) {
+                return Err(make_input_err!(
+                    "active_action_count_platform_properties: {key:?} and {earlier:?} \
+                     are the same label in Prometheus ({}{}), which keeps only one",
+                    EXECUTION_PLATFORM_PREFIX.replace('.', "_"),
+                    prometheus_label(key),
+                ));
+            }
+        }
+        Ok(Self {
+            keys: platform_property_keys
+                .iter()
+                .map(|key| {
+                    (
+                        Key::from(format!("{EXECUTION_PLATFORM_PREFIX}{key}")),
+                        key.clone(),
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    /// Whether only the stage is recorded, as when nothing is configured.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// The action's value for each configured key, in configured order, with
+    /// `""` for a key it does not carry. Together with the stage this names
+    /// the series the action is counted in.
+    #[must_use]
+    pub fn values(&self, platform_properties: &HashMap<String, String>) -> Vec<String> {
+        self.keys
+            .iter()
+            .map(|(_, key)| platform_properties.get(key).cloned().unwrap_or_default())
+            .collect()
+    }
+
+    /// The attributes for an action in `stage`.
+    #[must_use]
+    pub fn attributes(
+        &self,
+        stage: ExecutionStage,
+        platform_properties: &HashMap<String, String>,
+    ) -> Vec<KeyValue> {
+        self.attributes_for_values(stage, &self.values(platform_properties))
+    }
+
+    /// The attributes for a series named by [`Self::values`].
+    #[must_use]
+    pub fn attributes_for_values(&self, stage: ExecutionStage, values: &[String]) -> Vec<KeyValue> {
+        let mut attrs = Vec::with_capacity(self.keys.len() + 1);
+        attrs.push(KeyValue::new(EXECUTION_STAGE, stage));
+        attrs.extend(
+            self.keys
+                .iter()
+                .zip(values)
+                .map(|((attribute, _), value)| KeyValue::new(attribute.clone(), value.clone())),
+        );
+        attrs
     }
 }
 

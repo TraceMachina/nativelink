@@ -45,6 +45,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::operation_state_manager::{ClientStateManager, OperationFilter};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::store_trait::SchedulerStore;
@@ -139,6 +140,7 @@ async fn overlapping_invocations_use_separate_workers() -> Result<(), Error> {
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await?;
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
@@ -191,6 +193,7 @@ async fn add_action_smoke_test() -> Result<(), Error> {
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await
     .unwrap();
@@ -303,6 +306,7 @@ async fn test_multiple_clients_subscribe_to_same_action() -> Result<(), Error> {
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await
     .unwrap();
@@ -463,6 +467,7 @@ async fn test_outdated_version() -> Result<(), Error> {
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await
     .unwrap();
@@ -540,6 +545,7 @@ async fn test_orphaned_client_operation_id_returns_none() -> Result<(), Error> {
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await
     .unwrap();
@@ -602,6 +608,7 @@ async fn add_action_attaches_ttl_to_cid_mapping() -> Result<(), Error> {
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await
     .unwrap();
@@ -672,6 +679,7 @@ async fn an_update_against_a_vanished_record_leaves_nothing_behind() -> Result<(
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await
     .unwrap();

@@ -40,6 +40,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::store_trait::{
     SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
     SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
@@ -342,6 +343,7 @@ async fn build_db(
         60,
         60,
         enable_active_action_count_metric,
+        ActiveCountAttributes::default(),
     )
     .await
     .expect("construct test db")
@@ -827,6 +829,7 @@ async fn listed_subscriber_borrows_without_reading_the_record_again() -> Result<
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await?;
 

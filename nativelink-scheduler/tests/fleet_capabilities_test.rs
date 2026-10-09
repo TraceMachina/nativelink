@@ -32,6 +32,7 @@ use nativelink_store::redis_store::{RedisStore, RedisSubscriptionManager};
 use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::platform_properties::{PlatformProperties, PlatformPropertyValue};
 use nativelink_util::store_trait::SchedulerStore;
@@ -73,6 +74,7 @@ async fn make_db(
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await
 }

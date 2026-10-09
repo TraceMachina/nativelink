@@ -46,6 +46,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::operation_state_manager::{
     ClientStateManager, MatchingEngineStateManager, OperationFilter, OperationStageFlags,
     UpdateOperationType, WorkerStateManager,
@@ -60,6 +61,7 @@ async fn drops_missing_actions() -> Result<(), Error> {
         0,
         &task_change_notify.clone(),
         MockInstantWrapped::default,
+        ActiveCountAttributes::default(),
     );
     let state_manager = SimpleSchedulerStateManager::new(
         0,
@@ -150,7 +152,12 @@ fn state_manager(
         WORKER_TIMEOUT,
         Duration::from_mins(5),
         MAX_EXECUTING,
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify,
+            MockInstantWrapped::default,
+            ActiveCountAttributes::default(),
+        ),
         MockInstantWrapped::default,
         Some(registry),
     )
@@ -173,7 +180,12 @@ fn state_manager_no_executing_ceiling(
         WORKER_TIMEOUT,
         Duration::from_mins(5),
         Duration::ZERO,
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify,
+            MockInstantWrapped::default,
+            ActiveCountAttributes::default(),
+        ),
         MockInstantWrapped::default,
         Some(registry),
     )
@@ -889,6 +901,7 @@ fn faulty_state_manager(
                 0,
                 &task_change_notify,
                 MockInstantWrapped::default,
+                ActiveCountAttributes::default(),
             ),
             fault,
         },
@@ -1132,6 +1145,7 @@ fn faulty_scheduler(fault: Fault) -> Arc<SimpleScheduler> {
                 0,
                 &task_change_notify,
                 MockInstantWrapped::default,
+                ActiveCountAttributes::default(),
             ),
             fault,
         },

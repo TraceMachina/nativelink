@@ -17,6 +17,8 @@ use core::ops::Bound;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
+use std::collections::HashMap;
+use std::pin::pin;
 use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,7 +30,7 @@ use nativelink_util::action_messages::{
     ActionInfo, ActionStage, ActionUniqueQualifier, OperationId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::metrics::{EXECUTION_METRICS, EXECUTION_STAGE, ExecutionStage};
+use nativelink_util::metrics::{ActiveCountAttributes, EXECUTION_METRICS, ExecutionStage};
 use nativelink_util::platform_properties::PlatformProperties;
 use nativelink_util::spawn;
 use nativelink_util::store_trait::{
@@ -37,7 +39,6 @@ use nativelink_util::store_trait::{
     SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, TrueValue,
 };
 use nativelink_util::task::JoinHandleDropGuard;
-use opentelemetry::KeyValue;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, OnceCell};
 use tracing::{error, warn};
@@ -693,38 +694,92 @@ const fn get_state_prefix(state: SortedAwaitedActionState) -> &'static str {
     }
 }
 
-/// Reports how many actions the store holds in each stage as
-/// `execution.active.count`.
+/// One `execution.active.count` series: a stage and the action's values for
+/// the configured platform property keys ([`ActiveCountAttributes::values`]).
+type ActiveCountSeries = (ExecutionStage, Vec<String>);
+
+/// Counts the actions in one stage, by series.
+///
+/// With nothing configured the store returns the stage's total and never
+/// reads an action. With keys configured there is no index to ask, so every
+/// action in the stage is read and counted under its values.
+async fn count_active_series<S: SchedulerStore>(
+    store: &S,
+    sorted_state: SortedAwaitedActionState,
+    stage: ExecutionStage,
+    attrs: &ActiveCountAttributes,
+) -> Result<HashMap<ActiveCountSeries, i64>, Error> {
+    let mut counted = HashMap::new();
+    if attrs.is_empty() {
+        let count = store
+            .count_by_index_prefix(CountActionsInState(get_state_prefix(sorted_state)))
+            .await?;
+        counted.insert(
+            (stage, Vec::new()),
+            i64::try_from(count).unwrap_or(i64::MAX),
+        );
+        return Ok(counted);
+    }
+    let mut actions = pin!(
+        store
+            .search_by_index_prefix(SearchStateToAwaitedAction(get_state_prefix(sorted_state)))
+            .await?
+    );
+    while let Some(awaited_action) = actions.try_next().await? {
+        let values = attrs.values(&awaited_action.action_info().platform_properties);
+        *counted.entry((stage, values)).or_default() += 1;
+    }
+    Ok(counted)
+}
+
+/// Reports how many actions the store holds in each stage, and under each
+/// configured platform property value, as `execution.active.count`.
 ///
 /// The store is shared, so every scheduler replica reports the same totals:
 /// aggregate across replicas with `max`, not `sum`. Recording the change since
 /// the last pass, rather than adding and subtracting per transition, keeps the
 /// count right across restarts and for transitions another replica made.
+///
+/// `reported` holds the last value recorded for every series ever seen. A
+/// series the store no longer holds any action in is recorded down to 0 and
+/// kept, so an emptied queue reads as 0 rather than no data. Without keys
+/// the first pass records every stage even at zero, so an idle scheduler
+/// reads 0 from the start. With keys a series exists only once an action
+/// has carried its values: a pool that has had no action yet reads absent,
+/// not 0, until its first action (the memory backend behaves the same).
 async fn report_active_counts<S: SchedulerStore>(
     store: &S,
-    reported: &mut [Option<i64>; COUNTED_STATES.len()],
+    attrs: &ActiveCountAttributes,
+    reported: &mut HashMap<ActiveCountSeries, i64>,
 ) {
-    for ((state, stage), last) in COUNTED_STATES.iter().zip(reported.iter_mut()) {
-        let count = store
-            .count_by_index_prefix(CountActionsInState(get_state_prefix(*state)))
-            .await
-            .map(|count| i64::try_from(count).unwrap_or(i64::MAX));
-        match count {
-            // The first pass records even a zero, so every stage has a series
-            // and an empty queue reads as 0 rather than no data.
-            Ok(count) if *last != Some(count) => {
-                EXECUTION_METRICS.execution_active_count.add(
-                    count - last.unwrap_or(0),
-                    &[KeyValue::new(EXECUTION_STAGE, *stage)],
+    for (state, stage) in COUNTED_STATES {
+        let mut counted = match count_active_series(store, state, stage, attrs).await {
+            Ok(counted) => counted,
+            // The stage keeps its last values rather than reading as empty.
+            Err(err) => {
+                warn!(
+                    ?err,
+                    ?stage,
+                    "Failed to count actions for execution.active.count"
                 );
-                *last = Some(count);
+                continue;
             }
-            Ok(_) => {}
-            Err(err) => warn!(
-                ?err,
-                ?stage,
-                "Failed to count actions for execution.active.count"
-            ),
+        };
+        for (series, last) in reported.iter_mut().filter(|(series, _)| series.0 == stage) {
+            let count = counted.remove(series).unwrap_or(0);
+            if *last != count {
+                EXECUTION_METRICS.execution_active_count.add(
+                    count - *last,
+                    &attrs.attributes_for_values(stage, &series.1),
+                );
+                *last = count;
+            }
+        }
+        for (series, count) in counted {
+            EXECUTION_METRICS
+                .execution_active_count
+                .add(count, &attrs.attributes_for_values(stage, &series.1));
+            reported.insert(series, count);
         }
     }
 }
@@ -857,6 +912,7 @@ where
     I: InstantWrapper,
     NowFn: Fn() -> I + Send + Sync + Clone + 'static,
 {
+    #[expect(clippy::too_many_arguments)]
     pub async fn new(
         store: Arc<S>,
         task_change_publisher: Arc<Notify>,
@@ -865,6 +921,7 @@ where
         retain_completed_for_s: u32,
         client_action_timeout_s: u64,
         enable_active_action_count_metric: bool,
+        active_count_attrs: ActiveCountAttributes,
     ) -> Result<Self, Error> {
         let mut subscription = store
             .subscription_manager()
@@ -898,17 +955,25 @@ where
         // Off by default: counting queries the same store that serves action
         // scheduling, once per interval per replica, so it is opt-in rather
         // than a cost every deployment pays for a metric it may not read.
+        if !enable_active_action_count_metric && !active_count_attrs.is_empty() {
+            warn!(
+                "active_action_count_platform_properties is set but \
+                 enable_active_action_count_metric is off: with the store backend \
+                 execution.active.count is not reported at all, so the keys do nothing"
+            );
+        }
         let active_count_spawn = enable_active_action_count_metric.then(|| {
             let weak_store = Arc::downgrade(&store);
+            let attrs = active_count_attrs;
             spawn!("store_awaited_action_db_active_count", async move {
-                let mut reported = [None; COUNTED_STATES.len()];
+                let mut reported = HashMap::new();
                 loop {
                     // Wait first, so constructing the db never queries the store.
                     tokio::time::sleep(ACTIVE_COUNT_REFRESH_INTERVAL).await;
                     let Some(store) = weak_store.upgrade() else {
                         return;
                     };
-                    report_active_counts(store.as_ref(), &mut reported).await;
+                    report_active_counts(store.as_ref(), &attrs, &mut reported).await;
                 }
             })
         });
