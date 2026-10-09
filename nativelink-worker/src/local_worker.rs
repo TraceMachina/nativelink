@@ -1153,18 +1153,32 @@ pub async fn new_local_worker(
                 "isolate_tmp requires use_namespaces and use_mount_namespace to be true"
             ));
         }
+        let isolate_network = config.isolate_network.unwrap_or_default();
+        if isolate_network && config.use_namespaces != Some(true) {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "isolate_network requires use_namespaces to be true"
+            ));
+        }
         if let Some(use_namespaces) = &config.use_namespaces {
             if *use_namespaces
-                && !crate::namespace_utils::namespaces_supported(use_mount_namespace, isolate_tmp)
+                && !crate::namespace_utils::namespaces_supported(
+                    use_mount_namespace,
+                    isolate_tmp,
+                    isolate_network,
+                )
             {
                 return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
             }
             if !*use_namespaces {
                 crate::running_actions_manager::UseNamespaces::No
             } else if use_mount_namespace {
-                crate::running_actions_manager::UseNamespaces::YesAndMount { isolate_tmp }
+                crate::running_actions_manager::UseNamespaces::YesAndMount {
+                    isolate_tmp,
+                    isolate_network,
+                }
             } else {
-                crate::running_actions_manager::UseNamespaces::Yes
+                crate::running_actions_manager::UseNamespaces::Yes { isolate_network }
             }
         } else if use_mount_namespace {
             return Err(make_err!(
@@ -1200,16 +1214,13 @@ pub async fn new_local_worker(
             "isolate_tmp is not supported on non-Linux OSes"
         ));
     }
-
-    // A pooled worker process gets the same PID, user, UTS and IPC
-    // namespaces a one-shot action gets, never the mount namespace.
-    #[cfg(target_os = "linux")]
-    let persistent_workers_namespaced = !matches!(
-        use_namespaces,
-        crate::running_actions_manager::UseNamespaces::No
-    );
     #[cfg(not(target_os = "linux"))]
-    let persistent_workers_namespaced = false;
+    if config.isolate_network.is_some_and(core::convert::identity) {
+        return Err(make_err!(
+            Code::Unavailable,
+            "isolate_network is not supported on non-Linux OSes"
+        ));
+    }
 
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
@@ -1222,10 +1233,7 @@ pub async fn new_local_worker(
                     Duration::from_millis(config.kill_grace_ms)
                 },
                 set_tmpdir: config.set_tmpdir,
-                persistent_workers: persistent_worker_settings(
-                    config.persistent_workers.as_ref(),
-                    persistent_workers_namespaced,
-                ),
+                persistent_workers: persistent_worker_settings(config.persistent_workers.as_ref()),
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
@@ -1640,7 +1648,6 @@ impl Metrics {
 /// zero or unset.
 fn persistent_worker_settings(
     config: Option<&nativelink_config::cas_server::PersistentWorkersConfig>,
-    namespaced: bool,
 ) -> crate::running_actions_manager::PersistentWorkersSettings {
     use crate::persistent_worker::PoolConfig;
     let defaults = PoolConfig::default();
@@ -1668,11 +1675,10 @@ fn persistent_worker_settings(
                 c.acquire_timeout_s,
                 defaults.acquire_timeout.as_secs(),
             )),
-            namespaced,
         }
     });
     crate::running_actions_manager::PersistentWorkersSettings {
         enabled: config.is_none_or(|c| c.enabled),
-        pool: PoolConfig { namespaced, ..pool },
+        pool,
     }
 }

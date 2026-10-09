@@ -32,7 +32,7 @@ use parking_lot::Mutex;
 use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
-use super::live_worker::LiveWorker;
+use super::live_worker::{LiveWorker, Namespacing};
 use super::protocol::WireFormat;
 
 /// Default per-key bound on live workers. Matches Bazel's `worker_max_instances`
@@ -66,6 +66,9 @@ pub struct WorkerKey {
     /// started with exactly this environment, the way a one-shot action is,
     /// so two actions that differ in it do not share a process.
     pub env: Vec<(String, String)>,
+    /// The namespaces the worker process runs in, as the action would get
+    /// them, so actions that would be isolated differently never share one.
+    pub namespacing: Namespacing,
 }
 
 /// The key is logged on every spawn and completion and quoted in errors the
@@ -77,6 +80,7 @@ impl fmt::Debug for WorkerKey {
             .field("executable", &self.executable)
             .field("startup_args", &self.startup_args)
             .field("wire_format", &self.wire_format)
+            .field("namespacing", &self.namespacing)
             .field(
                 "env",
                 &self.env.iter().map(|(name, _)| name).collect::<Vec<_>>(),
@@ -110,6 +114,7 @@ impl WorkerKey {
             startup_args,
             wire_format,
             env: Vec::new(),
+            namespacing: Namespacing::None,
         })
     }
 
@@ -118,6 +123,13 @@ impl WorkerKey {
     pub fn with_env(mut self, mut env: Vec<(String, String)>) -> Self {
         env.sort();
         self.env = env;
+        self
+    }
+
+    /// The namespaces the worker process runs in, part of the key.
+    #[must_use]
+    pub const fn with_namespacing(mut self, namespacing: Namespacing) -> Self {
+        self.namespacing = namespacing;
         self
     }
 }
@@ -136,11 +148,6 @@ pub struct PoolConfig {
     /// one-shot instead. Bazel itself queues on `worker_max_instances`; a
     /// one-shot run of a worker tool pays the tool's startup again.
     pub acquire_timeout: Duration,
-    /// Start each worker process in its own user, PID, UTS and IPC
-    /// namespaces, as one-shot actions are when the worker runs with
-    /// `use_namespaces`. Never a mount namespace: the process outlives any
-    /// one action, so a private `/tmp` per action cannot apply to it.
-    pub namespaced: bool,
 }
 
 impl Default for PoolConfig {
@@ -151,7 +158,6 @@ impl Default for PoolConfig {
             max_requests_per_worker: DEFAULT_MAX_REQUESTS_PER_WORKER,
             shutdown_grace: Duration::from_secs(5),
             acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
-            namespaced: false,
         }
     }
 }
@@ -413,7 +419,7 @@ impl PersistentWorkerPool {
             key.wire_format,
             working_dir,
             &key.env,
-            self.inner.config.namespaced,
+            key.namespacing,
         );
         let worker = match spawn_result {
             Ok(w) => w,
@@ -519,6 +525,7 @@ mod tests {
             startup_args: vec![script.display().to_string()],
             wire_format: WireFormat::Json,
             env: path_env(),
+            namespacing: Namespacing::None,
         }
     }
 
@@ -615,6 +622,17 @@ mod tests {
         let c = base().with_env(vec![("PATH".into(), "/usr/bin".into())]);
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn worker_key_distinguishes_namespacing() {
+        let base =
+            || WorkerKey::from_argv(&["javac", "@a"].map(String::from), WireFormat::Proto).unwrap();
+        let namespaced =
+            |isolate_network| base().with_namespacing(Namespacing::Yes { isolate_network });
+        assert_eq!(base(), base().with_namespacing(Namespacing::None));
+        assert_ne!(base(), namespaced(false));
+        assert_ne!(namespaced(false), namespaced(true));
     }
 
     #[nativelink_test]

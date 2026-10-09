@@ -1565,6 +1565,27 @@ pub struct LocalWorkerConfig {
     /// Default: True when `use_mount_namespace` is true and `/tmp` exists,
     /// otherwise False.
     pub isolate_tmp: Option<bool>,
+
+    /// Whether to give each action its own network namespace, holding
+    /// nothing but a loopback interface that is brought up for it. Only on
+    /// Linux, and only with `use_namespaces` set to true. An action can still
+    /// listen on and connect to `127.0.0.1` (and `::1` where the host has
+    /// IPv6), so tests that start their own local servers keep working, but
+    /// connecting to any other address fails at once with "network
+    /// unreachable".
+    ///
+    /// A Unix socket on the filesystem the action can see, such as the
+    /// Docker socket, is still reachable; abstract Unix sockets belong to the
+    /// network namespace and are not. A name lookup answered over such a
+    /// socket, by a local caching resolver for example, may still succeed,
+    /// though a connection to the address it returns fails.
+    ///
+    /// If set to true without `use_namespaces`, or on a host that cannot
+    /// create a network namespace, the worker exits with an error at
+    /// startup. Persistent worker processes are isolated the same way.
+    ///
+    /// Default: False.
+    pub isolate_network: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

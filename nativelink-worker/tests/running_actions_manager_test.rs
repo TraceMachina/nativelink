@@ -16,6 +16,11 @@
 
 use serial_test::serial;
 
+#[cfg(target_os = "linux")]
+mod utils {
+    pub(crate) mod network_test_utils;
+}
+
 #[serial]
 mod tests {
     #[cfg(target_family = "unix")]
@@ -105,6 +110,9 @@ mod tests {
     use tokio::sync::watch;
     use tracing::info;
 
+    #[cfg(target_os = "linux")]
+    use crate::utils::network_test_utils;
+
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
     const DEFAULT_MAX_DOWNLOAD_TIMEOUT: u64 = 600;
     const DEFAULT_MAX_CLEANUP_WAIT: u64 = 30;
@@ -115,12 +123,15 @@ mod tests {
         // Keep the host's /tmp visible here: several tests stage wrappers and
         // payloads under the temp dir, which is /tmp outside of Bazel. The
         // private /tmp has its own dedicated test below.
-        if namespace_utils::namespaces_supported(true, false) {
+        if namespace_utils::namespaces_supported(true, false, false) {
             nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
                 isolate_tmp: false,
+                isolate_network: false,
             }
-        } else if namespace_utils::namespaces_supported(false, false) {
-            nativelink_worker::running_actions_manager::UseNamespaces::Yes
+        } else if namespace_utils::namespaces_supported(false, false, false) {
+            nativelink_worker::running_actions_manager::UseNamespaces::Yes {
+                isolate_network: false,
+            }
         } else {
             nativelink_worker::running_actions_manager::UseNamespaces::No
         }
@@ -6984,7 +6995,7 @@ exit 1
     async fn isolate_tmp_gives_action_a_private_tmp() -> Result<(), Box<dyn core::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
-        if !namespace_utils::namespaces_supported(true, true) {
+        if !namespace_utils::namespaces_supported(true, true, false) {
             return Ok(());
         }
 
@@ -7014,6 +7025,7 @@ exit 1
                 use_namespaces:
                     nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
                         isolate_tmp: true,
+                        isolate_network: false,
                     },
             })?);
 
@@ -7105,6 +7117,192 @@ exit 1
         assert!(
             tokio::fs::metadata(&scratch_file).await.is_err(),
             "the action's /tmp scratch file leaked to the host"
+        );
+        Ok(())
+    }
+
+    /// Runs one action that prints its own `/proc/net/dev`, and returns the
+    /// interfaces it saw.
+    #[cfg(target_os = "linux")]
+    async fn interfaces_seen_by_action(
+        use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces,
+    ) -> Result<std::collections::BTreeSet<String>, Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory,
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                execution_configuration: ExecutionConfiguration::default(),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                use_namespaces,
+            })?);
+
+        // Builtins only, so the action needs nothing on PATH beyond sh.
+        let command = Command {
+            arguments: vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "while read -r line; do echo \"$line\"; done < /proc/net/dev".to_string(),
+            ],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
+            ..Default::default()
+        };
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    execute_request: Some(execute_request),
+                    operation_id: OperationId::default().to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let action_result = run_action(running_action_impl).await?;
+        assert_eq!(action_result.exit_code, 0, "{action_result:?}");
+        let stdout = slow_store
+            .as_ref()
+            .get_part_unchunked(action_result.stdout_digest, 0, None)
+            .await?;
+        Ok(network_test_utils::interface_names(from_utf8(&stdout)?))
+    }
+
+    /// `use_namespaces()`, with the network isolated, or None, said on
+    /// stderr, where network namespaces are unavailable.
+    #[cfg(target_os = "linux")]
+    fn use_namespaces_isolating_network(
+        test: &str,
+    ) -> Option<nativelink_worker::running_actions_manager::UseNamespaces> {
+        use nativelink_worker::running_actions_manager::UseNamespaces;
+        if namespace_utils::namespaces_supported(true, false, true) {
+            Some(UseNamespaces::YesAndMount {
+                isolate_tmp: false,
+                isolate_network: true,
+            })
+        } else if namespace_utils::namespaces_supported(false, false, true) {
+            Some(UseNamespaces::Yes {
+                isolate_network: true,
+            })
+        } else {
+            network_test_utils::skip(test, "network namespaces are unavailable here");
+            None
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn isolate_network_leaves_an_action_only_loopback()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const TEST: &str = "isolate_network_leaves_an_action_only_loopback";
+        let Some(use_namespaces) = use_namespaces_isolating_network(TEST) else {
+            return Ok(());
+        };
+        if network_test_utils::host_interfaces_beyond_loopback(TEST).is_none() {
+            return Ok(());
+        }
+        assert_eq!(
+            interfaces_seen_by_action(use_namespaces).await?,
+            network_test_utils::only_loopback(),
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn persistent_worker_processes_get_the_actions_namespaces_but_mount() {
+        use nativelink_worker::persistent_worker::Namespacing;
+        use nativelink_worker::running_actions_manager::{
+            UseNamespaces, persistent_worker_namespacing,
+        };
+        assert_eq!(
+            persistent_worker_namespacing(UseNamespaces::No),
+            Namespacing::None
+        );
+        for isolate_network in [false, true] {
+            assert_eq!(
+                persistent_worker_namespacing(UseNamespaces::Yes { isolate_network }),
+                Namespacing::Yes { isolate_network }
+            );
+            assert_eq!(
+                persistent_worker_namespacing(UseNamespaces::YesAndMount {
+                    isolate_tmp: true,
+                    isolate_network,
+                }),
+                Namespacing::Yes { isolate_network }
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn network_is_not_isolated_by_default() -> Result<(), Box<dyn core::error::Error>> {
+        let Some(host_interfaces) = network_test_utils::host_interfaces_beyond_loopback(
+            "network_is_not_isolated_by_default",
+        ) else {
+            return Ok(());
+        };
+        // Namespaced or not, as the host allows, but without isolate_network.
+        assert_eq!(
+            interfaces_seen_by_action(use_namespaces()).await?,
+            host_interfaces,
+        );
+        assert_eq!(
+            interfaces_seen_by_action(
+                nativelink_worker::running_actions_manager::UseNamespaces::No
+            )
+            .await?,
+            host_interfaces,
         );
         Ok(())
     }
