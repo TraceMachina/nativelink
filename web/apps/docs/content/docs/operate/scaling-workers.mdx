@@ -346,6 +346,81 @@ will scale up your compile pool and change nothing. Either split the recording
 rule by the property that distinguishes the pools, or run a scheduler instance
 per pool. The second is blunter and easier to reason about.
 
+## Large actions starve behind small ones [#large-actions-starve-behind-small-ones]
+
+The matcher places whatever fits, in queue order, on every pass. That is
+right until the queue holds one action much larger than the rest. On a fleet
+of 16-core workers taking a steady stream of one- to four-core actions, an
+eight-core action at the head of the queue needs a worker with eight free
+cores at once, and no worker ever shows that: each core that frees is taken
+by the next small action before the pass reaches the big one again. The
+scheduler logs `No workers matched!` for it on every pass, the small actions
+keep running, and the big one waits as long as the stream lasts. Classic
+head-of-line starvation; `allocation_strategy: best_fit` packs the small
+actions more tightly and only slows it down.
+
+HPC schedulers solve this with a reservation: Slurm's backfill scheduler
+holds the resources the highest-priority waiting job needs on the node that
+will free them soonest, and lets smaller jobs backfill only around that
+hold. NativeLink has the same mechanism without the time estimate, as
+**`head_of_line_reservation`** on the `simple` scheduler:
+
+```json5
+"scheduler": {
+  "simple": {
+    "supported_platform_properties": { "cpu_count": "minimum", "memory_kb": "minimum" },
+    "head_of_line_reservation": { "after_s": 180 }
+  }
+}
+```
+
+Once the action at the head of the queue has waited `after_s` since it was
+last queued and a matching pass places something queued after it (the
+starvation itself), the scheduler holds for it the busy worker closest to
+fitting it (the fewest cores and KiB short, as a share of what the worker
+advertises, among the workers that could take it once drained) and sends
+that worker nothing queued after the action. The worker drains to the
+action: its running actions finish, nothing newer backfills the cores they
+free, and the action is placed when enough are free. Every other worker
+keeps taking the small actions. A full fleet that places nothing holds
+nothing, and neither does an action that is only next in line for the next
+free core, so a batch of actions requeued after a worker is lost does not
+start a run of holds.
+
+One hold at a time, and it follows the queue: an action that sorts before
+the held one (a higher priority, or an older action queued again) takes the
+held worker's room first, in queue order, and takes the hold for itself only
+if the held worker could never run it. The hold lifts when the action is
+placed, on the held worker or on any other that has room first, and when
+the action leaves the queue unplaced. When the held worker can no longer be
+waited on (it disconnects, drains, pauses, declines the action, reports too
+little free memory even once drained, or a requeue raised what the action
+asks past what it registered) the hold moves to another worker that
+qualifies, or is dropped until the action is overtaken again. What a worker
+reported free while idle caps what draining it is expected to free, so a
+worker that was drained and still refused the action is not held for it
+again on the strength of what its next running actions borrow, only once an
+idle report shows more.
+
+The cost is idle capacity, and it is the point: every core the held worker
+frees stays idle until the action lands. One hold wastes up to the action's
+size (eight cores, say) for as long as the longest action running on that
+worker when it was held, which on a two-worker fleet is half the fleet's
+backfilling for the length of that action, an hour for an hour-long one. With
+a small `after_s` on a fleet where large actions are common, some worker is
+held almost all the time. Set `after_s` above the typical queue wait, so a
+hold is only taken for an action that is actually stuck and not for one that
+would have found room in a few seconds anyway, and watch the `reserved` rate:
+a steady one means the fleet is sized for the small actions and not for the
+large ones, and the lasting fix is a worker shape that fits them. The admin
+API's worker listing shows the reserved worker's `reserved_for_operation`,
+each reservation and its end is logged at `info` with the operation, the
+worker and how long the action waited, and
+`scheduler.head_of_line.reservations` counts them by
+`scheduler.reservation.event` (`reserved`, `moved`, then `placed`, `gone`,
+`worker_lost`, `unfit` or `superseded`; `no_candidate` when an action needed
+a hold and no worker could be held for it).
+
 ## When it doesn't work [#when-it-doesnt-work]
 
 <Accordions>

@@ -230,6 +230,11 @@ pub struct SimpleScheduler {
     /// burst drains in a few passes. See `unsatisfiable_fail_cap`.
     last_unsatisfiable_backlog: AtomicUsize,
 
+    /// How long the action at the head of the queue may be queued without
+    /// room before a worker is reserved for it (`head_of_line_reservation`);
+    /// `None` when no worker is ever reserved.
+    head_of_line_after: Option<Duration>,
+
     /// The clock the state manager uses.
     now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
@@ -410,6 +415,11 @@ impl SimpleScheduler {
             .await;
     }
 
+    /// The worker scheduler, for tests that drive placement directly.
+    pub const fn worker_scheduler_for_test(&self) -> &Arc<ApiWorkerScheduler> {
+        &self.worker_scheduler
+    }
+
     /// A counter that changes every time the fleet does.
     pub async fn fleet_generation_for_test(&self) -> u64 {
         self.worker_scheduler.fleet_generation().await
@@ -466,7 +476,7 @@ impl SimpleScheduler {
         /// been unsatisfiable for the configured timeout and the action has
         /// itself been queued that long, fails it.
         async fn handle_unsatisfiable(
-            action_state_result: &dyn ActionStateResult,
+            operation_id: &OperationId,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             workers: &ApiWorkerScheduler,
             platform_properties: &PlatformProperties,
@@ -528,13 +538,6 @@ impl SimpleScheduler {
             }
             pass.fails_this_pass.fetch_add(1, Ordering::Relaxed);
 
-            let operation_id = {
-                let (action_state, _origin_metadata) = action_state_result
-                    .as_state()
-                    .await
-                    .err_tip(|| "Failed to get state of an unsatisfiable action")?;
-                action_state.client_operation_id.clone()
-            };
             // The client only hears what it asked for; what workers offer
             // stays in the server log above.
             let err = make_err!(
@@ -544,7 +547,7 @@ impl SimpleScheduler {
                 observation.waited.as_secs()
             );
             let failed = matching_engine_state_manager
-                .fail_queued_operation(&operation_id, err)
+                .fail_queued_operation(operation_id, err)
                 .await
                 .err_tip(|| "Failed to fail an unsatisfiable action in do_try_match")?;
             if failed {
@@ -556,40 +559,55 @@ impl SimpleScheduler {
             Ok(())
         }
 
-        /// A listed action with what matching needs of it.
+        /// A listed action with what matching needs of it, from one read of
+        /// its record.
         struct Loaded {
-            action_state_result: Box<dyn ActionStateResult>,
             action_info: ActionInfoWithProps,
+            operation_id: OperationId,
+            /// When the action was last queued: its submission, or its
+            /// requeue after a worker was lost or it was declined. What a
+            /// hold's `after_s` counts from.
+            queued_since: SystemTime,
         }
 
-        /// Reads what matching needs of a listed action. `None` when the
-        /// record cannot be read: gone from the store (eviction), or
-        /// unreadable. Counted so an operator can see the store losing
-        /// records, skipped so the rest of the pass still runs, and not an
-        /// error, since an error here made the pass rerun at once and log
-        /// ten times a second until the entry went away.
+        /// What reading a listed action came to.
+        enum LoadOutcome {
+            Loaded(Box<Loaded>),
+            /// The record is gone from the store (evicted): the listing is
+            /// stale and the action is not queued.
+            Gone,
+            /// The record is there but cannot be decoded: the action may
+            /// well be queued, this pass just cannot read it.
+            Unreadable,
+        }
+
+        /// Reads what matching needs of a listed action. A record that is
+        /// gone or unreadable is counted so an operator can see the store
+        /// losing records, and skipped so the rest of the pass still runs,
+        /// rather than an error, since an error here made the pass rerun at
+        /// once and log ten times a second until the entry went away.
         async fn load_action(
             action_state_result: Box<dyn ActionStateResult>,
             platform_property_manager: &PlatformPropertyManager,
             typed_properties: &Mutex<HashMap<u64, PlatformProperties>>,
-        ) -> Result<Option<Loaded>, Error> {
-            let (action_info, maybe_origin_metadata) =
-                match action_state_result.as_action_info().await {
+        ) -> Result<LoadOutcome, Error> {
+            let (action_info, action_state, maybe_origin_metadata) =
+                match action_state_result.as_action_info_with_state().await {
                     Ok(found) => found,
                     Err(err) if is_lost_record(&err) => {
+                        record_awaited_action_orphan("matching");
                         if err.code == Code::NotFound {
                             debug!(
                                 ?err,
                                 "Queued operation listed but its record is gone; skipping"
                             );
-                        } else {
-                            warn!(
-                                ?err,
-                                "Queued operation listed but its record cannot be read; skipping"
-                            );
+                            return Ok(LoadOutcome::Gone);
                         }
-                        record_awaited_action_orphan("matching");
-                        return Ok(None);
+                        warn!(
+                            ?err,
+                            "Queued operation listed but its record cannot be read; skipping"
+                        );
+                        return Ok(LoadOutcome::Unreadable);
                     }
                     // The store itself failed, so the pass is incomplete:
                     // an error here reruns it at once, as before.
@@ -607,15 +625,19 @@ impl SimpleScheduler {
             )
             .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
 
-            Ok(Some(Loaded {
-                action_state_result,
+            let queued_since = action_info
+                .insert_timestamp
+                .max(action_state.last_transition_timestamp);
+            Ok(LoadOutcome::Loaded(Box::new(Loaded {
                 action_info: ActionInfoWithProps {
                     inner: action_info,
                     platform_properties,
                     origin_metadata: maybe_origin_metadata.unwrap_or_default(),
                     scheduler_start_execute_event_id: None,
                 },
-            }))
+                operation_id: action_state.client_operation_id.clone(),
+                queued_since,
+            })))
         }
 
         /// What became of a dispatch that did not fail.
@@ -631,7 +653,7 @@ impl SimpleScheduler {
         /// the worker was actually told; a lost assignment race is not an
         /// error but sends nothing.
         async fn dispatch_to_worker(
-            action_state_result: &dyn ActionStateResult,
+            operation_id: OperationId,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
@@ -642,15 +664,6 @@ impl SimpleScheduler {
             let origin_metadata = action_info.origin_metadata.clone();
             let event_origin_metadata = origin_metadata.clone();
             let attach_operation_fut = async move {
-                // Extract the operation_id from the action_state.
-                let operation_id = {
-                    let (action_state, _origin_metadata) = action_state_result
-                        .as_state()
-                        .await
-                        .err_tip(|| "Failed to get action_info from as_state_result stream")?;
-                    action_state.client_operation_id.clone()
-                };
-
                 // Tell the matching engine that the operation is being assigned to a worker.
                 let assign_result = matching_engine_state_manager
                     .assign_operation(&operation_id, Ok(&worker_id))
@@ -722,11 +735,15 @@ impl SimpleScheduler {
         /// is a push; a replay walks the list once and asks the fleet once
         /// per property shape it meets, since every action of one shape
         /// asks the same of a worker: a shape whose first parked action
-        /// finds no room is skipped for the rest of that replay.
+        /// finds no room is skipped for the rest of that replay. The
+        /// exception is the worker held for the head of the queue, which
+        /// only that action and the ones queued before it may use, so the
+        /// replay asks once per shape and per that access.
         #[derive(Default)]
         struct Parked {
-            /// Each with its shape, computed once at parking.
-            queue: VecDeque<(PropertyShape, Loaded)>,
+            /// Each with its shape, computed once at parking, and whether
+            /// it sorts before the action a worker is held for.
+            queue: VecDeque<(PropertyShape, bool, Loaded)>,
             /// Actions that were not parked because the list was full.
             cap_dropped: u64,
         }
@@ -738,13 +755,13 @@ impl SimpleScheduler {
         const PARKED_CAP: usize = 10_000;
 
         impl Parked {
-            fn park(&mut self, loaded: Loaded) {
+            fn park(&mut self, loaded: Loaded, ahead_of_hold: bool) {
                 if self.queue.len() >= PARKED_CAP {
                     self.cap_dropped += 1;
                     return;
                 }
                 let shape = PropertyShape::from(&loaded.action_info.platform_properties);
-                self.queue.push_back((shape, loaded));
+                self.queue.push_back((shape, ahead_of_hold, loaded));
             }
 
             fn is_empty(&self) -> bool {
@@ -775,33 +792,56 @@ impl SimpleScheduler {
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+            hold_enabled: bool,
+            overtaken: &mut bool,
             full_worker_logging: bool,
             now: SystemTime,
             now_fn: &(dyn Fn() -> SystemTime + Send + Sync),
         ) -> Result<(), Error> {
             let mut result = Ok(());
-            let mut blocked: HashSet<PropertyShape> = HashSet::new();
+            // The action a worker is held for, if any: it and the actions
+            // ahead of it get a different answer from the rest of their
+            // shape, since the held worker is theirs to use.
+            let held = if hold_enabled {
+                workers
+                    .head_of_line_reservation()
+                    .await
+                    .map(|reservation| reservation.operation_id)
+            } else {
+                None
+            };
+            let mut blocked: HashSet<(PropertyShape, bool)> = HashSet::new();
             let mut still_parked = VecDeque::with_capacity(parked.queue.len());
-            while let Some((shape, loaded)) = parked.queue.pop_front() {
-                if blocked.contains(&shape) {
-                    still_parked.push_back((shape, loaded));
+            while let Some((shape, ahead, loaded)) = parked.queue.pop_front() {
+                let may_use_held = ahead || held.as_ref() == Some(&loaded.operation_id);
+                if blocked.contains(&(shape.clone(), may_use_held)) {
+                    still_parked.push_back((shape, ahead, loaded));
                     continue;
                 }
                 let MatchOutcome::Matched(worker_id) = workers
-                    .find_worker_for_action(
+                    .find_worker_for_action_observed(
                         &loaded.action_info.platform_properties,
+                        Some(&loaded.operation_id),
+                        ahead,
                         full_worker_logging,
                         now,
                     )
                     .await
+                    .0
                 else {
-                    still_parked.push_back((shape.clone(), loaded));
-                    blocked.insert(shape);
+                    still_parked.push_back((shape.clone(), ahead, loaded));
+                    blocked.insert((shape, may_use_held));
                     continue;
                 };
                 placement.attempted += 1;
+                // Placed past the actions still parked ahead of it, which
+                // are older; the front of the list being placed passes
+                // nobody.
+                if !still_parked.is_empty() {
+                    *overtaken = true;
+                }
                 match dispatch_to_worker(
-                    loaded.action_state_result.as_ref(),
+                    loaded.operation_id.clone(),
                     workers,
                     matching_engine_state_manager,
                     maybe_origin_event_tx,
@@ -876,6 +916,23 @@ impl SimpleScheduler {
         let mut placement = Placement::default();
         let mut capacity_seen = workers.capacity_generation();
         let mut queued_seen: u64 = 0;
+        // A reserved action the whole listing does not name has left the
+        // queue unplaced, and its worker is released at the end, provided
+        // the pass could read every record the listing named. Until the
+        // pass meets the reserved action, every action it reads sorts
+        // before it. With the option off nothing is read and nothing is
+        // locked.
+        let hold_enabled = self.head_of_line_after.is_some();
+        let reservation = if hold_enabled {
+            workers.head_of_line_reservation().await
+        } else {
+            None
+        };
+        let mut reserved_not_met = reservation.as_ref().map(|r| r.operation_id.clone());
+        let mut load_failures: u64 = 0;
+        // Whether something queued after the first parked action was
+        // placed while it waited: the starvation a hold is for.
+        let mut overtaken = false;
         while let Some(action_state_result) = stream.next().await {
             queued_seen += 1;
             let loaded = match load_action(
@@ -885,13 +942,25 @@ impl SimpleScheduler {
             )
             .await
             {
-                Ok(Some(loaded)) => loaded,
-                Ok(None) => continue,
+                Ok(LoadOutcome::Loaded(loaded)) => *loaded,
+                Ok(LoadOutcome::Gone) => continue,
+                Ok(LoadOutcome::Unreadable) => {
+                    load_failures += 1;
+                    continue;
+                }
                 Err(err) => {
+                    load_failures += 1;
                     result = result.merge(Err(err));
                     continue;
                 }
             };
+            if reserved_not_met.as_ref() == Some(&loaded.operation_id) {
+                reserved_not_met = None;
+            }
+            // A record the pass could not read may have been the held
+            // action's, so from there on nothing is known to be ahead of
+            // it, and the held worker is refused to everything else.
+            let ahead_of_hold = reserved_not_met.is_some() && load_failures == 0;
 
             // Room that opened since the pass last placed anything belongs
             // to the oldest action still waiting, not to this one, which is
@@ -901,6 +970,8 @@ impl SimpleScheduler {
                 let (outcome, generation) = workers
                     .find_worker_for_action_observed(
                         &loaded.action_info.platform_properties,
+                        Some(&loaded.operation_id),
+                        ahead_of_hold,
                         full_worker_logging,
                         unsatisfiable_pass.now,
                     )
@@ -917,6 +988,8 @@ impl SimpleScheduler {
                         workers,
                         matching_engine_state_manager,
                         maybe_origin_event_tx,
+                        hold_enabled,
+                        &mut overtaken,
                         full_worker_logging,
                         unsatisfiable_pass.now,
                         self.now_fn.as_ref(),
@@ -927,9 +1000,13 @@ impl SimpleScheduler {
 
             match outcome {
                 MatchOutcome::Matched(worker_id) => {
+                    // Placed past everything parked, which is older.
+                    if !parked.is_empty() {
+                        overtaken = true;
+                    }
                     result = result.merge(
                         dispatch_to_worker(
-                            loaded.action_state_result.as_ref(),
+                            loaded.operation_id.clone(),
                             workers,
                             matching_engine_state_manager,
                             maybe_origin_event_tx,
@@ -942,14 +1019,14 @@ impl SimpleScheduler {
                     );
                 }
                 // A worker could run it once one has room.
-                MatchOutcome::WaitingForCapacity => parked.park(loaded),
+                MatchOutcome::WaitingForCapacity => parked.park(loaded, ahead_of_hold),
                 // Nothing to wait for; a worker connecting starts a new pass,
                 // unless the no-worker clock is running.
                 MatchOutcome::NoWorkersConnected => {
                     if let Some(no_worker_pass) = &no_worker_pass {
                         result = result.merge(
                             handle_unsatisfiable(
-                                loaded.action_state_result.as_ref(),
+                                &loaded.operation_id,
                                 matching_engine_state_manager,
                                 workers,
                                 &loaded.action_info.platform_properties,
@@ -964,7 +1041,7 @@ impl SimpleScheduler {
                 MatchOutcome::Unsatisfiable(reason) => {
                     result = result.merge(
                         handle_unsatisfiable(
-                            loaded.action_state_result.as_ref(),
+                            &loaded.operation_id,
                             matching_engine_state_manager,
                             workers,
                             &loaded.action_info.platform_properties,
@@ -986,12 +1063,46 @@ impl SimpleScheduler {
                     workers,
                     matching_engine_state_manager,
                     maybe_origin_event_tx,
+                    hold_enabled,
+                    &mut overtaken,
                     full_worker_logging,
                     unsatisfiable_pass.now,
                     self.now_fn.as_ref(),
                 )
                 .await,
             );
+        }
+        // The listing was read to its end and named every action it could
+        // load, and the reserved one was not among them: it is no longer
+        // queued, so its worker is open to everything again. A listing
+        // with a record the pass could not read is not evidence.
+        if let Some(operation_id) = reserved_not_met
+            && load_failures == 0
+        {
+            workers.release_reservation_for_gone(&operation_id).await;
+        }
+        // The first action still parked is the head of the queue. Once it
+        // has waited `after_s` since it was last queued and this pass
+        // placed something queued after it, it is being starved: a worker
+        // is held for it so that it stops losing every core that frees to
+        // the newer, smaller actions behind it. A full fleet that places
+        // nothing holds nothing, and neither does an action that is simply
+        // next in line. A pass that could not read every record does not
+        // know its head.
+        if let Some(after) = self.head_of_line_after
+            && overtaken
+            && load_failures == 0
+            && let Some((_, _, head)) = parked.queue.front()
+            && let Ok(waited) = unsatisfiable_pass.now.duration_since(head.queued_since)
+            && waited >= after
+        {
+            workers
+                .reserve_head_of_line(
+                    &head.operation_id,
+                    &head.action_info.platform_properties,
+                    waited,
+                )
+                .await;
         }
         record_parked_dispatched(placement.dispatched);
         if placement.attempted > 0 || parked.cap_dropped > 0 {
@@ -1477,6 +1588,9 @@ impl SimpleScheduler {
                 no_worker_tracker: no_worker_action_timeout
                     .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
+                head_of_line_after: spec
+                    .head_of_line_reservation
+                    .map(|policy| Duration::from_secs(policy.after_s)),
                 now_fn: scheduler_now_fn,
             }
         });

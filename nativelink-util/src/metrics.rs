@@ -46,6 +46,10 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
 /// The platform properties no worker could satisfy, comma separated.
 pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
+/// What happened to a head-of-line reservation: `reserved`, `placed`,
+/// `gone`, `worker_lost`, `unfit`, `superseded`, `moved` or
+/// `no_candidate`.
+pub const SCHEDULER_RESERVATION_EVENT: &str = "scheduler.reservation.event";
 
 // Metric attribute keys for tiered stores.
 pub const STORE_TIER: &str = "store.tier";
@@ -1149,6 +1153,14 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             )
             .with_unit("{action}")
             .build(),
+
+        head_of_line_reservations: meter
+            .u64_counter("scheduler.head_of_line.reservations")
+            .with_description(
+                "Workers held for the action at the head of the queue after it waited `head_of_line_reservation.after_s` and was overtaken, and what became of each hold: the action placed, the action gone from the queue, the worker lost or no longer fit to wait on, the hold moved to another worker or superseded by an action that overtook it, or no worker that could be held",
+            )
+            .with_unit("{reservation}")
+            .build(),
     }
 });
 
@@ -1183,6 +1195,8 @@ pub struct SchedulerOtlpMetrics {
     pub sweep_failures: metrics::Counter<u64>,
     /// Actions sized by the historical resource scheduler, by source.
     pub hint_resolutions: metrics::Counter<u64>,
+    /// Head-of-line reservations made and how they ended, by event.
+    pub head_of_line_reservations: metrics::Counter<u64>,
 }
 
 /// Records a completed matching pass.
@@ -1245,6 +1259,25 @@ pub fn record_hint_resolution(source: &'static str) {
     SCHEDULER_METRICS
         .hint_resolutions
         .add(1, &[KeyValue::new("source", source)]);
+}
+
+/// Records a head-of-line reservation event: `reserved` when a worker is
+/// held for the action at the head of the queue; `moved` when the hold
+/// went to another worker because the held one was lost, drained or
+/// paused; then one of `placed` (the action was dispatched, there or
+/// elsewhere), `gone` (the action left the queue unplaced), `worker_lost`
+/// or `unfit` (the worker can no longer be waited on for the action and no
+/// other could be held: lost, drained, paused, declined it, refusing it
+/// idle, or the action now asks more than it registered) or `superseded`
+/// (an action ahead of it in the queue that the held worker could never
+/// run took the hold) when it ends; and `no_candidate` when an action at
+/// the head of the queue needed a hold and no worker could be held for
+/// it. `reserved` less `placed`, `gone`, `worker_lost`, `unfit` and
+/// `superseded` is what holds.
+pub fn record_head_of_line_reservation(event: &'static str) {
+    SCHEDULER_METRICS
+        .head_of_line_reservations
+        .add(1, &[KeyValue::new(SCHEDULER_RESERVATION_EVENT, event)]);
 }
 
 /// Records a queued action failed for being unsatisfiable. `properties`
