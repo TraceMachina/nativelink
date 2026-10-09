@@ -12,724 +12,306 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::time::Duration;
+//! ONTAP-specific wire behavior of `OntapS3Store`. Generic S3 behavior is
+//! covered by `s3_store_test.rs`.
+
 use std::sync::Arc;
 
-use aws_sdk_s3::config::{BehaviorVersion, Builder, Region};
+use aws_sdk_s3::config::Credentials;
 use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
-use bytes::{BufMut, Bytes, BytesMut};
-use futures::join;
-use http::header;
-use http::status::StatusCode;
-use http_body::Frame;
-use mock_instant::thread_local::MockClock;
+use http::{StatusCode, header};
 use nativelink_config::stores::{CommonObjectSpec, ExperimentalOntapS3Spec};
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_store::ontap_s3_store::OntapS3Store;
-use nativelink_util::buf_channel::make_buf_channel_pair;
-use nativelink_util::channel_body_for_tests::ChannelBody;
+use nativelink_store::s3_store::S3Store;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::spawn;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::StoreLike;
 use pretty_assertions::assert_eq;
-use sha2::{Digest, Sha256};
 
-const BUCKET_NAME: &str = "dummy-bucket-name";
-const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+const ENDPOINT: &str = "https://ontap.example.com";
 const VSERVER_NAME: &str = "testvserver";
+const BUCKET: &str = "test-bucket";
+const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
+
+// Coerces the function item to a plain fn pointer matching the store type.
+const NOW_FN: fn() -> MockInstantWrapped = MockInstantWrapped::default;
 
 #[nativelink_test]
-async fn simple_has_object_not_found() -> Result<(), Error> {
-    let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
+async fn aws_spec_passes_vserver_bucket_and_common_through() -> Result<(), Error> {
+    let aws_spec = OntapS3Store::build_aws_spec(&ExperimentalOntapS3Spec {
+        endpoint: ENDPOINT.to_string(),
+        vserver_name: VSERVER_NAME.to_string(),
+        bucket: BUCKET.to_string(),
+        common: CommonObjectSpec {
+            key_prefix: Some("cas/".to_string()),
+            consider_expired_after_s: 86400,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    // ONTAP signs with the vserver name as the region.
+    assert_eq!(aws_spec.region, VSERVER_NAME);
+    assert_eq!(aws_spec.bucket, BUCKET);
+    assert_eq!(aws_spec.common.key_prefix.as_deref(), Some("cas/"));
+    assert_eq!(aws_spec.common.consider_expired_after_s, 86400);
+    Ok(())
+}
+
+fn mock_spec() -> ExperimentalOntapS3Spec {
+    ExperimentalOntapS3Spec {
+        endpoint: ENDPOINT.to_string(),
+        vserver_name: VSERVER_NAME.to_string(),
+        bucket: BUCKET.to_string(),
+        ..Default::default()
+    }
+}
+
+type TestStore = S3Store<fn() -> MockInstantWrapped>;
+
+fn store_with(mock: StaticReplayClient) -> Result<Arc<TestStore>, Error> {
+    let spec = mock_spec();
+    let credentials = Credentials::new("AKIDTEST", "SECRETTEST", None, None, "test");
+    let s3_client = OntapS3Store::make_client_with(&spec, mock, credentials);
+    OntapS3Store::new_with_client(&spec, s3_client, NOW_FN)
+}
+
+fn ok_response() -> http::Response<SdkBody> {
+    http::Response::builder()
+        .status(StatusCode::OK)
+        .body(SdkBody::empty())
+        .unwrap()
+}
+
+/// No `aws-chunked` encoding and no checksum headers.
+fn assert_plain_upload(req: &aws_smithy_runtime_api::http::Request) {
+    let sha = req
+        .headers()
+        .get("x-amz-content-sha256")
+        .unwrap_or_default();
+    assert!(
+        !sha.contains("STREAMING"),
+        "upload must not use aws-chunked payload signing, got x-amz-content-sha256={sha}"
+    );
+    assert_ne!(
+        req.headers().get("content-encoding"),
+        Some("aws-chunked"),
+        "upload must not set Content-Encoding: aws-chunked"
+    );
+    for (name, value) in req.headers() {
+        assert!(
+            !name.starts_with("x-amz-checksum-") && name != "x-amz-sdk-checksum-algorithm",
+            "upload must not carry checksum headers, got {name}: {value}"
+        );
+    }
+}
+
+#[nativelink_test]
+async fn has_object_found_uses_path_style_endpoint() -> Result<(), Error> {
+    const SIZE: u64 = 512;
+    let mock = StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder()
+            .method("HEAD")
+            .uri(format!("{ENDPOINT}/{BUCKET}/{VALID_HASH1}-{SIZE}"))
+            .body(SdkBody::empty())
+            .unwrap(),
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_LENGTH, SIZE.to_string())
+            .body(SdkBody::empty())
+            .unwrap(),
+    )]);
+    let store = store_with(mock.clone())?;
+
+    let result = store.has(DigestInfo::try_new(VALID_HASH1, SIZE)?).await?;
+    assert_eq!(result, Some(SIZE), "expected object to be found");
+    mock.assert_requests_match(&[]);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn requests_are_signed_for_the_vserver() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![ReplayEvent::new(
         http::Request::builder().body(SdkBody::empty()).unwrap(),
         http::Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(SdkBody::empty())
             .unwrap(),
     )]);
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client)
-        .build();
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-    let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-    let result = store.has(digest).await;
-    assert_eq!(
-        result,
-        Ok(None),
-        "Expected to not find item, got: {result:?}"
+    let store = store_with(mock.clone())?;
+
+    let result = store.has(DigestInfo::try_new(VALID_HASH1, 100)?).await?;
+    assert_eq!(result, None, "expected absent object to map to None");
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one HeadObject request");
+    let authorization = reqs[0].headers().get("authorization").unwrap_or_default();
+    assert!(
+        authorization.contains(&format!("/{VSERVER_NAME}/s3/aws4_request")),
+        "expected the SigV4 scope to use the vserver as region, got {authorization}"
     );
     Ok(())
 }
 
 #[nativelink_test]
-async fn simple_has_retries() -> Result<(), Error> {
-    let mock_client = StaticReplayClient::new(vec![
-        ReplayEvent::new(
-            http::Request::builder().body(SdkBody::empty()).unwrap(),
-            http::Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(SdkBody::empty())
-                .unwrap(),
-        ),
-        ReplayEvent::new(
-            http::Request::builder().body(SdkBody::empty()).unwrap(),
-            http::Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .body(SdkBody::empty())
-                .unwrap(),
-        ),
-        ReplayEvent::new(
-            http::Request::builder().body(SdkBody::empty()).unwrap(),
-            http::Response::builder()
-                .status(StatusCode::CONFLICT)
-                .body(SdkBody::empty())
-                .unwrap(),
-        ),
-        ReplayEvent::new(
-            http::Request::builder().body(SdkBody::empty()).unwrap(),
-            http::Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_LENGTH, "111")
-                .body(SdkBody::empty())
-                .unwrap(),
-        ),
-    ]);
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client)
-        .build();
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            common: CommonObjectSpec {
-                retry: nativelink_config::stores::Retry {
-                    max_retries: 1024,
-                    delay: 0.0,
-                    jitter: 0.0,
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-    let digest = DigestInfo::try_new(VALID_HASH1, 100).unwrap();
-    let result = store.has(digest).await;
-    assert_eq!(
-        result,
-        Ok(Some(111)),
-        "Expected to find item, got: {result:?}"
+async fn get_missing_object_maps_to_not_found() -> Result<(), Error> {
+    const NO_SUCH_KEY: &str = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<Error><Code>NoSuchKey</Code>",
+        "<Message>The specified key does not exist.</Message></Error>"
     );
-    Ok(())
-}
-
-#[nativelink_test]
-async fn has_with_expired_result() -> Result<(), Error> {
-    const CAS_ENTRY_SIZE: usize = 10;
-    let mock_client = StaticReplayClient::new(vec![
-        ReplayEvent::new(
-            http::Request::builder().body(SdkBody::empty()).unwrap(),
-            http::Response::builder()
-                .header(header::CONTENT_LENGTH, "512")
-                .header(header::LAST_MODIFIED, "Thu, 01 Jan 1970 00:00:00 GMT")
-                .body(SdkBody::empty())
-                .unwrap(),
-        ),
-        ReplayEvent::new(
-            http::Request::builder().body(SdkBody::empty()).unwrap(),
-            http::Response::builder()
-                .header(header::CONTENT_LENGTH, "512")
-                .header(header::LAST_MODIFIED, "Thu, 01 Jan 1970 00:00:00 GMT")
-                .body(SdkBody::empty())
-                .unwrap(),
-        ),
-    ]);
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client)
-        .build();
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            common: CommonObjectSpec {
-                consider_expired_after_s: 2 * 24 * 60 * 60, // 2 days.
-                ..Default::default()
-            },
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-
-    // Time starts at 1970-01-01 00:00:00.
-    let digest = DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE).unwrap();
-    {
-        MockClock::advance(Duration::from_hours(24)); // 1 day.
-        // Date is now 1970-01-02 00:00:00.
-        let mut results = vec![None];
-        store
-            .has_with_results(&[digest.into()], &mut results)
-            .await
-            .unwrap();
-        assert_eq!(results, vec![Some(512)]);
-    }
-    {
-        MockClock::advance(Duration::from_hours(24)); // 1 day.
-        // Date is now 1970-01-03 00:00:00.
-        let mut results = vec![None];
-        store
-            .has_with_results(&[digest.into()], &mut results)
-            .await
-            .unwrap();
-        // The result should be expired even though s3 says it's there.
-        assert_eq!(results, vec![None]);
-    }
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn simple_update_ac() -> Result<(), Error> {
-    const AC_ENTRY_SIZE: u64 = 199;
-    const CONTENT_LENGTH: usize = 50;
-
-    let mut send_data = BytesMut::with_capacity(CONTENT_LENGTH);
-    for i in 0..CONTENT_LENGTH {
-        let value = (i % 93) + 33;
-        send_data.put_u8(u8::try_from(value).expect("value always in u8 range"));
-    }
-    let send_data = send_data.freeze();
-
-    let (mock_client, request_receiver) = aws_smithy_http_client::test_util::capture_request(Some(
-        aws_smithy_runtime_api::http::Response::new(
-            StatusCode::OK.into(),
-            SdkBody::empty(), // This is an upload, so server does not send a body.
-        )
-        .try_into_http1x()
-        .unwrap(),
-    ));
-
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client)
-        .build();
-
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-
-    let (mut tx, rx) = make_buf_channel_pair();
-
-    // Make future responsible for processing the datastream
-    // and forwarding it to the s3 backend/server.
-    let update_fut = Box::pin(async move {
-        store
-            .update(
-                DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
-                rx,
-                UploadSizeInfo::ExactSize(CONTENT_LENGTH as u64),
-            )
-            .await
-    });
-
-    let send_data_copy = send_data.clone();
-    // Create spawn that is responsible for sending the stream of data
-    // to the S3Store and processing/forwarding to the S3 backend.
-    let sender_fut = spawn!("sender", async move {
-        for i in 0..CONTENT_LENGTH {
-            tx.send(send_data_copy.slice(i..=i)).await?;
-        }
-        tx.send_eof()
-    });
-
-    // Extract out the body stream sent by the s3 store.
-    let body_stream = {
-        // We need to poll here to get the request sent, but future
-        // wont be done until we send all the data (which we do later).
-
-        update_fut.await.err_tip(|| "Error in update function")?;
-        // Collect our spawn future to ensure it completes without error.
-        sender_fut
-            .await
-            .err_tip(|| "Failed to launch spawn")?
-            .err_tip(|| "In spawn")?;
-
-        let sent_request = request_receiver.expect_request();
-        assert_eq!(sent_request.method(), "PUT");
-        assert_eq!(
-            sent_request.uri(),
-            format!(
-                "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=PutObject"
-            )
-        );
-        let headers = sent_request.headers();
-        assert_eq!(
-            headers.get("x-amz-content-sha256"),
-            Some("UNSIGNED-PAYLOAD")
-        );
-        assert_eq!(
-            headers.get("x-amz-checksum-sha256"),
-            Some("ZAbm15cMyBMkq2sUXRgXHNb3az8dLCm3tnyixpdxF+o")
-        );
-        aws_sdk_s3::primitives::ByteStream::from_body_0_4(sent_request.into_body())
-    };
-
-    // Wait for all the data to be received by the s3 backend server.
-    let data_sent_to_s3 = body_stream
-        .collect()
-        .await
-        .map_err(|e| make_input_err!("{e:?}"))?;
-
-    let received_data = data_sent_to_s3.into_bytes();
-    // Strip HTTP chunking headers if they exist
-    let data_content = if received_data.starts_with(b"32\r\n") {
-        // Extract just the content part without the chunking headers
-        let content_start = received_data
-            .windows(2)
-            .position(|w| w == b"\r\n")
-            .map_or(0, |p| p + 2);
-        let content_end = content_start + send_data.len();
-        received_data.slice(content_start..content_end)
-    } else {
-        received_data
-    };
-    assert_eq!(send_data, data_content, "Expected content data to match");
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn simple_get_ac() -> Result<(), Error> {
-    const VALUE: &str = "23";
-    const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not VALUE.len().
-
-    let mock_client = StaticReplayClient::new(vec![ReplayEvent::new(
+    let mock = StaticReplayClient::new(vec![ReplayEvent::new(
         http::Request::builder().body(SdkBody::empty()).unwrap(),
+        http::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(SdkBody::from(NO_SUCH_KEY))
+            .unwrap(),
+    )]);
+    let store = store_with(mock)?;
+
+    let err = store
+        .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, 100)?, 0, None)
+        .await
+        .expect_err("get on a missing object must error");
+    assert_eq!(
+        err.code,
+        Code::NotFound,
+        "expected NotFound code for an absent object"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn ranged_get_sends_range_header_path_style() -> Result<(), Error> {
+    const VALUE: &str = "ontap-object-contents";
+    const OFFSET: u64 = 105;
+    const LENGTH: u64 = 50_000;
+    let mock = StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder()
+            .uri(format!(
+                "{ENDPOINT}/{BUCKET}/{VALID_HASH1}-1000?x-id=GetObject"
+            ))
+            .header("range", format!("bytes={OFFSET}-{}", OFFSET + LENGTH))
+            .body(SdkBody::empty())
+            .unwrap(),
         http::Response::builder()
             .status(StatusCode::OK)
             .body(SdkBody::from(VALUE))
             .unwrap(),
     )]);
+    let store = store_with(mock.clone())?;
 
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client)
-        .build();
-
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-
-    let store_data = store
-        .get_part_unchunked(DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?, 0, None)
-        .await?;
-
-    assert_eq!(
-        store_data,
-        VALUE.as_bytes(),
-        "Hash for key: {VALID_HASH1} did not insert. Expected: {VALUE:#x?}, but got: {store_data:#x?}"
-    );
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn smoke_test_get_part() -> Result<(), Error> {
-    const AC_ENTRY_SIZE: u64 = 1000; // Any size that is not raw_send_data.len().
-    const OFFSET: usize = 105;
-    const LENGTH: usize = 50_000; // Just a size that is not the same as the real data size.
-
-    let mock_client = StaticReplayClient::new(
-        vec![
-            ReplayEvent::new(
-                http::Request
-                    ::builder()
-                    .uri(
-                        format!(
-                            "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=GetObject"
-                        )
-                    )
-                    .header("range", format!("bytes={}-{}", OFFSET, OFFSET + LENGTH))
-                    .body(SdkBody::empty())
-                    .unwrap(),
-                http::Response::builder().status(StatusCode::OK).body(SdkBody::empty()).unwrap()
-            )
-        ]
-    );
-
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client.clone())
-        .build();
-
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-
-    store
+    let got = store
         .get_part_unchunked(
-            DigestInfo::try_new(VALID_HASH1, AC_ENTRY_SIZE)?,
-            OFFSET as u64,
-            Some(LENGTH as u64),
+            DigestInfo::try_new(VALID_HASH1, 1000)?,
+            OFFSET,
+            Some(LENGTH),
+        )
+        .await?;
+    assert_eq!(got, VALUE.as_bytes());
+    mock.assert_requests_match(&[]);
+    Ok(())
+}
+
+// Regression guard for #2767 (unpadded `x-amz-checksum-sha256`).
+#[nativelink_test]
+async fn update_single_put_is_path_style_and_unchunked() -> Result<(), Error> {
+    const DATA: &[u8] = b"hello-ontap-single-put-body";
+    let mock = StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder().body(SdkBody::empty()).unwrap(),
+        ok_response(),
+    )]);
+    let store = store_with(mock.clone())?;
+
+    store
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?,
+            DATA.into(),
         )
         .await?;
 
-    mock_client.assert_requests_match(&[]);
-    Ok(())
-}
-
-#[nativelink_test]
-async fn get_part_is_zero_digest() -> Result<(), Error> {
-    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
-    let mock_client = StaticReplayClient::new(vec![]);
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client)
-        .build();
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-    let store = Arc::new(OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?);
-    let store_clone = store.clone();
-    let (mut writer, mut reader) = make_buf_channel_pair();
-    let _drop_guard = spawn!("get_part_is_zero_digest", async move {
-        store_clone
-            .get_part(digest, &mut writer, 0, None)
-            .await
-            .unwrap();
-    });
-    let file_data = reader
-        .consume(Some(1024))
-        .await
-        .err_tip(|| "Error reading bytes")?;
-    let empty_bytes = Bytes::new();
-    assert_eq!(&file_data, &empty_bytes, "Expected file content to match");
-    Ok(())
-}
-
-#[nativelink_test]
-async fn ensure_empty_string_in_stream_works_test() -> Result<(), Error> {
-    const CAS_ENTRY_SIZE: usize = 10; // Length of "helloworld".
-    let (tx, channel_body) = ChannelBody::new();
-    let mock_client = StaticReplayClient::new(
-        vec![
-            ReplayEvent::new(
-                http::Request
-                    ::builder()
-                    .uri(
-                        format!(
-                            "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{CAS_ENTRY_SIZE}?x-id=GetObject"
-                        )
-                    )
-                    .header("range", format!("bytes={}-{}", 0, CAS_ENTRY_SIZE))
-                    .body(SdkBody::empty())
-                    .unwrap(),
-                http::Response
-                    ::builder()
-                    .status(StatusCode::OK)
-                    .body(SdkBody::from_body_1_x(channel_body))
-                    .unwrap()
-            )
-        ]
-    );
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client.clone())
-        .build();
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-    let (_, get_part_result) = join!(
-        async move {
-            tx.send(Frame::data(Bytes::from_static(b"hello")))
-                .await
-                .map_err(|_| "send error")?;
-            tx.send(Frame::data(Bytes::from_static(b"")))
-                .await
-                .map_err(|_| "send error")?;
-            tx.send(Frame::data(Bytes::from_static(b"world")))
-                .await
-                .map_err(|_| "send error")?;
-            Result::<(), &'static str>::Ok(())
-        },
-        store.get_part_unchunked(
-            DigestInfo::try_new(VALID_HASH1, CAS_ENTRY_SIZE)?,
-            0,
-            Some(CAS_ENTRY_SIZE as u64)
-        )
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 1, "expected exactly one PutObject request");
+    let req = reqs[0];
+    assert_eq!(req.method(), "PUT", "single-shot upload should be a PUT");
+    let want_prefix = format!("{ENDPOINT}/{BUCKET}/{VALID_HASH1}-{}", DATA.len());
+    assert!(
+        req.uri().starts_with(&want_prefix),
+        "expected path-style URL starting with {want_prefix}, got {}",
+        req.uri()
     );
     assert_eq!(
-        &*get_part_result.err_tip(|| "Expected get_part_result to pass")?,
-        b"helloworld"
+        req.headers().get("x-amz-content-sha256"),
+        Some("UNSIGNED-PAYLOAD"),
     );
-    mock_client.assert_requests_match(&[]);
+    assert_plain_upload(req);
     Ok(())
 }
 
 #[nativelink_test]
-async fn has_with_results_on_zero_digests() -> Result<(), Error> {
-    let digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
-    let keys = vec![digest.into()];
-    let mut results = vec![None];
+async fn update_multipart_parts_are_path_style_and_unchunked() -> Result<(), Error> {
+    const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5MB.
+    const DATA_SIZE: usize = MIN_MULTIPART_SIZE * 2;
+    let data = vec![7u8; DATA_SIZE];
 
-    let mock_client = StaticReplayClient::new(vec![]);
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client)
-        .build();
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
-
-    store.has_with_results(&keys, &mut results).await.unwrap();
-    assert_eq!(results, vec![Some(0)]);
-
-    Ok(())
-}
-
-#[nativelink_test]
-async fn multipart_update_large_cas() -> Result<(), Error> {
-    const MIN_MULTIPART_SIZE: usize = 5 * 1024 * 1024; // 5mb.
-    const AC_ENTRY_SIZE: usize = MIN_MULTIPART_SIZE * 2 + 50;
-
-    let mut send_data = Vec::with_capacity(AC_ENTRY_SIZE);
-    for i in 0..send_data.capacity() {
-        let value = (i * 3) % 256;
-        send_data.push(u8::try_from(value).expect("value always in u8 range"));
-    }
-    let digest = DigestInfo::try_new(VALID_HASH1, send_data.len())?;
-
-    let mock_client = StaticReplayClient::new(
-        vec![
-            // Multipart upload initiation
-            ReplayEvent::new(
-                http::Request
-                    ::builder()
-                    .uri(
-                        format!(
-                            "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploads"
-                        )
-                    )
-                    .method("POST")
-                    .body(SdkBody::empty())
-                    .unwrap(),
-                http::Response
-                    ::builder()
-                    .status(StatusCode::OK)
-                    .body(
-                        SdkBody::from(
-                            r#"
-                    <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                      <UploadId>Dummy-uploadid</UploadId>
-                    </InitiateMultipartUploadResult>"#.as_bytes()
-                        )
-                    )
-                    .unwrap()
-            ),
-            // Part 1 upload
-            ReplayEvent::new(
-                http::Request
-                    ::builder()
-                    .uri(
-                        format!(
-                            "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=1&uploadId=Dummy-uploadid"
-                        )
-                    )
-                    .method("PUT")
-                    .header("content-type", "application/octet-stream")
-                    .header("content-length", "5242880")
-                    .body(SdkBody::from(&send_data[0..MIN_MULTIPART_SIZE]))
-                    .unwrap(),
-                http::Response::builder().status(StatusCode::OK).body(SdkBody::empty()).unwrap()
-            ),
-            // Part 2 upload
-            ReplayEvent::new(
-                http::Request
-                    ::builder()
-                    .uri(
-                        format!(
-                            "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=2&uploadId=Dummy-uploadid"
-                        )
-                    )
-                    .method("PUT")
-                    .header("content-type", "application/octet-stream")
-                    .header("content-length", "5242880")
-                    .body(SdkBody::from(&send_data[MIN_MULTIPART_SIZE..MIN_MULTIPART_SIZE * 2]))
-                    .unwrap(),
-                http::Response::builder().status(StatusCode::OK).body(SdkBody::empty()).unwrap()
-            ),
-            // Part 3 upload
-            ReplayEvent::new(
-                http::Request
-                    ::builder()
-                    .uri(
-                        format!(
-                            "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?x-id=UploadPart&partNumber=3&uploadId=Dummy-uploadid"
-                        )
-                    )
-                    .method("PUT")
-                    .header("content-type", "application/octet-stream")
-                    .header("content-length", "50")
-                    .body(
-                        SdkBody::from(
-                            &send_data[MIN_MULTIPART_SIZE * 2..MIN_MULTIPART_SIZE * 2 + 50]
-                        )
-                    )
-                    .unwrap(),
-                http::Response::builder().status(StatusCode::OK).body(SdkBody::empty()).unwrap()
-            ),
-            // Multipart upload completion
-            ReplayEvent::new(
-                http::Request
-                    ::builder()
-                    .uri(
-                        format!(
-                            "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/{VALID_HASH1}-{AC_ENTRY_SIZE}?uploadId=Dummy-uploadid"
-                        )
-                    )
-                    .method("POST")
-                    .header("content-length", "216")
-                    .body(
-                        SdkBody::from(
-                            concat!(
-                                r#"<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#,
-                                "<Part><PartNumber>1</PartNumber></Part>",
-                                "<Part><PartNumber>2</PartNumber></Part>",
-                                "<Part><PartNumber>3</PartNumber></Part>",
-                                "</CompleteMultipartUpload>"
-                            )
-                        )
-                    )
-                    .unwrap(),
-                http::Response
-                    ::builder()
-                    .status(StatusCode::OK)
-                    .body(
-                        SdkBody::from(
-                            concat!(
-                                "<CompleteMultipartUploadResult>",
-                                "</CompleteMultipartUploadResult>"
-                            )
-                        )
-                    )
-                    .unwrap()
-            )
-        ]
-    );
-
-    let test_config = Builder::new()
-        .behavior_version(BehaviorVersion::latest())
-        .region(Region::from_static(VSERVER_NAME))
-        .http_client(mock_client.clone())
-        .build();
-
-    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
-    let store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
-            bucket: BUCKET_NAME.to_string(),
-            vserver_name: VSERVER_NAME.to_string(),
-            endpoint: "https://example.com".to_string(),
-            ..Default::default()
-        }),
-        s3_client,
-        Arc::new(move |_delay| Duration::from_secs(0)),
-        MockInstantWrapped::default,
-    )?;
+    let mock = StaticReplayClient::new(vec![
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body(SdkBody::from(concat!(
+                    "<InitiateMultipartUploadResult>",
+                    "<UploadId>Dummy-uploadid</UploadId>",
+                    "</InitiateMultipartUploadResult>"
+                )))
+                .unwrap(),
+        ),
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            ok_response(),
+        ),
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            ok_response(),
+        ),
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body(SdkBody::from(
+                    "<CompleteMultipartUploadResult></CompleteMultipartUploadResult>",
+                ))
+                .unwrap(),
+        ),
+    ]);
+    let store = store_with(mock.clone())?;
 
     store
-        .update_oneshot(digest, send_data.clone().into())
-        .await
-        .unwrap();
-    mock_client.assert_requests_match(&[]);
+        .update_oneshot(
+            DigestInfo::try_new(VALID_HASH1, DATA_SIZE as u64)?,
+            data.into(),
+        )
+        .await?;
+
+    let reqs: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(reqs.len(), 4, "expected create, two parts and complete");
+    let object_url = format!("{ENDPOINT}/{BUCKET}/{VALID_HASH1}-{DATA_SIZE}");
+    for req in &reqs {
+        assert!(
+            req.uri().starts_with(&object_url),
+            "expected path-style URL starting with {object_url}, got {}",
+            req.uri()
+        );
+    }
+    let parts: Vec<_> = reqs
+        .iter()
+        .filter(|req| req.uri().contains("x-id=UploadPart"))
+        .collect();
+    assert_eq!(parts.len(), 2, "expected two UploadPart requests");
+    for part in parts {
+        assert_plain_upload(part);
+    }
     Ok(())
 }

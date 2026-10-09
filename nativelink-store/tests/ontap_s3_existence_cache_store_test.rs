@@ -28,6 +28,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
 use nativelink_store::ontap_s3_store::OntapS3Store;
+use nativelink_store::s3_store::S3Store;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
@@ -265,8 +266,8 @@ async fn test_cache_population() -> Result<(), Error> {
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
-    let ontap_s3_store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
+    let ontap_s3_store = S3Store::new_with_client_and_jitter(
+        &OntapS3Store::build_aws_spec(&ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
@@ -436,8 +437,8 @@ async fn test_cache_sync_multiple_objects() -> Result<(), Error> {
         .build();
     let s3_client = aws_sdk_s3::Client::from_conf(test_config);
 
-    let ontap_s3_store = OntapS3Store::new_with_client_and_jitter(
-        &(ExperimentalOntapS3Spec {
+    let ontap_s3_store = S3Store::new_with_client_and_jitter(
+        &OntapS3Store::build_aws_spec(&ExperimentalOntapS3Spec {
             bucket: BUCKET_NAME.to_string(),
             vserver_name: VSERVER_NAME.to_string(),
             endpoint: "https://example.com".to_string(),
