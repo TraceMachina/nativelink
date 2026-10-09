@@ -167,6 +167,34 @@ pub struct SimpleSpec {
     #[serde(default)]
     pub enable_active_action_count_metric: bool,
 
+    /// Platform property keys to attribute `execution.active.count` by, so
+    /// that pools sharing one scheduler can each be scaled on their own
+    /// demand. Each listed key becomes an attribute `execution.platform.<key>`
+    /// on the metric, carrying the action's value for that key (`""` when the
+    /// action does not set it). One scheduler serving a Linux pool and a
+    /// macOS pool lists `["OSFamily"]`, and the queue depth of each pool is
+    /// then its own series: `execution_platform_OSFamily="linux"` and
+    /// `="macos"` in Prometheus.
+    ///
+    /// Every series carries every listed key, so summing over them still
+    /// gives the per-stage totals the metric reported before. Choose keys with
+    /// few distinct values: each distinct combination of values is a series
+    /// for as long as the scheduler runs, and nothing bounds that but this
+    /// list. A series exists only once an action has carried its values, so
+    /// a pool that has had no action yet reads absent, not 0; a recording
+    /// rule an autoscaler reads should guard it (`... or vector(0)`). With the
+    /// store backend (`enable_active_action_count_metric`), attributing means
+    /// each pass reads every action in every stage rather than asking the
+    /// store for four totals.
+    ///
+    /// Prometheus sees `execution_platform_<key>` with every character
+    /// outside `[A-Za-z0-9_]` in the key rewritten to `_`
+    /// (`container-image` becomes `execution_platform_container_image`), so
+    /// two keys that differ only in such characters are refused at startup.
+    /// Default: empty (attributed by stage only)
+    #[serde(default)]
+    pub active_action_count_platform_properties: Vec<String>,
+
     /// Remove workers from pool once the worker has not responded in this
     /// amount of time in seconds. Any message from the worker counts, not
     /// only keepalives. Eviction requeues everything the worker held, so

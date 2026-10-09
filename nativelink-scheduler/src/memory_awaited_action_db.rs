@@ -30,7 +30,8 @@ use nativelink_util::chunked_stream::ChunkedStream;
 use nativelink_util::evicting_map::{EvictingMap, LenEntry};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
-    EXECUTION_METRICS, ExecutionResult, ExecutionStage, make_execution_attributes,
+    ActiveCountAttributes, EXECUTION_METRICS, ExecutionResult, ExecutionStage,
+    make_execution_attributes,
 };
 use nativelink_util::spawn;
 use nativelink_util::task::JoinHandleDropGuard;
@@ -331,6 +332,9 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
 
     /// The function to get the current time.
     now_fn: NowFn,
+
+    /// What `execution.active.count` is attributed by.
+    active_count_attrs: ActiveCountAttributes,
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbImpl<I, NowFn> {
@@ -417,10 +421,10 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     // A removed operation has no later stage transition to
                     // decrement its active count. This also covers clients
                     // that disappear while an action is still executing.
-                    let stage_attrs = vec![opentelemetry::KeyValue::new(
-                        nativelink_util::metrics::EXECUTION_STAGE,
+                    let stage_attrs = self.active_count_attrs.attributes(
                         ExecutionStage::from(&awaited_action.state().stage),
-                    )];
+                        &awaited_action.action_info().platform_properties,
+                    );
                     EXECUTION_METRICS
                         .execution_active_count
                         .add(-1, &stage_attrs);
@@ -650,10 +654,28 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                 .stage
                 .is_same_stage(&new_awaited_action.state().stage);
 
+            // The active count is keyed by stage and by the configured
+            // platform properties, and a requeue may rewrite the latter (a
+            // memory escalation raises the reservation), so the action moves
+            // series whenever either changes: out of the series it was
+            // counted in, into the one it is in now.
+            let old_stage_attrs = self.active_count_attrs.attributes(
+                ExecutionStage::from(&old_awaited_action.state().stage),
+                &old_awaited_action.action_info().platform_properties,
+            );
+            let new_stage_attrs = self.active_count_attrs.attributes(
+                ExecutionStage::from(&new_awaited_action.state().stage),
+                &new_awaited_action.action_info().platform_properties,
+            );
+            if old_stage_attrs != new_stage_attrs {
+                let metrics = &*EXECUTION_METRICS;
+                metrics.execution_active_count.add(-1, &old_stage_attrs);
+                metrics.execution_active_count.add(1, &new_stage_attrs);
+            }
+
             if !is_same_stage {
                 // Record metrics for stage transitions
                 let metrics = &*EXECUTION_METRICS;
-                let old_stage = &old_awaited_action.state().stage;
                 let new_stage = &new_awaited_action.state().stage;
 
                 // Track stage transitions
@@ -663,20 +685,6 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
                     Some(old_awaited_action.action_info().priority),
                 );
                 metrics.execution_stage_transitions.add(1, &base_attrs);
-
-                // Update active count for old stage
-                let old_stage_attrs = vec![opentelemetry::KeyValue::new(
-                    nativelink_util::metrics::EXECUTION_STAGE,
-                    ExecutionStage::from(old_stage),
-                )];
-                metrics.execution_active_count.add(-1, &old_stage_attrs);
-
-                // Update active count for new stage
-                let new_stage_attrs = vec![opentelemetry::KeyValue::new(
-                    nativelink_util::metrics::EXECUTION_STAGE,
-                    ExecutionStage::from(new_stage),
-                )];
-                metrics.execution_active_count.add(1, &new_stage_attrs);
 
                 // Record completion metrics with action digest for failure tracking
                 let action_digest = old_awaited_action.action_info().digest().to_string();
@@ -817,10 +825,9 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
         // Record metric for new action entering the queue
         let metrics = &*EXECUTION_METRICS;
         let _base_attrs = make_execution_attributes("unknown", None, Some(action_info.priority));
-        let queued_attrs = vec![opentelemetry::KeyValue::new(
-            nativelink_util::metrics::EXECUTION_STAGE,
-            ExecutionStage::Queued,
-        )];
+        let queued_attrs = self
+            .active_count_attrs
+            .attributes(ExecutionStage::Queued, &action_info.platform_properties);
         metrics.execution_active_count.add(1, &queued_attrs);
 
         self.sorted_action_info_hash_keys
@@ -928,6 +935,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
         eviction_config: &EvictionPolicy,
         tasks_change_notify: Arc<Notify>,
         now_fn: NowFn,
+        active_count_attrs: ActiveCountAttributes,
     ) -> Self {
         let (action_event_tx, mut action_event_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Mutex::new(AwaitedActionDbImpl {
@@ -938,6 +946,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
             connected_clients_for_operation_id: HashMap::new(),
             action_event_tx,
             now_fn,
+            active_count_attrs,
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {

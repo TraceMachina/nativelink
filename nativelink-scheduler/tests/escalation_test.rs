@@ -34,6 +34,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, UpdateOperationType,
 };
@@ -86,7 +87,12 @@ fn make_scheduler_with_limits(
     };
     SimpleScheduler::new_with_callback(
         &spec,
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify,
+            MockInstantWrapped::default,
+            ActiveCountAttributes::default(),
+        ),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
