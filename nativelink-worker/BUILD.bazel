@@ -19,6 +19,7 @@ rust_library(
         "src/persistent_worker/mod.rs",
         "src/persistent_worker/pool.rs",
         "src/persistent_worker/protocol.rs",
+        "src/process_session.rs",
         "src/qos.rs",
         "src/reaper.rs",
         "src/running_actions_manager.rs",

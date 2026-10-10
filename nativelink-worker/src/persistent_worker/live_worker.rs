@@ -100,10 +100,16 @@ impl LiveWorker {
             // safely to a single request.
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        // Its own process group, so the resource sampler can attribute the
-        // process and its children to the request being served.
+        // The leader of its own session, so the resource sampler can
+        // attribute the process and its children to the request being
+        // served (`crate::process_session`). Registered before the
+        // namespace hook, so the stub and what it starts are in the session.
         #[cfg(unix)]
-        cmd.process_group(0);
+        // SAFETY: become_session_leader only calls setsid, which is
+        // async-signal-safe.
+        unsafe {
+            cmd.pre_exec(crate::process_session::become_session_leader);
+        }
         #[cfg(target_os = "linux")]
         if namespaced {
             use std::os::unix::ffi::OsStrExt;
@@ -166,7 +172,7 @@ impl LiveWorker {
         self.wire_format
     }
 
-    /// The worker process's id, which is also its process group.
+    /// The worker process's id, which is also its session's.
     pub fn pid(&self) -> Option<u32> {
         self.child.id()
     }
