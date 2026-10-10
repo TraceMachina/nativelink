@@ -178,8 +178,8 @@ message ActionResourceUsage {
     string worker_id = 4;
 
     /// Total CPU time consumed by the action process tree, in milliseconds.
-    /// User and system time combined, summed across every process in the
-    /// action's process group.
+    /// User and system time combined, of every process the action started:
+    /// the kernel's total of everything the action's stub reaped.
     uint64 cpu_time_ms = 5;
 
     /// Wall time from spawn to exit, in milliseconds; cores used is
