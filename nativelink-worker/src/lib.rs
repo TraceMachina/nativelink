@@ -19,6 +19,8 @@ pub mod local_worker;
 #[cfg(target_os = "linux")]
 pub mod namespace_utils;
 pub mod persistent_worker;
+#[cfg(target_family = "unix")]
+pub mod process_session;
 pub mod qos;
 pub mod reaper;
 pub mod running_actions_manager;

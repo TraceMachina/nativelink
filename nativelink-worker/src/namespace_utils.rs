@@ -25,26 +25,21 @@ pub struct MaybeNamespacedChild {
     child: tokio::process::Child,
 }
 
-/// SIGKILL to every process in the group `pgid` leads. ESRCH means the
-/// group is already gone, which is the outcome wanted; anything else, EPERM
-/// above all, means a survivor and is reported.
+/// SIGKILL to every process in the session `sid` leads, repeated until none
+/// is left alive (`crate::process_session::signal_session`). A member that
+/// survives that is reported.
 #[cfg(target_os = "linux")]
-fn kill_process_group(pgid: u32) {
-    let Ok(pgid) = i32::try_from(pgid) else {
-        return;
-    };
-    // SAFETY: killpg only takes integers and has no memory safety
-    // considerations; a stale group id is reported as ESRCH, not acted on.
-    let rc = unsafe { libc::killpg(pgid, libc::SIGKILL) };
-    if rc != 0 {
-        let err = Error::last_os_error();
-        if err.raw_os_error() != Some(libc::ESRCH) {
-            error!(
-                pgid,
-                ?err,
-                "Could not kill the action's process group; a descendant may have survived"
-            );
-        }
+fn kill_session(sid: u32) {
+    crate::process_session::signal_session(sid, libc::SIGKILL);
+    let survivors = crate::process_session::session_members(sid)
+        .iter()
+        .filter(|(_, stat)| !crate::process_session::is_zombie_stat(stat))
+        .count();
+    if survivors > 0 {
+        error!(
+            sid,
+            survivors, "Could not kill the action's session; a descendant may have survived"
+        );
     }
 }
 
@@ -61,15 +56,15 @@ impl MaybeNamespacedChild {
     /// stub and the init of the action's PID namespace, so its death takes
     /// the action and everything the action spawned with it; the stub also
     /// set `PR_SET_PDEATHSIG` on the action for the same end. Not
-    /// namespaced, the child is its own group leader, so the group gets the
+    /// namespaced, the child leads its own session, so the session gets the
     /// SIGKILL first: a timed-out or cancelled action used to lose only its
     /// direct child while its descendants ran on (issue #225).
     pub async fn kill(&mut self) -> Result<(), Error> {
         #[cfg(target_os = "linux")]
         if !self.namespaced
-            && let Some(pgid) = self.child.id()
+            && let Some(sid) = self.child.id()
         {
-            kill_process_group(pgid);
+            kill_session(sid);
         }
         self.child.kill().await
     }

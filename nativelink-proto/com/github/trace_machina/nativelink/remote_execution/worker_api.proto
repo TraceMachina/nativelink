@@ -179,7 +179,7 @@ message ActionResourceUsage {
 
     /// Total CPU time consumed by the action process tree, in milliseconds.
     /// User and system time combined, summed across every process in the
-    /// action's process group.
+    /// action's session.
     uint64 cpu_time_ms = 5;
 
     /// Wall time from spawn to exit, in milliseconds; cores used is

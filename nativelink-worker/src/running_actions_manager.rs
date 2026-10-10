@@ -155,8 +155,8 @@ fn tag_missing_input(err: Error) -> Error {
 
 /// How long a killed action's output pipes, or those of one that left
 /// stragglers behind, get to drain. They close when every process holding
-/// them is gone, which the SIGKILL to the group sees to; a process that
-/// left the group could still hold them, so that wait is bounded, and what
+/// them is gone, which the SIGKILL to the session sees to; a process that
+/// left the session could still hold them, so that wait is bounded, and what
 /// was read by then is kept. An action that exited cleanly with nothing
 /// left behind is read to the end.
 const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -196,15 +196,15 @@ type SpawnedChild = crate::namespace_utils::MaybeNamespacedChild;
 #[cfg(not(target_os = "linux"))]
 type SpawnedChild = process::Child;
 
-/// SIGKILL through the child wrapper, which takes the whole process group
-/// with it, logged if it fails.
+/// SIGKILL through the child wrapper, which takes the action's whole
+/// session with it, logged if it fails.
 async fn hard_kill(child: &mut SpawnedChild, why: &str) {
     if let Err(err) = child.kill().await {
         error!(?err, why, "Could not kill process in RunningActionsManager");
     }
 }
 
-/// Starts stopping an action. With a grace period the process group gets
+/// Starts stopping an action. With a grace period the action's session gets
 /// SIGTERM and the returned future fires when SIGKILL is due; without one
 /// SIGKILL goes out now and the future never fires.
 async fn stop_action(
@@ -215,9 +215,9 @@ async fn stop_action(
     debug!(grace_ms = grace.as_millis(), why, "Stopping action");
     #[cfg(target_os = "linux")]
     if !grace.is_zero()
-        && let Some(pgid) = child.id()
+        && let Some(sid) = child.id()
     {
-        signal_process_group(pgid, libc::SIGTERM);
+        crate::process_session::signal_session(sid, libc::SIGTERM);
         return tokio::time::sleep(grace).boxed().fuse();
     }
     hard_kill(child, why).await;
@@ -290,14 +290,14 @@ const DISK_SAMPLE_EVERY: u32 = 40;
 
 #[cfg(target_os = "linux")]
 fn start_action_resource_usage_sampler(
-    pgid: u32,
+    sid: u32,
     ceilings: Ceilings,
     disk_directory: Option<(PathBuf, SystemTime)>,
 ) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory)
+        sample_action_resource_usage(sid, stop_rx, ceilings, disk_directory)
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
@@ -386,22 +386,6 @@ fn start_disk_sample(
     }))
 }
 
-/// A signal to every process in the action's group. The action is its own
-/// group leader, so this reaches the children a shell forked. The SIGKILL
-/// at the end of a kill goes through the child wrapper, which takes the
-/// group with it (or tells the stub, namespaced); this is for the SIGTERM
-/// that gives an action its grace, and for the stragglers left once the
-/// action's own process has exited. Returns whether any process got it.
-#[cfg(target_family = "unix")]
-fn signal_process_group(pgid: u32, signal: i32) -> bool {
-    let Ok(pgid) = i32::try_from(pgid) else {
-        return false;
-    };
-    // SAFETY: killpg only takes integers and has no memory safety
-    // considerations; a stale group id is reported as ESRCH, not acted on.
-    unsafe { libc::killpg(pgid, signal) == 0 }
-}
-
 #[cfg(target_os = "linux")]
 async fn finish_action_resource_usage_sampler(
     sampler: ActionResourceUsageSampler,
@@ -412,7 +396,7 @@ async fn finish_action_resource_usage_sampler(
 
 #[cfg(target_os = "linux")]
 async fn sample_action_resource_usage(
-    pgid: u32,
+    sid: u32,
     mut stop_rx: watch::Receiver<bool>,
     mut ceilings: Ceilings,
     disk_directory: Option<(PathBuf, SystemTime)>,
@@ -429,13 +413,13 @@ async fn sample_action_resource_usage(
     // short-lived. Keep the last figure seen for each pid and total them at
     // the end instead.
     let mut cpu_ticks_by_pid = HashMap::new();
-    // What the group had already spent when sampling began. A one-shot
+    // What the session had already spent when sampling began. A one-shot
     // process starts at nothing; a pooled process carries every request it
     // served before, which is not this action's.
     let mut baseline_ticks: Option<u64> = None;
 
     let sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
-        let observed = sample_process_group(pgid, cpu_ticks_by_pid);
+        let observed = sample_session(sid, cpu_ticks_by_pid);
         if let Some(memory_kb) = observed {
             *peak_memory_kb = (*peak_memory_kb).max(memory_kb);
         }
@@ -450,8 +434,8 @@ async fn sample_action_resource_usage(
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
         }
-        if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
-            // The group leader has been reaped and no member process remains,
+        if observed.is_none() && !Path::new(&format!("/proc/{sid}")).exists() {
+            // The session leader has been reaped and no member process remains,
             // so the action is finished.
             break;
         }
@@ -556,35 +540,24 @@ fn ticks_to_millis(ticks: u64) -> u64 {
     ticks.saturating_mul(1_000) / hz
 }
 
-/// Sums the resident memory of every process in the action's process group.
+/// Sums the resident memory of every process in the action's session.
 ///
-/// The action is spawned as its own process-group leader (see
-/// `command_builder.process_group(0)` in `inner_execute`), so `pgid` equals
-/// the spawned child's pid and every descendant inherits it. Sampling by
-/// process group — rather than walking the parent/child tree from the spawned
-/// pid — is required because an intermediate shell frequently exits and
-/// reparents the real workload to the worker (PID 1); the tree walk then sees
-/// only a childless zombie and reports zero. Process-group membership is
-/// inherited and survives reparenting, and excludes the worker's own group.
-/// Returns `None` when no member process can be read (the group is empty).
+/// The action is spawned as the leader of its own session (see
+/// `become_session_leader` in `inner_execute`), so `sid` equals the spawned
+/// child's pid and every descendant inherits it. Sampling by session, rather
+/// than walking the parent/child tree from the spawned pid, is required
+/// because an intermediate shell frequently exits and reparents the real
+/// workload to the worker (PID 1); the tree walk then sees only a childless
+/// zombie and reports zero. Session membership is inherited and survives
+/// reparenting, excludes the worker's own session, and, unlike a process
+/// group, holds the jobs a job-control shell moves to groups of their own
+/// (`crate::process_session` says why that matters).
+/// Returns `None` when no member process can be read (the session is empty).
 #[cfg(target_os = "linux")]
-fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> Option<u64> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return None;
-    };
-
+fn sample_session(sid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> Option<u64> {
     let mut total_kb = 0;
     let mut found_any_process = false;
-    for entry in entries.flatten() {
-        let Ok(member_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{member_pid}/stat")) else {
-            continue;
-        };
-        if parse_pgid_from_stat(&stat) != Some(pgid) {
-            continue;
-        }
+    for (member_pid, stat) in crate::process_session::session_members(sid) {
         if let Some(ticks) = parse_cpu_ticks_from_stat(&stat) {
             // Monotonic per process, but a pid could in principle be reused
             // within one action, so never let the figure go backwards.
@@ -601,7 +574,7 @@ fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> 
 }
 
 /// The process's share of its resident pages: `Pss` from `smaps_rollup`
-/// divides a page shared by N processes N ways, so summed over the group it
+/// divides a page shared by N processes N ways, so summed over the session it
 /// counts a forked parent's pages, shared libraries and mapped inputs once.
 /// `VmRSS` counts them once per process, and a test runner that forks eight
 /// children would sample at several times what the cgroup charges. Falls
@@ -625,29 +598,16 @@ pub fn parse_kb_field(text: &str, field: &str) -> Option<u64> {
     })
 }
 
-/// Parses the process group id (`pgrp`, field 5) from the contents of a
-/// `/proc/<pid>/stat` line.
-///
-/// `comm` (field 2) can contain spaces and parentheses, so fields are parsed
-/// relative to the final `)` to avoid miscounting. Returns `None` when the
-/// line is malformed.
-#[cfg(target_os = "linux")]
-pub fn parse_pgid_from_stat(stat: &str) -> Option<u32> {
-    let after_comm = stat.rsplit_once(')')?.1;
-    // Fields after the final ')': state(0) ppid(1) pgrp(2) ...
-    after_comm.split_whitespace().nth(2)?.parse().ok()
-}
-
 /// Sums user and system CPU ticks (`utime` + `stime`, fields 14 and 15) from
 /// the contents of a `/proc/<pid>/stat` line.
 ///
-/// Parsed relative to the final `)` for the same reason as the pgid above:
+/// Parsed relative to the final `)`, as `parse_session_from_stat` does:
 /// `comm` can contain spaces and parentheses. Returns `None` when the line is
 /// malformed.
 ///
 /// `cutime`/`cstime` are deliberately not included. They only cover children
 /// this process has already reaped, so adding them here would double count
-/// every child that is still its own entry in the group.
+/// every child that is still its own entry in the session.
 #[cfg(target_os = "linux")]
 pub fn parse_cpu_ticks_from_stat(stat: &str) -> Option<u64> {
     let after_comm = stat.rsplit_once(')')?.1;
@@ -2536,9 +2496,9 @@ impl RunningActionImpl {
                             // peak memory is the whole process, which holds
                             // what earlier requests left in it.
                             #[cfg(target_os = "linux")]
-                            let sampler = lease.worker().pid().map(|pgid| {
+                            let sampler = lease.worker().pid().map(|sid| {
                                 start_action_resource_usage_sampler(
-                                    pgid,
+                                    sid,
                                     Ceilings {
                                         memory_limit_kb: None,
                                         disk_limit_kb: None,
@@ -2698,6 +2658,22 @@ impl RunningActionImpl {
             command_builder.env(name, value);
         }
 
+        // Run the action as the leader of its own session (sid == pgid ==
+        // child pid) on every unix. The resource-usage sampler attributes
+        // memory and CPU by session, and the kills end the session, so this
+        // keeps the whole action together, including processes reparented
+        // to the worker when an intermediate shell exits and the jobs a
+        // job-control shell moves to groups of their own, and never
+        // conflates it with the worker's own session. Registered before the
+        // namespace hook, so the namespace's stub and everything it starts
+        // are in the session.
+        #[cfg(target_family = "unix")]
+        // SAFETY: become_session_leader only calls setsid, which is
+        // async-signal-safe.
+        unsafe {
+            command_builder.pre_exec(crate::process_session::become_session_leader);
+        }
+
         // Sandboxing of the command if we are running on Linux, this resolves issues where
         // children can spawn children and also provides better reproducibility.
         #[cfg(target_os = "linux")]
@@ -2744,15 +2720,6 @@ impl RunningActionImpl {
                 }
             }
         }
-        // Run the action as its own process-group leader (pgid == child
-        // pid) on every unix. The resource-usage sampler attributes memory
-        // by process group, and the kill at exit ends the group, so this
-        // keeps the whole action together, including processes reparented
-        // to the worker when an intermediate shell exits, and never
-        // conflates it with the worker's own group.
-        #[cfg(target_family = "unix")]
-        command_builder.process_group(0);
-
         let mut child_process = command_builder
             .spawn()
             .err_tip(|| format!("Could not execute command {args:?}"))?;
@@ -2823,7 +2790,7 @@ impl RunningActionImpl {
         // below stays pending instead of resolving closed.
         let mut over_limit_keepalive = Some(over_limit_tx);
         #[cfg(target_os = "linux")]
-        let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
+        let mut maybe_resource_usage_sampler = child_process.id().map(|sid| {
             let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
             let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
             let over_limit_tx = (memory_limit_kb.is_some() || disk_limit_kb.is_some())
@@ -2838,7 +2805,7 @@ impl RunningActionImpl {
                 (directory, since)
             });
             start_action_resource_usage_sampler(
-                pgid,
+                sid,
                 Ceilings {
                     memory_limit_kb,
                     disk_limit_kb,
@@ -2851,10 +2818,10 @@ impl RunningActionImpl {
         let _ = &disk_enforcement;
         let mut over_limit_fut = over_limit_rx.fuse();
 
-        // The group to end when the action's own process has exited; taken
+        // The session to end when the action's own process has exited; taken
         // before the guard owns the child.
         #[cfg(target_family = "unix")]
-        let action_pgid = child_process.id();
+        let action_sid = child_process.id();
         let mut child_process_guard = guard(child_process, |mut child_process| {
             let result: Result<Option<std::process::ExitStatus>, std::io::Error> =
                 child_process.try_wait();
@@ -3030,23 +2997,23 @@ impl RunningActionImpl {
                         timer.measure();
                     }
                     // The action is over; anything still running in its
-                    // group is a straggler (a background job, a helper that
+                    // session is a straggler (a background job, a helper that
                     // daemonized) holding the pipes open, and without this
                     // the action would sit here until its timeout. The
                     // sandboxes Bazel runs locally end them the same way.
                     #[cfg(target_family = "unix")]
-                    let had_stragglers = action_pgid
-                        .is_some_and(|pgid| signal_process_group(pgid, libc::SIGKILL));
+                    let had_stragglers = action_sid
+                        .is_some_and(|sid| crate::process_session::signal_session(sid, libc::SIGKILL));
                     #[cfg(not(target_family = "unix"))]
                     let had_stragglers = false;
                     // An action that exited on its own with nothing left in
-                    // its group closes its pipes itself, and its output is
+                    // its session closes its pipes itself, and its output is
                     // the result, so that read runs to the end: a reader
                     // slowed by a busy spill must not lose bytes to a clock.
                     // The wait is bounded only when there was something to
                     // hold the pipes: a killed action, whose output is a
                     // bonus, or stragglers, one of which may have left the
-                    // group. What was read by then is kept.
+                    // session. What was read by then is kept.
                     let mut drain = core::pin::pin!(async { tokio::join!(all_stdout_fut, all_stderr_fut) });
                     let (maybe_all_stdout, maybe_all_stderr) = if killed_action || had_stragglers {
                         tokio::select! {

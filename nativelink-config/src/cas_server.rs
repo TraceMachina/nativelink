@@ -916,7 +916,7 @@ pub struct EndpointConfig {
 pub enum MemoryEnforcement {
     /// Measure only.
     None,
-    /// Kill the action's process group once two consecutive samples exceed
+    /// Kill the action's session once two consecutive samples exceed
     /// the reservation plus headroom, or one sample exceeds twice it.
     #[default]
     Soft,

@@ -6853,14 +6853,12 @@ exit 1
         Ok(())
     }
 
-    /// Regression for skipping the `pre_exec` hook when namespaces are off.
-    /// With namespaces disabled (the default) the action spawn goes through
-    /// `posix_spawn` instead of `fork`, and `process_group(0)` must still make
-    /// the child its own process-group leader (pgid == pid).
+    /// The action leads a session of its own, and so a group of its own:
+    /// with namespaces off (the default) the spawn still runs the
+    /// `pre_exec` hook that calls `setsid`, so sid == pgid == pid.
     #[cfg(target_os = "linux")]
     #[nativelink_test]
-    async fn no_namespace_action_is_process_group_leader() -> Result<(), Box<dyn core::error::Error>>
-    {
+    async fn no_namespace_action_is_session_leader() -> Result<(), Box<dyn core::error::Error>> {
         const WORKER_ID: &str = "foo_worker_id";
 
         fn test_monotonic_clock() -> SystemTime {
@@ -6901,13 +6899,12 @@ exit 1
             },
         )?);
 
-        // Print the shell's own pid (field 1) and process-group id (field 5)
-        // from its /proc stat line; process_group(0) makes them equal.
+        // Print the shell's own pid (field 1), group (field 5) and session (field 6).
         let command = Command {
             arguments: vec![
                 "sh".to_string(),
                 "-c".to_string(),
-                "read -r pid _ _ _ pgrp _ < /proc/$$/stat; printf '%s %s' \"$pid\" \"$pgrp\""
+                "read -r pid _ _ _ pgrp sid _ < /proc/$$/stat; printf '%s %s %s' \"$pid\" \"$pgrp\" \"$sid\""
                     .to_string(),
             ],
             output_paths: vec![],
@@ -6961,21 +6958,266 @@ exit 1
             .await?;
 
         let action_result = run_action(running_action_impl.clone()).await?;
-        assert_eq!(
-            action_result.exit_code, 0,
-            "action should run to completion via posix_spawn"
-        );
-
+        assert_eq!(action_result.exit_code, 0, "{action_result:?}");
         let stdout = cas_store
             .as_ref()
             .get_part_unchunked(action_result.stdout_digest, 0, None)
             .await?;
-        let stdout = from_utf8(&stdout)?;
-        let (pid, pgrp) = stdout.split_once(' ').expect("expected 'pid pgrp' output");
-        assert_eq!(
-            pid, pgrp,
-            "spawned process should be its own process-group leader (pid={pid} pgrp={pgrp})"
+        let stdout = from_utf8(&stdout)?.trim().to_string();
+        let ids: Vec<&str> = stdout.split(' ').collect();
+        assert_eq!(ids.len(), 3, "expected 'pid pgrp sid' output: {stdout}");
+        assert!(
+            ids[0] == ids[1] && ids[1] == ids[2],
+            "spawned process should lead its own group and session (pid pgrp sid = {stdout})"
         );
+        Ok(())
+    }
+
+    /// A job-control shell (`set -m`, as Bazel's `test-setup.sh` runs every
+    /// test) moves each job to a process group of its own. The job is still
+    /// the action's: the CPU it spends is in the action's measurement. When
+    /// the sampler matched the action's group, a test's usage read as the
+    /// waiting shell's, about nothing.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn job_control_job_is_measured() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                execution_configuration: ExecutionConfiguration::default(),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                // Pin namespaces off so this exercises the no-pre_exec/posix_spawn
+                // path regardless of what the host kernel supports.
+                use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces::No,
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        // Two seconds of busy loop in a background job, which `set -m` puts in its own group.
+        let command = Command {
+            arguments: vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                "set -m; (end=$((SECONDS + 2)); while [ $SECONDS -lt $end ]; do :; done) & wait"
+                    .to_string(),
+            ],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
+            ..Default::default()
+        };
+        let operation_id = OperationId::default().to_string();
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(execute_request),
+                    operation_id,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let action_result = run_action(running_action_impl.clone()).await?;
+        assert_eq!(action_result.exit_code, 0, "{action_result:?}");
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert!(
+            usage.cpu_time_ms >= 500,
+            "the job's busy loop is the action's CPU: {usage:?}"
+        );
+        Ok(())
+    }
+
+    /// A job the action left running in a process group of its own (a
+    /// job-control shell's background job) is ended with the action: the
+    /// straggler kill reaches the whole session, not only the action's
+    /// group, which the job had left.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn job_control_straggler_is_killed() -> Result<(), Box<dyn core::error::Error>> {
+        const WORKER_ID: &str = "foo_worker_id";
+
+        fn test_monotonic_clock() -> SystemTime {
+            static CLOCK: AtomicU64 = AtomicU64::new(0);
+            monotonic_clock(&CLOCK)
+        }
+
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager = Arc::new(RunningActionsManagerImpl::new_with_callbacks(
+            RunningActionsManagerArgs {
+                root_action_directory,
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                execution_configuration: ExecutionConfiguration::default(),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                // Pin namespaces off so this exercises the no-pre_exec/posix_spawn
+                // path regardless of what the host kernel supports.
+                use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces::No,
+            },
+            Callbacks {
+                now_fn: test_monotonic_clock,
+                sleep_fn: |_duration| Box::pin(future::pending()),
+            },
+        )?);
+
+        // Leave a sleep behind in a group of its own, and name its pid.
+        let command = Command {
+            arguments: vec![
+                "bash".to_string(),
+                "-c".to_string(),
+                "set -m; sleep 300 >/dev/null 2>&1 & echo $!".to_string(),
+            ],
+            output_paths: vec![],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let execute_request = ExecuteRequest {
+            action_digest: Some(action_digest.into()),
+            digest_function: ProtoDigestFunction::Sha256.into(),
+            ..Default::default()
+        };
+        let operation_id = OperationId::default().to_string();
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(execute_request),
+                    operation_id,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let action_result = run_action(running_action_impl.clone()).await?;
+        assert_eq!(action_result.exit_code, 0, "{action_result:?}");
+        let stdout = cas_store
+            .as_ref()
+            .get_part_unchunked(action_result.stdout_digest, 0, None)
+            .await?;
+        let stdout = from_utf8(&stdout)?.trim().to_string();
+        let pid: u32 = stdout.parse()?;
+        // Killed, it is gone or a zombie waiting to be reaped by whoever
+        // adopted it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let alive = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|stat| !nativelink_worker::process_session::is_zombie_stat(&stat));
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the job the action left behind (pid {pid}) is still running"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         Ok(())
     }
 
@@ -8610,27 +8852,45 @@ done
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     #[test]
-    fn parse_pgid_from_stat_extracts_field_after_comm() {
-        use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
-        // /proc/<pid>/stat layout: pid (comm) state ppid pgrp ...
+    fn parse_session_from_stat_extracts_field_after_comm() {
+        use nativelink_worker::process_session::parse_session_from_stat;
+        // /proc/<pid>/stat layout: pid (comm) state ppid pgrp session ...
         assert_eq!(
-            parse_pgid_from_stat("315 (perl) S 1 60 60 0 -1 0"),
-            Some(60)
+            parse_session_from_stat("315 (perl) S 1 60 42 0 -1 0"),
+            Some(42)
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     #[test]
-    fn parse_pgid_from_stat_handles_comm_with_spaces_and_parens() {
-        use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
+    fn parse_session_from_stat_handles_comm_with_spaces_and_parens() {
+        use nativelink_worker::process_session::parse_session_from_stat;
         // `comm` may contain spaces and parentheses; parsing must be relative
-        // to the final ')'. Here pgrp == 777.
+        // to the final ')'. Here session == 778.
         assert_eq!(
-            parse_pgid_from_stat("1234 (weird )( name) R 1 777 777 0 -1 0"),
-            Some(777)
+            parse_session_from_stat("1234 (weird )( name) R 1 777 778 0 -1 0"),
+            Some(778)
         );
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn parse_session_from_stat_rejects_malformed_input() {
+        use nativelink_worker::process_session::parse_session_from_stat;
+        assert_eq!(parse_session_from_stat("no parenthesis here"), None);
+        assert_eq!(parse_session_from_stat("123 (only) S 1 2"), None); // too few fields
+        assert_eq!(parse_session_from_stat(""), None);
+    }
+
+    #[cfg(target_family = "unix")]
+    #[test]
+    fn is_zombie_stat_reads_the_state_after_comm() {
+        use nativelink_worker::process_session::is_zombie_stat;
+        assert!(is_zombie_stat("99 (a) Z) Z 1 99 99 0"));
+        assert!(!is_zombie_stat("99 (Z) S 1 99 99 0"));
+        assert!(!is_zombie_stat("no parenthesis here"));
     }
 
     #[cfg(target_os = "linux")]
@@ -8673,15 +8933,6 @@ done
             None
         );
         assert_eq!(parse_cpu_ticks_from_stat(""), None);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn parse_pgid_from_stat_rejects_malformed_input() {
-        use nativelink_worker::running_actions_manager::parse_pgid_from_stat;
-        assert_eq!(parse_pgid_from_stat("no parenthesis here"), None);
-        assert_eq!(parse_pgid_from_stat("123 (only) S"), None); // too few fields
-        assert_eq!(parse_pgid_from_stat(""), None);
     }
 
     // Regression test for #2636: deeply nested directories with a single
