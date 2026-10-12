@@ -1119,28 +1119,13 @@ impl ApiWorkerSchedulerImpl {
         if !is_finished {
             return update_operation_res;
         }
-        // A result the store would not take right now (Redis refusing
-        // writes at its memory ceiling, a failover, a timed out command) is
-        // not done: keep the action on the worker, so the worker's resend is
-        // accepted instead of being refused as an operation it is not
-        // running, and the record is not left Executing with nobody holding
-        // the result. The error goes back to the worker, which retries.
-        if let Err(err) = &update_operation_res
-            && is_transient_store_failure(err)
-        {
-            warn!(
-                %operation_id,
-                ?worker_id,
-                ?err,
-                "Result could not be stored; keeping it on the worker for a resend"
-            );
-            record_dispatch_requeue("result_store_retry");
-            return update_operation_res;
-        }
         // The worker is done with this action even if the state-manager update
         // failed (e.g. the operation was already torn down after its clients
         // timed out). The worker bookkeeping below must still run, or the
         // worker's platform properties leak until it can never match again.
+        // A result the store refused (Redis at its memory ceiling, a
+        // failover) is lost with it; the record stays Executing on a worker
+        // that no longer runs it, which the executing sweep requeues.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
@@ -1519,23 +1504,6 @@ pub struct ApiWorkerScheduler {
 
     /// Woken when a worker joins or leaves this scheduler.
     local_fleet_change_notify: Arc<Notify>,
-}
-
-/// Whether a failed state write is the store's doing rather than the
-/// operation's: refused, unreachable, timed out, or a versioned write that
-/// kept losing to other writers. `Aborted` also names a worker that does not
-/// own the operation, which a resend will not change.
-fn is_transient_store_failure(err: &Error) -> bool {
-    match err.code {
-        Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted | Code::Unknown => {
-            true
-        }
-        Code::Aborted => err
-            .messages
-            .iter()
-            .any(|m| m.contains("version did not match")),
-        _ => false,
-    }
 }
 
 impl ApiWorkerScheduler {

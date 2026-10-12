@@ -35,9 +35,8 @@ use nativelink_util::metrics::{
     record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, Decline,
-    MatchingEngineStateManager, OperationFilter, OperationStageFlags, OrderDirection,
-    UpdateOperationType, WorkerStateManager,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
+    OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::PlatformProperties;
@@ -656,13 +655,17 @@ where
                         lost_for_s = lost_grace.as_secs(),
                         "Executing operation is not running on its worker; its result was lost, requeuing"
                     );
+                    // Through the error path, so the loss spends one of the
+                    // action's `max_job_retries` and a result the store keeps
+                    // refusing ends in a failure the client sees, not a loop.
                     match self
                         .inner_update_operation(
                             &operation_id,
                             Some(worker_id),
-                            UpdateOperationType::UpdateWithDecline(Decline {
-                                reason: "lost_result".to_string(),
-                            }),
+                            UpdateOperationType::UpdateWithError(make_err!(
+                                Code::Unavailable,
+                                "The worker finished this operation but its result never reached the scheduler"
+                            )),
                         )
                         .await
                     {

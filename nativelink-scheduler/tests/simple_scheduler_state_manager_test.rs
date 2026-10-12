@@ -47,8 +47,8 @@ use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
-    ClientStateManager, MatchingEngineStateManager, OperationFilter, OperationStageFlags,
-    UpdateOperationType, WorkerStateManager,
+    ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
+    OperationStageFlags, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::{Notify, mpsc};
@@ -144,9 +144,22 @@ fn state_manager(
         fn() -> MockInstantWrapped,
     >,
 > {
+    state_manager_with_retries(registry, 5)
+}
+
+fn state_manager_with_retries(
+    registry: Arc<WorkerRegistry>,
+    max_job_retries: usize,
+) -> Arc<
+    SimpleSchedulerStateManager<
+        impl AwaitedActionDb,
+        MockInstantWrapped,
+        fn() -> MockInstantWrapped,
+    >,
+> {
     let task_change_notify = Arc::new(Notify::new());
     SimpleSchedulerStateManager::new(
-        5,
+        max_job_retries,
         WORKER_TIMEOUT,
         Duration::from_mins(5),
         MAX_EXECUTING,
@@ -951,7 +964,7 @@ async fn the_sweep_fails_when_the_listing_fails() -> Result<(), Error> {
 async fn add_queued_actions(
     state_mgr: &impl ClientStateManager,
     n: usize,
-) -> Result<Vec<Box<dyn nativelink_util::operation_state_manager::ActionStateResult>>, Error> {
+) -> Result<Vec<Box<dyn ActionStateResult>>, Error> {
     let mut clients = Vec::with_capacity(n);
     for _ in 0..n {
         clients.push(
@@ -1203,13 +1216,7 @@ async fn the_matcher_fails_the_pass_when_the_listing_fails() -> Result<(), Error
 /// id the matching engine sees for it.
 async fn queued_operation_id(
     state_mgr: &(impl ClientStateManager + MatchingEngineStateManager),
-) -> Result<
-    (
-        OperationId,
-        Box<dyn nativelink_util::operation_state_manager::ActionStateResult>,
-    ),
-    Error,
-> {
+) -> Result<(OperationId, Box<dyn ActionStateResult>), Error> {
     let client = state_mgr
         .add_action(
             OperationId::default(),
@@ -1326,12 +1333,21 @@ async fn queue_and_assign<T: AwaitedActionDb>(
     state_mgr: &TestStateManager<T>,
     worker_id: &WorkerId,
 ) -> Result<OperationId, Error> {
+    let (operation_id, subscriber) = queue_and_assign_with_client(state_mgr, worker_id).await?;
+    // No client stays attached: the client-driven timeout check never runs.
+    drop(subscriber);
+    Ok(operation_id)
+}
+
+/// Same, keeping the client attached so the test can read the final state.
+async fn queue_and_assign_with_client<T: AwaitedActionDb>(
+    state_mgr: &TestStateManager<T>,
+    worker_id: &WorkerId,
+) -> Result<(OperationId, Box<dyn ActionStateResult>), Error> {
     let started = make_system_time(0);
     let subscriber = state_mgr
         .add_action(OperationId::default(), Arc::new(action_info(started)))
         .await?;
-    // No client stays attached: the client-driven timeout check never runs.
-    drop(subscriber);
     let mut queued = MatchingEngineStateManager::filter_operations(
         state_mgr,
         OperationFilter {
@@ -1349,7 +1365,7 @@ async fn queue_and_assign<T: AwaitedActionDb>(
     state_mgr
         .assign_operation(&operation_id, Ok(worker_id))
         .await?;
-    Ok(operation_id)
+    Ok((operation_id, subscriber))
 }
 
 async fn count_in_stage<T: AwaitedActionDb>(
@@ -1482,5 +1498,53 @@ async fn executing_sweep_requeues_an_action_its_worker_no_longer_runs() -> Resul
         .await?;
     assert_eq!(report.requeued, 0);
     assert_eq!(report.retired, 0);
+    Ok(())
+}
+
+/// A lost result spends one of the action's `max_job_retries`, so a store
+/// that keeps refusing the result ends the action with an error the client
+/// sees instead of running it again forever.
+#[nativelink_test]
+async fn executing_sweep_lost_result_counts_against_max_job_retries() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let worker_id = WorkerId::from(String::from("result-never-lands"));
+    let registry = Arc::new(WorkerRegistry::new());
+    registry
+        .register_worker(&worker_id, make_system_time(0))
+        .await;
+    // No retries: the first lost result is one too many.
+    let state_mgr = state_manager_with_retries(registry.clone(), 0);
+    let (_operation_id, client) = queue_and_assign_with_client(&state_mgr, &worker_id).await?;
+
+    let not_running = |_: WorkerId, _: OperationId| future::ready(Some(false)).boxed();
+    let grace = Duration::from_mins(1);
+    let mut lost_since = HashMap::new();
+    for seconds in [120, 181] {
+        MockClock::advance(Duration::from_secs(if seconds == 120 { 120 } else { 61 }));
+        registry
+            .update_worker_heartbeat(&worker_id, make_system_time(seconds))
+            .await;
+        state_mgr
+            .sweep_executing_actions(&not_running, &mut lost_since, grace)
+            .await?;
+    }
+
+    assert_eq!(
+        count_in_stage(&state_mgr, OperationStageFlags::Queued).await?,
+        0,
+        "past max_job_retries the action is not queued again"
+    );
+    let (state, _origin_metadata) = client.as_state().await?;
+    let ActionStage::Completed(result) = &state.stage else {
+        panic!("expected Completed, got {:?}", state.stage);
+    };
+    let err = result.error.as_ref().expect("the client is told why");
+    assert_eq!(err.code, Code::FailedPrecondition);
+    assert!(
+        err.messages
+            .iter()
+            .any(|m| m.contains("never reached the scheduler")),
+        "the failure names the lost result: {err:?}"
+    );
     Ok(())
 }

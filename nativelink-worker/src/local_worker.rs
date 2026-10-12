@@ -127,55 +127,6 @@ const fn seconds_or(configured: u64, default: Duration) -> Duration {
 
 /// Sends `GoingAway` within `deadline`. Logged rather than fatal: the stream
 /// close that follows is what removes the worker, this only says why.
-/// How many times a result report is resent when the scheduler could not
-/// take it, and the pause before each resend. The result is in hand; the
-/// scheduler's store (Redis at its memory ceiling, a failover, a timed out
-/// command) is what refused it, and it keeps the action on the worker for
-/// exactly this resend. A report dropped here is an action the scheduler
-/// believes is still running.
-const EXECUTION_RESPONSE_ATTEMPTS: u32 = 4;
-const EXECUTION_RESPONSE_BACKOFF: [Duration; 3] = [
-    Duration::from_millis(250),
-    Duration::from_secs(1),
-    Duration::from_secs(4),
-];
-
-const fn is_retryable_report_error(err: &Error) -> bool {
-    matches!(
-        err.code,
-        Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted | Code::Unknown
-    )
-}
-
-async fn send_execution_response<T: WorkerApiClientTrait>(
-    grpc_client: &mut T,
-    result: ExecuteResult,
-) -> Result<(), Error> {
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
-        match grpc_client.execution_response(result.clone()).await {
-            Ok(()) => return Ok(()),
-            Err(err)
-                if attempt < EXECUTION_RESPONSE_ATTEMPTS && is_retryable_report_error(&err) =>
-            {
-                let delay = EXECUTION_RESPONSE_BACKOFF[usize::try_from(attempt - 1)
-                    .unwrap_or(0)
-                    .min(EXECUTION_RESPONSE_BACKOFF.len() - 1)];
-                warn!(
-                    operation_id = %result.operation_id,
-                    attempt,
-                    ?err,
-                    delay_ms = delay.as_millis(),
-                    "Scheduler could not take the action's result, resending"
-                );
-                time::sleep(delay).await;
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
 async fn send_going_away<T: WorkerApiClientTrait>(
     grpc_client: &mut T,
     drain: bool,
@@ -777,8 +728,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 resource_usage.worker_id.clone_from(&worker_id);
                                                 resource_usage
                                             });
-                                            send_execution_response(
-                                                &mut grpc_client,
+                                            grpc_client.execution_response(
                                                 ExecuteResult{
                                                     instance_name,
                                                     operation_id,
@@ -815,14 +765,14 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                     ..ActionResult::default()
                                                 };
                                                 let action_stage = ActionStage::Completed(action_result);
-                                                send_execution_response(&mut grpc_client, ExecuteResult{
+                                                grpc_client.execution_response(ExecuteResult{
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::ExecuteResponse(action_stage.into())),
                                                     resource_usage: None,
                                                 }).await.err_tip(|| "Error calling execution_response with missing inputs")?;
                                             } else {
-                                                send_execution_response(&mut grpc_client, ExecuteResult{
+                                                grpc_client.execution_response(ExecuteResult{
                                                     instance_name,
                                                     operation_id,
                                                     result: Some(execute_result::Result::InternalError(e.into())),
