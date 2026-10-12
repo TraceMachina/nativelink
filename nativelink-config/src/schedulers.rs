@@ -94,14 +94,21 @@ pub enum WorkerAllocationStrategy {
     BestFit,
 }
 
-// defaults to every 10s
+// Disabled by default: each log lists every queued and executing operation
+// from the scheduler's store, on every replica, which on a shared Redis is
+// a full index read per interval per replica.
 const fn default_worker_match_logging_interval_s() -> i64 {
-    10
+    -1
 }
 
 // defaults to every 5s
 const fn default_fallback_match_interval_s() -> i64 {
     5
+}
+
+// defaults to every 30s
+const fn default_executing_sweep_interval_s() -> i64 {
+    30
 }
 
 #[derive(Deserialize, Serialize, Debug, Default)]
@@ -184,6 +191,21 @@ pub struct SimpleSpec {
     /// Default: 0 (disabled)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_executing_timeout_s: u64,
+
+    /// How often the scheduler sweeps executing actions for ones to retire:
+    /// an action past `max_action_executing_timeout_s` (or its own
+    /// `Action.timeout` plus `worker_timeout_s`) with no word from its
+    /// worker, and an action whose worker is connected to this scheduler but
+    /// no longer runs it, which means its result was lost on the way to the
+    /// store. Without the sweep those checks run only inside a client's
+    /// `Execute` or `WaitExecution` call, once per `worker_timeout_s`, and never
+    /// once the client has gone.
+    /// Defaults to 30s. Zero or any negative value disables it.
+    #[serde(
+        default = "default_executing_sweep_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand_and_negative"
+    )]
+    pub executing_sweep_interval_s: i64,
 
     /// Evict a worker that has not reported back on an operation it was
     /// told to kill within this many seconds. A healthy worker
@@ -328,8 +350,12 @@ pub struct SimpleSpec {
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
 
     /// Every N seconds, do logging of worker matching
-    /// e.g. "worker busy", "can't find any worker"
-    /// Defaults to 10s. Can be set to -1 to disable
+    /// e.g. "worker busy", "can't find any worker", and the oldest queued
+    /// and executing operations. Each pass lists every queued and executing
+    /// operation from the store, on every scheduler replica: with a shared
+    /// Redis that is a full index read per interval per replica, which is
+    /// why it is off unless asked for. Turn it on for a look, not for good.
+    /// Defaults to -1 (disabled). Any positive value enables it.
     #[serde(
         default = "default_worker_match_logging_interval_s",
         deserialize_with = "convert_duration_with_shellexpand_and_negative"

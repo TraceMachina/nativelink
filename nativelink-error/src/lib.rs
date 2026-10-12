@@ -329,7 +329,7 @@ impl From<std::io::Error> for Error {
 impl From<redis::RedisError> for Error {
     fn from(error: redis::RedisError) -> Self {
         use redis::ErrorKind::{
-            AuthenticationFailed, ClusterConnectionNotFound, EmptySentinelList,
+            AuthenticationFailed, ClusterConnectionNotFound, EmptySentinelList, Extension,
             InvalidClientConfig, Io as IoError, MasterNameNotFoundBySentinel,
             NoValidReplicasFoundBySentinel, Parse as ParseError, RESP3NotSupported, Server,
             UnexpectedReturnType,
@@ -377,6 +377,12 @@ impl From<redis::RedisError> for Error {
             // not InvalidArgument: a malformed reply is our problem or the
             // server's, and it is at least worth a retry.
             ParseError | UnexpectedReturnType => Code::Internal,
+
+            // A server at its maxmemory with noeviction refuses every write
+            // with OOM. The client knows no kind for it, so it arrives as an
+            // extension code; it is the server out of room, nothing wrong
+            // with the command.
+            Extension if error.code() == Some("OOM") => Code::ResourceExhausted,
 
             _ => Code::Unknown,
         };
