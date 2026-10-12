@@ -1436,9 +1436,18 @@ impl SimpleScheduler {
 
                                 let res = scheduler.do_try_match(full_worker_logging).await;
                                 if full_worker_logging {
+                                    // Queued and executing only: completed
+                                    // records are kept for a while and say
+                                    // nothing about matching, and listing
+                                    // them too is what made this log a full
+                                    // read of the store.
                                     let operations_stream = scheduler
                                         .matching_engine_state_manager
-                                        .filter_operations(OperationFilter::default())
+                                        .filter_operations(OperationFilter {
+                                            stages: OperationStageFlags::Queued
+                                                | OperationStageFlags::Executing,
+                                            ..OperationFilter::default()
+                                        })
                                         .await
                                         .err_tip(|| "In action_scheduler getting filter result");
 

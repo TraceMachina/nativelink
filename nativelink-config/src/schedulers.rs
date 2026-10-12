@@ -94,9 +94,11 @@ pub enum WorkerAllocationStrategy {
     BestFit,
 }
 
-// defaults to every 10s
+// Disabled by default: each log lists every queued and executing operation
+// from the scheduler's store, on every replica, which on a shared Redis is
+// a full index read per interval per replica.
 const fn default_worker_match_logging_interval_s() -> i64 {
-    10
+    -1
 }
 
 // defaults to every 5s
@@ -348,8 +350,12 @@ pub struct SimpleSpec {
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
 
     /// Every N seconds, do logging of worker matching
-    /// e.g. "worker busy", "can't find any worker"
-    /// Defaults to 10s. Can be set to -1 to disable
+    /// e.g. "worker busy", "can't find any worker", and the oldest queued
+    /// and executing operations. Each pass lists every queued and executing
+    /// operation from the store, on every scheduler replica: with a shared
+    /// Redis that is a full index read per interval per replica, which is
+    /// why it is off unless asked for. Turn it on for a look, not for good.
+    /// Defaults to -1 (disabled). Any positive value enables it.
     #[serde(
         default = "default_worker_match_logging_interval_s",
         deserialize_with = "convert_duration_with_shellexpand_and_negative"
