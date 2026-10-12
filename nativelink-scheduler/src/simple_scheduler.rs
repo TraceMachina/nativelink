@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use futures::{Future, StreamExt, future};
+use futures::{Future, FutureExt, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -201,6 +201,10 @@ pub struct SimpleScheduler {
     /// Dropped with the struct, like the matching task.
     task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
 
+    /// Background task that retires executing actions whose worker has gone
+    /// quiet or no longer runs them. Dropped with the struct.
+    task_executing_sweep_spawn: JoinHandleDropGuard<()>,
+
     /// Background task that swaps worker capabilities with peer schedulers
     /// on the same state. Dropped with the struct, like the matching task.
     task_fleet_exchange_spawn: JoinHandleDropGuard<()>,
@@ -247,6 +251,10 @@ impl core::fmt::Debug for SimpleScheduler {
             .field(
                 "task_abandoned_sweep_spawn",
                 &self.task_abandoned_sweep_spawn,
+            )
+            .field(
+                "task_executing_sweep_spawn",
+                &self.task_executing_sweep_spawn,
             )
             .field("task_fleet_exchange_spawn", &self.task_fleet_exchange_spawn)
             .finish_non_exhaustive()
@@ -1244,6 +1252,64 @@ impl SimpleScheduler {
                 }
             });
 
+        // Executing actions get their own sweep for the same reason, on the
+        // scheduler's clock rather than a waiting client's.
+        let executing_sweep_interval = match spec.executing_sweep_interval_s {
+            ..=0 => None,
+            secs => Some(Duration::from_secs(secs.unsigned_abs())),
+        };
+        let task_executing_sweep_spawn = {
+            let state_manager = Arc::downgrade(&state_manager);
+            let worker_scheduler = Arc::downgrade(&worker_scheduler);
+            spawn!("simple_scheduler_task_executing_sweep", async move {
+                let Some(interval) = executing_sweep_interval else {
+                    return;
+                };
+                // Long enough that an assignment's store write and the
+                // dispatch behind it are never mistaken for a lost result.
+                let lost_grace = (interval * 2).max(Duration::from_mins(1));
+                let mut lost_since = HashMap::new();
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let (Some(state_manager), Some(worker_scheduler)) =
+                        (state_manager.upgrade(), worker_scheduler.upgrade())
+                    else {
+                        return;
+                    };
+                    let check_scheduler = worker_scheduler.clone();
+                    let running_on_worker =
+                        move |worker_id: WorkerId, operation_id: OperationId| {
+                            let worker_scheduler = check_scheduler.clone();
+                            async move {
+                                worker_scheduler
+                                    .running_on_worker(&worker_id, &operation_id)
+                                    .await
+                            }
+                            .boxed()
+                        };
+                    match state_manager
+                        .sweep_executing_actions(&running_on_worker, &mut lost_since, lost_grace)
+                        .await
+                    {
+                        Ok(report) if report.retired + report.requeued + report.failed > 0 => {
+                            info!(
+                                retired = report.retired,
+                                requeued = report.requeued,
+                                failed = report.failed,
+                                "Executing sweep"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            record_sweep_failure();
+                            error!(?err, "Error while sweeping executing actions");
+                        }
+                    }
+                    drop((state_manager, worker_scheduler));
+                }
+            })
+        };
+
         // Only runs when the state is shared. It runs whatever the timeout,
         // so that a peer which does fail actions sees these workers even
         // while this scheduler is still rolling out or has the timeout off.
@@ -1468,6 +1534,7 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 task_abandoned_sweep_spawn,
+                task_executing_sweep_spawn,
                 task_fleet_exchange_spawn,
                 worker_match_logging_interval,
                 typed_properties: Mutex::new(HashMap::new()),

@@ -408,15 +408,25 @@ async fn blake3_digest_function_registered_properly() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn simple_worker_start_action_test() -> Result<(), Error> {
-    start_action_lifecycle_test(false).await
+    start_action_lifecycle_test(false, 0).await
 }
 
 #[nativelink_test]
 async fn single_use_worker_rejects_second_action_and_waits_for_uploads() -> Result<(), Error> {
-    start_action_lifecycle_test(true).await
+    start_action_lifecycle_test(true, 0).await
 }
 
-async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
+/// A result the scheduler could not store is resent, not dropped: the first
+/// report comes back Unavailable and the same result arrives again.
+#[nativelink_test]
+async fn execution_response_is_resent_when_the_scheduler_cannot_take_it() -> Result<(), Error> {
+    start_action_lifecycle_test(false, 1).await
+}
+
+async fn start_action_lifecycle_test(
+    single_use: bool,
+    refused_reports: usize,
+) -> Result<(), Error> {
     let mut test_context = setup_local_worker_with_config(LocalWorkerConfig {
         single_use,
         max_inflight_tasks: if single_use { 9 } else { 0 },
@@ -585,7 +595,18 @@ async fn start_action_lifecycle_test(single_use: bool) -> Result<(), Error> {
         u64::from(!single_use)
     );
 
-    // Now our client should be notified that our runner finished.
+    // Now our client should be notified that our runner finished. A report
+    // the scheduler refuses for a store failure is sent again.
+    for _ in 0..refused_reports {
+        let refused = test_context
+            .client
+            .expect_execution_response(Err(make_err!(
+                Code::Unavailable,
+                "scheduler store is not taking writes"
+            )))
+            .await;
+        assert_eq!(refused.operation_id, String::new());
+    }
     let execution_response = test_context.client.expect_execution_response(Ok(())).await;
 
     // Now ensure the final results match our expectations.
