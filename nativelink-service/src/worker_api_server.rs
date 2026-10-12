@@ -389,6 +389,21 @@ impl WorkerConnection {
             )
             .await
             .err_tip(|| "Could not process keep_alive from worker in inner_keep_alive()")?;
+        if let Some(running) = keep_alive_request.running_operations {
+            self.scheduler
+                .worker_running_operations_reported(
+                    &self.worker_id,
+                    running
+                        .operation_ids
+                        .into_iter()
+                        .map(OperationId::from)
+                        .collect(),
+                )
+                .await
+                .err_tip(
+                    || "Could not process the running operations report in inner_keep_alive()",
+                )?;
+        }
         Ok(())
     }
 

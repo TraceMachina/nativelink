@@ -1649,6 +1649,16 @@ impl WorkerScheduler for SimpleScheduler {
             .await
     }
 
+    async fn worker_running_operations_reported(
+        &self,
+        worker_id: &WorkerId,
+        operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_running_operations_reported(worker_id, operation_ids)
+            .await
+    }
+
     async fn worker_liveness_refreshed(
         &self,
         worker_id: &WorkerId,
