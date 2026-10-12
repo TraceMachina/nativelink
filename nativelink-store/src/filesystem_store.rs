@@ -1549,18 +1549,43 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     /// acquisition and thread hop to dispatch one cost tens: asking per path
     /// spent ~4.6s per action on a 15k-file tree, and asking once for the tree
     /// spends ~37ms.
+    ///
+    /// A hit also counts as a use of the blob. The variant lives outside the
+    /// eviction index, so a toolchain binary that every action hardlinks from
+    /// its variant would otherwise never move in the LRU and be evicted as the
+    /// coldest entry of a full store, taking its variant with it under the
+    /// next action's batch. One batched lookup refreshes every hit's position.
+    /// A variant whose blob is no longer indexed is reported `NotFound`, not
+    /// handed out: the caller then fills the fast store again, which puts the
+    /// blob back in the index so its next eviction deletes the variant too.
     pub async fn get_executable_hardlink_sources(
         &self,
         digests: &[DigestInfo],
     ) -> Vec<Result<OsString, Error>> {
-        let mut tasks = Vec::with_capacity(digests.len());
-        for (digest, hit) in digests
+        let hits = self.materialized_variants(digests).await;
+        let hit_keys: Vec<StoreKey<'static>> = digests
             .iter()
-            .copied()
-            .zip(self.materialized_variants(digests).await)
-        {
+            .zip(&hits)
+            .filter(|(_, hit)| hit.is_some())
+            .map(|(digest, _)| StoreKey::Digest(*digest))
+            .collect();
+        let mut indexed = vec![None; hit_keys.len()];
+        if !hit_keys.is_empty() {
+            self.evicting_map
+                .sizes_for_keys(hit_keys.iter(), &mut indexed, false /* peek */)
+                .await;
+        }
+        let mut indexed = indexed.into_iter();
+
+        let mut tasks = Vec::with_capacity(digests.len());
+        for (digest, hit) in digests.iter().copied().zip(hits) {
+            let orphaned = hit.is_some() && indexed.next().flatten().is_none();
             tasks.push(async move {
                 match hit {
+                    Some(_) if orphaned => Err(make_err!(
+                        Code::NotFound,
+                        "{digest} has an executable variant on disk but no indexed blob; fill the fast store again"
+                    )),
                     Some(path) => Ok(path),
                     None => self.get_executable_hardlink_source(&digest).await,
                 }

@@ -1909,6 +1909,93 @@ async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
     Ok(())
 }
 
+/// The warm variant path never consults the eviction index, so a toolchain
+/// binary that every action hardlinks from its variant looked idle to the LRU
+/// and was evicted first when the store filled, taking its variant with it
+/// mid-batch. A variant hit must count as a use of the blob.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn executable_variant_hit_refreshes_blob_recency() -> Result<(), Error> {
+    const HASH3: &str = "0123456789abcdef000000000000000000030000000000000123456789abcdef";
+    const VALUE3: &str = "5555555555";
+    let content_path = make_temp_path("content_path");
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    let digest3 = DigestInfo::try_new(HASH3, VALUE3.len())?;
+
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 2,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+    store.get_executable_hardlink_source(&digest1).await?;
+    store.update_oneshot(digest2, VALUE2.into()).await?;
+
+    // digest1 is the older entry, but its variant is used again here.
+    let sources = store.get_executable_hardlink_sources(&[digest1]).await;
+    assert_eq!(sources.len(), 1);
+    let variant_path = sources.into_iter().next().unwrap()?;
+    assert_eq!(
+        variant_path,
+        OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest1}"))
+    );
+
+    // The third insert evicts one entry; it must be the one not used since.
+    store.update_oneshot(digest3, VALUE3.into()).await?;
+    assert!(
+        store.has(digest1).await?.is_some(),
+        "the blob behind a used variant must stay resident"
+    );
+    assert!(
+        store.has(digest2).await?.is_none(),
+        "the entry not used since must be the one evicted"
+    );
+    fs::metadata(&variant_path)
+        .await
+        .err_tip(|| "the used variant must survive the eviction")?;
+    Ok(())
+}
+
+/// A variant left on disk after its blob dropped out of the index is not a
+/// hit: handing it out would keep an untracked file in use for good. It is a
+/// miss, so the caller fills the fast store again and the blob is indexed.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn orphaned_executable_variant_is_a_miss() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            ..Default::default()
+        })
+        .await?,
+    );
+    // The variant without its blob, as a deletion that never ran leaves it.
+    let variant_path = format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest}");
+    fs::create_dir_all(format!("{content_path}.exec/{DIGEST_FOLDER_V2}")).await?;
+    std::fs::write(&variant_path, VALUE1)?;
+
+    let sources = store.get_executable_hardlink_sources(&[digest]).await;
+    assert_eq!(sources.len(), 1);
+    let err = sources
+        .into_iter()
+        .next()
+        .unwrap()
+        .expect_err("an orphaned variant must not be handed out");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    Ok(())
+}
+
 /// This test simulates a full disk without needing one. It writes past the `RLIMIT_FSIZE`
 /// cap, thus failing with `EFBIG`, which tokio defers exactly like `ENOSPC`. The
 /// [`SIGXFSZ`](`libc::SIGXFSZ`) signal must be ignored or the kernel will kill the process
