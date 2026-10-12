@@ -769,6 +769,7 @@ mod tests {
         let tool_path = format!("{download_dir}/tool");
         let tool = fs::read(&tool_path).await?;
         assert_eq!(from_utf8(&tool)?, EXEC_CONTENT);
+        #[cfg(target_family = "unix")]
         assert_ne!(
             fs::metadata(&tool_path).await?.mode() & 0o111,
             0,
@@ -833,6 +834,7 @@ mod tests {
         let tool_path = format!("{download_dir}/tool");
         let tool = fs::read(&tool_path).await?;
         assert_eq!(from_utf8(&tool)?, EXEC_CONTENT);
+        #[cfg(target_family = "unix")]
         assert_ne!(
             fs::metadata(&tool_path).await?.mode() & 0o111,
             0,
@@ -841,6 +843,7 @@ mod tests {
         let stamped_path = format!("{download_dir}/stamped.txt");
         let stamped = fs::read(&stamped_path).await?;
         assert_eq!(from_utf8(&stamped)?, STAMPED_CONTENT);
+        #[cfg(target_family = "unix")]
         assert_eq!(
             fs::metadata(&stamped_path).await?.mode() & 0o777,
             STAMPED_MODE
