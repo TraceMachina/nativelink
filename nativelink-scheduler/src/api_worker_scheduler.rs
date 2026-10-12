@@ -1123,6 +1123,9 @@ impl ApiWorkerSchedulerImpl {
         // failed (e.g. the operation was already torn down after its clients
         // timed out). The worker bookkeeping below must still run, or the
         // worker's platform properties leak until it can never match again.
+        // A result the store refused (Redis at its memory ceiling, a
+        // failover) is lost with it; the record stays Executing on a worker
+        // that no longer runs it, which the executing sweep requeues.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
@@ -1504,6 +1507,20 @@ pub struct ApiWorkerScheduler {
 }
 
 impl ApiWorkerScheduler {
+    /// Whether `worker_id`, connected to this scheduler, still holds
+    /// `operation_id`. `None` when the worker is not connected here.
+    pub async fn running_on_worker(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Option<bool> {
+        let inner = self.inner.lock().await;
+        inner
+            .workers
+            .peek(worker_id)
+            .map(|worker| worker.running_action_infos.contains_key(operation_id))
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         worker_state_manager: Arc<dyn WorkerStateManager>,

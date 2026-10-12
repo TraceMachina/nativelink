@@ -14,12 +14,14 @@
 
 use core::ops::Bound;
 use core::time::Duration;
+use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use async_lock::Mutex;
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use futures::{StreamExt, TryStreamExt, stream};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
@@ -30,7 +32,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
     EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
-    record_awaited_action_orphan, record_queue_retired,
+    record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -45,6 +47,17 @@ use super::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
+
+/// What one executing sweep did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutingSweepReport {
+    /// Retired as overdue, through `timeout_operation_id`.
+    pub retired: u64,
+    /// Sent back to the queue because their worker no longer ran them.
+    pub requeued: u64,
+    /// Could not be moved this sweep; they are tried again on the next.
+    pub failed: u64,
+}
 
 /// Why the scheduler times out an executing action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -535,6 +548,147 @@ where
     /// clients eventually report a remote execution failure.
     ///
     /// Returns how many were retired.
+    /// Retires executing actions that nothing else will reach.
+    ///
+    /// The timeout check in `MatchingEngineActionStateResult::changed` runs
+    /// only while a client is waiting on the action, once per
+    /// `no_event_action_timeout`. An action whose client has gone, or whose
+    /// result the worker sent but the store did not take, stays `Executing`
+    /// with its slot's worth of fleet capacity accounted to it until
+    /// something lists it. This does, on the scheduler's own clock:
+    ///
+    /// - an action `timeout_cause` says is overdue is retired through
+    ///   `timeout_operation_id`, which re-checks under its lock;
+    /// - an action whose worker `running_on_worker` knows and reports as no
+    ///   longer running it has lost its result. It goes back to the queue
+    ///   untried once that has been so for `lost_grace`, which covers the
+    ///   moment between the store write of an assignment and the dispatch
+    ///   that follows it. `lost_since` carries the first sighting between
+    ///   sweeps and is pruned of actions no longer in that state.
+    ///
+    /// `running_on_worker` answers `None` for a worker this scheduler is not
+    /// connected to: a peer's worker, or one already gone, which the
+    /// timeout path handles. A record the listing names but cannot read is
+    /// skipped, so one bad entry does not stop the sweep.
+    pub async fn sweep_executing_actions(
+        &self,
+        running_on_worker: &(
+             dyn Fn(WorkerId, OperationId) -> BoxFuture<'static, Option<bool>> + Send + Sync
+         ),
+        lost_since: &mut HashMap<OperationId, SystemTime>,
+        lost_grace: Duration,
+    ) -> Result<ExecutingSweepReport, Error> {
+        let now = (self.now_fn)().now();
+        let stream = self
+            .action_db
+            .get_range_of_actions(
+                SortedAwaitedActionState::Executing,
+                Bound::Unbounded,
+                Bound::Unbounded,
+                true,
+            )
+            .await
+            .err_tip(|| "In sweep_executing_actions")?;
+        tokio::pin!(stream);
+
+        let mut report = ExecutingSweepReport::default();
+        let mut still_lost = HashMap::new();
+        while let Some(subscriber) = stream.next().await {
+            let awaited_action = match subscriber {
+                Ok(subscriber) => subscriber.borrow().await,
+                Err(err) => Err(err),
+            };
+            let awaited_action = match awaited_action {
+                Ok(awaited_action) => awaited_action,
+                Err(err) => {
+                    if !is_lost_record(&err) {
+                        return Err(err).err_tip(|| "In sweep_executing_actions");
+                    }
+                    warn!(
+                        ?err,
+                        "Executing operation listed but its record cannot be read; skipping"
+                    );
+                    record_awaited_action_orphan("executing_sweep");
+                    continue;
+                }
+            };
+            if !matches!(awaited_action.state().stage, ActionStage::Executing) {
+                continue;
+            }
+            let operation_id = awaited_action.operation_id().clone();
+
+            if self.timeout_cause(&awaited_action).await.is_some() {
+                match self.timeout_operation_id(&operation_id).await {
+                    Ok(()) => report.retired += 1,
+                    // A conflicting write means someone else moved it, which
+                    // is what we wanted; anything else is logged and the
+                    // sweep goes on to the rest.
+                    Err(err) if err.code == Code::Aborted => {}
+                    Err(err) => {
+                        warn!(%operation_id, ?err, "Could not time out an executing operation");
+                        report.failed += 1;
+                    }
+                }
+                continue;
+            }
+
+            let Some(worker_id) = awaited_action.worker_id() else {
+                continue;
+            };
+            // Freshly assigned: the dispatch that puts it on the worker may
+            // not have happened yet.
+            if now
+                .duration_since(awaited_action.state().last_transition_timestamp)
+                .is_ok_and(|since| since < lost_grace)
+            {
+                continue;
+            }
+            if running_on_worker(worker_id.clone(), operation_id.clone()).await == Some(false) {
+                let first_seen = *lost_since.get(&operation_id).unwrap_or(&now);
+                if now
+                    .duration_since(first_seen)
+                    .is_ok_and(|lost| lost >= lost_grace)
+                {
+                    warn!(
+                        %operation_id,
+                        ?worker_id,
+                        lost_for_s = lost_grace.as_secs(),
+                        "Executing operation is not running on its worker; its result was lost, requeuing"
+                    );
+                    // Through the error path, so the loss spends one of the
+                    // action's `max_job_retries` and a result the store keeps
+                    // refusing ends in a failure the client sees, not a loop.
+                    match self
+                        .inner_update_operation(
+                            &operation_id,
+                            Some(worker_id),
+                            UpdateOperationType::UpdateWithError(make_err!(
+                                Code::Unavailable,
+                                "The worker finished this operation but its result never reached the scheduler"
+                            )),
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            record_dispatch_requeue("lost_result");
+                            report.requeued += 1;
+                        }
+                        Err(err) if err.code == Code::Aborted => {}
+                        Err(err) => {
+                            warn!(%operation_id, ?err, "Could not requeue an operation whose result was lost");
+                            report.failed += 1;
+                            still_lost.insert(operation_id.clone(), first_seen);
+                        }
+                    }
+                } else {
+                    still_lost.insert(operation_id.clone(), first_seen);
+                }
+            }
+        }
+        *lost_since = still_lost;
+        Ok(report)
+    }
+
     pub async fn sweep_abandoned_queued_actions(&self) -> Result<u64, Error> {
         let now = (self.now_fn)().now();
         let stream = self

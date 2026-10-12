@@ -125,6 +125,20 @@ mod redis_error_codes {
     }
 
     #[test]
+    fn oom_is_resource_exhausted() {
+        // What a Redis at its maxmemory with noeviction answers every write.
+        let reply = redis::parse_redis_value(
+            b"-OOM command not allowed when used memory > 'maxmemory'.\r\n",
+        )
+        .expect("an error reply parses");
+        let redis::Value::ServerError(server_error) = reply else {
+            panic!("expected a server error, got {reply:?}");
+        };
+        let err: Error = RedisError::from(server_error).into();
+        assert_eq!(err.code, Code::ResourceExhausted);
+    }
+
+    #[test]
     fn auth_failures_are_permission_denied() {
         assert_eq!(
             code_of(ErrorKind::AuthenticationFailed),
