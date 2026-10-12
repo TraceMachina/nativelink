@@ -326,31 +326,6 @@ impl ApiWorkerSchedulerImpl {
     ///
     /// Note: This only updates the local worker state. The worker registry is updated
     /// separately after releasing the inner lock to reduce contention.
-    /// The operations `worker_id` runs whose store records are due a
-    /// liveness refresh: none until `interval` has passed since the last
-    /// refresh, then all of them, and the clock restarts. Operations the
-    /// worker was told to kill are left out; they are on their way off it.
-    fn operations_due_for_touch(
-        &mut self,
-        worker_id: &WorkerId,
-        timestamp: WorkerTimestamp,
-        interval: u64,
-    ) -> Vec<OperationId> {
-        let Some(worker) = self.workers.0.peek_mut(worker_id) else {
-            return Vec::new();
-        };
-        if timestamp.saturating_sub(worker.last_operation_touch_timestamp) < interval {
-            return Vec::new();
-        }
-        worker.last_operation_touch_timestamp = timestamp;
-        worker
-            .running_action_infos
-            .keys()
-            .filter(|operation_id| !worker.is_kill_requested(operation_id))
-            .cloned()
-            .collect()
-    }
-
     fn refresh_lifetime(
         &mut self,
         worker_id: &WorkerId,
@@ -1376,6 +1351,47 @@ impl ApiWorkerSchedulerImpl {
 
     /// Dispatches this worker has not acknowledged within the timeout, as
     /// of its latest keepalive.
+    /// A keepalive's report of what the worker is running. An acknowledged
+    /// operation this scheduler holds for the worker that the report has
+    /// left out twice in a row ran without its result reaching here: the
+    /// store refused the write, or the worker's report of it was lost. Its
+    /// slot is released and it goes back through the error path, so a result
+    /// the store keeps refusing spends `max_job_retries` and ends in a
+    /// failure the client sees rather than running forever. A requeue the
+    /// store refuses is logged, not raised: the keepalive that carried the
+    /// report must not fail over it, and the executing sweep tries again.
+    async fn running_operations_reported(
+        &mut self,
+        worker_id: &WorkerId,
+        reported: &HashSet<OperationId>,
+    ) {
+        let Some(worker) = self.workers.0.peek_mut(worker_id) else {
+            return;
+        };
+        let lost = worker.unreported_operations(reported);
+        for operation_id in lost {
+            warn!(
+                ?worker_id,
+                %operation_id,
+                "Worker no longer reports an operation it acknowledged and sent no result for; requeuing"
+            );
+            record_dispatch_requeue("unreported");
+            if let Err(err) = self
+                .update_action(
+                    worker_id,
+                    &operation_id,
+                    UpdateOperationType::UpdateWithError(make_err!(
+                        Code::Unavailable,
+                        "The worker stopped running this operation without its result reaching the scheduler"
+                    )),
+                )
+                .await
+            {
+                warn!(?worker_id, %operation_id, ?err, "Could not requeue an operation the worker dropped");
+            }
+        }
+    }
+
     fn unacknowledged_dispatches(
         &self,
         worker_id: &WorkerId,
@@ -1506,12 +1522,6 @@ pub struct ApiWorkerScheduler {
         help = "Timeout of how long to evict workers if no response in this given amount of time in seconds."
     )]
     worker_timeout_s: u64,
-    /// How often, in seconds, a worker's keepalive refreshes the store's
-    /// worker-update timestamp on the operations it runs. Zero turns it off.
-    #[metric(
-        help = "Seconds between refreshes of running operations' worker-update timestamps from a keepalive."
-    )]
-    operation_touch_interval_s: u64,
     #[metric(
         help = "How long a sent kill may go unacknowledged before the worker is evicted, in seconds."
     )]
@@ -1546,7 +1556,6 @@ impl ApiWorkerScheduler {
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
         dispatch_ack_timeout_s: u64,
-        operation_touch_interval_s: u64,
         worker_registry: SharedWorkerRegistry,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
         has_peers: bool,
@@ -1583,7 +1592,6 @@ impl ApiWorkerScheduler {
             }),
             platform_property_manager,
             worker_timeout_s,
-            operation_touch_interval_s,
             unacknowledged_kill_timeout_s,
             dispatch_ack_timeout_s,
             worker_registry,
@@ -1642,23 +1650,11 @@ impl ApiWorkerScheduler {
         load: Option<WorkerLoad>,
         keepalive: bool,
     ) -> Result<(), Error> {
-        let mut due_for_touch = Vec::new();
-        let mut state_manager = None;
         {
             let mut inner = self.inner.lock().await;
             inner
                 .refresh_lifetime(worker_id, timestamp, load, keepalive)
                 .err_tip(|| "Error refreshing lifetime in worker_keep_alive_received()")?;
-            if keepalive && self.operation_touch_interval_s > 0 {
-                due_for_touch = inner.operations_due_for_touch(
-                    worker_id,
-                    timestamp,
-                    self.operation_touch_interval_s,
-                );
-                if !due_for_touch.is_empty() {
-                    state_manager = Some(inner.worker_state_manager.clone());
-                }
-            }
             if self.dispatch_ack_timeout_s > 0 {
                 let stale = inner.unacknowledged_dispatches(
                     worker_id,
@@ -1699,26 +1695,6 @@ impl ApiWorkerScheduler {
         self.worker_registry
             .update_worker_heartbeat(worker_id, now)
             .await;
-        // Outside the lock: one store write per running operation, and the
-        // store is not something to hold the worker map across. A refused
-        // write is logged and tried again on the next due keepalive; it
-        // never fails the keepalive itself.
-        if let Some(state_manager) = state_manager {
-            for operation_id in due_for_touch {
-                if let Err(err) = state_manager
-                    .update_operation(&operation_id, worker_id, UpdateOperationType::KeepAlive)
-                    .await
-                {
-                    warn!(
-                        ?worker_id,
-                        %operation_id,
-                        ?err,
-                        "Could not refresh a running operation's worker-update timestamp"
-                    );
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -2046,6 +2022,19 @@ impl WorkerScheduler for ApiWorkerScheduler {
         load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         self.refresh_worker(worker_id, timestamp, load, true).await
+    }
+
+    async fn worker_running_operations_reported(
+        &self,
+        worker_id: &WorkerId,
+        operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        let reported: HashSet<OperationId> = operation_ids.into_iter().collect();
+        let mut inner = self.inner.lock().await;
+        inner
+            .running_operations_reported(worker_id, &reported)
+            .await;
+        Ok(())
     }
 
     async fn worker_liveness_refreshed(

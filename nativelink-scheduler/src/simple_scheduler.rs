@@ -64,7 +64,7 @@ use crate::simple_scheduler_state_manager::{
 };
 use crate::unsatisfiable_tracker::UnsatisfiableTracker;
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp};
-use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, WorkerRegistry};
+use crate::worker_registry::WorkerRegistry;
 use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
 
 /// Default timeout for workers in seconds: four default keepalive intervals
@@ -1197,20 +1197,6 @@ impl SimpleScheduler {
             Some(worker_registry.clone()),
         );
 
-        // A running operation's worker-update timestamp is the assignment
-        // time until its result arrives, so "silent for the ceiling" would
-        // otherwise mean "assigned that long ago" and a long action on a
-        // live worker would be retried at the ceiling, by this scheduler or
-        // by a peer that cannot see the worker's heartbeat. Refreshing it
-        // from the keepalive a few times per ceiling keeps that from
-        // happening at a few writes per worker per interval.
-        let liveness_ceiling_s = if spec.max_action_executing_timeout_s > 0 {
-            spec.max_action_executing_timeout_s
-        } else {
-            ORPHANED_ACTION_TIMEOUT.as_secs()
-        };
-        let operation_touch_interval_s = (liveness_ceiling_s / 4).max(worker_timeout_s);
-
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
             platform_property_manager.clone(),
@@ -1221,7 +1207,6 @@ impl SimpleScheduler {
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
             spec.dispatch_ack_timeout_s,
-            operation_touch_interval_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
             has_peers,
@@ -1582,6 +1567,16 @@ impl WorkerScheduler for SimpleScheduler {
     ) -> Result<(), Error> {
         self.worker_scheduler
             .worker_keep_alive_received(worker_id, timestamp, load)
+            .await
+    }
+
+    async fn worker_running_operations_reported(
+        &self,
+        worker_id: &WorkerId,
+        operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_running_operations_reported(worker_id, operation_ids)
             .await
     }
 

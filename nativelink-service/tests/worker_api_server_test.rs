@@ -197,7 +197,6 @@ async fn setup_api_server_with(
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
         dispatch_ack_timeout_s,
-        0, // operation_touch_interval_s
         worker_registry,
         None,
         false,                   // has_peers
@@ -1213,6 +1212,7 @@ pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
             load: Some(WorkerLoad {
                 free_memory_kb: 1_000,
             }),
+            running_operations: None,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
@@ -1229,6 +1229,7 @@ pub async fn a_decline_keeps_the_worker_paused_until_a_keepalive_test()
             load: Some(WorkerLoad {
                 free_memory_kb: 5_000,
             }),
+            running_operations: None,
         }))
         .await
         .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
@@ -1345,6 +1346,7 @@ pub async fn a_slow_result_does_not_stop_the_stream_reads_test()
                 .worker_stream
                 .send(Update::KeepAliveRequest(KeepAliveRequest {
                     load: Some(WorkerLoad { free_memory_kb }),
+                    running_operations: None,
                 })),
         )
         .await

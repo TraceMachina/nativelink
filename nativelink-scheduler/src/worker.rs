@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -87,7 +87,18 @@ pub struct PendingActionInfoData {
     /// The last resource usage the worker reported for this operation; it
     /// arrives just before the result and says whether the result is a kill.
     pub last_usage: Option<ActionResourceUsage>,
+    /// Keepalive reports in a row that left this operation out. Counted only
+    /// once the worker acknowledged the dispatch; a report that names the
+    /// operation resets it.
+    #[metric(help = "Consecutive keepalive reports that left this operation out.")]
+    pub missed_reports: u32,
 }
+
+/// How many keepalive reports in a row may leave an acknowledged operation
+/// out before the worker is taken to have dropped it. One miss is a report
+/// sent while the dispatch was still landing; two is a worker that ran the
+/// action and whose result never arrived.
+pub const LOST_AFTER_MISSED_REPORTS: u32 = 2;
 
 /// Represents a connection to a worker and used as the medium to
 /// interact with the worker from the client/scheduler.
@@ -117,10 +128,6 @@ pub struct Worker {
     // the LRUCache in the Workers struct.
     #[metric(help = "Last time this worker was communicated with.")]
     pub last_update_timestamp: WorkerTimestamp,
-
-    /// When this worker's running operations last had their worker-update
-    /// timestamp refreshed in the store from its keepalive.
-    pub last_operation_touch_timestamp: WorkerTimestamp,
 
     /// Whether the worker rejected the last action due to back pressure.
     #[metric(help = "If the worker is paused.")]
@@ -231,7 +238,6 @@ impl Worker {
             tx,
             running_action_infos: HashMap::new(),
             last_update_timestamp: timestamp,
-            last_operation_touch_timestamp: timestamp,
             is_paused: false,
             pause_needs_kb: None,
             admits_when_idle: false,
@@ -370,6 +376,30 @@ impl Worker {
         }
     }
 
+    /// Takes a keepalive's report of what the worker is running and returns
+    /// the acknowledged operations it has left out of
+    /// [`LOST_AFTER_MISSED_REPORTS`] reports in a row. An operation the
+    /// worker was told to kill is on its way off and not counted; one it has
+    /// not acknowledged may still be in transit, which the acknowledgement
+    /// sweep covers.
+    pub fn unreported_operations(&mut self, reported: &HashSet<OperationId>) -> Vec<OperationId> {
+        let mut lost = Vec::new();
+        for (operation_id, pending) in &mut self.running_action_infos {
+            if reported.contains(operation_id) {
+                pending.missed_reports = 0;
+                continue;
+            }
+            if !pending.accepted || pending.kill_requested_at.is_some() {
+                continue;
+            }
+            pending.missed_reports += 1;
+            if pending.missed_reports >= LOST_AFTER_MISSED_REPORTS {
+                lost.push(operation_id.clone());
+            }
+        }
+        lost
+    }
+
     /// Operations dispatched at or before `cutoff` that the worker never
     /// acknowledged.
     pub fn unacknowledged(&self, cutoff: WorkerTimestamp) -> Vec<OperationId> {
@@ -415,6 +445,7 @@ impl Worker {
                     PendingActionInfoData {
                         action_info,
                         kill_requested_at: None,
+                        missed_reports: 0,
                         dispatched_at,
                         accepted: false,
                         last_usage: None,

@@ -58,6 +58,19 @@ message KeepAliveRequest {
     /// The worker's spare capacity as of this keepalive.
     WorkerLoad load = 1;
 
+    /// The operations the worker is running as of this keepalive. A worker
+    /// that reports them lets the scheduler tell an operation the worker
+    /// still runs from one whose result never arrived. Absent from workers
+    /// that do not report.
+    RunningOperations running_operations = 2;
+
+    reserved 3; // NextId.
+}
+
+/// The operations a worker is running, by operation id.
+message RunningOperations {
+    repeated string operation_ids = 1;
+
     reserved 2; // NextId.
 }
 

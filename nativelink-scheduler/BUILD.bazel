@@ -91,8 +91,8 @@ rust_test_suite(
         "tests/store_awaited_action_db_test.rs",
         "tests/unsatisfiable_action_test.rs",
         "tests/worker_capability_index_test.rs",
-        "tests/worker_keepalive_touch_test.rs",
         "tests/worker_registry_test.rs",
+        "tests/worker_running_operations_report_test.rs",
     ],
     compile_data = [
         "tests/utils/scheduler_utils.rs",

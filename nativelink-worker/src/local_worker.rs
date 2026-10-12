@@ -18,7 +18,7 @@ use core::str;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -34,8 +34,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
-    GoingAwayRequest, KeepAliveRequest, StartExecute, UpdateForWorker, WorkerLoad,
-    execute_declined, execute_result,
+    GoingAwayRequest, KeepAliveRequest, RunningOperations, StartExecute, UpdateForWorker,
+    WorkerLoad, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -47,6 +47,7 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{background_spawn, spawn, spawn_blocking, tls_utils};
 use opentelemetry::context::Context;
+use parking_lot::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{process, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -427,7 +428,13 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     }
 
     /// Starts a background spawn/thread that will send a message to the server every `timeout / 2`.
-    async fn start_keep_alive(&self) -> Result<(), Error> {
+    /// Each keepalive carries `running_operations`, what this worker holds
+    /// from dispatch to published result, so the scheduler can tell an
+    /// operation still running here from one whose result it never saw.
+    async fn start_keep_alive(
+        &self,
+        running_operations: Arc<Mutex<HashSet<String>>>,
+    ) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
         let timeout = self
@@ -460,7 +467,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 // actions declared less than they use.
                 let load = crate::capacity::free_memory_kb()
                     .map(|free_memory_kb| WorkerLoad { free_memory_kb });
-                if let Err(e) = grpc_client.keep_alive(KeepAliveRequest { load }).await {
+                let operation_ids = running_operations.lock().iter().cloned().collect();
+                let request = KeepAliveRequest {
+                    load,
+                    running_operations: Some(RunningOperations { operation_ids }),
+                };
+                if let Err(e) = grpc_client.keep_alive(request).await {
                     error!(?e, "Failed to send KeepAlive in LocalWorker");
                     return Err(e.append("KeepAlive failed; reconnecting to the scheduler"));
                 }
@@ -489,7 +501,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         // giving mutable access to stuff in this struct.
         // NOTE: If you ever return from this function it will disconnect from the scheduler.
         let mut futures = FuturesUnordered::new();
-        futures.push(self.start_keep_alive().boxed());
+        // What this worker is running, from the dispatch until the result is
+        // published, reported on every keepalive.
+        let running_operations = Arc::new(Mutex::new(HashSet::new()));
+        futures.push(self.start_keep_alive(running_operations.clone()).boxed());
 
         let (add_future_channel, add_future_rx) = mpsc::unbounded_channel();
         let mut add_future_rx = UnboundedReceiverStream::new(add_future_rx).fuse();
@@ -617,6 +632,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             let execute_request = start_execute.execute_request.as_ref();
                             let operation_id = start_execute.operation_id.clone();
                             let operation_id_to_log = operation_id.clone();
+                            let tracked_operation_id = operation_id.clone();
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
@@ -811,10 +827,15 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             let actions_notify = actions_notify.clone();
                             let actions_in_flight_fail = actions_in_flight.clone();
                             let actions_notify_fail = actions_notify.clone();
+                            let running_operations_done = running_operations.clone();
+                            let running_operations_fail = running_operations.clone();
+                            let tracked_done = tracked_operation_id.clone();
+                            let tracked_fail = tracked_operation_id.clone();
                             // Counted from the dispatch, so the next one is
                             // admitted against this slot while the
                             // acknowledgement is still on its way.
                             actions_in_flight.fetch_add(1, Ordering::Release);
+                            running_operations.lock().insert(tracked_operation_id);
 
                             futures.push(
                                 async move {
@@ -833,6 +854,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     }
                                     add_future_channel
                                         .send(make_publish_future(res).then(move |res| {
+                                            running_operations_done.lock().remove(&tracked_done);
                                             actions_in_flight.fetch_sub(1, Ordering::Release);
                                             actions_notify.notify_one();
                                             core::future::ready(res)
@@ -844,6 +866,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 })
                                 .or_else(move |err| {
                                     // If the make_publish_future is not run we still need to notify.
+                                    running_operations_fail.lock().remove(&tracked_fail);
                                     actions_in_flight_fail.fetch_sub(1, Ordering::Release);
                                     actions_notify_fail.notify_one();
                                     core::future::ready(Err(err))
