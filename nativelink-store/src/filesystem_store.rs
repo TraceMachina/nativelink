@@ -1549,16 +1549,40 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
     /// acquisition and thread hop to dispatch one cost tens: asking per path
     /// spent ~4.6s per action on a 15k-file tree, and asking once for the tree
     /// spends ~37ms.
+    ///
+    /// A hit also counts as a use of the blob. The variant lives outside the
+    /// eviction index, so a toolchain binary that every action hardlinks from
+    /// its variant would otherwise never move in the LRU and be evicted as the
+    /// coldest entry of a full store, taking its variant with it under the
+    /// next action's batch. One batched lookup refreshes every hit's position;
+    /// a hit whose blob is no longer indexed is a miss, so the per-digest path
+    /// re-populates it rather than handing out an orphaned variant.
     pub async fn get_executable_hardlink_sources(
         &self,
         digests: &[DigestInfo],
     ) -> Vec<Result<OsString, Error>> {
-        let mut tasks = Vec::with_capacity(digests.len());
-        for (digest, hit) in digests
+        let mut hits = self.materialized_variants(digests).await;
+        let hit_keys: Vec<StoreKey<'static>> = digests
             .iter()
-            .copied()
-            .zip(self.materialized_variants(digests).await)
-        {
+            .zip(&hits)
+            .filter(|(_, hit)| hit.is_some())
+            .map(|(digest, _)| StoreKey::Digest(*digest))
+            .collect();
+        if !hit_keys.is_empty() {
+            let mut indexed = vec![None; hit_keys.len()];
+            self.evicting_map
+                .sizes_for_keys(hit_keys.iter(), &mut indexed, false /* peek */)
+                .await;
+            let mut indexed = indexed.into_iter();
+            for hit in hits.iter_mut().filter(|hit| hit.is_some()) {
+                if indexed.next().flatten().is_none() {
+                    *hit = None;
+                }
+            }
+        }
+
+        let mut tasks = Vec::with_capacity(digests.len());
+        for (digest, hit) in digests.iter().copied().zip(hits) {
             tasks.push(async move {
                 match hit {
                     Some(path) => Ok(path),

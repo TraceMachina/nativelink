@@ -688,6 +688,166 @@ mod tests {
         Ok(())
     }
 
+    /// Uploads a one-level input tree and stages it into a fresh directory.
+    async fn stage_tree(
+        slow_store: &Arc<MemoryStore>,
+        cas_store: &Arc<FastSlowStore>,
+        fast_store: &Arc<FilesystemStore>,
+        files: Vec<FileNode>,
+    ) -> Result<String, Error> {
+        let root_digest = serialize_and_upload_message(
+            &Directory {
+                files,
+                ..Default::default()
+            },
+            slow_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+        download_to_directory(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_digest,
+            &download_dir,
+        )
+        .await?;
+        Ok(download_dir)
+    }
+
+    /// Every source of a tree is resolved before the batch links any of them,
+    /// and a fast store at its ceiling evicts between the two: here the
+    /// executable's fetch evicts the plain blob, whose resolved path is then
+    /// gone when the batch reaches it. The link is made again from a fresh
+    /// fetch instead of failing the action.
+    #[nativelink_test]
+    async fn download_to_directory_relinks_plain_input_evicted_during_staging()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const PLAIN_CONTENT: &str = "plain input";
+        const EXEC_CONTENT: &str = "#!/bin/sh\nexit 0\n";
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let plain_digest = DigestInfo::new([31u8; 32], PLAIN_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(plain_digest, PLAIN_CONTENT.into())
+            .await?;
+        let exec_digest = DigestInfo::new([32u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "plain.txt".to_string(),
+                    digest: Some(plain_digest.into()),
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(exec_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+            ],
+        )
+        .await?;
+
+        let plain = fs::read(format!("{download_dir}/plain.txt")).await?;
+        assert_eq!(from_utf8(&plain)?, PLAIN_CONTENT);
+        let tool_path = format!("{download_dir}/tool");
+        let tool = fs::read(&tool_path).await?;
+        assert_eq!(from_utf8(&tool)?, EXEC_CONTENT);
+        assert_ne!(
+            fs::metadata(&tool_path).await?.mode() & 0o111,
+            0,
+            "the executable must keep its bit after staging"
+        );
+        Ok(())
+    }
+
+    /// An executable is resolved to its variant before the batch, and a file
+    /// that needs a private copy is fetched after it: in a store that holds one
+    /// blob that fetch evicts the executable, whose variant the eviction
+    /// deletes before the batch can link it. The variant is built again from a
+    /// fresh fetch and linked.
+    #[nativelink_test]
+    async fn download_to_directory_relinks_executable_input_evicted_during_staging()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const EXEC_CONTENT: &str = "#!/bin/sh\necho tool\n";
+        const STAMPED_CONTENT: &str = "stamped";
+        const STAMPED_MODE: u32 = 0o640;
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let exec_digest = DigestInfo::new([33u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+        let stamped_digest = DigestInfo::new([34u8; 32], STAMPED_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(stamped_digest, STAMPED_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(exec_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "stamped.txt".to_string(),
+                    digest: Some(stamped_digest.into()),
+                    node_properties: Some(NodeProperties {
+                        unix_mode: Some(STAMPED_MODE),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await?;
+
+        let tool_path = format!("{download_dir}/tool");
+        let tool = fs::read(&tool_path).await?;
+        assert_eq!(from_utf8(&tool)?, EXEC_CONTENT);
+        assert_ne!(
+            fs::metadata(&tool_path).await?.mode() & 0o111,
+            0,
+            "the executable must keep its bit after staging"
+        );
+        let stamped_path = format!("{download_dir}/stamped.txt");
+        let stamped = fs::read(&stamped_path).await?;
+        assert_eq!(from_utf8(&stamped)?, STAMPED_CONTENT);
+        assert_eq!(
+            fs::metadata(&stamped_path).await?.mode() & 0o777,
+            STAMPED_MODE
+        );
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn download_to_directory_zero_digest_empty_file_test()
     -> Result<(), Box<dyn core::error::Error>> {

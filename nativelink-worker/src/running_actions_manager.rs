@@ -857,7 +857,7 @@ fn download_to_directory_with_lease<'a>(
         // later pass has to create a parent it happens to need.
         fs::create_dir_many(dirs).await?;
         materialize_inline_nodes(cas_store, filesystem_store, inline_nodes).await?;
-        materialize_links(filesystem_store, links).await
+        materialize_links(cas_store, filesystem_store, links).await
     }
     .boxed()
 }
@@ -868,19 +868,22 @@ fn download_to_directory_with_lease<'a>(
 struct PendingLink {
     src: PathBuf,
     dst: PathBuf,
+    /// What `src` was resolved from, so a link whose source is gone by the
+    /// time the batch runs can be resolved and made again.
+    digest: DigestInfo,
+    executable: bool,
     /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
     /// inode cannot be dropped out from under the batch. `None` for an
     /// executable variant, which is a private file outside the entry map and so
     /// has no entry to hold.
     ///
-    /// Neither case is fully closed: a held entry pins the inode but does not
-    /// stop an eviction from *renaming* the blob, and a variant is deleted
-    /// outright by the eviction callback. Both races predate batching, which
-    /// widens the window from a single file to a whole input tree. An operator
-    /// seeing `NotFound` during staging should enable
-    /// `experimental_active_input_leases`, since a leased digest is not
-    /// evicted, or raise the store's `max_bytes`. The durable fix is a
-    /// `hard_link_locked_many` holding every read guard across the batch.
+    /// A held entry pins the inode but does not stop an eviction from renaming
+    /// the blob, and a variant is deleted outright by the eviction callback, so
+    /// a link in the batch can still find its source gone; [`relink_evicted_input`]
+    /// then fetches the blob back and links it at once. An operator who sees
+    /// those repairs often is running the store at its ceiling and should enable
+    /// `experimental_active_input_leases`, since a leased digest is not evicted,
+    /// or raise the store's `max_bytes`.
     _keepalive: Option<Arc<FileEntryImpl>>,
 }
 
@@ -896,7 +899,11 @@ struct PendingFile {
 type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
 
 /// Executes every deferred hardlink of an input tree in one batched pass.
+///
+/// A link whose source has gone missing since it was resolved is made again
+/// from a fresh copy of the blob; any other failure fails the tree.
 async fn materialize_links(
+    cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     links: Vec<PendingLink>,
 ) -> Result<(), Error> {
@@ -905,7 +912,20 @@ async fn materialize_links(
         .map(|link| (link.src.clone(), link.dst.clone()))
         .collect();
     for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
+        let Err(err) = result else {
+            continue;
+        };
         let (src_path, dest) = (&link.src, &link.dst);
+        let result = if err.code == Code::NotFound {
+            info!(
+                digest = %link.digest,
+                ?src_path,
+                "Hardlink source was evicted while the input tree was staged, fetching it again"
+            );
+            relink_evicted_input(cas_store, filesystem_store, link).await
+        } else {
+            Err(err)
+        };
         result.map_err(|e| {
             let src_metadata = std::fs::metadata(src_path);
             let dest_metadata = std::fs::metadata(dest);
@@ -934,6 +954,48 @@ async fn materialize_links(
         })?;
     }
     Ok(())
+}
+
+/// Makes one hardlink again after the batch found its source gone.
+///
+/// Every source of an input tree is resolved before the first link is made,
+/// and a store at its ceiling can evict a blob in between: eviction renames a
+/// plain blob out from under the path that was resolved, and deletes an
+/// executable variant outright. The blob is still in the slow tier, so it is
+/// fetched back and linked at once. A plain blob is linked inside its entry's
+/// path lock, which an eviction has to take to rename it, so this link cannot
+/// lose the same race again; a variant is linked straight after it is
+/// resolved, which leaves a window of one call where the batch left a whole
+/// tree's worth.
+async fn relink_evicted_input(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    link: &PendingLink,
+) -> Result<(), Error> {
+    cas_store
+        .populate_fast_store(link.digest.into())
+        .await
+        .err_tip(|| {
+            format!(
+                "Fetching {} back for an evicted hardlink source",
+                link.digest
+            )
+        })?;
+    let dst = link.dst.clone();
+    if link.executable {
+        let src = filesystem_store
+            .get_executable_hardlink_source(&link.digest)
+            .await
+            .err_tip(|| format!("Resolving the executable variant for {} again", link.digest))?;
+        return fs::hard_link(src, dst).await;
+    }
+    let file_entry = filesystem_store
+        .get_file_entry_for_digest(&link.digest)
+        .await
+        .err_tip(|| "Resolving an evicted hardlink source again")?;
+    file_entry
+        .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
+        .await
 }
 
 /// Resolves every non-executable file of an input tree to its CAS blob path.
@@ -973,6 +1035,8 @@ async fn resolve_plain_files(
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
                 dst: PathBuf::from(file.dst),
+                digest: file.digest,
+                executable: false,
                 _keepalive: Some(file_entry),
             })
         });
@@ -1026,6 +1090,8 @@ async fn resolve_exec_files(
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
                 dst: PathBuf::from(file.dst),
+                digest: file.digest,
+                executable: true,
                 _keepalive: None,
             })
         });
