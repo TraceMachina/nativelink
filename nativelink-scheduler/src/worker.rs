@@ -118,6 +118,10 @@ pub struct Worker {
     #[metric(help = "Last time this worker was communicated with.")]
     pub last_update_timestamp: WorkerTimestamp,
 
+    /// When this worker's running operations last had their worker-update
+    /// timestamp refreshed in the store from its keepalive.
+    pub last_operation_touch_timestamp: WorkerTimestamp,
+
     /// Whether the worker rejected the last action due to back pressure.
     #[metric(help = "If the worker is paused.")]
     pub is_paused: bool,
@@ -227,6 +231,7 @@ impl Worker {
             tx,
             running_action_infos: HashMap::new(),
             last_update_timestamp: timestamp,
+            last_operation_touch_timestamp: timestamp,
             is_paused: false,
             pause_needs_kb: None,
             admits_when_idle: false,

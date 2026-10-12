@@ -197,6 +197,7 @@ async fn setup_api_server_with(
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
         dispatch_ack_timeout_s,
+        0, // operation_touch_interval_s
         worker_registry,
         None,
         false,                   // has_peers
