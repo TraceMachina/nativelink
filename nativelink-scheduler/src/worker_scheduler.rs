@@ -101,6 +101,18 @@ pub trait WorkerScheduler: Sync + Send + Unpin + RootMetricsComponent + 'static 
         load: Option<WorkerLoad>,
     ) -> Result<(), Error>;
 
+    /// A keepalive said which operations the worker is running. An
+    /// acknowledged operation the worker leaves out of two reports in a row
+    /// finished without its result reaching the scheduler; it is released
+    /// and requeued. Ignored unless the scheduler tracks what it dispatched.
+    async fn worker_running_operations_reported(
+        &self,
+        _worker_id: &WorkerId,
+        _operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Any other message from the worker (an acknowledgement, a decline, an
     /// execute result) proves it is alive. Unlike a keepalive it lifts no
     /// pause: a decline is not the worker saying it is ready to be asked

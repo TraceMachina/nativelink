@@ -25,11 +25,23 @@ pub struct WorkerLoad {
     pub free_memory_kb: u64,
 }
 /// / Request object for keep alive requests.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KeepAliveRequest {
     /// / The worker's spare capacity as of this keepalive.
     #[prost(message, optional, tag = "1")]
     pub load: ::core::option::Option<WorkerLoad>,
+    /// / The operations the worker is running as of this keepalive. A worker
+    /// / that reports them lets the scheduler tell an operation the worker
+    /// / still runs from one whose result never arrived. Absent from workers
+    /// / that do not report.
+    #[prost(message, optional, tag = "2")]
+    pub running_operations: ::core::option::Option<RunningOperations>,
+}
+/// / The operations a worker is running, by operation id.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RunningOperations {
+    #[prost(string, repeated, tag = "1")]
+    pub operation_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// / Request object for going away requests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

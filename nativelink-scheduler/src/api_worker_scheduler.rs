@@ -1123,6 +1123,9 @@ impl ApiWorkerSchedulerImpl {
         // failed (e.g. the operation was already torn down after its clients
         // timed out). The worker bookkeeping below must still run, or the
         // worker's platform properties leak until it can never match again.
+        // A result the store refused (Redis at its memory ceiling, a
+        // failover) is lost with it; the record stays Executing on a worker
+        // that no longer runs it, which the executing sweep requeues.
 
         // Clear this action from the current worker if finished.
         let complete_action_res = {
@@ -1351,6 +1354,47 @@ impl ApiWorkerSchedulerImpl {
 
     /// Dispatches this worker has not acknowledged within the timeout, as
     /// of its latest keepalive.
+    /// A keepalive's report of what the worker is running. An acknowledged
+    /// operation this scheduler holds for the worker that the report has
+    /// left out twice in a row ran without its result reaching here: the
+    /// store refused the write, or the worker's report of it was lost. Its
+    /// slot is released and it goes back through the error path, so a result
+    /// the store keeps refusing spends `max_job_retries` and ends in a
+    /// failure the client sees rather than running forever. A requeue the
+    /// store refuses is logged, not raised: the keepalive that carried the
+    /// report must not fail over it, and the executing sweep tries again.
+    async fn running_operations_reported(
+        &mut self,
+        worker_id: &WorkerId,
+        reported: &HashSet<OperationId>,
+    ) {
+        let Some(worker) = self.workers.0.peek_mut(worker_id) else {
+            return;
+        };
+        let lost = worker.unreported_operations(reported);
+        for operation_id in lost {
+            warn!(
+                ?worker_id,
+                %operation_id,
+                "Worker no longer reports an operation it acknowledged and sent no result for; requeuing"
+            );
+            record_dispatch_requeue("unreported");
+            if let Err(err) = self
+                .update_action(
+                    worker_id,
+                    &operation_id,
+                    UpdateOperationType::UpdateWithError(make_err!(
+                        Code::Unavailable,
+                        "The worker stopped running this operation without its result reaching the scheduler"
+                    )),
+                )
+                .await
+            {
+                warn!(?worker_id, %operation_id, ?err, "Could not requeue an operation the worker dropped");
+            }
+        }
+    }
+
     fn unacknowledged_dispatches(
         &self,
         worker_id: &WorkerId,
@@ -1504,6 +1548,20 @@ pub struct ApiWorkerScheduler {
 }
 
 impl ApiWorkerScheduler {
+    /// Whether `worker_id`, connected to this scheduler, still holds
+    /// `operation_id`. `None` when the worker is not connected here.
+    pub async fn running_on_worker(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+    ) -> Option<bool> {
+        let inner = self.inner.lock().await;
+        inner
+            .workers
+            .peek(worker_id)
+            .map(|worker| worker.running_action_infos.contains_key(operation_id))
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         worker_state_manager: Arc<dyn WorkerStateManager>,
@@ -1981,6 +2039,19 @@ impl WorkerScheduler for ApiWorkerScheduler {
         load: Option<WorkerLoad>,
     ) -> Result<(), Error> {
         self.refresh_worker(worker_id, timestamp, load, true).await
+    }
+
+    async fn worker_running_operations_reported(
+        &self,
+        worker_id: &WorkerId,
+        operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        let reported: HashSet<OperationId> = operation_ids.into_iter().collect();
+        let mut inner = self.inner.lock().await;
+        inner
+            .running_operations_reported(worker_id, &reported)
+            .await;
+        Ok(())
     }
 
     async fn worker_liveness_refreshed(

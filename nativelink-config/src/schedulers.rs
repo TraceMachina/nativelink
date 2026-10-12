@@ -106,6 +106,11 @@ const fn default_fallback_match_interval_s() -> i64 {
     5
 }
 
+// defaults to every 30s
+const fn default_executing_sweep_interval_s() -> i64 {
+    30
+}
+
 #[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -186,6 +191,21 @@ pub struct SimpleSpec {
     /// Default: 0 (disabled)
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub max_action_executing_timeout_s: u64,
+
+    /// How often the scheduler sweeps executing actions for ones to retire:
+    /// an action past `max_action_executing_timeout_s` (or its own
+    /// `Action.timeout` plus `worker_timeout_s`) with no word from its
+    /// worker, and an action whose worker is connected to this scheduler but
+    /// no longer runs it, which means its result was lost on the way to the
+    /// store. Without the sweep those checks run only inside a client's
+    /// `Execute` or `WaitExecution` call, once per `worker_timeout_s`, and never
+    /// once the client has gone.
+    /// Defaults to 30s. Zero or any negative value disables it.
+    #[serde(
+        default = "default_executing_sweep_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand_and_negative"
+    )]
+    pub executing_sweep_interval_s: i64,
 
     /// Evict a worker that has not reported back on an operation it was
     /// told to kill within this many seconds. A healthy worker
