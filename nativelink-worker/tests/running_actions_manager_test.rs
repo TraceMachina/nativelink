@@ -30,7 +30,7 @@ mod tests {
     use std::ffi::OsString;
     use std::io::{Cursor, Write};
     #[cfg(target_family = "unix")]
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,8 +149,24 @@ mod tests {
         ),
         Error,
     > {
+        setup_stores_at(make_temp_path("content_path"), eviction_policy).await
+    }
+
+    /// Same, with the fast store's content directory chosen by the test.
+    async fn setup_stores_at(
+        content_path: String,
+        eviction_policy: Option<EvictionPolicy>,
+    ) -> Result<
+        (
+            Arc<FilesystemStore>,
+            Arc<MemoryStore>,
+            Arc<FastSlowStore>,
+            Arc<MemoryStore>,
+        ),
+        Error,
+    > {
         let fast_config = FilesystemSpec {
-            content_path: make_temp_path("content_path"),
+            content_path,
             temp_path: make_temp_path("temp_path"),
             eviction_policy,
             ..Default::default()
@@ -847,6 +863,55 @@ mod tests {
         assert_eq!(
             fs::metadata(&stamped_path).await?.mode() & 0o777,
             STAMPED_MODE
+        );
+        Ok(())
+    }
+
+    /// An executable variant whose blob is gone from the index is a miss, so
+    /// staging fetches the blob again: the file is linked, and the blob is
+    /// indexed so its next eviction takes the variant with it.
+    #[nativelink_test]
+    async fn download_to_directory_reindexes_an_orphaned_executable_variant()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const EXEC_CONTENT: &str = "#!/bin/sh\necho orphan\n";
+
+        let content_path = make_temp_path("content_path");
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_at(content_path.clone(), None).await?;
+        let exec_digest = DigestInfo::new([35u8; 32], EXEC_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(exec_digest, EXEC_CONTENT.into())
+            .await?;
+        // Its variant on disk with nothing in the fast store's index.
+        let variant_dir = format!("{content_path}.exec/d2");
+        fs::create_dir_all(&variant_dir).await?;
+        let variant_path = format!("{variant_dir}/{exec_digest}");
+        std::fs::write(&variant_path, EXEC_CONTENT)?;
+        #[cfg(target_family = "unix")]
+        std::fs::set_permissions(&variant_path, std::fs::Permissions::from_mode(0o555))?;
+        assert!(fast_store.has(exec_digest).await?.is_none());
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![FileNode {
+                name: "tool".to_string(),
+                digest: Some(exec_digest.into()),
+                is_executable: true,
+                ..Default::default()
+            }],
+        )
+        .await?;
+
+        let tool_path = format!("{download_dir}/tool");
+        assert_eq!(from_utf8(&fs::read(&tool_path).await?)?, EXEC_CONTENT);
+        #[cfg(target_family = "unix")]
+        assert_ne!(fs::metadata(&tool_path).await?.mode() & 0o111, 0);
+        assert!(
+            fast_store.has(exec_digest).await?.is_some(),
+            "the blob behind an orphaned variant must be indexed again"
         );
         Ok(())
     }

@@ -900,6 +900,11 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
             .with_unit("{worker}")
             .build(),
 
+        input_relinks: meter
+            .u64_counter("worker.input.relinks")
+            .with_description("Input hardlinks made again because the fast store evicted their source while the tree was staged, by kind: plain, executable")
+            .build(),
+
         dispatch_requeues: meter
             .u64_counter("scheduler.dispatch.requeues")
             .with_description("Dispatches sent back to the queue untried, by reason: declined, channel_full, unacknowledged")
@@ -947,6 +952,8 @@ pub struct WorkerMetrics {
     pub worker_connections: metrics::Counter<u64>,
     /// Workers that have left, cumulative, by reason.
     pub worker_disconnections: metrics::Counter<u64>,
+    /// Input hardlinks made again after their source was evicted mid-staging, by kind.
+    pub input_relinks: metrics::Counter<u64>,
     /// Dispatches requeued untried, by reason.
     pub dispatch_requeues: metrics::Counter<u64>,
     /// Keepalives received, cumulative.
@@ -999,6 +1006,15 @@ pub fn record_dispatch_requeue(reason: &'static str) {
     WORKER_METRICS
         .dispatch_requeues
         .add(1, &[KeyValue::new("reason", reason)]);
+}
+
+/// Records an input hardlink made again because the fast store evicted its
+/// source between resolving the tree and linking it. A steady rate says the
+/// store runs at its ceiling.
+pub fn record_input_relink(kind: &'static str) {
+    WORKER_METRICS
+        .input_relinks
+        .add(1, &[KeyValue::new("kind", kind)]);
 }
 
 /// Records a keepalive from a worker.

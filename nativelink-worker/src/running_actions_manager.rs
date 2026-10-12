@@ -68,6 +68,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+use nativelink_util::metrics::record_input_relink;
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
@@ -898,6 +899,9 @@ struct PendingFile {
 /// materialize one at a time, for one input subtree.
 type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
 
+/// How many evicted inputs of one tree are fetched back at once.
+const INPUT_RELINK_CONCURRENCY: usize = 32;
+
 /// Executes every deferred hardlink of an input tree in one batched pass.
 ///
 /// A link whose source has gone missing since it was resolved is made again
@@ -911,49 +915,83 @@ async fn materialize_links(
         .iter()
         .map(|link| (link.src.clone(), link.dst.clone()))
         .collect();
+    let mut evicted = Vec::new();
     for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
         let Err(err) = result else {
             continue;
         };
-        let (src_path, dest) = (&link.src, &link.dst);
-        let result = if err.code == Code::NotFound {
-            info!(
-                digest = %link.digest,
-                ?src_path,
-                "Hardlink source was evicted while the input tree was staged, fetching it again"
-            );
-            relink_evicted_input(cas_store, filesystem_store, link).await
-        } else {
-            Err(err)
-        };
-        result.map_err(|e| {
-            let src_metadata = std::fs::metadata(src_path);
-            let dest_metadata = std::fs::metadata(dest);
-            let dest_parent_metadata = dest.parent().map(Path::metadata);
-            let snapshot = filesystem_store.get_eviction_snapshot();
-            warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
-            if e.code == Code::NotFound {
-                e.append(
-                    format!(
-                    "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
-                    This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                    To fix this issue:\n\
-                    1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                    2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                    3. The setting is typically found in your nativelink.json config under:\n\
-                    stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                    4. Restart NativeLink after making the change\n\n\
-                    If this error persists after increasing max_bytes several times, please report at:\n\
-                    https://github.com/TraceMachina/nativelink/issues\n\
-                    Include your config file and both server and client logs to help us assist you.",
-                    src_path.display(), dest.display()
-                ))
-            } else {
-                e.append(format!("Could not make hardlink from {} to {}", src_path.display(), dest.display()))
-            }
-        })?;
+        // `NotFound` also names a missing destination directory. Only a
+        // source that is gone is the store's eviction, and only that is
+        // worth a fetch.
+        let source_gone = err.code == Code::NotFound
+            && matches!(fs::metadata(&link.src).await, Err(e) if e.code == Code::NotFound);
+        if !source_gone {
+            return Err(hardlink_error(filesystem_store, link, err));
+        }
+        evicted.push(link);
     }
-    Ok(())
+    if evicted.is_empty() {
+        return Ok(());
+    }
+    // The store at its ceiling is where several inputs of one tree go at
+    // once, so they are fetched back together, not one round trip each.
+    let repairs: Vec<BoxFuture<'_, Result<(), Error>>> = evicted
+        .into_iter()
+        .map(|link| relink_and_report(cas_store, filesystem_store, link).boxed())
+        .collect();
+    futures::stream::iter(repairs)
+        .buffer_unordered(INPUT_RELINK_CONCURRENCY)
+        .try_collect::<()>()
+        .await
+}
+
+async fn relink_and_report(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    link: &PendingLink,
+) -> Result<(), Error> {
+    info!(
+        digest = %link.digest,
+        src_path = ?link.src,
+        "Hardlink source was evicted while the input tree was staged, fetching it again"
+    );
+    relink_evicted_input(cas_store, filesystem_store, link)
+        .await
+        .map_err(|err| hardlink_error(filesystem_store, link, err))
+}
+
+/// The error a failed input hardlink surfaces as, with what an operator needs
+/// to tell an evicted source from everything else.
+fn hardlink_error(filesystem_store: Pin<&FilesystemStore>, link: &PendingLink, e: Error) -> Error {
+    let (src_path, dest) = (&link.src, &link.dst);
+    let src_metadata = std::fs::metadata(src_path);
+    let dest_metadata = std::fs::metadata(dest);
+    let dest_parent_metadata = dest.parent().map(Path::metadata);
+    let snapshot = filesystem_store.get_eviction_snapshot();
+    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
+    if e.code == Code::NotFound {
+        e.append(
+            format!(
+            "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
+            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+            To fix this issue:\n\
+            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+            3. The setting is typically found in your nativelink.json config under:\n\
+            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+            4. Restart NativeLink after making the change\n\n\
+            If this error persists after increasing max_bytes several times, please report at:\n\
+            https://github.com/TraceMachina/nativelink/issues\n\
+            Include your config file and both server and client logs to help us assist you.",
+            src_path.display(), dest.display()
+        ))
+    } else {
+        e.append(format!(
+            "Could not make hardlink from {} to {}",
+            src_path.display(),
+            dest.display()
+        ))
+    }
 }
 
 /// Makes one hardlink again after the batch found its source gone.
@@ -987,7 +1025,9 @@ async fn relink_evicted_input(
             .get_executable_hardlink_source(&link.digest)
             .await
             .err_tip(|| format!("Resolving the executable variant for {} again", link.digest))?;
-        return fs::hard_link(src, dst).await;
+        fs::hard_link(src, dst).await?;
+        record_input_relink("executable");
+        return Ok(());
     }
     let file_entry = filesystem_store
         .get_file_entry_for_digest(&link.digest)
@@ -995,7 +1035,9 @@ async fn relink_evicted_input(
         .err_tip(|| "Resolving an evicted hardlink source again")?;
     file_entry
         .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
-        .await
+        .await?;
+    record_input_relink("plain");
+    Ok(())
 }
 
 /// Resolves every non-executable file of an input tree to its CAS blob path.

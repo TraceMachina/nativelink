@@ -1964,6 +1964,38 @@ async fn executable_variant_hit_refreshes_blob_recency() -> Result<(), Error> {
     Ok(())
 }
 
+/// A variant left on disk after its blob dropped out of the index is not a
+/// hit: handing it out would keep an untracked file in use for good. It is a
+/// miss, so the caller fills the fast store again and the blob is indexed.
+#[cfg(target_family = "unix")]
+#[nativelink_test]
+async fn orphaned_executable_variant_is_a_miss() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            ..Default::default()
+        })
+        .await?,
+    );
+    // The variant without its blob, as a deletion that never ran leaves it.
+    let variant_path = format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest}");
+    fs::create_dir_all(format!("{content_path}.exec/{DIGEST_FOLDER_V2}")).await?;
+    std::fs::write(&variant_path, VALUE1)?;
+
+    let sources = store.get_executable_hardlink_sources(&[digest]).await;
+    assert_eq!(sources.len(), 1);
+    let err = sources
+        .into_iter()
+        .next()
+        .unwrap()
+        .expect_err("an orphaned variant must not be handed out");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    Ok(())
+}
+
 /// This test simulates a full disk without needing one. It writes past the `RLIMIT_FSIZE`
 /// cap, thus failing with `EFBIG`, which tokio defers exactly like `ENOSPC`. The
 /// [`SIGXFSZ`](`libc::SIGXFSZ`) signal must be ignored or the kernel will kill the process
