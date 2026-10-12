@@ -601,7 +601,10 @@ where
             };
             let awaited_action = match awaited_action {
                 Ok(awaited_action) => awaited_action,
-                Err(err) if is_lost_record(&err) => {
+                Err(err) => {
+                    if !is_lost_record(&err) {
+                        return Err(err).err_tip(|| "In sweep_executing_actions");
+                    }
                     warn!(
                         ?err,
                         "Executing operation listed but its record cannot be read; skipping"
@@ -609,7 +612,6 @@ where
                     record_awaited_action_orphan("executing_sweep");
                     continue;
                 }
-                Err(err) => return Err(err).err_tip(|| "In sweep_executing_actions"),
             };
             if !matches!(awaited_action.state().stage, ActionStage::Executing) {
                 continue;

@@ -202,8 +202,9 @@ pub struct SimpleScheduler {
     task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
 
     /// Background task that retires executing actions whose worker has gone
-    /// quiet or no longer runs them. Dropped with the struct.
-    task_executing_sweep_spawn: JoinHandleDropGuard<()>,
+    /// quiet or no longer runs them. Dropped with the struct; `None` when
+    /// `executing_sweep_interval_s` disables it.
+    task_executing_sweep_spawn: Option<JoinHandleDropGuard<()>>,
 
     /// Background task that swaps worker capabilities with peer schedulers
     /// on the same state. Dropped with the struct, like the matching task.
@@ -1258,13 +1259,11 @@ impl SimpleScheduler {
             ..=0 => None,
             secs => Some(Duration::from_secs(secs.unsigned_abs())),
         };
-        let task_executing_sweep_spawn = {
+        // Disabled means no task at all, not a task that returns at once.
+        let task_executing_sweep_spawn = executing_sweep_interval.map(|interval| {
             let state_manager = Arc::downgrade(&state_manager);
             let worker_scheduler = Arc::downgrade(&worker_scheduler);
             spawn!("simple_scheduler_task_executing_sweep", async move {
-                let Some(interval) = executing_sweep_interval else {
-                    return;
-                };
                 // Long enough that an assignment's store write and the
                 // dispatch behind it are never mistaken for a lost result.
                 let lost_grace = (interval * 2).max(Duration::from_mins(1));
@@ -1274,6 +1273,10 @@ impl SimpleScheduler {
                     let (Some(state_manager), Some(worker_scheduler)) =
                         (state_manager.upgrade(), worker_scheduler.upgrade())
                     else {
+                        // Only on process shutdown, when the scheduler that
+                        // owned this task is gone; worth a line if it ever
+                        // happens any other way.
+                        info!("Scheduler dropped, stopping the executing sweep");
                         return;
                     };
                     let check_scheduler = worker_scheduler.clone();
@@ -1308,7 +1311,7 @@ impl SimpleScheduler {
                     drop((state_manager, worker_scheduler));
                 }
             })
-        };
+        });
 
         // Only runs when the state is shared. It runs whatever the timeout,
         // so that a peer which does fail actions sees these workers even
