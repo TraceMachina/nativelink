@@ -90,6 +90,7 @@ pub struct AzureBlobStore<NowFn> {
     #[metric(help = "The number of concurrent uploads allowed")]
     max_concurrent_uploads: usize,
     throttle_retry_delay: Duration,
+    throttle_retry_max_delay: Duration,
 }
 
 impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
@@ -186,6 +187,30 @@ where
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
+        let throttle_retry_delay = Duration::try_from_secs_f32(spec.common.throttle_retry_delay_s)
+            .map_err(|e| make_err!(Code::InvalidArgument, "Invalid throttle_retry_delay_s: {e}"))?;
+        let throttle_retry_max_delay =
+            Duration::try_from_secs_f32(spec.common.throttle_retry_max_delay_s).map_err(|e| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Invalid throttle_retry_max_delay_s: {e}"
+                )
+            })?;
+        if throttle_retry_max_delay < throttle_retry_delay {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "throttle_retry_max_delay_s ({}) is less than throttle_retry_delay_s ({})",
+                spec.common.throttle_retry_max_delay_s,
+                spec.common.throttle_retry_delay_s
+            ));
+        }
+        let throttle_retry_budget =
+            Duration::try_from_secs_f32(spec.common.throttle_retry_budget_s).map_err(|e| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Invalid throttle_retry_budget_s: {e}"
+                )
+            })?;
         Ok(Arc::new(Self {
             client: Arc::new(client),
             now_fn,
@@ -200,7 +225,8 @@ where
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
                 spec.common.retry.clone(),
-            ),
+            )
+            .with_throttle_budget(throttle_retry_budget),
             consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
                 .common
@@ -210,10 +236,8 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS),
-            throttle_retry_delay: Duration::try_from_secs_f32(spec.common.throttle_retry_delay_s)
-                .map_err(|e| {
-                make_err!(Code::InvalidArgument, "Invalid throttle_retry_delay_s: {e}")
-            })?,
+            throttle_retry_delay,
+            throttle_retry_max_delay,
         }))
     }
 
@@ -223,7 +247,8 @@ where
 
     /// How long a throttled response (503 `ServerBusy` or 429) asked us to
     /// wait, or `None` when the error is anything else. The wait is the
-    /// `Retry-After` header when present, never less than the configured floor.
+    /// `Retry-After` header when present, never less than the configured
+    /// floor and never more than the configured cap.
     fn throttle_wait(&self, err: &azure_core::Error, op: &'static str) -> Option<Duration> {
         let ErrorKind::HttpResponse {
             status,
@@ -255,11 +280,20 @@ where
                     .map(Duration::from_secs)
             })
         });
-        Some(
-            header_wait
-                .unwrap_or(Duration::ZERO)
-                .max(self.throttle_retry_delay),
-        )
+        let asked = header_wait
+            .unwrap_or(Duration::ZERO)
+            .max(self.throttle_retry_delay);
+        if asked > self.throttle_retry_max_delay {
+            event!(
+                Level::WARN,
+                ?op,
+                asked_s = asked.as_secs_f32(),
+                cap_s = self.throttle_retry_max_delay.as_secs_f32(),
+                "Throttled response asked for a longer wait than throttle_retry_max_delay_s; waiting the cap"
+            );
+            return Some(self.throttle_retry_max_delay);
+        }
+        Some(asked)
     }
 
     fn retry_later<T>(

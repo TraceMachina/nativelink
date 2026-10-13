@@ -1407,16 +1407,44 @@ pub struct CommonObjectSpec {
 
     /// Minimum number of seconds to wait after a response that asked the
     /// client to slow down (HTTP 503 `ServerBusy` or 429) when it carries no
-    /// `Retry-After` header. The exponential backoff from `retry` still
-    /// applies when it is longer.
+    /// `Retry-After` header.
     ///
     /// Default: 2.0
     #[serde(default = "default_throttle_retry_delay_s")]
     pub throttle_retry_delay_s: f32,
+
+    /// Longest wait honoured from a `Retry-After` header. A server or proxy
+    /// asking for more waits this long instead, and the capped wait is
+    /// logged. Must not be less than `throttle_retry_delay_s`.
+    ///
+    /// Default: 60.0
+    #[serde(default = "default_throttle_retry_max_delay_s")]
+    pub throttle_retry_max_delay_s: f32,
+
+    /// Seconds one operation may spend waiting on throttled responses
+    /// without spending any of `retry.max_retries`: while the budget lasts
+    /// each throttle waits what the server asked (at least
+    /// `throttle_retry_delay_s`, at most `throttle_retry_max_delay_s`) and
+    /// the attempt is not counted, so a long throttle is ridden out rather
+    /// than failed on the seventh try. Once it is used up, throttles spend
+    /// attempts and backoff like any other transient error. 0 turns the
+    /// budget off.
+    ///
+    /// Default: 120.0
+    #[serde(default = "default_throttle_retry_budget_s")]
+    pub throttle_retry_budget_s: f32,
 }
 
 const fn default_throttle_retry_delay_s() -> f32 {
     2.0
+}
+
+const fn default_throttle_retry_max_delay_s() -> f32 {
+    60.0
+}
+
+const fn default_throttle_retry_budget_s() -> f32 {
+    120.0
 }
 
 impl Default for CommonObjectSpec {
@@ -1430,6 +1458,8 @@ impl Default for CommonObjectSpec {
             insecure_allow_http: false,
             disable_http2: false,
             throttle_retry_delay_s: default_throttle_retry_delay_s(),
+            throttle_retry_max_delay_s: default_throttle_retry_max_delay_s(),
+            throttle_retry_budget_s: default_throttle_retry_budget_s(),
         }
     }
 }
