@@ -4106,6 +4106,7 @@ exit 0
     /// `fetch_setup` with the action's own timeout set and, when `nested`,
     /// the flaky file under a subdirectory beside a second file at the
     /// root, so that a failed attempt leaves a partly built tree behind.
+    #[cfg(target_family = "unix")]
     async fn fetch_setup_tree<S: StoreDriver>(
         max_download_timeout: Duration,
         action_timeout: Option<Duration>,
