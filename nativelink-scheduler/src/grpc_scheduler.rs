@@ -38,6 +38,7 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
+use nativelink_util::telemetry::inject_context;
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
 use tokio::select;
@@ -218,10 +219,12 @@ impl GrpcScheduler {
                 .connection("get_known_properties".into())
                 .await
                 .err_tip(|| "in get_platform_property_manager()")?;
+            let mut request = Request::new(GetCapabilitiesRequest {
+                instance_name: instance_name.to_string(),
+            });
+            inject_context(&mut request);
             let capabilities_result = CapabilitiesClient::new(channel)
-                .get_capabilities(GetCapabilitiesRequest {
-                    instance_name: instance_name.to_string(),
-                })
+                .get_capabilities(request)
                 .await
                 .err_tip(|| "Retrieving upstream GrpcScheduler capabilities");
             let capabilities = capabilities_result?.into_inner();
@@ -276,8 +279,14 @@ impl GrpcScheduler {
                     .connection(format!("add_action: {:?}", request.action_digest))
                     .await
                     .err_tip(|| "in add_action()")?;
+                // The upstream reads the identity and the client's build
+                // metadata from the context, as this server did; a bare
+                // request would leave its origin events anonymous and its
+                // buck2 isolation off.
+                let mut request = Request::new(request);
+                inject_context(&mut request);
                 ExecutionClient::new(channel)
-                    .execute(Request::new(request))
+                    .execute(request)
                     .await
                     .err_tip(|| "Sending action to upstream scheduler")
             })
@@ -311,8 +320,10 @@ impl GrpcScheduler {
                     .connection(format!("filter_operations: {}", request.name))
                     .await
                     .err_tip(|| "in find_by_client_operation_id()")?;
+                let mut request = Request::new(request);
+                inject_context(&mut request);
                 ExecutionClient::new(channel)
-                    .wait_execution(Request::new(request))
+                    .wait_execution(request)
                     .await
                     .err_tip(|| "While getting wait_execution stream")
             })
