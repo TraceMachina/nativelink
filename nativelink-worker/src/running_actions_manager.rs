@@ -5543,16 +5543,27 @@ mod tests {
     }
 
     /// The worker's own disk failing maps to the same codes a store
-    /// failure does, but is never retried on this worker.
+    /// failure does, but is never retried on this worker. The error
+    /// numbers are Linux's (ENOSPC, EPIPE), so that part runs on unix.
     #[test]
     fn an_operating_system_error_is_not_a_transient_fetch_error() {
-        let disk_full = Error::from(std::io::Error::from_raw_os_error(28));
-        assert_eq!(disk_full.code, Code::Unknown);
-        assert!(!is_transient_fetch_error(&disk_full), "{disk_full:?}");
-        let broken_pipe =
-            Error::from(std::io::Error::from_raw_os_error(32)).append("Writing an input");
-        assert_eq!(broken_pipe.code, Code::Internal);
-        assert!(!is_transient_fetch_error(&broken_pipe), "{broken_pipe:?}");
+        #[cfg(target_family = "unix")]
+        {
+            let disk_full = Error::from(std::io::Error::from_raw_os_error(28));
+            assert_eq!(disk_full.code, Code::Unknown);
+            assert!(!is_transient_fetch_error(&disk_full), "{disk_full:?}");
+            let broken_pipe =
+                Error::from(std::io::Error::from_raw_os_error(32)).append("Writing an input");
+            assert_eq!(broken_pipe.code, Code::Internal);
+            assert!(!is_transient_fetch_error(&broken_pipe), "{broken_pipe:?}");
+        }
+        // What the standard library prints for any OS error, whatever the
+        // platform's number for it.
+        let os_error = Error::from(std::io::Error::other(
+            "No space left on device (os error 28)",
+        ));
+        assert_eq!(os_error.code, Code::Internal);
+        assert!(!is_transient_fetch_error(&os_error), "{os_error:?}");
         // A store that reset the connection is not this worker's disk.
         let reset = Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
         assert_eq!(reset.code, Code::Unavailable);
