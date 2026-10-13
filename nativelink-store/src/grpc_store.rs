@@ -54,7 +54,7 @@ use nativelink_util::proto_stream_utils::{
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
-use nativelink_util::telemetry::{ClientHeaders, inject_context};
+use nativelink_util::telemetry::{forward_client_headers, inject_context};
 use nativelink_util::wire_compression::{
     stream_decode_compressed_upload, stream_encode_compressed_download_from_reader,
 };
@@ -80,20 +80,7 @@ fn enrich_request<T>(
     for (key, value) in headers {
         request.metadata_mut().insert(key.clone(), value.clone());
     }
-    if !forward_headers.is_empty()
-        && let Some(client_headers) = Context::current().get::<ClientHeaders>()
-    {
-        for name in forward_headers {
-            if let Some(value) = client_headers.0.get(&name.to_lowercase())
-                && let (Ok(k), Ok(v)) = (
-                    MetadataKey::from_bytes(name.as_bytes()),
-                    MetadataValue::try_from(value.as_str()),
-                )
-            {
-                request.metadata_mut().insert(k, v);
-            }
-        }
-    }
+    forward_client_headers(&mut request, forward_headers);
     inject_context(&mut request);
     request
 }

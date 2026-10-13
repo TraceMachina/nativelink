@@ -129,11 +129,7 @@ pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
         ))
         .build();
 
-    let propagator = TextMapCompositePropagator::new(vec![
-        Box::new(BaggagePropagator::new()),
-        Box::new(TraceContextPropagator::new()),
-    ]);
-    global::set_text_map_propagator(propagator);
+    init_propagator();
 
     let maybe_channel = maybe_load_balanced_channel().await;
 
@@ -413,6 +409,41 @@ impl<S> tower::Layer<S> for OtlpLayer {
 
     fn layer(&self, service: S) -> Self::Service {
         OtlpMiddleware::new(service, self.identity_required)
+    }
+}
+
+/// Installs the propagator the servers extract with and the forwarders inject
+/// with: W3C baggage and trace context.
+pub fn init_propagator() {
+    global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+        Box::new(BaggagePropagator::new()),
+        Box::new(TraceContextPropagator::new()),
+    ]));
+}
+
+/// Copies the nominated headers of the inbound client request, as the
+/// [`OtlpMiddleware`] stored them in the context, onto an outgoing request.
+/// This is how a client's credentials reach the upstream behind a forwarding
+/// store or scheduler; names match case-insensitively.
+pub fn forward_client_headers<T>(request: &mut tonic::Request<T>, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let Some(client_headers) = opentelemetry::Context::current()
+        .get::<ClientHeaders>()
+        .cloned()
+    else {
+        return;
+    };
+    for name in names {
+        if let Some(value) = client_headers.0.get(&name.to_lowercase())
+            && let (Ok(k), Ok(v)) = (
+                tonic::metadata::MetadataKey::from_bytes(name.as_bytes()),
+                tonic::metadata::MetadataValue::try_from(value.as_str()),
+            )
+        {
+            request.metadata_mut().insert(k, v);
+        }
     }
 }
 
