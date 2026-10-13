@@ -46,6 +46,7 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
 /// The platform properties no worker could satisfy, comma separated.
 pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
+pub const WORKER_PREPARE_OUTCOME: &str = "worker.prepare.outcome";
 
 // Metric attribute keys for tiered stores.
 pub const STORE_TIER: &str = "store.tier";
@@ -1032,7 +1033,7 @@ pub fn record_input_relink(kind: &'static str) {
 pub fn record_prepare_retry(outcome: &'static str) {
     WORKER_METRICS
         .prepare_retries
-        .add(1, &[KeyValue::new("outcome", outcome)]);
+        .add(1, &[KeyValue::new(WORKER_PREPARE_OUTCOME, outcome)]);
 }
 
 /// Records a keepalive from a worker.
