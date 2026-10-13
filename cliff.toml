@@ -78,6 +78,22 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.7.7: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Clear a read-only tree without changing the mode", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Count retries, recoveries and exhausted retries per client", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Fetch an input again when the store evicts it", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Hold a worker for a queued action whose reservation only fits an idle one", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Honor Retry-After on throttled Azure blob responses", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Record the input fetch retry outcome under a prefixed attribute", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "Relink an input whose blob was evicted during staging", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Report queued and executing actions by age", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Report running operations on the worker keepalive", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Resolve a forwarded operation name by its configured instance", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Retry an action's input fetch on the worker after a transient store failure", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Sweep executing actions on the scheduler's clock", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Worker match logging off by default", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "cut CI log noise so real failures stand out", group = "<!-- 4 -->🧪 Testing & CI" },
+
   { message = "Resend a retried event-sink write from offset zero", group = "<!-- 2 -->🐛 Bug Fixes" },
 
   { message = "Drop hint dimensions the ladder does not reserve", group = "<!-- 2 -->🐛 Bug Fixes" },
