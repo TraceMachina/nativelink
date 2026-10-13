@@ -1198,7 +1198,7 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
         worker_holds: meter
             .u64_counter("scheduler.worker.holds")
             .with_description(
-                "Workers held for a queued action that kept finding no room, by outcome: held when the hold began, placed when the action ran, released when the action or the worker left, expired when max_hold_s passed first",
+                "Workers held for a queued action that kept finding no room, by outcome: held when the hold began, placed when a worker took the action, released when the action or the worker left, declined when the held worker declined the action idle, expired when max_hold_s passed first",
             )
             .with_unit("{hold}")
             .build(),
@@ -1408,9 +1408,11 @@ pub fn record_parked_dispatched(count: u64) {
     }
 }
 
-/// Records a worker hold beginning (`held`) or ending: `placed` when the
-/// action ran, `released` when the action left the queue or the worker
-/// left, `expired` when `max_hold_s` passed first.
+/// Records a worker hold beginning (`held`) or ending: `placed` when a
+/// worker took the action, `released` when the action left the queue or
+/// the worker left or drained, `declined` when the held worker declined
+/// the action idle and another is held instead, `expired` when `max_hold_s`
+/// passed first.
 pub fn record_worker_hold(outcome: &'static str) {
     SCHEDULER_METRICS
         .worker_holds

@@ -54,8 +54,8 @@ use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
+use crate::api_worker_scheduler::{ApiWorkerScheduler, QueuedAction};
+use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION, PeerScheduler};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -235,10 +235,6 @@ pub struct SimpleScheduler {
     /// burst drains in a few passes. See `unsatisfiable_fail_cap`.
     last_unsatisfiable_backlog: AtomicUsize,
 
-    /// How long a queued action waits, finding no room on every pass,
-    /// before a worker is held for it; `None` when holds are off.
-    hold_after: Option<Duration>,
-
     /// The clock the state manager uses.
     now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
@@ -409,11 +405,31 @@ impl SimpleScheduler {
         self.do_try_match(false).await
     }
 
-    /// Stands in for the fleet exchange with peer schedulers.
+    /// Stands in for the fleet exchange with peer schedulers: one peer with
+    /// these workers.
     pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
+        self.set_peer_schedulers_for_test(vec![PeerScheduler {
+            scheduler_id: "peer".to_string(),
+            workers: peer_fleet,
+        }])
+        .await;
+    }
+
+    /// Stands in for the fleet exchange with peer schedulers.
+    pub async fn set_peer_schedulers_for_test(&self, peers: Vec<PeerScheduler>) {
         self.worker_scheduler
-            .set_peer_fleet(Some(peer_fleet), (self.now_fn)())
+            .set_peer_fleet(Some(peers), (self.now_fn)())
             .await;
+    }
+
+    /// The id this scheduler publishes to its peers under.
+    pub fn scheduler_id_for_test(&self) -> &str {
+        self.worker_scheduler.scheduler_id()
+    }
+
+    /// The workers held for a queued action right now.
+    pub async fn held_workers_for_test(&self) -> Vec<WorkerId> {
+        self.worker_scheduler.held_workers_for_test().await
     }
 
     /// Stands in for a failed fleet exchange with peer schedulers.
@@ -805,7 +821,10 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         now,
-                        Some(&loaded.action_info.inner.unique_qualifier),
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                        }),
                     )
                     .await
                 else {
@@ -926,7 +945,10 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         unsatisfiable_pass.now,
-                        Some(&loaded.action_info.inner.unique_qualifier),
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                        }),
                     )
                     .await;
                 if generation == capacity_seen || parked.is_empty() {
@@ -965,24 +987,9 @@ impl SimpleScheduler {
                         .map(|_| ()),
                     );
                 }
-                // A worker could run it once one has room. One that has
-                // waited long enough for that gets a worker held for it,
-                // if one would fit it idle (`reservation_hold`).
+                // A worker could run it once one has room. The match
+                // considered holding a worker for it (`reservation_hold`).
                 MatchOutcome::WaitingForCapacity => {
-                    if let Some(hold_after) = self.hold_after
-                        && unsatisfiable_pass
-                            .now
-                            .duration_since(loaded.action_info.inner.insert_timestamp)
-                            .is_ok_and(|waited| waited >= hold_after)
-                    {
-                        workers
-                            .hold_worker_for(
-                                &loaded.action_info.inner.unique_qualifier,
-                                &loaded.action_info.platform_properties,
-                                unsatisfiable_pass.now,
-                            )
-                            .await;
-                    }
                     parked.park(loaded);
                 }
                 // Nothing to wait for; a worker connecting starts a new pass,
@@ -1245,6 +1252,9 @@ impl SimpleScheduler {
             Some(worker_registry.clone()),
         );
 
+        // The id this scheduler publishes its fleet to its peers under, and
+        // takes its turn holding workers by.
+        let scheduler_id = Uuid::new_v4().hyphenated().to_string();
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
             platform_property_manager.clone(),
@@ -1260,6 +1270,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx.clone(),
             has_peers,
             record_ttl,
+            scheduler_id.clone(),
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -1359,7 +1370,6 @@ impl SimpleScheduler {
         // so that a peer which does fail actions sees these workers even
         // while this scheduler is still rolling out or has the timeout off.
         let task_fleet_exchange_spawn = {
-            let scheduler_id = Uuid::new_v4().hyphenated().to_string();
             let state_manager = Arc::downgrade(&state_manager);
             let local_fleet_change_notify = worker_scheduler.local_fleet_change_notify().clone();
             let worker_scheduler = Arc::downgrade(&worker_scheduler);
@@ -1598,10 +1608,6 @@ impl SimpleScheduler {
                 no_worker_tracker: no_worker_action_timeout
                     .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
-                hold_after: spec
-                    .reservation_hold
-                    .as_ref()
-                    .map(|hold| Duration::from_secs(hold.hold_after_s)),
                 now_fn: scheduler_now_fn,
             }
         });

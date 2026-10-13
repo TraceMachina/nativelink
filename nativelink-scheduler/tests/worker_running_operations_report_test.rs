@@ -118,6 +118,7 @@ async fn dispatched() -> Result<Fixture, Error> {
         None,
         false,
         Duration::from_secs(15),
+        "scheduler".to_string(),
     );
     let worker_id = WorkerId::from(String::from("worker"));
     let (tx, mut rx) = mpsc::channel(8);

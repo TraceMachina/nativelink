@@ -202,6 +202,7 @@ async fn setup_api_server_with(
         None,
         false,                   // has_peers
         Duration::from_secs(15), // record_ttl (unused while has_peers = false)
+        "scheduler".to_string(),
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
