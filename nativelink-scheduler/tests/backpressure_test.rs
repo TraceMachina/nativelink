@@ -31,6 +31,7 @@ use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{OperationId, WorkerId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::operation_state_manager::{ClientStateManager, UpdateOperationType};
 use nativelink_util::platform_properties::PlatformProperties;
 use pretty_assertions::assert_eq;
@@ -48,7 +49,12 @@ fn make_scheduler() -> Arc<SimpleScheduler> {
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         &SimpleSpec::default(),
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify,
+            MockInstantWrapped::default,
+            ActiveCountAttributes::default(),
+        ),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,

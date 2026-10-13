@@ -12,19 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+
+use nativelink_error::Code;
 use nativelink_util::action_messages::{
     ActionResult, ActionStage, ExecutionMetadata, FileInfo, NameOrPath,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::metrics::{
-    CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS, ExecutionMetricAttrs, ExecutionStage,
-    WORKER_METRICS, WorkerDisconnectReason, execution_output_bytes, make_execution_attributes,
-    peak_memory_sample, pool_available_sample, record_cache_entries_delta,
-    record_completed_execution_metrics, record_connection_acquired, record_connection_reconnect,
-    record_execution_cpu_time, record_execution_peak_memory, record_health_check,
-    record_matching_pass, record_rpc_served, record_store_tier_io, record_store_tier_read,
-    record_worker_connected, record_worker_disconnected, record_worker_keepalive,
-    record_worker_state, saturating_i64, split_grpc_path,
+    ActiveCountAttributes, CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS,
+    ExecutionMetricAttrs, ExecutionStage, WORKER_METRICS, WorkerDisconnectReason,
+    execution_output_bytes, make_execution_attributes, peak_memory_sample, pool_available_sample,
+    record_cache_entries_delta, record_completed_execution_metrics, record_connection_acquired,
+    record_connection_reconnect, record_execution_cpu_time, record_execution_peak_memory,
+    record_health_check, record_matching_pass, record_rpc_served, record_store_tier_io,
+    record_store_tier_read, record_worker_connected, record_worker_disconnected,
+    record_worker_keepalive, record_worker_state, saturating_i64, split_grpc_path,
 };
 use opentelemetry::KeyValue;
 
@@ -401,4 +404,55 @@ fn peak_memory_sample_bounds_an_absurd_reading() {
     // Absurd readings are bounded rather than wrapped.
     assert_eq!(peak_memory_sample(u64::MAX), 1 << 50);
     assert_eq!(peak_memory_sample(u64::MAX / 512), 1 << 50);
+}
+
+#[test]
+fn active_count_attributes_carry_the_stage_then_each_key_in_order() {
+    let attrs = ActiveCountAttributes::new(&["OSFamily".to_string(), "ISA".to_string()])
+        .expect("distinct keys are accepted");
+    let platform_properties = HashMap::from([("ISA".to_string(), "arm64".to_string())]);
+
+    let attributes = attrs.attributes(ExecutionStage::Queued, &platform_properties);
+
+    assert_eq!(
+        attributes,
+        vec![
+            KeyValue::new("execution.stage", "queued"),
+            // A key the action does not carry is present, as "", so the
+            // attribute set never depends on what an action declares.
+            KeyValue::new("execution.platform.OSFamily", ""),
+            KeyValue::new("execution.platform.ISA", "arm64"),
+        ]
+    );
+    assert_eq!(
+        attrs.values(&platform_properties),
+        vec![String::new(), "arm64".to_string()]
+    );
+    assert_eq!(
+        attrs.attributes_for_values(ExecutionStage::Queued, &attrs.values(&platform_properties)),
+        attributes
+    );
+    assert!(ActiveCountAttributes::new(&[]).expect("no keys").is_empty());
+    assert!(!attrs.is_empty());
+}
+
+#[test]
+fn active_count_attributes_refuse_keys_that_are_one_prometheus_label() {
+    for keys in [
+        ["OSFamily", "OSFamily"],
+        // The collector's Prometheus exporter maps both to
+        // `execution_platform_container_image`.
+        ["container-image", "container.image"],
+        ["gpu_type", "gpu-type"],
+    ] {
+        let err = ActiveCountAttributes::new(&[keys[0].to_string(), keys[1].to_string()])
+            .expect_err("colliding keys must be refused");
+        assert_eq!(err.code, Code::InvalidArgument, "{keys:?}: {err}");
+        assert!(err.to_string().contains(keys[0]), "{keys:?}: {err}");
+        assert!(err.to_string().contains(keys[1]), "{keys:?}: {err}");
+    }
+    assert!(
+        ActiveCountAttributes::new(&["container-image".to_string(), "container_tag".to_string()])
+            .is_ok()
+    );
 }

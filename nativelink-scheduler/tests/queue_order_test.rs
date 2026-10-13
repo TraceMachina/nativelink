@@ -40,6 +40,7 @@ use nativelink_util::action_messages::{
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::metrics::ActiveCountAttributes;
 use nativelink_util::store_trait::SchedulerStore;
 use pretty_assertions::assert_eq;
 use tokio::sync::Notify;
@@ -132,6 +133,7 @@ async fn memory_backend_serves_highest_priority_then_oldest() -> Result<(), Erro
         &EvictionPolicy::default(),
         Arc::new(Notify::new()),
         MockInstantWrapped::default,
+        ActiveCountAttributes::default(),
     );
     assert_eq!(queued_order(&db).await?, EXPECTED);
     Ok(())
@@ -157,6 +159,7 @@ async fn redis_backend_serves_highest_priority_then_oldest() -> Result<(), Error
         60,
         60,
         false,
+        ActiveCountAttributes::default(),
     )
     .await?;
     assert_eq!(queued_order(&db).await?, EXPECTED);

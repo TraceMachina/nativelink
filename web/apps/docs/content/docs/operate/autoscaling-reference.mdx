@@ -209,8 +209,8 @@ readinessProbe:
 
 <li>
 
-**Make the signal fresh.** Two changes, one on the scheduler pod and one in
-Prometheus.
+**Make the signal fresh, and make it name the pool.** Three changes: two on
+the scheduler and one in Prometheus.
 
 ```yaml
 # scheduler Deployment, container env
@@ -223,6 +223,26 @@ env:
     value: "15000"   # milliseconds; SDK default is 60000
 ```
 
+`nativelink_execution_active_count` carries `execution_stage` and nothing
+else unless the scheduler is told which platform property tells its pools
+apart. List that property and every series carries it as a label,
+`execution_platform_<key>`, with the action's value. The label name is the
+key with every character outside `[A-Za-z0-9_]` rewritten to `_` by the
+collector's Prometheus exporter (`container-image` becomes
+`execution_platform_container_image`), and the scheduler refuses two keys
+that would become one label.
+
+```json5
+schedulers: [{
+  name: "MAIN_SCHEDULER",
+  simple: {
+    supported_platform_properties: { OSFamily: "exact" },
+    // one series per OSFamily value: linux, macos, ...
+    active_action_count_platform_properties: ["OSFamily"],
+  },
+}]
+```
+
 ```yaml
 # a rule group of your own, evaluated fast enough to scale on
 groups:
@@ -231,14 +251,37 @@ groups:
     rules:
       - record: nativelink:queue_depth_fast
         expr: |
-          sum by (instance_name) (
+          sum by (instance_name, execution_platform_OSFamily) (
             nativelink_execution_active_count{execution_stage="queued"}
           )
+      # one series per pool for its HPA, present at 0 before the pool's
+      # first action rather than absent
+      - record: nativelink:queue_depth_fast:linux
+        expr: |
+          sum by (instance_name) (
+            nativelink:queue_depth_fast{execution_platform_OSFamily="linux"}
+          ) or vector(0)
+      - record: nativelink:queue_depth_fast:macos
+        expr: |
+          sum by (instance_name) (
+            nativelink:queue_depth_fast{execution_platform_OSFamily="macos"}
+          ) or vector(0)
 ```
 
 Keep the shipped `nativelink:queue_depth` for dashboards. Scale on the fast
-copy, summed without `execution_priority` so the HPA sees one series per
-instance rather than one per priority band.
+copies, summed without `execution_priority` so each HPA sees one series per
+pool rather than one per priority band: the Linux pool's adapter rule (step
+6) names `nativelink:queue_depth_fast:linux`, the macOS pool's
+`nativelink:queue_depth_fast:macos`. A single pool lists nothing and sums
+without the label. An action that does not set the property counts under
+the empty value.
+
+The `or vector(0)` is not decoration. A per-pool series exists only once an
+action has carried that value, so a pool that has had no action since the
+scheduler started reads **absent**, not 0, and an adapter asked for an absent
+series returns an error rather than a zero; `vector(0)` carries no labels,
+which is why each pool gets a rule of its own rather than one label matcher.
+Without keys the stage series behave as before.
 
 </li>
 
@@ -462,7 +505,9 @@ you set `name` to the pod name in step 3, the id is discoverable: it is the
 `execution_worker_id` label on the execution series the scheduler emits for
 that worker's actions, prefixed with the pod name.
 `nativelink_execution_active_count` does not carry that label (it is
-attributed by stage only); `nativelink_execution_stage_transitions_total` and
+attributed by stage, and by the platform properties
+`active_action_count_platform_properties` lists);
+`nativelink_execution_stage_transitions_total` and
 `nativelink_execution_completed_count_total` do. A `preStop` hook can look it
 up and call drain.
 
