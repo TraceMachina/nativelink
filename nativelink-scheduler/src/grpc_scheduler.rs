@@ -38,6 +38,7 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::retry::{Retrier, RetryResult};
+use nativelink_util::telemetry::{forward_client_headers, inject_context};
 use nativelink_util::{background_spawn, tls_utils};
 use parking_lot::Mutex;
 use tokio::select;
@@ -91,6 +92,7 @@ pub struct GrpcScheduler {
     supported_props: Mutex<HashMap<String, Vec<String>>>,
     retrier: Retrier,
     connection_manager: ConnectionManager,
+    forward_headers: Vec<String>,
 }
 
 impl GrpcScheduler {
@@ -117,7 +119,24 @@ impl GrpcScheduler {
                 spec.retry.clone(),
                 jitter_fn,
             ),
+            forward_headers: spec
+                .forward_headers
+                .iter()
+                .map(|name| name.to_lowercase())
+                .collect(),
         })
+    }
+
+    /// Wraps a message for the upstream with what this server was handed: the
+    /// client's nominated headers, the trace and the baggage. The upstream
+    /// reads the identity and the build metadata from the baggage as this
+    /// server did; a bare request would leave its origin events anonymous and
+    /// its buck2 isolation off.
+    fn enrich_request<T>(&self, message: T) -> Request<T> {
+        let mut request = Request::new(message);
+        forward_client_headers(&mut request, &self.forward_headers);
+        inject_context(&mut request);
+        request
     }
 
     async fn perform_request<F, Fut, R, I>(&self, input: I, mut request: F) -> Result<R, Error>
@@ -219,9 +238,9 @@ impl GrpcScheduler {
                 .await
                 .err_tip(|| "in get_platform_property_manager()")?;
             let capabilities_result = CapabilitiesClient::new(channel)
-                .get_capabilities(GetCapabilitiesRequest {
+                .get_capabilities(self.enrich_request(GetCapabilitiesRequest {
                     instance_name: instance_name.to_string(),
-                })
+                }))
                 .await
                 .err_tip(|| "Retrieving upstream GrpcScheduler capabilities");
             let capabilities = capabilities_result?.into_inner();
@@ -277,7 +296,7 @@ impl GrpcScheduler {
                     .await
                     .err_tip(|| "in add_action()")?;
                 ExecutionClient::new(channel)
-                    .execute(Request::new(request))
+                    .execute(self.enrich_request(request))
                     .await
                     .err_tip(|| "Sending action to upstream scheduler")
             })
@@ -312,7 +331,7 @@ impl GrpcScheduler {
                     .await
                     .err_tip(|| "in find_by_client_operation_id()")?;
                 ExecutionClient::new(channel)
-                    .wait_execution(Request::new(request))
+                    .wait_execution(self.enrich_request(request))
                     .await
                     .err_tip(|| "While getting wait_execution stream")
             })

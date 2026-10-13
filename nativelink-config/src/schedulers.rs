@@ -423,6 +423,17 @@ pub struct GrpcSpec {
     /// Default: 1.
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub connections_per_endpoint: usize,
+
+    /// Header names to copy from the incoming client request onto every
+    /// request sent to the upstream scheduler. Use this to pass through
+    /// dynamic credentials such as a JWT sent by the build client.
+    ///
+    /// Example: `["authorization", "x-custom-token"]`
+    ///
+    /// The OpenTelemetry trace context and baggage (the client's identity and
+    /// build metadata) are always forwarded.
+    #[serde(default)]
+    pub forward_headers: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]

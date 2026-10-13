@@ -902,7 +902,7 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
 
         input_relinks: meter
             .u64_counter("worker.input.relinks")
-            .with_description("Input hardlinks made again because the fast store evicted their source while the tree was staged, by kind: plain, executable")
+            .with_description("Input hardlinks made again because the fast store evicted their source while the tree was staged, by kind: plain, executable, or exhausted when the retries ran out")
             .build(),
 
         dispatch_requeues: meter
@@ -1009,8 +1009,8 @@ pub fn record_dispatch_requeue(reason: &'static str) {
 }
 
 /// Records an input hardlink made again because the fast store evicted its
-/// source between resolving the tree and linking it. A steady rate says the
-/// store runs at its ceiling.
+/// source between resolving the tree and linking it, or `exhausted` when the
+/// fetch retries ran out. A steady rate says the store runs at its ceiling.
 pub fn record_input_relink(kind: &'static str) {
     WORKER_METRICS
         .input_relinks

@@ -902,6 +902,56 @@ type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
 /// How many evicted inputs of one tree are fetched back at once.
 const INPUT_RELINK_CONCURRENCY: usize = 32;
 
+/// How many times an input is fetched into the fast store and resolved
+/// before the action fails. A store at its ceiling can take a blob away
+/// again between the fetch and the lookup, or between the lookup and the
+/// link.
+const INPUT_FETCH_ATTEMPTS: u32 = 3;
+
+/// The pause before a retry grows by this much per attempt, plus a jitter
+/// of up to the same amount taken from the digest, so the retry does not
+/// land in the eviction pass that took the blob and a tree's inputs do not
+/// all come back in one burst.
+const INPUT_FETCH_PAUSE_STEP_MS: u64 = 20;
+
+fn input_fetch_pause(attempt: u32, digest: &DigestInfo) -> Duration {
+    let attempt = u64::from(attempt);
+    let jitter = (u64::from(digest.packed_hash()[0]) * attempt) % INPUT_FETCH_PAUSE_STEP_MS;
+    Duration::from_millis(INPUT_FETCH_PAUSE_STEP_MS * attempt + jitter)
+}
+
+/// Fetches a blob into the fast store with `populate` and resolves it there
+/// with `resolve`, again when the store has taken it away in between.
+async fn fetch_and_resolve<T, P, PFut, R, RFut>(
+    digest: DigestInfo,
+    populate: P,
+    resolve: R,
+) -> Result<T, Error>
+where
+    P: Fn() -> PFut,
+    PFut: Future<Output = Result<(), Error>>,
+    R: Fn() -> RFut,
+    RFut: Future<Output = Result<T, Error>>,
+{
+    let mut attempt = 1;
+    loop {
+        populate()
+            .await
+            .err_tip(|| format!("Fetching {digest} for an input"))?;
+        match resolve().await {
+            Err(err) if err.code == Code::NotFound => {
+                if attempt >= INPUT_FETCH_ATTEMPTS {
+                    record_input_relink("exhausted");
+                    return Err(err);
+                }
+                tokio::time::sleep(input_fetch_pause(attempt, &digest)).await;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Executes every deferred hardlink of an input tree in one batched pass.
 ///
 /// A link whose source has gone missing since it was resolved is made again
@@ -920,12 +970,12 @@ async fn materialize_links(
         let Err(err) = result else {
             continue;
         };
-        // `NotFound` also names a missing destination directory. Only a
-        // source that is gone is the store's eviction, and only that is
-        // worth a fetch.
-        let source_gone = err.code == Code::NotFound
-            && matches!(fs::metadata(&link.src).await, Err(e) if e.code == Code::NotFound);
-        if !source_gone {
+        // `NotFound` is the source: this walk made the destination's parent.
+        // The store evicted the blob, or deleted the variant, after it was
+        // resolved. Looking for the source now would prove nothing, since a
+        // neighbouring action that stages the same file builds the variant
+        // again within milliseconds; the link is made again from a fetch.
+        if err.code != Code::NotFound {
             return Err(hardlink_error(filesystem_store, link, err));
         }
         evicted.push(link);
@@ -1010,32 +1060,39 @@ async fn relink_evicted_input(
     filesystem_store: Pin<&FilesystemStore>,
     link: &PendingLink,
 ) -> Result<(), Error> {
-    cas_store
-        .populate_fast_store(link.digest.into())
-        .await
-        .err_tip(|| {
-            format!(
-                "Fetching {} back for an evicted hardlink source",
-                link.digest
-            )
-        })?;
-    let dst = link.dst.clone();
     if link.executable {
-        let src = filesystem_store
-            .get_executable_hardlink_source(&link.digest)
-            .await
-            .err_tip(|| format!("Resolving the executable variant for {} again", link.digest))?;
-        fs::hard_link(src, dst).await?;
+        fetch_and_resolve(
+            link.digest,
+            || cas_store.populate_fast_store(link.digest.into()),
+            || async {
+                let src = filesystem_store
+                    .get_executable_hardlink_source(&link.digest)
+                    .await
+                    .err_tip(|| {
+                        format!("Resolving the executable variant for {} again", link.digest)
+                    })?;
+                fs::hard_link(src, &link.dst).await
+            },
+        )
+        .await?;
         record_input_relink("executable");
         return Ok(());
     }
-    let file_entry = filesystem_store
-        .get_file_entry_for_digest(&link.digest)
-        .await
-        .err_tip(|| "Resolving an evicted hardlink source again")?;
-    file_entry
-        .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
-        .await?;
+    fetch_and_resolve(
+        link.digest,
+        || cas_store.populate_fast_store(link.digest.into()),
+        || async {
+            let file_entry = filesystem_store
+                .get_file_entry_for_digest(&link.digest)
+                .await
+                .err_tip(|| "Resolving an evicted hardlink source again")?;
+            let dst = link.dst.clone();
+            file_entry
+                .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
+                .await
+        },
+    )
+    .await?;
     record_input_relink("plain");
     Ok(())
 }
@@ -1060,14 +1117,13 @@ async fn resolve_plain_files(
             {
                 entry
             } else {
-                cas_store
-                    .populate_fast_store(file.digest.into())
-                    .await
-                    .err_tip(|| "Populating fast store for hard link")?;
-                filesystem_store
-                    .get_file_entry_for_digest(&file.digest)
-                    .await
-                    .err_tip(|| "During hard link")?
+                fetch_and_resolve(
+                    file.digest,
+                    || cas_store.populate_fast_store(file.digest.into()),
+                    || filesystem_store.get_file_entry_for_digest(&file.digest),
+                )
+                .await
+                .err_tip(|| "During hard link")?
             };
             // TODO: add a test for #2051: deadlock with large number of files
             let src_path = file_entry
@@ -1103,7 +1159,8 @@ async fn collect_links(
 /// tree's variants for existence in one dispatch.
 ///
 /// A variant cannot be built from a blob that is not resident, and only this
-/// caller can fetch one, so those digests are populated and retried here.
+/// caller can fetch one, so those digests are fetched and resolved here, again
+/// if the store evicts the blob before the variant is built.
 async fn resolve_exec_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
@@ -1120,14 +1177,13 @@ async fn resolve_exec_files(
             let src_path = if let Ok(src_path) = source {
                 src_path
             } else {
-                cas_store
-                    .populate_fast_store(file.digest.into())
-                    .await
-                    .err_tip(|| "Populating fast store for executable")?;
-                filesystem_store
-                    .get_executable_hardlink_source(&file.digest)
-                    .await
-                    .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
+                fetch_and_resolve(
+                    file.digest,
+                    || cas_store.populate_fast_store(file.digest.into()),
+                    || filesystem_store.get_executable_hardlink_source(&file.digest),
+                )
+                .await
+                .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
             };
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
@@ -5130,4 +5186,108 @@ pub struct Metrics {
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]
     directory_cache: Option<Weak<crate::directory_cache::DirectoryCache>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::AtomicU32;
+
+    use nativelink_macro::nativelink_test;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn test_digest(first_byte: u8) -> DigestInfo {
+        let mut hash = [0u8; 32];
+        hash[0] = first_byte;
+        DigestInfo::new(hash, 1)
+    }
+
+    /// Runs `fetch_and_resolve` against a resolve step that fails with
+    /// `fail_with` for the first `failures` calls and succeeds after, and
+    /// returns the result with how often each step ran.
+    async fn drive(failures: u32, fail_with: Code) -> (Result<u32, Error>, u32, u32) {
+        let populates = AtomicU32::new(0);
+        let resolves = AtomicU32::new(0);
+        let result = fetch_and_resolve(
+            test_digest(0),
+            || async {
+                populates.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+            || async {
+                let call = resolves.fetch_add(1, Ordering::Relaxed) + 1;
+                if call <= failures {
+                    return Err(make_err!(fail_with, "resolve attempt {call} failed"));
+                }
+                Ok(call)
+            },
+        )
+        .await;
+        (
+            result,
+            populates.load(Ordering::Relaxed),
+            resolves.load(Ordering::Relaxed),
+        )
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_retries_a_missing_blob() {
+        let (result, populates, resolves) = drive(2, Code::NotFound).await;
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(populates, 3);
+        assert_eq!(resolves, 3);
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_gives_up_after_the_last_attempt() {
+        let (result, populates, resolves) = drive(3, Code::NotFound).await;
+        assert_eq!(result.unwrap_err().code, Code::NotFound);
+        assert_eq!(populates, INPUT_FETCH_ATTEMPTS);
+        assert_eq!(resolves, INPUT_FETCH_ATTEMPTS);
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_returns_other_errors_at_once() {
+        let (result, populates, resolves) = drive(1, Code::Internal).await;
+        assert_eq!(result.unwrap_err().code, Code::Internal);
+        assert_eq!(populates, 1);
+        assert_eq!(resolves, 1);
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_stops_when_the_fetch_fails() {
+        let resolves = AtomicU32::new(0);
+        let result: Result<(), Error> = fetch_and_resolve(
+            test_digest(0),
+            || async { Err(make_err!(Code::Unavailable, "slow store is down")) },
+            || async {
+                resolves.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err().code, Code::Unavailable);
+        assert_eq!(resolves.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn input_fetch_pause_grows_with_the_attempt_and_stays_bounded() {
+        let step = Duration::from_millis(INPUT_FETCH_PAUSE_STEP_MS);
+        for first_byte in [0u8, 1, 19, 20, 127, 255] {
+            let digest = test_digest(first_byte);
+            for attempt in 1..INPUT_FETCH_ATTEMPTS {
+                let pause = input_fetch_pause(attempt, &digest);
+                assert!(pause >= step * attempt, "{pause:?} for attempt {attempt}");
+                assert!(
+                    pause < step * (attempt + 1),
+                    "{pause:?} for attempt {attempt}"
+                );
+            }
+        }
+        assert_ne!(
+            input_fetch_pause(1, &test_digest(3)),
+            input_fetch_pause(1, &test_digest(7))
+        );
+    }
 }
