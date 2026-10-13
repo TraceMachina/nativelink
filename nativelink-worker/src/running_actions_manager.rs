@@ -902,6 +902,38 @@ type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
 /// How many evicted inputs of one tree are fetched back at once.
 const INPUT_RELINK_CONCURRENCY: usize = 32;
 
+/// How many times an input is fetched into the fast store and resolved
+/// before the action fails. A store at its ceiling can take a blob away
+/// again between the fetch and the lookup, or between the lookup and the
+/// link.
+const INPUT_FETCH_ATTEMPTS: usize = 3;
+
+/// Fetches a blob into the fast store and resolves it there, again when the
+/// store has taken it away in between.
+async fn fetch_and_resolve<T, F, Fut>(
+    cas_store: &FastSlowStore,
+    digest: DigestInfo,
+    resolve: F,
+) -> Result<T, Error>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, Error>>,
+{
+    let mut attempt = 1;
+    loop {
+        cas_store
+            .populate_fast_store(digest.into())
+            .await
+            .err_tip(|| format!("Fetching {digest} for an input"))?;
+        match resolve().await {
+            Err(err) if err.code == Code::NotFound && attempt < INPUT_FETCH_ATTEMPTS => {
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Executes every deferred hardlink of an input tree in one batched pass.
 ///
 /// A link whose source has gone missing since it was resolved is made again
@@ -920,12 +952,12 @@ async fn materialize_links(
         let Err(err) = result else {
             continue;
         };
-        // `NotFound` also names a missing destination directory. Only a
-        // source that is gone is the store's eviction, and only that is
-        // worth a fetch.
-        let source_gone = err.code == Code::NotFound
-            && matches!(fs::metadata(&link.src).await, Err(e) if e.code == Code::NotFound);
-        if !source_gone {
+        // `NotFound` is the source: this walk made the destination's parent.
+        // The store evicted the blob, or deleted the variant, after it was
+        // resolved. Looking for the source now would prove nothing, since a
+        // neighbouring action that stages the same file builds the variant
+        // again within milliseconds; the link is made again from a fetch.
+        if err.code != Code::NotFound {
             return Err(hardlink_error(filesystem_store, link, err));
         }
         evicted.push(link);
@@ -1010,32 +1042,31 @@ async fn relink_evicted_input(
     filesystem_store: Pin<&FilesystemStore>,
     link: &PendingLink,
 ) -> Result<(), Error> {
-    cas_store
-        .populate_fast_store(link.digest.into())
-        .await
-        .err_tip(|| {
-            format!(
-                "Fetching {} back for an evicted hardlink source",
-                link.digest
-            )
-        })?;
-    let dst = link.dst.clone();
     if link.executable {
-        let src = filesystem_store
-            .get_executable_hardlink_source(&link.digest)
-            .await
-            .err_tip(|| format!("Resolving the executable variant for {} again", link.digest))?;
-        fs::hard_link(src, dst).await?;
+        fetch_and_resolve(cas_store, link.digest, || async {
+            let src = filesystem_store
+                .get_executable_hardlink_source(&link.digest)
+                .await
+                .err_tip(|| {
+                    format!("Resolving the executable variant for {} again", link.digest)
+                })?;
+            fs::hard_link(src, &link.dst).await
+        })
+        .await?;
         record_input_relink("executable");
         return Ok(());
     }
-    let file_entry = filesystem_store
-        .get_file_entry_for_digest(&link.digest)
-        .await
-        .err_tip(|| "Resolving an evicted hardlink source again")?;
-    file_entry
-        .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
-        .await?;
+    fetch_and_resolve(cas_store, link.digest, || async {
+        let file_entry = filesystem_store
+            .get_file_entry_for_digest(&link.digest)
+            .await
+            .err_tip(|| "Resolving an evicted hardlink source again")?;
+        let dst = link.dst.clone();
+        file_entry
+            .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
+            .await
+    })
+    .await?;
     record_input_relink("plain");
     Ok(())
 }
@@ -1060,14 +1091,11 @@ async fn resolve_plain_files(
             {
                 entry
             } else {
-                cas_store
-                    .populate_fast_store(file.digest.into())
-                    .await
-                    .err_tip(|| "Populating fast store for hard link")?;
-                filesystem_store
-                    .get_file_entry_for_digest(&file.digest)
-                    .await
-                    .err_tip(|| "During hard link")?
+                fetch_and_resolve(cas_store, file.digest, || {
+                    filesystem_store.get_file_entry_for_digest(&file.digest)
+                })
+                .await
+                .err_tip(|| "During hard link")?
             };
             // TODO: add a test for #2051: deadlock with large number of files
             let src_path = file_entry
@@ -1103,7 +1131,8 @@ async fn collect_links(
 /// tree's variants for existence in one dispatch.
 ///
 /// A variant cannot be built from a blob that is not resident, and only this
-/// caller can fetch one, so those digests are populated and retried here.
+/// caller can fetch one, so those digests are fetched and resolved here, again
+/// if the store evicts the blob before the variant is built.
 async fn resolve_exec_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
@@ -1120,14 +1149,11 @@ async fn resolve_exec_files(
             let src_path = if let Ok(src_path) = source {
                 src_path
             } else {
-                cas_store
-                    .populate_fast_store(file.digest.into())
-                    .await
-                    .err_tip(|| "Populating fast store for executable")?;
-                filesystem_store
-                    .get_executable_hardlink_source(&file.digest)
-                    .await
-                    .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
+                fetch_and_resolve(cas_store, file.digest, || {
+                    filesystem_store.get_executable_hardlink_source(&file.digest)
+                })
+                .await
+                .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
             };
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
