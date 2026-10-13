@@ -46,6 +46,11 @@ pub struct WorkerSummary {
     pub available_platform_properties: HashMap<String, String>,
     /// What the worker last reported having to spare, if it reports.
     pub free_memory_kb: Option<u64>,
+    /// The operation the worker is held for under
+    /// `head_of_line_reservation`, while it is: it takes nothing else
+    /// until that action is placed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reserved_for_operation: Option<String>,
 }
 
 #[async_trait]
