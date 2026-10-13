@@ -905,6 +905,11 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
             .with_description("Input hardlinks made again because the fast store evicted their source while the tree was staged, by kind: plain, executable, or exhausted when the retries ran out")
             .build(),
 
+        prepare_retries: meter
+            .u64_counter("worker.prepare.retries")
+            .with_description("Input tree fetches tried again on the same worker after a transient store failure, by outcome: retried, recovered when a later attempt succeeded, or exhausted when the download deadline ran out")
+            .build(),
+
         dispatch_requeues: meter
             .u64_counter("scheduler.dispatch.requeues")
             .with_description("Dispatches sent back to the queue untried, by reason: declined, channel_full, unacknowledged")
@@ -954,6 +959,8 @@ pub struct WorkerMetrics {
     pub worker_disconnections: metrics::Counter<u64>,
     /// Input hardlinks made again after their source was evicted mid-staging, by kind.
     pub input_relinks: metrics::Counter<u64>,
+    /// Input tree fetches tried again on the worker after a transient store failure, by outcome.
+    pub prepare_retries: metrics::Counter<u64>,
     /// Dispatches requeued untried, by reason.
     pub dispatch_requeues: metrics::Counter<u64>,
     /// Keepalives received, cumulative.
@@ -1015,6 +1022,15 @@ pub fn record_input_relink(kind: &'static str) {
     WORKER_METRICS
         .input_relinks
         .add(1, &[KeyValue::new("kind", kind)]);
+}
+
+/// Records an input tree fetch the worker tried again after a transient
+/// store failure: `retried` per attempt made again, `recovered` when a later
+/// attempt succeeded, `exhausted` when the download deadline ran out first.
+pub fn record_prepare_retry(outcome: &'static str) {
+    WORKER_METRICS
+        .prepare_retries
+        .add(1, &[KeyValue::new("outcome", outcome)]);
 }
 
 /// Records a keepalive from a worker.

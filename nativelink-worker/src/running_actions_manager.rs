@@ -68,7 +68,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::metrics::record_input_relink;
+use nativelink_util::metrics::{record_input_relink, record_prepare_retry};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
@@ -918,6 +918,38 @@ fn input_fetch_pause(attempt: u32, digest: &DigestInfo) -> Duration {
     let attempt = u64::from(attempt);
     let jitter = (u64::from(digest.packed_hash()[0]) * attempt) % INPUT_FETCH_PAUSE_STEP_MS;
     Duration::from_millis(INPUT_FETCH_PAUSE_STEP_MS * attempt + jitter)
+}
+
+/// The pause before a whole input tree is fetched again doubles from here.
+const PREPARE_RETRY_PAUSE_MS: u64 = 1000;
+
+/// The pause before a whole input tree is fetched again never exceeds this.
+const PREPARE_RETRY_PAUSE_CAP_MS: u64 = 30_000;
+
+/// Whether a failed input fetch is worth trying again from this worker.
+/// These are the codes the store retrier itself treats as transient; a
+/// throttled object store surfaces as `Internal` once the retrier gives up.
+const fn is_transient_fetch_error(code: Code) -> bool {
+    matches!(
+        code,
+        Code::Unavailable
+            | Code::ResourceExhausted
+            | Code::Aborted
+            | Code::Internal
+            | Code::Unknown
+            | Code::DeadlineExceeded
+            | Code::DataLoss
+    )
+}
+
+/// Pause before fetching the input tree again: 1 s, 2 s, 4 s ... capped at
+/// 30 s, shortened by up to a quarter with a jitter taken from the digest so
+/// the workers that failed together do not all come back together.
+fn prepare_retry_pause(attempt: u32, digest: &DigestInfo) -> Duration {
+    let doublings = attempt.saturating_sub(1).min(5);
+    let base_ms = (PREPARE_RETRY_PAUSE_MS << doublings).min(PREPARE_RETRY_PAUSE_CAP_MS);
+    let jitter_byte = (u64::from(digest.packed_hash()[0]) * u64::from(attempt)) % 256;
+    Duration::from_millis(base_ms - base_ms * jitter_byte / 1024)
 }
 
 /// Fetches a blob into the fast store with `populate` and resolves it there
@@ -2326,7 +2358,87 @@ impl RunningActionImpl {
     ///
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
-    async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+    /// Fetches the input tree into the work directory, again after a
+    /// transient store failure while `deadline` (none: unbounded) leaves
+    /// room for another attempt. A worker that already holds part of the tree in its fast
+    /// store finishes the job here rather than handing the action back for
+    /// another worker to fetch everything against the same struggling store.
+    async fn fetch_inputs_with_retry(
+        &self,
+        filesystem_store: Pin<&FilesystemStore>,
+        deadline: Option<Instant>,
+    ) -> Result<(), Error> {
+        let started = Instant::now();
+        let mut attempt: u32 = 1;
+        loop {
+            let result = self
+                .metrics()
+                .download_to_directory
+                .wrap(prepare_action_inputs_with_lease(
+                    &self.running_actions_manager.directory_cache,
+                    &self.running_actions_manager.cas_store,
+                    filesystem_store,
+                    &self.action_info.input_root_digest,
+                    &self.work_directory,
+                    self.input_lease.clone(),
+                ))
+                .await;
+            let err = match result {
+                Ok(()) => {
+                    if attempt > 1 {
+                        record_prepare_retry("recovered");
+                        info!(
+                            operation_id = %self.operation_id,
+                            attempt,
+                            elapsed_s = started.elapsed().as_secs(),
+                            "prepare_action: input fetch recovered"
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(err) if is_transient_fetch_error(err.code) => err,
+                Err(err) => return Err(err),
+            };
+            let pause = prepare_retry_pause(attempt, &self.action_info.input_root_digest);
+            if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
+                record_prepare_retry("exhausted");
+                return Err(err.append(format!(
+                    "Input fetch of operation {} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
+                    self.operation_id,
+                    started.elapsed().as_secs()
+                )));
+            }
+            warn!(
+                operation_id = %self.operation_id,
+                attempt,
+                wait_ms = pause.as_millis(),
+                error = %err,
+                "prepare_action: input fetch failed, retrying"
+            );
+            record_prepare_retry("retried");
+            // Start the next attempt from an empty directory: links and
+            // files from the partial tree would otherwise fail it with
+            // AlreadyExists.
+            if let Err(remove_err) = fs::remove_dir_all(&self.work_directory).await
+                && remove_err.code != Code::NotFound
+            {
+                return Err(remove_err.append(format!(
+                    "Failed to clear work directory {} before fetching the inputs again",
+                    self.work_directory
+                )));
+            }
+            fs::create_dir(&self.work_directory)
+                .await
+                .err_tip(|| format!("Error recreating work directory {}", self.work_directory))?;
+            tokio::time::sleep(pause).await;
+            attempt += 1;
+        }
+    }
+
+    async fn inner_prepare_action(
+        self: Arc<Self>,
+        download_deadline: Option<Instant>,
+    ) -> Result<Arc<Self>, Error> {
         // Before anything lands on disk: an action that reserved more than
         // is free is refused as backpressure, not run into ENOSPC halfway
         // through its inputs. Free means free after what the actions
@@ -2391,16 +2503,7 @@ impl RunningActionImpl {
                 self.did_cleanup.store(false, Ordering::Release);
                 // Download the input files/folder and place them into the temp directory.
                 // Use directory cache if available for better performance.
-                self.metrics()
-                    .download_to_directory
-                    .wrap(prepare_action_inputs_with_lease(
-                        &self.running_actions_manager.directory_cache,
-                        &self.running_actions_manager.cas_store,
-                        filesystem_store_pin,
-                        &self.action_info.input_root_digest,
-                        &self.work_directory,
-                        self.input_lease.clone(),
-                    ))
+                self.fetch_inputs_with_retry(filesystem_store_pin, download_deadline)
                     .await
                     .map_err(tag_missing_input)
             })
@@ -3824,12 +3927,16 @@ impl RunningAction for RunningActionImpl {
         let operation_id = self.operation_id.clone();
         let metrics = self.metrics().clone();
         let mut kill_rx = self.kill_token.subscribe();
+        // The retry loop inside stops short of this; the timeout below is
+        // the backstop for an attempt that never answers. A timeout too far
+        // out to represent leaves the retries unbounded, as the timeout is.
+        let download_deadline = Instant::now().checked_add(download_timeout);
         // Boxed: the prepare state machine is large, and pinning it on the
         // stack next to the select below overflowed a test thread.
         let mut prepare_fut = Box::pin(
             metrics
                 .prepare_action
-                .wrap(Self::inner_prepare_action(self)),
+                .wrap(Self::inner_prepare_action(self, download_deadline)),
         );
         // A fetch that never answers would otherwise hold the slot for good
         // while the worker's keepalives say it is fine: name it every minute
@@ -5289,5 +5396,68 @@ mod tests {
             input_fetch_pause(1, &test_digest(3)),
             input_fetch_pause(1, &test_digest(7))
         );
+    }
+
+    #[test]
+    fn prepare_retry_pause_doubles_and_stays_under_the_cap() {
+        let cap = Duration::from_millis(PREPARE_RETRY_PAUSE_CAP_MS);
+        for first_byte in [0u8, 1, 19, 127, 255] {
+            let digest = test_digest(first_byte);
+            for attempt in 1..=10u32 {
+                let base = Duration::from_millis(
+                    (PREPARE_RETRY_PAUSE_MS << attempt.saturating_sub(1).min(5))
+                        .min(PREPARE_RETRY_PAUSE_CAP_MS),
+                );
+                let pause = prepare_retry_pause(attempt, &digest);
+                assert!(pause <= base, "{pause:?} for attempt {attempt}");
+                assert!(pause > base * 3 / 4, "{pause:?} for attempt {attempt}");
+                assert!(pause <= cap, "{pause:?} for attempt {attempt}");
+            }
+        }
+        assert_eq!(
+            prepare_retry_pause(1, &test_digest(0)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            prepare_retry_pause(2, &test_digest(0)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            prepare_retry_pause(3, &test_digest(0)),
+            Duration::from_secs(4)
+        );
+        assert_eq!(prepare_retry_pause(9, &test_digest(0)), cap);
+        assert_ne!(
+            prepare_retry_pause(1, &test_digest(3)),
+            prepare_retry_pause(1, &test_digest(7))
+        );
+    }
+
+    #[test]
+    fn transient_fetch_errors_are_the_retrier_codes() {
+        for code in [
+            Code::Unavailable,
+            Code::ResourceExhausted,
+            Code::Aborted,
+            Code::Internal,
+            Code::Unknown,
+            Code::DeadlineExceeded,
+            Code::DataLoss,
+        ] {
+            assert!(is_transient_fetch_error(code), "{code:?}");
+        }
+        for code in [
+            Code::NotFound,
+            Code::InvalidArgument,
+            Code::FailedPrecondition,
+            Code::PermissionDenied,
+            Code::Unauthenticated,
+            Code::Unimplemented,
+            Code::OutOfRange,
+            Code::AlreadyExists,
+            Code::Cancelled,
+        ] {
+            assert!(!is_transient_fetch_error(code), "{code:?}");
+        }
     }
 }
