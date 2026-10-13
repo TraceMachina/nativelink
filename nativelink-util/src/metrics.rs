@@ -46,7 +46,16 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
 /// The platform properties no worker could satisfy, comma separated.
 pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
+/// The age bucket of a queued or executing action.
+pub const SCHEDULER_ACTION_AGE: &str = "scheduler.action.age";
+
+// Metric attribute keys for the worker.
 pub const WORKER_PREPARE_OUTCOME: &str = "worker.prepare.outcome";
+pub const WORKER_RELINK_KIND: &str = "worker.relink.kind";
+
+// Metric attribute keys for object stores.
+pub const STORE_OBJECT_PROVIDER: &str = "store.object.provider";
+pub const STORE_OBJECT_OPERATION: &str = "store.object.operation";
 
 // Metric attribute keys for tiered stores.
 pub const STORE_TIER: &str = "store.tier";
@@ -1022,7 +1031,7 @@ pub fn record_dispatch_requeue(reason: &'static str) {
 pub fn record_input_relink(kind: &'static str) {
     WORKER_METRICS
         .input_relinks
-        .add(1, &[KeyValue::new("kind", kind)]);
+        .add(1, &[KeyValue::new(WORKER_RELINK_KIND, kind)]);
 }
 
 /// Records an input fetch the worker tried again after a transient store
@@ -1285,9 +1294,6 @@ pub fn record_queue_depth(count: u64) {
     SCHEDULER_METRICS.queue_depth.record(count, &[]);
 }
 
-/// Attribute key for the age bucket of a queued or executing action.
-pub const ACTION_AGE_BUCKET: &str = "age";
-
 /// Upper bounds of the action age buckets; anything older falls in the last,
 /// open bucket. Matches how an operator asks about a backlog: how much has
 /// waited over a minute, five, fifteen, thirty, an hour.
@@ -1368,7 +1374,7 @@ fn record_age_buckets(
     ages: &AgeBuckets,
 ) {
     for (label, count) in AGE_BUCKET_LABELS.iter().zip(ages.counts()) {
-        by_bucket.record(count, &[KeyValue::new(ACTION_AGE_BUCKET, *label)]);
+        by_bucket.record(count, &[KeyValue::new(SCHEDULER_ACTION_AGE, *label)]);
     }
     oldest.record(ages.oldest().as_secs_f64(), &[]);
 }
@@ -1448,7 +1454,10 @@ pub struct StoreMetrics {
 pub fn record_object_store_throttle(provider: &'static str, op: &'static str) {
     STORE_METRICS.object_throttles.add(
         1,
-        &[KeyValue::new("provider", provider), KeyValue::new("op", op)],
+        &[
+            KeyValue::new(STORE_OBJECT_PROVIDER, provider),
+            KeyValue::new(STORE_OBJECT_OPERATION, op),
+        ],
     );
 }
 
