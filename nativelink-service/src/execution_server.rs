@@ -143,16 +143,27 @@ impl NativelinkOperationId {
             client_operation_id,
         }
     }
+}
 
-    fn from_name(name: &str) -> Result<Self, Error> {
-        let (instance_name, name) = name
-            .rsplit_once('/')
-            .err_tip(|| "Expected instance_name and name to be separated by '/'")?;
-        Ok(Self::new(
-            instance_name.to_string(),
-            OperationId::from(name),
-        ))
-    }
+/// Splits an operation name into the instance that serves it and the id the
+/// scheduler knows, trying the configured instance names longest first. A
+/// client operation id may itself carry a `/`: a grpc scheduler hands back the
+/// upstream's `<instance>/<uuid>` as the id, so the name a client holds reads
+/// `main/main/<uuid>`, and splitting at the last `/` would look for an
+/// instance called `main/main`. The instance is the longest configured name
+/// the operation name starts with, and the id is whatever follows it.
+fn resolve_operation_name<'a>(
+    instances: impl IntoIterator<Item = &'a str>,
+    name: &str,
+) -> Option<(&'a str, OperationId)> {
+    let mut instances: Vec<&str> = instances.into_iter().collect();
+    instances.sort_by_key(|instance| core::cmp::Reverse(instance.len()));
+    instances.into_iter().find_map(|instance| {
+        name.strip_prefix(instance)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .filter(|id| !id.is_empty())
+            .map(|id| (instance, OperationId::from(id)))
+    })
 }
 
 impl fmt::Display for NativelinkOperationId {
@@ -486,14 +497,21 @@ impl ExecutionServer {
         &self,
         request: WaitExecutionRequest,
     ) -> Result<impl Stream<Item = Result<Operation, Status>> + Send + use<>, Status> {
-        let nl_operation_id = NativelinkOperationId::from_name(&request.name)
-            .err_tip(|| "Failed to parse operation_id in ExecutionServer::wait_execution")?;
-        let Some(instance_info) = self.instance_infos.get(&nl_operation_id.instance_name) else {
+        let Some((instance_name, client_operation_id)) = resolve_operation_name(
+            self.instance_infos.keys().map(String::as_str),
+            &request.name,
+        ) else {
             return Err(Status::not_found(format!(
-                "No scheduler with the instance name {}",
-                nl_operation_id.instance_name,
+                "No scheduler serves the instance of operation {}",
+                request.name,
             )));
         };
+        let nl_operation_id =
+            NativelinkOperationId::new(instance_name.to_string(), client_operation_id);
+        let instance_info = self
+            .instance_infos
+            .get(instance_name)
+            .ok_or_else(|| Status::internal("Instance resolved from its own map is missing"))?;
         let Some(rx) = instance_info
             .scheduler
             .filter_operations(OperationFilter {
@@ -674,13 +692,28 @@ impl Operations for ExecutionServer {
 
 #[cfg(test)]
 #[test]
-fn test_nl_op_id_from_name() -> Result<(), Box<dyn core::error::Error>> {
-    let examples = [("foo/bar", "foo"), ("a/b/c/d", "a/b/c")];
+fn test_resolve_operation_name() {
+    let instances = ["main", "", "a/b/c"];
+    let examples = [
+        ("main/bar", Some(("main", "bar"))),
+        // The id a grpc scheduler hands back carries the upstream's instance.
+        ("main/main/bar", Some(("main", "main/bar"))),
+        ("/bar", Some(("", "bar"))),
+        ("a/b/c/d", Some(("a/b/c", "d"))),
+        // Not an instance this server has, and not the default one either.
+        ("other/bar", None),
+        // A prefix that is not a whole instance name.
+        ("mainline/bar", None),
+        ("main/", None),
+    ];
 
     for (input, expected) in examples {
-        let id = NativelinkOperationId::from_name(input)?;
-        assert_eq!(id.instance_name, expected);
+        let resolved = resolve_operation_name(instances, input)
+            .map(|(instance, id)| (instance, id.to_string()));
+        assert_eq!(
+            resolved.as_ref().map(|(i, id)| (*i, id.as_str())),
+            expected,
+            "{input}"
+        );
     }
-
-    Ok(())
 }
