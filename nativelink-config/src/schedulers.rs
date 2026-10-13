@@ -345,6 +345,22 @@ pub struct SimpleSpec {
     #[serde(default)]
     pub memory_escalation: Option<MemoryEscalationSpec>,
 
+    /// Hold a worker for a queued action that keeps finding no room. An
+    /// action whose reservation only fits an idle worker starves under
+    /// load: every pass tries it first and finds each worker partly busy,
+    /// then fills the room that opens with newer, smaller actions, so no
+    /// worker ever drains for it. With this set, once such an action has
+    /// waited `hold_after_s` while some connected worker would fit it
+    /// idle, the scheduler picks one such worker and offers it nothing
+    /// else until the action is placed, leaves the queue, or `max_hold_s`
+    /// passes. An action no connected worker would fit even idle gets no
+    /// hold. With the matcher in every CAS replica a hold is local to the
+    /// replica the worker is connected to, which is the only one that can
+    /// dispatch to it.
+    /// Default: unset (off)
+    #[serde(default)]
+    pub reservation_hold: Option<ReservationHoldSpec>,
+
     /// The storage backend to use for the scheduler.
     /// Default: memory
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
@@ -569,6 +585,55 @@ const fn default_memory_escalation_max_steps() -> u64 {
 
 const fn default_memory_escalation_percent() -> u64 {
     200
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ReservationHoldSpec {
+    /// Seconds a queued action has to have waited, finding no room on
+    /// every pass, before a worker is held for it.
+    /// Default: 30
+    #[serde(
+        default = "default_reservation_hold_after_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub hold_after_s: u64,
+
+    /// Seconds a hold lasts at most. A hold that long without the action
+    /// fitting means the worker never reported room for it even drained;
+    /// the hold is given up so the worker is not idle for good, and the
+    /// action is not held for again until as long has passed.
+    /// Default: 300
+    #[serde(
+        default = "default_reservation_max_hold_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub max_hold_s: u64,
+
+    /// Most workers held at once on this scheduler. 0 is one tenth of the
+    /// workers connected to it, and at least one.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_held_workers: usize,
+}
+
+impl Default for ReservationHoldSpec {
+    fn default() -> Self {
+        Self {
+            hold_after_s: default_reservation_hold_after_s(),
+            max_hold_s: default_reservation_max_hold_s(),
+            max_held_workers: 0,
+        }
+    }
+}
+
+const fn default_reservation_hold_after_s() -> u64 {
+    30
+}
+
+const fn default_reservation_max_hold_s() -> u64 {
+    300
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]

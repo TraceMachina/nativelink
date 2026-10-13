@@ -109,6 +109,7 @@ async fn dispatched() -> Result<Fixture, Error> {
         WorkerAllocationStrategy::default(),
         None,
         None,
+        None,
         Arc::new(Notify::new()),
         WORKER_TIMEOUT_S,
         60,

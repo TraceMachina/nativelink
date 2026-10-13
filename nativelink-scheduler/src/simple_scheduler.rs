@@ -235,6 +235,10 @@ pub struct SimpleScheduler {
     /// burst drains in a few passes. See `unsatisfiable_fail_cap`.
     last_unsatisfiable_backlog: AtomicUsize,
 
+    /// How long a queued action waits, finding no room on every pass,
+    /// before a worker is held for it; `None` when holds are off.
+    hold_after: Option<Duration>,
+
     /// The clock the state manager uses.
     now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
@@ -801,6 +805,7 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         now,
+                        Some(&loaded.action_info.inner.unique_qualifier),
                     )
                     .await
                 else {
@@ -883,6 +888,7 @@ impl SimpleScheduler {
         let maybe_origin_event_tx = self.maybe_origin_event_tx.as_ref();
         let mut parked = Parked::default();
         let mut placement = Placement::default();
+        let hold_pass = workers.begin_pass_holds().await;
         let mut capacity_seen = workers.capacity_generation();
         let mut queued_seen: u64 = 0;
         // How long each action read has waited since its client submitted
@@ -920,6 +926,7 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         unsatisfiable_pass.now,
+                        Some(&loaded.action_info.inner.unique_qualifier),
                     )
                     .await;
                 if generation == capacity_seen || parked.is_empty() {
@@ -958,8 +965,26 @@ impl SimpleScheduler {
                         .map(|_| ()),
                     );
                 }
-                // A worker could run it once one has room.
-                MatchOutcome::WaitingForCapacity => parked.park(loaded),
+                // A worker could run it once one has room. One that has
+                // waited long enough for that gets a worker held for it,
+                // if one would fit it idle (`reservation_hold`).
+                MatchOutcome::WaitingForCapacity => {
+                    if let Some(hold_after) = self.hold_after
+                        && unsatisfiable_pass
+                            .now
+                            .duration_since(loaded.action_info.inner.insert_timestamp)
+                            .is_ok_and(|waited| waited >= hold_after)
+                    {
+                        workers
+                            .hold_worker_for(
+                                &loaded.action_info.inner.unique_qualifier,
+                                &loaded.action_info.platform_properties,
+                                unsatisfiable_pass.now,
+                            )
+                            .await;
+                    }
+                    parked.park(loaded);
+                }
                 // Nothing to wait for; a worker connecting starts a new pass,
                 // unless the no-worker clock is running.
                 MatchOutcome::NoWorkersConnected => {
@@ -1010,6 +1035,11 @@ impl SimpleScheduler {
                 .await,
             );
         }
+        // The whole queue was read: a held action the pass did not meet
+        // is gone, and a hold past its time is given up.
+        workers
+            .end_pass_holds(hold_pass, unsatisfiable_pass.now)
+            .await;
         record_parked_dispatched(placement.dispatched);
         if placement.attempted > 0 || parked.cap_dropped > 0 {
             debug!(
@@ -1221,6 +1251,7 @@ impl SimpleScheduler {
             spec.allocation_strategy,
             spec.live_memory_veto.clone(),
             spec.memory_escalation.clone(),
+            spec.reservation_hold,
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
@@ -1567,6 +1598,10 @@ impl SimpleScheduler {
                 no_worker_tracker: no_worker_action_timeout
                     .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
+                hold_after: spec
+                    .reservation_hold
+                    .as_ref()
+                    .map(|hold| Duration::from_secs(hold.hold_after_s)),
                 now_fn: scheduler_now_fn,
             }
         });

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp::Reverse;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
@@ -22,7 +23,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex;
 use futures::{StreamExt, future};
 use lru::LruCache;
-use nativelink_config::schedulers::{MemoryEscalationSpec, WorkerAllocationStrategy};
+use nativelink_config::schedulers::{
+    MemoryEscalationSpec, ReservationHoldSpec, WorkerAllocationStrategy,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -34,11 +37,12 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ResourceOutcome, WorkerLoad,
 };
-use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
+use nativelink_util::action_messages::{ActionStage, ActionUniqueQualifier, OperationId, WorkerId};
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
-    record_execution_peak_memory, record_worker_connected, record_worker_disconnected,
-    record_worker_keepalive, record_worker_keepalive_gap, record_worker_state,
+    record_execution_peak_memory, record_held_workers, record_worker_connected,
+    record_worker_disconnected, record_worker_hold, record_worker_keepalive,
+    record_worker_keepalive_gap, record_worker_state,
 };
 use nativelink_util::operation_state_manager::{
     Decline, Escalation, UpdateOperationType, WorkerStateManager,
@@ -176,6 +180,19 @@ impl MetricsComponent for Workers {
     }
 }
 
+/// A worker kept for one queued action that found no room anywhere.
+#[derive(Debug, Clone)]
+struct Hold {
+    /// The action the worker is kept for.
+    action: ActionUniqueQualifier,
+    /// When the hold is given up.
+    until: SystemTime,
+    /// The last matching pass that read the action, by `pass_generation`.
+    /// A pass that read the whole queue without meeting it means the
+    /// action is gone, and so is the reason to hold.
+    seen_in: u64,
+}
+
 /// A collection of workers that are available to run tasks.
 #[derive(MetricsComponent)]
 struct ApiWorkerSchedulerImpl {
@@ -194,6 +211,19 @@ struct ApiWorkerSchedulerImpl {
     /// How a memory kill is turned into a retry with a larger reservation;
     /// unset means the kill fails the action.
     memory_escalation: Option<MemoryEscalationSpec>,
+    /// How a queued action that keeps finding no room gets a worker held
+    /// for it; unset means never.
+    reservation_hold: Option<ReservationHoldSpec>,
+    /// Workers held for one queued action each, by worker, and the same
+    /// holds by action. A held worker is offered nothing but its action.
+    holds: HashMap<WorkerId, Hold>,
+    holds_by_action: HashMap<ActionUniqueQualifier, WorkerId>,
+    /// Actions whose hold expired, and until when they are not held for
+    /// again, so one that never fits does not keep a worker idle in turns.
+    hold_cooldowns: HashMap<ActionUniqueQualifier, SystemTime>,
+    /// Counts matching passes, so a hold can record the last pass that
+    /// met its action; see `Hold::seen_in`.
+    pass_generation: u64,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
     /// Bumped with every notification, under the same lock as placement, so
@@ -471,6 +501,7 @@ impl ApiWorkerSchedulerImpl {
     /// Note: The caller is responsible for any rescheduling of any tasks that might be
     /// running.
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
+        self.end_hold(worker_id, "released");
         // Remove from capability index
         self.capability_index.remove_worker(worker_id);
         // Pop before recomputing the shapes, or the departing worker still
@@ -571,8 +602,161 @@ impl ApiWorkerSchedulerImpl {
             record_worker_state("draining", is_draining);
         }
         worker.is_draining = is_draining;
+        if is_draining {
+            // A draining worker takes nothing, its holder included.
+            self.end_hold(worker_id, "released");
+        }
         self.capacity_changed();
         Ok(())
+    }
+
+    /// Ends the hold on `worker_id`, if any, for `outcome`. The worker is
+    /// room the fleet did not have a moment ago, so the matcher is woken.
+    fn end_hold(&mut self, worker_id: &WorkerId, outcome: &'static str) {
+        let Some(hold) = self.holds.remove(worker_id) else {
+            return;
+        };
+        self.holds_by_action.remove(&hold.action);
+        info!(?worker_id, action = ?hold.action, outcome, "Worker hold ended");
+        record_worker_hold(outcome);
+        record_held_workers(self.holds.len());
+        self.capacity_changed();
+    }
+
+    /// Ends the hold for `action`, if any, for `outcome`.
+    fn end_hold_for_action(&mut self, action: &ActionUniqueQualifier, outcome: &'static str) {
+        if let Some(worker_id) = self.holds_by_action.get(action).cloned() {
+            self.end_hold(&worker_id, outcome);
+        }
+    }
+
+    /// Holds a worker for `action`, which has waited long enough finding
+    /// no room: of the workers neither draining nor held that would fit
+    /// it idle, the one with the fewest actions running and then the most
+    /// memory left. Nothing is held when holds are off, the cap is
+    /// reached, the action's last hold expired too recently, or no
+    /// connected worker would fit it even idle, which is not a matter of
+    /// waiting. Returns whether the action holds a worker now.
+    fn hold_worker_for(
+        &mut self,
+        action: &ActionUniqueQualifier,
+        platform_properties: &PlatformProperties,
+        now: SystemTime,
+    ) -> bool {
+        let Some(spec) = &self.reservation_hold else {
+            return false;
+        };
+        if self.holds_by_action.contains_key(action) {
+            return true;
+        }
+        if self
+            .hold_cooldowns
+            .get(action)
+            .is_some_and(|until| now < *until)
+        {
+            return false;
+        }
+        let cap = if spec.max_held_workers == 0 {
+            (self.workers.len() / 10).max(1)
+        } else {
+            spec.max_held_workers
+        };
+        if self.holds.len() >= cap {
+            return false;
+        }
+        let memory_property = self.live_memory_veto.as_deref();
+        let memory_left = |worker: &Worker| match memory_property
+            .and_then(|property| worker.platform_properties.properties.get(property))
+        {
+            Some(PlatformPropertyValue::Minimum(kb)) => *kb,
+            _ => 0,
+        };
+        let holds = &self.holds;
+        let chosen = self
+            .workers
+            .iter()
+            .filter(|(worker_id, worker)| !worker.is_draining && !holds.contains_key(*worker_id))
+            .filter(|(_, worker)| {
+                platform_properties.is_satisfied_by(&worker.total_platform_properties, false)
+            })
+            .min_by_key(|(_, worker)| {
+                (
+                    worker.running_action_infos.len(),
+                    Reverse(memory_left(worker)),
+                )
+            })
+            .map(|(worker_id, _)| worker_id.clone());
+        let Some(worker_id) = chosen else {
+            return false;
+        };
+        info!(
+            ?worker_id,
+            ?action,
+            max_hold_s = spec.max_hold_s,
+            "Holding a worker for a queued action that keeps finding no room"
+        );
+        self.holds.insert(
+            worker_id.clone(),
+            Hold {
+                action: action.clone(),
+                until: now + Duration::from_secs(spec.max_hold_s),
+                seen_in: self.pass_generation,
+            },
+        );
+        self.holds_by_action.insert(action.clone(), worker_id);
+        record_worker_hold("held");
+        record_held_workers(self.holds.len());
+        true
+    }
+
+    /// A matching pass begins; returns its generation, which the holds it
+    /// meets record and `end_pass_holds` compares against.
+    const fn begin_pass_holds(&mut self) -> u64 {
+        self.pass_generation += 1;
+        self.pass_generation
+    }
+
+    /// Ends the holds that no pass since `pass` began has met, whose
+    /// action is gone, and the ones past their time, whose action is then
+    /// not held for again for as long. Judged by generation rather than a
+    /// flag so that two passes in flight at once (a test entry point
+    /// beside the matcher's own loop) cannot clear each other's marks.
+    fn end_pass_holds(&mut self, pass: u64, now: SystemTime) {
+        let ended: Vec<(WorkerId, &'static str)> = self
+            .holds
+            .iter()
+            .filter_map(|(worker_id, hold)| {
+                if hold.seen_in < pass {
+                    Some((worker_id.clone(), "released"))
+                } else if hold.until <= now {
+                    Some((worker_id.clone(), "expired"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (worker_id, outcome) in ended {
+            if outcome == "expired"
+                && let Some(hold) = self.holds.get(&worker_id)
+                && let Some(spec) = &self.reservation_hold
+            {
+                self.hold_cooldowns.insert(
+                    hold.action.clone(),
+                    now + Duration::from_secs(spec.max_hold_s),
+                );
+            }
+            self.end_hold(&worker_id, outcome);
+        }
+        self.hold_cooldowns.retain(|_, until| now < *until);
+    }
+
+    /// Marks the hold for `action`, if any, as met by the pass under way.
+    fn note_held_action_seen(&mut self, action: &ActionUniqueQualifier) {
+        if let Some(worker_id) = self.holds_by_action.get(action)
+            && let Some(hold) = self.holds.get_mut(worker_id)
+        {
+            hold.seen_in = self.pass_generation;
+        }
     }
 
     /// Whether peer-absence can be trusted to fail an action right now — a
@@ -671,6 +855,7 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         candidates: &HashSet<WorkerId>,
         full_worker_logging: bool,
+        asking: Option<&ActionUniqueQualifier>,
     ) -> Option<WorkerId> {
         // Check function for availability AND dynamic Minimum property verification.
         // The index only does presence checks for Minimum properties since their
@@ -686,6 +871,16 @@ impl ApiWorkerSchedulerImpl {
                         w.running_action_infos.len(),
                         w.max_inflight_tasks
                     );
+                }
+                return false;
+            }
+
+            // A held worker takes nothing but the action it is held for.
+            if let Some(hold) = self.holds.get(*worker_id)
+                && asking != Some(&hold.action)
+            {
+                if full_worker_logging {
+                    info!("Worker {worker_id} is held for another action");
                 }
                 return false;
             }
@@ -782,7 +977,11 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
         now: SystemTime,
+        asking: Option<&ActionUniqueQualifier>,
     ) -> MatchOutcome {
+        if let Some(action) = asking {
+            self.note_held_action_seen(action);
+        }
         if self.workers.is_empty() {
             if full_worker_logging {
                 info!("No workers available to match!");
@@ -798,9 +997,12 @@ impl ApiWorkerSchedulerImpl {
             let candidates = self
                 .capability_index
                 .find_matching_workers(platform_properties, full_worker_logging);
-            if let Some(worker_id) =
-                self.find_available_worker(platform_properties, &candidates, full_worker_logging)
-            {
+            if let Some(worker_id) = self.find_available_worker(
+                platform_properties,
+                &candidates,
+                full_worker_logging,
+                asking,
+            ) {
                 return MatchOutcome::Matched(worker_id);
             }
             Some(candidates)
@@ -1245,6 +1447,9 @@ impl ApiWorkerSchedulerImpl {
                     .await;
                 return Result::<(), _>::Err(err).merge(evicted).merge(requeued);
             }
+            // The action ran, here or elsewhere; a worker held for it is
+            // free for everything again.
+            self.end_hold_for_action(&action_info.inner.unique_qualifier, "placed");
             Ok(())
         } else {
             warn!(
@@ -1569,6 +1774,7 @@ impl ApiWorkerScheduler {
         allocation_strategy: WorkerAllocationStrategy,
         live_memory_veto: Option<String>,
         memory_escalation: Option<MemoryEscalationSpec>,
+        reservation_hold: Option<ReservationHoldSpec>,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
@@ -1591,6 +1797,11 @@ impl ApiWorkerScheduler {
                 allocation_strategy,
                 live_memory_veto,
                 memory_escalation,
+                reservation_hold,
+                holds: HashMap::new(),
+                holds_by_action: HashMap::new(),
+                hold_cooldowns: HashMap::new(),
+                pass_generation: 0,
                 worker_change_notify,
                 capacity_generation: capacity_generation.clone(),
                 worker_registry: worker_registry.clone(),
@@ -1769,10 +1980,38 @@ impl ApiWorkerScheduler {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
         now: SystemTime,
+        asking: Option<&ActionUniqueQualifier>,
     ) -> MatchOutcome {
-        self.find_worker_for_action_observed(platform_properties, full_worker_logging, now)
+        self.find_worker_for_action_observed(platform_properties, full_worker_logging, now, asking)
             .await
             .0
+    }
+
+    /// Holds a worker for `action`, a queued action that has waited long
+    /// enough finding no room; see `ReservationHoldSpec`. Returns whether
+    /// the action holds a worker now.
+    pub async fn hold_worker_for(
+        &self,
+        action: &ActionUniqueQualifier,
+        platform_properties: &PlatformProperties,
+        now: SystemTime,
+    ) -> bool {
+        self.inner
+            .lock()
+            .await
+            .hold_worker_for(action, platform_properties, now)
+    }
+
+    /// A matching pass is about to read the queue; returns the pass, for
+    /// `end_pass_holds`.
+    pub async fn begin_pass_holds(&self) -> u64 {
+        self.inner.lock().await.begin_pass_holds()
+    }
+
+    /// The pass read the whole queue: release the holds no pass since it
+    /// began has met, and the ones past their time.
+    pub async fn end_pass_holds(&self, pass: u64, now: SystemTime) {
+        self.inner.lock().await.end_pass_holds(pass, now);
     }
 
     /// `find_worker_for_action`, also returning the capacity generation read
@@ -1785,6 +2024,7 @@ impl ApiWorkerScheduler {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
         now: SystemTime,
+        asking: Option<&ActionUniqueQualifier>,
     ) -> (MatchOutcome, u64) {
         let start = Instant::now();
         self.metrics
@@ -1793,8 +2033,12 @@ impl ApiWorkerScheduler {
 
         let mut inner = self.inner.lock().await;
         let worker_count = inner.workers.len() as u64;
-        let result =
-            inner.inner_find_worker_for_action(platform_properties, full_worker_logging, now);
+        let result = inner.inner_find_worker_for_action(
+            platform_properties,
+            full_worker_logging,
+            now,
+            asking,
+        );
         let generation = inner.capacity_generation.load(Ordering::Relaxed);
 
         // Track workers iterated (worst case is all workers)
