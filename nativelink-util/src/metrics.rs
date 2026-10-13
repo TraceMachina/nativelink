@@ -1130,6 +1130,38 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_unit("{action}")
             .build(),
 
+        queue_age: meter
+            .u64_gauge("scheduler.queue.age")
+            .with_description(
+                "Queued actions the last matching pass read, by how long ago their client submitted them",
+            )
+            .with_unit("{action}")
+            .build(),
+
+        queue_oldest_age: meter
+            .f64_gauge("scheduler.queue.oldest_age")
+            .with_description(
+                "Seconds since the client submitted the oldest action the last matching pass read",
+            )
+            .with_unit("s")
+            .build(),
+
+        executing_age: meter
+            .u64_gauge("scheduler.executing.age")
+            .with_description(
+                "Executing actions the last executing sweep read, by how long they have been executing",
+            )
+            .with_unit("{action}")
+            .build(),
+
+        executing_oldest_age: meter
+            .f64_gauge("scheduler.executing.oldest_age")
+            .with_description(
+                "Seconds the longest-executing action the last executing sweep read has been executing",
+            )
+            .with_unit("s")
+            .build(),
+
         queue_retired: meter
             .u64_counter("scheduler.queue.retired")
             .with_description("Queued actions retired because no client was listening any more")
@@ -1188,6 +1220,15 @@ pub struct SchedulerOtlpMetrics {
     pub unsatisfiable_failed: metrics::Counter<u64>,
     /// Queued actions the last matching pass read.
     pub queue_depth: metrics::Gauge<u64>,
+    /// Queued actions the last matching pass read, by age bucket.
+    pub queue_age: metrics::Gauge<u64>,
+    /// Age of the oldest action the last matching pass read, in seconds.
+    pub queue_oldest_age: metrics::Gauge<f64>,
+    /// Executing actions the last executing sweep read, by age bucket.
+    pub executing_age: metrics::Gauge<u64>,
+    /// How long the longest-executing action the last sweep read has been
+    /// executing, in seconds.
+    pub executing_oldest_age: metrics::Gauge<f64>,
     /// Queued actions retired for having no client.
     pub queue_retired: metrics::Counter<u64>,
     /// Actions a pass parked for want of room and dispatched when room
@@ -1223,6 +1264,94 @@ pub fn record_unsatisfiable_queued(count: u64) {
 /// Records how many queued actions a matching pass read.
 pub fn record_queue_depth(count: u64) {
     SCHEDULER_METRICS.queue_depth.record(count, &[]);
+}
+
+/// Attribute key for the age bucket of a queued or executing action.
+pub const ACTION_AGE_BUCKET: &str = "age";
+
+/// Upper bounds of the action age buckets; anything older falls in the last,
+/// open bucket. Matches how an operator asks about a backlog: how much has
+/// waited over a minute, five, fifteen, thirty, an hour.
+const AGE_BUCKET_BOUNDS: [core::time::Duration; 5] = [
+    core::time::Duration::from_mins(1),
+    core::time::Duration::from_mins(5),
+    core::time::Duration::from_mins(15),
+    core::time::Duration::from_mins(30),
+    core::time::Duration::from_hours(1),
+];
+
+/// The `age` attribute values, one per bucket, in bound order.
+pub const AGE_BUCKET_LABELS: [&str; 6] =
+    ["lt_1m", "1m_5m", "5m_15m", "15m_30m", "30m_60m", "ge_60m"];
+
+/// Counts actions into age buckets as a pass reads them, for one gauge
+/// sample per bucket at the end of the pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AgeBuckets {
+    counts: [u64; AGE_BUCKET_LABELS.len()],
+    oldest: core::time::Duration,
+}
+
+impl AgeBuckets {
+    /// Counts one action of the given age.
+    pub fn observe(&mut self, age: core::time::Duration) {
+        let bucket = AGE_BUCKET_BOUNDS
+            .iter()
+            .position(|bound| age < *bound)
+            .unwrap_or(AGE_BUCKET_BOUNDS.len());
+        self.counts[bucket] += 1;
+        self.oldest = self.oldest.max(age);
+    }
+
+    /// Counts one action from the time its age is measured from. A time
+    /// after `now` (clock skew between replicas) counts as no age at all.
+    pub fn observe_since(&mut self, since: SystemTime, now: SystemTime) {
+        self.observe(now.duration_since(since).unwrap_or_default());
+    }
+
+    /// The count in each bucket, in [`AGE_BUCKET_LABELS`] order.
+    #[must_use]
+    pub const fn counts(&self) -> [u64; AGE_BUCKET_LABELS.len()] {
+        self.counts
+    }
+
+    /// The oldest age counted, zero when nothing was.
+    #[must_use]
+    pub const fn oldest(&self) -> core::time::Duration {
+        self.oldest
+    }
+}
+
+/// Records the ages of the queued actions a matching pass read. Every bucket
+/// is written, empty ones as zero, so a gauge never holds a count from a
+/// backlog that has since drained.
+pub fn record_queue_ages(ages: &AgeBuckets) {
+    record_age_buckets(
+        &SCHEDULER_METRICS.queue_age,
+        &SCHEDULER_METRICS.queue_oldest_age,
+        ages,
+    );
+}
+
+/// Records the ages of the executing actions an executing sweep read, the
+/// same way as [`record_queue_ages`].
+pub fn record_executing_ages(ages: &AgeBuckets) {
+    record_age_buckets(
+        &SCHEDULER_METRICS.executing_age,
+        &SCHEDULER_METRICS.executing_oldest_age,
+        ages,
+    );
+}
+
+fn record_age_buckets(
+    by_bucket: &metrics::Gauge<u64>,
+    oldest: &metrics::Gauge<f64>,
+    ages: &AgeBuckets,
+) {
+    for (label, count) in AGE_BUCKET_LABELS.iter().zip(ages.counts()) {
+        by_bucket.record(count, &[KeyValue::new(ACTION_AGE_BUCKET, *label)]);
+    }
+    oldest.record(ages.oldest().as_secs_f64(), &[]);
 }
 
 /// Records queued actions retired by the abandoned sweep.

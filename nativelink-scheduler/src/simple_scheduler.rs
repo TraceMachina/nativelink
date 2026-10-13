@@ -31,9 +31,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
-    record_awaited_action_orphan, record_matching_pass, record_parked_dispatched,
-    record_queue_depth, record_sweep_failure, record_unsatisfiable_failed,
-    record_unsatisfiable_queued,
+    AgeBuckets, record_awaited_action_orphan, record_executing_ages, record_matching_pass,
+    record_parked_dispatched, record_queue_ages, record_queue_depth, record_sweep_failure,
+    record_unsatisfiable_failed, record_unsatisfiable_queued,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -885,6 +885,10 @@ impl SimpleScheduler {
         let mut placement = Placement::default();
         let mut capacity_seen = workers.capacity_generation();
         let mut queued_seen: u64 = 0;
+        // How long each action read has waited since its client submitted
+        // it, requeues included: the pass already reads every queued action,
+        // so the ages cost nothing more from the store.
+        let mut queued_ages = AgeBuckets::default();
         while let Some(action_state_result) = stream.next().await {
             queued_seen += 1;
             let loaded = match load_action(
@@ -901,6 +905,10 @@ impl SimpleScheduler {
                     continue;
                 }
             };
+            queued_ages.observe_since(
+                loaded.action_info.inner.insert_timestamp,
+                unsatisfiable_pass.now,
+            );
 
             // Room that opened since the pass last placed anything belongs
             // to the oldest action still waiting, not to this one, which is
@@ -1027,6 +1035,7 @@ impl SimpleScheduler {
         }
         record_unsatisfiable_queued(unsatisfiable_queued);
         record_queue_depth(queued_seen);
+        record_queue_ages(&queued_ages);
         // Remember this pass's backlog so the next pass can size its fail cap:
         // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
         self.last_unsatisfiable_backlog.store(
@@ -1294,15 +1303,17 @@ impl SimpleScheduler {
                         .sweep_executing_actions(&running_on_worker, &mut lost_since, lost_grace)
                         .await
                     {
-                        Ok(report) if report.retired + report.requeued + report.failed > 0 => {
-                            info!(
-                                retired = report.retired,
-                                requeued = report.requeued,
-                                failed = report.failed,
-                                "Executing sweep"
-                            );
+                        Ok(report) => {
+                            record_executing_ages(&report.ages);
+                            if report.retired + report.requeued + report.failed > 0 {
+                                info!(
+                                    retired = report.retired,
+                                    requeued = report.requeued,
+                                    failed = report.failed,
+                                    "Executing sweep"
+                                );
+                            }
                         }
-                        Ok(_) => {}
                         Err(err) => {
                             record_sweep_failure();
                             error!(?err, "Error while sweeping executing actions");
