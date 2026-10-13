@@ -48,6 +48,11 @@ pub(crate) type JitterFn = Arc<dyn Fn(Duration) -> Duration + Send + Sync>;
 pub enum RetryResult<T> {
     Ok(T),
     Retry(Error),
+    /// Retryable, and the server asked for at least this long before the
+    /// next attempt. Within the retrier's throttle budget the wait is taken
+    /// as is and spends no attempt; past it the backoff still applies when
+    /// it is longer and the attempt counts.
+    RetryAfter(Error, Duration),
     Err(Error),
 }
 
@@ -57,6 +62,9 @@ pub struct Retrier {
     sleep_fn: SleepFn,
     jitter_fn: JitterFn,
     config: Retry,
+    /// How long one `retry` call may spend on `RetryAfter` waits before
+    /// they start spending attempts. Zero means they always do.
+    throttle_budget: Duration,
 }
 
 impl core::fmt::Debug for Retrier {
@@ -94,7 +102,16 @@ impl Retrier {
             sleep_fn,
             jitter_fn,
             config,
+            throttle_budget: Duration::ZERO,
         }
+    }
+
+    /// Lets one `retry` call spend up to `budget` waiting on `RetryAfter`
+    /// results without counting those tries as attempts.
+    #[must_use]
+    pub const fn with_throttle_budget(mut self, budget: Duration) -> Self {
+        self.throttle_budget = budget;
+        self
     }
 
     /// This should only return true if the error code should be interpreted as
@@ -147,9 +164,10 @@ impl Retrier {
             let mut iter = self.get_retry_config();
             tokio::pin!(operation);
             let mut attempt = 0;
+            let mut throttled = Duration::ZERO;
             loop {
                 attempt += 1;
-                match operation.next().await {
+                let (err, min_wait, is_throttle) = match operation.next().await {
                     None => {
                         return Err(make_err!(
                             Code::Internal,
@@ -160,22 +178,34 @@ impl Retrier {
                     Some(RetryResult::Err(e)) => {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
-                    Some(RetryResult::Retry(err)) => {
-                        if !self.should_retry(err.code) {
-                            if err.code == Code::NotFound {
-                                info!(?err, "Not found, not retrying");
-                            } else {
-                                error!(?attempt, ?err, "Not retrying permanent error");
-                            }
-                            return Err(err);
-                        }
-                        (self.sleep_fn)(
-                            iter.next()
-                                .ok_or_else(|| err.append(format!("On attempt {attempt}")))?,
-                        )
-                        .await;
+                    Some(RetryResult::Retry(err)) => (err, Duration::ZERO, false),
+                    Some(RetryResult::RetryAfter(err, min_wait)) => (err, min_wait, true),
+                };
+                if !self.should_retry(err.code) {
+                    if err.code == Code::NotFound {
+                        info!(?err, "Not found, not retrying");
+                    } else {
+                        error!(?attempt, ?err, "Not retrying permanent error");
                     }
+                    return Err(err);
                 }
+                // A throttle within the budget waits what was asked and is
+                // not an attempt: the server said when to come back, and
+                // the budget bounds how long that is listened to. A zero
+                // wait would spin, so it goes through the backoff instead.
+                if is_throttle
+                    && !min_wait.is_zero()
+                    && throttled.saturating_add(min_wait) <= self.throttle_budget
+                {
+                    throttled = throttled.saturating_add(min_wait);
+                    attempt -= 1;
+                    (self.sleep_fn)(min_wait).await;
+                    continue;
+                }
+                let backoff = iter
+                    .next()
+                    .ok_or_else(|| err.append(format!("On attempt {attempt}")))?;
+                (self.sleep_fn)(backoff.max(min_wait)).await;
             }
         }
     }
