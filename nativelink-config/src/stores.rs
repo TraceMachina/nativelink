@@ -1342,7 +1342,7 @@ pub struct ExperimentalAzureSpec {
     pub common: CommonObjectSpec,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct CommonObjectSpec {
     /// If you wish to prefix the location in the bucket. If None, no prefix will be used.
@@ -1404,6 +1404,34 @@ pub struct CommonObjectSpec {
     /// Default: false
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub disable_http2: bool,
+
+    /// Minimum number of seconds to wait after a response that asked the
+    /// client to slow down (HTTP 503 `ServerBusy` or 429) when it carries no
+    /// `Retry-After` header. The exponential backoff from `retry` still
+    /// applies when it is longer.
+    ///
+    /// Default: 2.0
+    #[serde(default = "default_throttle_retry_delay_s")]
+    pub throttle_retry_delay_s: f32,
+}
+
+const fn default_throttle_retry_delay_s() -> f32 {
+    2.0
+}
+
+impl Default for CommonObjectSpec {
+    fn default() -> Self {
+        Self {
+            key_prefix: None,
+            retry: Retry::default(),
+            consider_expired_after_s: 0,
+            max_retry_buffer_per_request: None,
+            multipart_max_concurrent_uploads: None,
+            insecure_allow_http: false,
+            disable_http2: false,
+            throttle_retry_delay_s: default_throttle_retry_delay_s(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy)]

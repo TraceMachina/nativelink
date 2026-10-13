@@ -48,6 +48,9 @@ pub(crate) type JitterFn = Arc<dyn Fn(Duration) -> Duration + Send + Sync>;
 pub enum RetryResult<T> {
     Ok(T),
     Retry(Error),
+    /// Retryable, and the server asked for at least this long before the
+    /// next attempt. The backoff still applies when it is longer.
+    RetryAfter(Error, Duration),
     Err(Error),
 }
 
@@ -149,7 +152,7 @@ impl Retrier {
             let mut attempt = 0;
             loop {
                 attempt += 1;
-                match operation.next().await {
+                let (err, min_wait) = match operation.next().await {
                     None => {
                         return Err(make_err!(
                             Code::Internal,
@@ -160,22 +163,21 @@ impl Retrier {
                     Some(RetryResult::Err(e)) => {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
-                    Some(RetryResult::Retry(err)) => {
-                        if !self.should_retry(err.code) {
-                            if err.code == Code::NotFound {
-                                info!(?err, "Not found, not retrying");
-                            } else {
-                                error!(?attempt, ?err, "Not retrying permanent error");
-                            }
-                            return Err(err);
-                        }
-                        (self.sleep_fn)(
-                            iter.next()
-                                .ok_or_else(|| err.append(format!("On attempt {attempt}")))?,
-                        )
-                        .await;
+                    Some(RetryResult::Retry(err)) => (err, Duration::ZERO),
+                    Some(RetryResult::RetryAfter(err, min_wait)) => (err, min_wait),
+                };
+                if !self.should_retry(err.code) {
+                    if err.code == Code::NotFound {
+                        info!(?err, "Not found, not retrying");
+                    } else {
+                        error!(?attempt, ?err, "Not retrying permanent error");
                     }
+                    return Err(err);
                 }
+                let backoff = iter
+                    .next()
+                    .ok_or_else(|| err.append(format!("On attempt {attempt}")))?;
+                (self.sleep_fn)(backoff.max(min_wait)).await;
             }
         }
     }

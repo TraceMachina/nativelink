@@ -14,7 +14,7 @@
 
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::future::ready;
 use futures::stream::repeat_with;
@@ -209,5 +209,90 @@ async fn retry_calls_sleep_fn() -> Result<(), Error> {
         );
     }
 
+    Ok(())
+}
+
+fn recording_retrier(backoff: Duration, sleeps: &Arc<Mutex<Vec<Duration>>>) -> Retrier {
+    let sleeps = Arc::clone(sleeps);
+    Retrier::new(
+        Arc::new(move |duration| {
+            sleeps.lock().unwrap().push(duration);
+            Box::pin(ready(()))
+        }),
+        Arc::new(move |_delay| backoff),
+        Retry {
+            max_retries: 3,
+            ..Default::default()
+        },
+    )
+}
+
+#[nativelink_test]
+async fn retry_after_hint_wins_when_longer_than_backoff() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = recording_retrier(Duration::from_millis(200), &sleeps);
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            if run_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                return RetryResult::RetryAfter(
+                    make_err!(Code::Unavailable, "Throttled"),
+                    Duration::from_secs(3),
+                );
+            }
+            RetryResult::Ok(true)
+        }))
+        .await?;
+
+    assert_eq!(result, true);
+    assert_eq!(run_count.load(Ordering::Relaxed), 2);
+    assert_eq!(*sleeps.lock().unwrap(), vec![Duration::from_secs(3)]);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn retry_after_backoff_wins_when_longer_than_hint() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = recording_retrier(Duration::from_secs(2), &sleeps);
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            if run_count.fetch_add(1, Ordering::Relaxed) == 0 {
+                return RetryResult::RetryAfter(
+                    make_err!(Code::Unavailable, "Throttled"),
+                    Duration::from_millis(50),
+                );
+            }
+            RetryResult::Ok(true)
+        }))
+        .await?;
+
+    assert_eq!(result, true);
+    assert_eq!(run_count.load(Ordering::Relaxed), 2);
+    assert_eq!(*sleeps.lock().unwrap(), vec![Duration::from_secs(2)]);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn retry_after_with_permanent_code_returns_at_once() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = recording_retrier(Duration::from_millis(200), &sleeps);
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            run_count.fetch_add(1, Ordering::Relaxed);
+            RetryResult::<bool>::RetryAfter(
+                make_err!(Code::NotFound, "Dummy failure"),
+                Duration::from_secs(5),
+            )
+        }))
+        .await;
+
+    assert_eq!(result.unwrap_err().code, Code::NotFound);
+    assert_eq!(run_count.load(Ordering::Relaxed), 1);
+    assert!(sleeps.lock().unwrap().is_empty());
     Ok(())
 }

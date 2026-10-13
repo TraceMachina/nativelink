@@ -1405,6 +1405,34 @@ pub fn record_unsatisfiable_failed(properties: String) {
     );
 }
 
+/// Global object-store metrics.
+pub static STORE_METRICS: LazyLock<StoreMetrics> = LazyLock::new(|| {
+    let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());
+
+    StoreMetrics {
+        object_throttles: meter
+            .u64_counter("store.object.throttles")
+            .with_description("Object store responses that asked the client to slow down (HTTP 503 ServerBusy or 429), by provider and operation")
+            .with_unit("{response}")
+            .build(),
+    }
+});
+
+/// Object-store metrics shared by the cloud backends.
+#[derive(Debug)]
+pub struct StoreMetrics {
+    /// Throttled responses, by provider and operation.
+    pub object_throttles: metrics::Counter<u64>,
+}
+
+/// Records a response from an object store that asked the client to slow down.
+pub fn record_object_store_throttle(provider: &'static str, op: &'static str) {
+    STORE_METRICS.object_throttles.add(
+        1,
+        &[KeyValue::new("provider", provider), KeyValue::new("op", op)],
+    );
+}
+
 /// Global tiered-store metrics.
 pub static STORE_TIER_METRICS: LazyLock<StoreTierMetrics> = LazyLock::new(|| {
     let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());

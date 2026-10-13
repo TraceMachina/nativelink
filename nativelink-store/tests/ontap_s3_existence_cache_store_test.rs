@@ -71,6 +71,7 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
             multipart_max_concurrent_uploads: None,
             insecure_allow_http: false,
             disable_http2: false,
+            ..Default::default()
         },
     };
 
