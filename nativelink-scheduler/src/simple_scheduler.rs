@@ -54,8 +54,8 @@ use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
+use crate::api_worker_scheduler::{ApiWorkerScheduler, QueuedAction};
+use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION, PeerScheduler};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -405,11 +405,31 @@ impl SimpleScheduler {
         self.do_try_match(false).await
     }
 
-    /// Stands in for the fleet exchange with peer schedulers.
+    /// Stands in for the fleet exchange with peer schedulers: one peer with
+    /// these workers.
     pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
+        self.set_peer_schedulers_for_test(vec![PeerScheduler {
+            scheduler_id: "peer".to_string(),
+            workers: peer_fleet,
+        }])
+        .await;
+    }
+
+    /// Stands in for the fleet exchange with peer schedulers.
+    pub async fn set_peer_schedulers_for_test(&self, peers: Vec<PeerScheduler>) {
         self.worker_scheduler
-            .set_peer_fleet(Some(peer_fleet), (self.now_fn)())
+            .set_peer_fleet(Some(peers), (self.now_fn)())
             .await;
+    }
+
+    /// The id this scheduler publishes to its peers under.
+    pub fn scheduler_id_for_test(&self) -> &str {
+        self.worker_scheduler.scheduler_id()
+    }
+
+    /// The workers held for a queued action right now.
+    pub async fn held_workers_for_test(&self) -> Vec<WorkerId> {
+        self.worker_scheduler.held_workers_for_test().await
     }
 
     /// Stands in for a failed fleet exchange with peer schedulers.
@@ -801,6 +821,10 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         now,
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                        }),
                     )
                     .await
                 else {
@@ -883,6 +907,7 @@ impl SimpleScheduler {
         let maybe_origin_event_tx = self.maybe_origin_event_tx.as_ref();
         let mut parked = Parked::default();
         let mut placement = Placement::default();
+        let hold_pass = workers.begin_pass_holds().await;
         let mut capacity_seen = workers.capacity_generation();
         let mut queued_seen: u64 = 0;
         // How long each action read has waited since its client submitted
@@ -920,6 +945,10 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         unsatisfiable_pass.now,
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                        }),
                     )
                     .await;
                 if generation == capacity_seen || parked.is_empty() {
@@ -958,8 +987,11 @@ impl SimpleScheduler {
                         .map(|_| ()),
                     );
                 }
-                // A worker could run it once one has room.
-                MatchOutcome::WaitingForCapacity => parked.park(loaded),
+                // A worker could run it once one has room. The match
+                // considered holding a worker for it (`reservation_hold`).
+                MatchOutcome::WaitingForCapacity => {
+                    parked.park(loaded);
+                }
                 // Nothing to wait for; a worker connecting starts a new pass,
                 // unless the no-worker clock is running.
                 MatchOutcome::NoWorkersConnected => {
@@ -1010,6 +1042,11 @@ impl SimpleScheduler {
                 .await,
             );
         }
+        // The whole queue was read: a held action the pass did not meet
+        // is gone, and a hold past its time is given up.
+        workers
+            .end_pass_holds(hold_pass, unsatisfiable_pass.now)
+            .await;
         record_parked_dispatched(placement.dispatched);
         if placement.attempted > 0 || parked.cap_dropped > 0 {
             debug!(
@@ -1215,12 +1252,16 @@ impl SimpleScheduler {
             Some(worker_registry.clone()),
         );
 
+        // The id this scheduler publishes its fleet to its peers under, and
+        // takes its turn holding workers by.
+        let scheduler_id = Uuid::new_v4().hyphenated().to_string();
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
             platform_property_manager.clone(),
             spec.allocation_strategy,
             spec.live_memory_veto.clone(),
             spec.memory_escalation.clone(),
+            spec.reservation_hold,
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
@@ -1229,6 +1270,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx.clone(),
             has_peers,
             record_ttl,
+            scheduler_id.clone(),
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -1328,7 +1370,6 @@ impl SimpleScheduler {
         // so that a peer which does fail actions sees these workers even
         // while this scheduler is still rolling out or has the timeout off.
         let task_fleet_exchange_spawn = {
-            let scheduler_id = Uuid::new_v4().hyphenated().to_string();
             let state_manager = Arc::downgrade(&state_manager);
             let local_fleet_change_notify = worker_scheduler.local_fleet_change_notify().clone();
             let worker_scheduler = Arc::downgrade(&worker_scheduler);

@@ -46,6 +46,7 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
 /// The platform properties no worker could satisfy, comma separated.
 pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
+pub const SCHEDULER_HOLD_OUTCOME: &str = "scheduler.hold.outcome";
 /// The age bucket of a queued or executing action.
 pub const SCHEDULER_ACTION_AGE: &str = "scheduler.action.age";
 
@@ -1204,6 +1205,20 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_unit("{action}")
             .build(),
 
+        worker_holds: meter
+            .u64_counter("scheduler.worker.holds")
+            .with_description(
+                "Workers held for a queued action that kept finding no room, by outcome: held when the hold began, placed when a worker took the action, released when the action or the worker left, declined when the held worker declined the action idle, expired when max_hold_s passed first",
+            )
+            .with_unit("{hold}")
+            .build(),
+
+        held_workers: meter
+            .u64_gauge("scheduler.worker.held")
+            .with_description("Workers this scheduler holds for a queued action right now")
+            .with_unit("{worker}")
+            .build(),
+
         awaited_action_orphans: meter
             .u64_counter("scheduler.awaited_action.orphans")
             .with_description(
@@ -1262,6 +1277,11 @@ pub struct SchedulerOtlpMetrics {
     /// Actions a pass parked for want of room and dispatched when room
     /// opened before the pass ended, ahead of the newer actions it was reading.
     pub parked_dispatched: metrics::Counter<u64>,
+    /// Workers held for a queued action that kept finding no room, by what
+    /// began or ended the hold.
+    pub worker_holds: metrics::Counter<u64>,
+    /// Workers held for such an action right now.
+    pub held_workers: metrics::Gauge<u64>,
     /// Listed operations whose record was gone on read, by site.
     pub awaited_action_orphans: metrics::Counter<u64>,
     /// Abandoned-queue sweeps that failed before finishing.
@@ -1393,6 +1413,24 @@ pub fn record_parked_dispatched(count: u64) {
     if count > 0 {
         SCHEDULER_METRICS.parked_dispatched.add(count, &[]);
     }
+}
+
+/// Records a worker hold beginning (`held`) or ending: `placed` when a
+/// worker took the action, `released` when the action left the queue or
+/// the worker left or drained, `declined` when the held worker declined
+/// the action idle and another is held instead, `expired` when `max_hold_s`
+/// passed first.
+pub fn record_worker_hold(outcome: &'static str) {
+    SCHEDULER_METRICS
+        .worker_holds
+        .add(1, &[KeyValue::new(SCHEDULER_HOLD_OUTCOME, outcome)]);
+}
+
+/// Records how many workers are held right now.
+pub fn record_held_workers(count: usize) {
+    SCHEDULER_METRICS
+        .held_workers
+        .record(u64::try_from(count).unwrap_or(u64::MAX), &[]);
 }
 
 /// Records an operation the queue listed whose record was gone when read;

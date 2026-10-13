@@ -44,7 +44,8 @@ use opentelemetry::KeyValue;
 use tracing::{debug, info, trace, warn};
 
 use super::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PeerScheduler,
+    SortedAwaitedActionState,
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
@@ -790,7 +791,7 @@ where
         scheduler_id: &str,
         local: Vec<PlatformProperties>,
         ttl: Duration,
-    ) -> Result<Vec<PlatformProperties>, Error> {
+    ) -> Result<Vec<PeerScheduler>, Error> {
         self.action_db
             .exchange_fleet_capabilities(scheduler_id, local, ttl)
             .await

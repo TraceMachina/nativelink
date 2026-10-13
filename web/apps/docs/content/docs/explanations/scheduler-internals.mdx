@@ -186,6 +186,34 @@ the parked actions a worker was actually told to run that way; a non-zero
 rate is normal on a busy fleet and means the head of the queue is being
 served.
 
+Parking does not help an action whose reservation only fits a worker with
+nothing else on it. Every pass tries it first and finds each worker partly
+busy, then fills the room that opens with newer, smaller actions, so no
+worker ever drains for it while the fleet reads as free. **`reservation_hold`**
+is for that action: once it has waited `hold_after_s` and fits no busy worker
+until more than one of that worker's actions finish (an action one completion
+would make room for is only waiting its turn, which the pass order gives it),
+the pass holds a worker that would fit it idle (fewest actions running, then
+most memory free as last reported, never one that declined that much while
+idle) and offers it nothing else; as its actions finish the held action is
+placed there the moment the ledger and the live veto allow. The hold stays
+through the dispatch until the worker takes the action; a worker that declines
+it sends it back to the queue with the hold kept, unless it declined idle, in
+which case the hold moves to another worker. The hold ends when a worker takes
+the action, anywhere, when it leaves the queue, when the worker leaves or
+drains, or after `max_hold_s`, whichever is first; an expired hold is not
+repeated for that action until as long again has passed, twice as long for
+each expiry in a row on a worker that was idle, so an action that never fits
+does not keep workers idle in turns. At most `max_held_workers` are held at
+once per replica (a tenth of the workers connected to it by default). A hold is
+local to the scheduler replica the worker is connected to; replicas sharing a
+queue take turns per action, by a hash of the action over the replicas whose
+workers would fit it as the fleet census last read them, so one worker is held
+for it fleet-wide. `scheduler.worker.holds` counts holds by outcome and
+`scheduler.worker.held` is how many workers are held right now. An action no
+connected worker would fit even idle gets no hold; that is the unsatisfiable
+path, or a sizing class larger than the workers less their overhead.
+
 When a worker reports an action killed for memory, by its own reservation
 enforcement or by the kernel near the limit, **`memory_escalation`** requeues
 the action with the reservation multiplied by `percent` (default 200) instead

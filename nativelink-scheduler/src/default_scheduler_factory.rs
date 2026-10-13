@@ -159,6 +159,15 @@ async fn simple_scheduler_factory(
             policy.percent
         ));
     }
+    if let Some(hold) = &spec.reservation_hold
+        && (hold.hold_after_s == 0 || hold.max_hold_s == 0)
+    {
+        return Err(make_input_err!(
+            "reservation_hold.hold_after_s and max_hold_s must be above zero, got {} and {}: a zero wait holds for any action on its first miss, and a zero hold expires in the pass that took it and wakes the next",
+            hold.hold_after_s,
+            hold.max_hold_s
+        ));
+    }
     match spec
         .experimental_backend
         .as_ref()

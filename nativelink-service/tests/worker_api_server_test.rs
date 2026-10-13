@@ -193,6 +193,7 @@ async fn setup_api_server_with(
         WorkerAllocationStrategy::default(),
         None,
         None,
+        None,
         tasks_or_worker_change_notify,
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
@@ -201,6 +202,7 @@ async fn setup_api_server_with(
         None,
         false,                   // has_peers
         Duration::from_secs(15), // record_ttl (unused while has_peers = false)
+        "scheduler".to_string(),
     );
 
     let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
@@ -525,6 +527,7 @@ pub async fn going_away_with_drain_stops_dispatch_and_keeps_the_worker_until_the
             &PlatformProperties::new(HashMap::new()),
             false,
             make_system_time(BASE_NOW_S),
+            None,
         )
         .await;
     assert!(
@@ -955,6 +958,7 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
             &PlatformProperties::new(HashMap::new()),
             true,
             make_system_time(BASE_NOW_S),
+            None,
         )
         .await;
     assert_eq!(
@@ -1014,6 +1018,7 @@ pub async fn workers_only_allow_max_tasks() -> Result<(), Box<dyn core::error::E
             &PlatformProperties::new(HashMap::new()),
             true,
             make_system_time(BASE_NOW_S),
+            None,
         )
         .await;
     assert_eq!(
