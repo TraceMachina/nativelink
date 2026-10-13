@@ -1273,11 +1273,11 @@ pub const ACTION_AGE_BUCKET: &str = "age";
 /// open bucket. Matches how an operator asks about a backlog: how much has
 /// waited over a minute, five, fifteen, thirty, an hour.
 const AGE_BUCKET_BOUNDS: [core::time::Duration; 5] = [
-    core::time::Duration::from_secs(60),
-    core::time::Duration::from_secs(5 * 60),
-    core::time::Duration::from_secs(15 * 60),
-    core::time::Duration::from_secs(30 * 60),
-    core::time::Duration::from_secs(60 * 60),
+    core::time::Duration::from_mins(1),
+    core::time::Duration::from_mins(5),
+    core::time::Duration::from_mins(15),
+    core::time::Duration::from_mins(30),
+    core::time::Duration::from_hours(1),
 ];
 
 /// The `age` attribute values, one per bucket, in bound order.

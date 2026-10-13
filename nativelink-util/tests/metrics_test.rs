@@ -417,7 +417,7 @@ fn test_age_buckets_boundaries() {
         ages.observe(Duration::from_secs(secs));
     }
     assert_eq!(ages.counts(), [2, 2, 2, 2, 2, 2]);
-    assert_eq!(ages.oldest(), Duration::from_secs(86_400));
+    assert_eq!(ages.oldest(), Duration::from_hours(24));
     assert_eq!(AGE_BUCKET_LABELS.len(), ages.counts().len());
 }
 
@@ -431,9 +431,9 @@ fn test_age_buckets_future_start_counts_as_zero() {
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
     let mut ages = AgeBuckets::default();
     ages.observe_since(now + Duration::from_secs(5), now);
-    ages.observe_since(now.checked_sub(Duration::from_secs(120)).unwrap(), now);
+    ages.observe_since(now.checked_sub(Duration::from_mins(2)).unwrap(), now);
     assert_eq!(ages.counts(), [1, 1, 0, 0, 0, 0]);
-    assert_eq!(ages.oldest(), Duration::from_secs(120));
+    assert_eq!(ages.oldest(), Duration::from_mins(2));
 }
 
 /// Recording with no meter provider installed is a no-op, not a panic.
