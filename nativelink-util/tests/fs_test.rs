@@ -153,6 +153,35 @@ async fn remove_files_with_bad_permissions() -> Result<(), Box<dyn core::error::
     Ok(())
 }
 
+/// A worker's tree is hardlinks to blobs other actions share. Clearing a
+/// tree with a read-only directory in it must not change those inodes: an
+/// executable variant keeps its execute bit for the actions still running
+/// it, and the tree is still gone.
+#[nativelink_test]
+async fn remove_dir_all_leaves_shared_inodes_alone() -> Result<(), Box<dyn core::error::Error>> {
+    let dir = env::temp_dir().join("remove_dir_all_shared_inodes_test");
+    drop(remove_dir_all(&dir).await);
+    fs::create_dir_all(dir.join("tree/readonly"))?;
+    // The blob lives outside the tree, as a CAS blob does, linked into it.
+    let blob = dir.join("blob.exe");
+    fs::write(&blob, "#!/bin/sh\n")?;
+    fs::set_permissions(&blob, Permissions::from_mode(0o555))?;
+    fs::hard_link(&blob, dir.join("tree/readonly/tool"))?;
+    fs::hard_link(&blob, dir.join("tree/tool"))?;
+    fs::set_permissions(dir.join("tree/readonly"), Permissions::from_mode(0o500))?;
+
+    remove_dir_all(dir.join("tree")).await?;
+
+    assert!(!fs::exists(dir.join("tree"))?, "the tree is gone");
+    assert_eq!(
+        fs::metadata(&blob)?.permissions().mode() & 0o777,
+        0o555,
+        "the shared blob keeps its mode"
+    );
+    remove_dir_all(&dir).await?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 #[nativelink_test]
 async fn freebind_allows_binding_unassigned_address() -> Result<(), Box<dyn core::error::Error>> {
