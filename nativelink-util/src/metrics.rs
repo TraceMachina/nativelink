@@ -907,7 +907,7 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
 
         prepare_retries: meter
             .u64_counter("worker.prepare.retries")
-            .with_description("Input tree fetches tried again on the same worker after a transient store failure, by outcome: retried, recovered when a later attempt succeeded, or exhausted when the download deadline ran out")
+            .with_description("Input fetches tried again on the same worker after a transient store failure: retried per attempt made again, then one of recovered, exhausted when the download deadline ran out, failed when a later attempt failed for good, or abandoned when a kill or the download timeout ended the fetch mid-retry")
             .build(),
 
         dispatch_requeues: meter
@@ -959,7 +959,7 @@ pub struct WorkerMetrics {
     pub worker_disconnections: metrics::Counter<u64>,
     /// Input hardlinks made again after their source was evicted mid-staging, by kind.
     pub input_relinks: metrics::Counter<u64>,
-    /// Input tree fetches tried again on the worker after a transient store failure, by outcome.
+    /// Input fetches tried again on the worker after a transient store failure: `retried` per attempt made again, then one of `recovered`, `exhausted`, `failed` or `abandoned`.
     pub prepare_retries: metrics::Counter<u64>,
     /// Dispatches requeued untried, by reason.
     pub dispatch_requeues: metrics::Counter<u64>,
@@ -1024,9 +1024,11 @@ pub fn record_input_relink(kind: &'static str) {
         .add(1, &[KeyValue::new("kind", kind)]);
 }
 
-/// Records an input tree fetch the worker tried again after a transient
-/// store failure: `retried` per attempt made again, `recovered` when a later
-/// attempt succeeded, `exhausted` when the download deadline ran out first.
+/// Records an input fetch the worker tried again after a transient store
+/// failure: `retried` per attempt made again, then one terminal outcome,
+/// `recovered`, `exhausted` (the download deadline ran out), `failed` (a
+/// later attempt failed for good) or `abandoned` (a kill or the download
+/// timeout ended it mid-retry).
 pub fn record_prepare_retry(outcome: &'static str) {
     WORKER_METRICS
         .prepare_retries

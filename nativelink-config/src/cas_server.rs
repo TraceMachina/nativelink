@@ -1299,6 +1299,15 @@ pub struct LocalWorkerConfig {
     /// `DeadlineExceeded` and may be retried by the scheduler, and a warning
     /// names the action every minute before that. Value in seconds.
     ///
+    /// A fetch that fails with a transient store error is fetched again
+    /// from this worker, with a pause doubling from 1 s to 30 s, for as
+    /// long as this leaves room for another attempt, or the action's own
+    /// timeout when that is shorter. The scheduler is not told of the
+    /// retries: it ends an executing action on its own at the action's
+    /// timeout plus `worker_timeout_s`, and at
+    /// `max_action_executing_timeout_s`, so keep this below those or the
+    /// action is requeued while the worker still retries.
+    ///
     /// Default: 10 minutes
     #[serde(
         default,

@@ -928,18 +928,32 @@ const PREPARE_RETRY_PAUSE_CAP_MS: u64 = 30_000;
 
 /// Whether a failed input fetch is worth trying again from this worker.
 /// These are the codes the store retrier itself treats as transient; a
-/// throttled object store surfaces as `Internal` once the retrier gives up.
-const fn is_transient_fetch_error(code: Code) -> bool {
-    matches!(
-        code,
+/// throttled object store surfaces as `Internal` once the retrier gives up,
+/// and an unclassified store failure as `Unknown`. The worker's own
+/// filesystem lands on those two codes as well: a full disk, a blob at
+/// its link limit or a read-only mount map to `Unknown`, a broken pipe to
+/// `Internal`. A worker whose disk is the problem has to hand the action
+/// back so it lands on a healthy one, not fetch into the same disk until
+/// the deadline, so an operating system error is never retried here. Such
+/// an error carries the OS error number in its message; a store's does not.
+fn is_transient_fetch_error(err: &Error) -> bool {
+    match err.code {
         Code::Unavailable
-            | Code::ResourceExhausted
-            | Code::Aborted
-            | Code::Internal
-            | Code::Unknown
-            | Code::DeadlineExceeded
-            | Code::DataLoss
-    )
+        | Code::ResourceExhausted
+        | Code::Aborted
+        | Code::DeadlineExceeded
+        | Code::DataLoss => true,
+        Code::Internal | Code::Unknown => !is_os_error(err),
+        _ => false,
+    }
+}
+
+/// Whether the error was raised by the operating system on this worker:
+/// `std::io::Error` prints those as `... (os error N)`.
+fn is_os_error(err: &Error) -> bool {
+    err.messages
+        .iter()
+        .any(|message| message.contains("(os error "))
 }
 
 /// Pause before fetching the input tree again: 1 s, 2 s, 4 s ... capped at
@@ -950,6 +964,54 @@ fn prepare_retry_pause(attempt: u32, digest: &DigestInfo) -> Duration {
     let base_ms = (PREPARE_RETRY_PAUSE_MS << doublings).min(PREPARE_RETRY_PAUSE_CAP_MS);
     let jitter_byte = (u64::from(digest.packed_hash()[0]) * u64::from(attempt)) % 256;
     Duration::from_millis(base_ms - base_ms * jitter_byte / 1024)
+}
+
+/// Counts the retries of one input fetch on `worker.prepare.retries` and
+/// settles it on exactly one terminal outcome once a retry was made:
+/// `recovered`, `exhausted`, `failed` when a later attempt failed for good,
+/// or `abandoned` when the fetch was dropped mid-retry by a kill or the
+/// download timeout. A fetch that succeeded or failed first time records
+/// nothing, so the terminal outcomes add up to the fetches retried.
+struct PrepareRetries<R: Fn(&'static str)> {
+    record: R,
+    retries: u32,
+    settled: bool,
+}
+
+impl<R: Fn(&'static str)> PrepareRetries<R> {
+    const fn new(record: R) -> Self {
+        Self {
+            record,
+            retries: 0,
+            settled: false,
+        }
+    }
+
+    fn retried(&mut self) {
+        self.retries += 1;
+        (self.record)("retried");
+    }
+
+    fn settle(mut self, outcome: &'static str) {
+        self.settled = true;
+        if self.retries > 0 {
+            (self.record)(outcome);
+        }
+    }
+}
+
+impl<R: Fn(&'static str)> Drop for PrepareRetries<R> {
+    fn drop(&mut self) {
+        if !self.settled && self.retries > 0 {
+            (self.record)("abandoned");
+        }
+    }
+}
+
+/// Records on `worker.prepare.retries`. A named function rather than the
+/// helper itself, so the metrics reference generator sees the call.
+fn record_prepare_outcome(outcome: &'static str) {
+    record_prepare_retry(outcome);
 }
 
 /// Fetches a blob into the fast store with `populate` and resolves it there
@@ -2358,35 +2420,45 @@ impl RunningActionImpl {
     ///
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
-    /// Fetches the input tree into the work directory, again after a
-    /// transient store failure while `deadline` (none: unbounded) leaves
-    /// room for another attempt. A worker that already holds part of the tree in its fast
-    /// store finishes the job here rather than handing the action back for
-    /// another worker to fetch everything against the same struggling store.
-    async fn fetch_inputs_with_retry(
+    /// Fetches the Command and the input tree into the work directory,
+    /// again after a transient store failure while `deadline` (none:
+    /// unbounded) leaves room for another attempt. A worker that already
+    /// holds part of the tree in its fast store finishes the job here rather
+    /// than handing the action back for another worker to fetch everything
+    /// against the same struggling store. The two fetches are retried
+    /// together: a Command read that fails during the same storm would
+    /// otherwise fail the action while the inputs were still being retried.
+    async fn fetch_with_retry(
         &self,
         filesystem_store: Pin<&FilesystemStore>,
         deadline: Option<Instant>,
-    ) -> Result<(), Error> {
+    ) -> Result<ProtoCommand, Error> {
         let started = Instant::now();
         let mut attempt: u32 = 1;
+        let mut retries = PrepareRetries::new(record_prepare_outcome);
         loop {
-            let result = self
-                .metrics()
-                .download_to_directory
-                .wrap(prepare_action_inputs_with_lease(
-                    &self.running_actions_manager.directory_cache,
-                    &self.running_actions_manager.cas_store,
-                    filesystem_store,
-                    &self.action_info.input_root_digest,
-                    &self.work_directory,
-                    self.input_lease.clone(),
-                ))
-                .await;
-            let err = match result {
-                Ok(()) => {
+            let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
+                get_and_decode_digest::<ProtoCommand>(
+                    self.running_actions_manager.cas_store.as_ref(),
+                    self.action_info.command_digest.into(),
+                )
+                .await
+                .err_tip(|| "Converting command_digest to Command")
+            });
+            let inputs_fut =
+                self.metrics()
+                    .download_to_directory
+                    .wrap(prepare_action_inputs_with_lease(
+                        &self.running_actions_manager.directory_cache,
+                        &self.running_actions_manager.cas_store,
+                        filesystem_store,
+                        &self.action_info.input_root_digest,
+                        &self.work_directory,
+                        self.input_lease.clone(),
+                    ));
+            let err = match try_join(command_fut, inputs_fut).await {
+                Ok((command, ())) => {
                     if attempt > 1 {
-                        record_prepare_retry("recovered");
                         info!(
                             operation_id = %self.operation_id,
                             attempt,
@@ -2394,14 +2466,18 @@ impl RunningActionImpl {
                             "prepare_action: input fetch recovered"
                         );
                     }
-                    return Ok(());
+                    retries.settle("recovered");
+                    return Ok(command);
                 }
-                Err(err) if is_transient_fetch_error(err.code) => err,
-                Err(err) => return Err(err),
+                Err(err) if is_transient_fetch_error(&err) => err,
+                Err(err) => {
+                    retries.settle("failed");
+                    return Err(err);
+                }
             };
             let pause = prepare_retry_pause(attempt, &self.action_info.input_root_digest);
             if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
-                record_prepare_retry("exhausted");
+                retries.settle("exhausted");
                 return Err(err.append(format!(
                     "Input fetch of operation {} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
                     self.operation_id,
@@ -2415,24 +2491,32 @@ impl RunningActionImpl {
                 error = %err,
                 "prepare_action: input fetch failed, retrying"
             );
-            record_prepare_retry("retried");
-            // Start the next attempt from an empty directory: links and
-            // files from the partial tree would otherwise fail it with
-            // AlreadyExists.
-            if let Err(remove_err) = fs::remove_dir_all(&self.work_directory).await
-                && remove_err.code != Code::NotFound
-            {
-                return Err(remove_err.append(format!(
-                    "Failed to clear work directory {} before fetching the inputs again",
-                    self.work_directory
-                )));
+            retries.retried();
+            // Start the next attempt from an empty directory: the
+            // directories and links of the partial tree would otherwise
+            // fail it with AlreadyExists.
+            if let Err(err) = self.clear_work_directory().await {
+                retries.settle("failed");
+                return Err(err);
             }
-            fs::create_dir(&self.work_directory)
-                .await
-                .err_tip(|| format!("Error recreating work directory {}", self.work_directory))?;
             tokio::time::sleep(pause).await;
             attempt += 1;
         }
+    }
+
+    /// Empties the work directory between two fetch attempts.
+    async fn clear_work_directory(&self) -> Result<(), Error> {
+        if let Err(remove_err) = fs::remove_dir_all(&self.work_directory).await
+            && remove_err.code != Code::NotFound
+        {
+            return Err(remove_err.append(format!(
+                "Failed to clear work directory {} before fetching the inputs again",
+                self.work_directory
+            )));
+        }
+        fs::create_dir(&self.work_directory)
+            .await
+            .err_tip(|| format!("Error recreating work directory {}", self.work_directory))
     }
 
     async fn inner_prepare_action(
@@ -2483,32 +2567,18 @@ impl RunningActionImpl {
                 (self.running_actions_manager.callbacks.now_fn)();
         }
         let command = {
-            // Download and build out our input files/folders. Also fetch and decode our Command.
-            let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
-                get_and_decode_digest::<ProtoCommand>(
-                    self.running_actions_manager.cas_store.as_ref(),
-                    self.action_info.command_digest.into(),
-                )
-                .await
-                .err_tip(|| "Converting command_digest to Command")
-                .map_err(tag_missing_input)
-            });
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
-            let (command, ()) = try_join(command_fut, async {
-                fs::create_dir(&self.work_directory)
-                    .await
-                    .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
-                // Now the work directory has been created, we have to clean up.
-                self.did_cleanup.store(false, Ordering::Release);
-                // Download the input files/folder and place them into the temp directory.
-                // Use directory cache if available for better performance.
-                self.fetch_inputs_with_retry(filesystem_store_pin, download_deadline)
-                    .await
-                    .map_err(tag_missing_input)
-            })
-            .await?;
-            command
+            fs::create_dir(&self.work_directory)
+                .await
+                .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
+            // Now the work directory has been created, we have to clean up.
+            self.did_cleanup.store(false, Ordering::Release);
+            // Fetch and decode the Command and download the input tree into
+            // the work directory, retried together after a store failure.
+            self.fetch_with_retry(filesystem_store_pin, download_deadline)
+                .await
+                .map_err(tag_missing_input)?
         };
         {
             // Create all directories needed for our output paths. This is required by the bazel spec.
@@ -3928,9 +3998,18 @@ impl RunningAction for RunningActionImpl {
         let metrics = self.metrics().clone();
         let mut kill_rx = self.kill_token.subscribe();
         // The retry loop inside stops short of this; the timeout below is
-        // the backstop for an attempt that never answers. A timeout too far
-        // out to represent leaves the retries unbounded, as the timeout is.
-        let download_deadline = Instant::now().checked_add(download_timeout);
+        // the backstop for an attempt that never answers. The retries are
+        // also bounded by the action's own timeout: the scheduler ends the
+        // action soon after that passes, whatever the worker is still
+        // fetching. A window too far out to represent leaves the retries
+        // unbounded, as the timeout is.
+        let action_timeout = self.action_info.timeout;
+        let retry_window = if action_timeout.is_zero() {
+            download_timeout
+        } else {
+            download_timeout.min(action_timeout)
+        };
+        let download_deadline = Instant::now().checked_add(retry_window);
         // Boxed: the prepare state machine is large, and pinning it on the
         // stack next to the select below overflowed a test thread.
         let mut prepare_fut = Box::pin(
@@ -5444,7 +5523,8 @@ mod tests {
             Code::DeadlineExceeded,
             Code::DataLoss,
         ] {
-            assert!(is_transient_fetch_error(code), "{code:?}");
+            let err = make_err!(code, "store answered 503 ServerBusy");
+            assert!(is_transient_fetch_error(&err), "{code:?}");
         }
         for code in [
             Code::NotFound,
@@ -5457,7 +5537,50 @@ mod tests {
             Code::AlreadyExists,
             Code::Cancelled,
         ] {
-            assert!(!is_transient_fetch_error(code), "{code:?}");
+            let err = make_err!(code, "store answered");
+            assert!(!is_transient_fetch_error(&err), "{code:?}");
         }
+    }
+
+    /// The worker's own disk failing maps to the same codes a store
+    /// failure does, but is never retried on this worker.
+    #[test]
+    fn an_operating_system_error_is_not_a_transient_fetch_error() {
+        let disk_full = Error::from(std::io::Error::from_raw_os_error(28));
+        assert_eq!(disk_full.code, Code::Unknown);
+        assert!(!is_transient_fetch_error(&disk_full), "{disk_full:?}");
+        let broken_pipe =
+            Error::from(std::io::Error::from_raw_os_error(32)).append("Writing an input");
+        assert_eq!(broken_pipe.code, Code::Internal);
+        assert!(!is_transient_fetch_error(&broken_pipe), "{broken_pipe:?}");
+        // A store that reset the connection is not this worker's disk.
+        let reset = Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        assert_eq!(reset.code, Code::Unavailable);
+        assert!(is_transient_fetch_error(&reset), "{reset:?}");
+    }
+
+    /// Every retried fetch settles on one terminal outcome, dropped ones
+    /// included; a fetch never retried records nothing.
+    #[test]
+    fn prepare_retries_settle_once() {
+        let recorded = std::cell::RefCell::new(Vec::new());
+        let record = |outcome: &'static str| recorded.borrow_mut().push(outcome);
+
+        let mut retries = PrepareRetries::new(record);
+        retries.retried();
+        retries.retried();
+        retries.settle("recovered");
+        assert_eq!(*recorded.borrow(), vec!["retried", "retried", "recovered"]);
+
+        recorded.borrow_mut().clear();
+        PrepareRetries::new(record).settle("failed");
+        assert!(recorded.borrow().is_empty(), "no retry, nothing to settle");
+
+        recorded.borrow_mut().clear();
+        {
+            let mut retries = PrepareRetries::new(record);
+            retries.retried();
+        }
+        assert_eq!(*recorded.borrow(), vec!["retried", "abandoned"]);
     }
 }
