@@ -513,6 +513,13 @@ pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error>
 // We can't just use the stock remove_dir_all as it falls over if someone's set readonly
 // permissions. This version walks the directories and fixes the permissions where needed
 // before deleting everything.
+//
+// Only directories are touched. Unlinking a file needs write and search
+// permission on its directory, never on the file itself, and the files of
+// a worker's tree are hardlinks to CAS blobs and executable variants that
+// other actions share: a chmod on one of those changes the inode for every
+// tree it is linked into, and an executable variant would lose its execute
+// bit under the actions still running it.
 #[cfg(not(target_family = "windows"))]
 fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     // Because otherwise Windows builds complain about these things not being used
@@ -538,9 +545,6 @@ fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
                 }
                 e @ Err(_) => e.err_tip(|| format!("Removing {}", entry.path().display()))?,
             }
-        } else if metadata.is_file() {
-            std::fs::set_permissions(entry.path(), Permissions::from_mode(0o600))
-                .err_tip(|| format!("Setting permissions for {}", entry.path().display()))?;
         }
     }
 
