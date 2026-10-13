@@ -341,7 +341,8 @@ impl GrpcStore {
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
                 spec.retry.clone(),
-            ),
+            )
+            .with_client("grpc_store"),
             connection_manager: ConnectionManager::new(
                 endpoints,
                 spec.connections_per_endpoint,

@@ -113,7 +113,8 @@ impl TlsClient {
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 common.retry.make_jitter_fn(),
                 common.retry.clone(),
-            ),
+            )
+            .with_client("s3_http"),
         }
     }
 }

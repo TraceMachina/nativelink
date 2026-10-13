@@ -14,14 +14,14 @@
 
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::future::ready;
 use futures::stream::repeat_with;
 use nativelink_config::stores::Retry;
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
-use nativelink_util::retry::{Retrier, RetryResult};
+use nativelink_util::retry::{Retrier, RetryOutcome, RetryResult};
 use pretty_assertions::assert_eq;
 use tokio::time::Duration;
 
@@ -209,5 +209,99 @@ async fn retry_calls_sleep_fn() -> Result<(), Error> {
         );
     }
 
+    Ok(())
+}
+
+/// A retrier whose outcomes land in the returned list, with `max_retries`.
+fn observed_retrier(max_retries: usize) -> (Retrier, Arc<Mutex<Vec<RetryOutcome>>>) {
+    let outcomes = Arc::new(Mutex::new(Vec::new()));
+    let sink = outcomes.clone();
+    let retrier = Retrier::new(
+        Arc::new(|_duration| Box::pin(ready(()))),
+        Arc::new(move |_delay| Duration::from_millis(1)),
+        Retry {
+            max_retries,
+            ..Default::default()
+        },
+    )
+    .with_client("test")
+    .with_outcome_fn(Arc::new(move |outcome| sink.lock().unwrap().push(outcome)));
+    (retrier, outcomes)
+}
+
+/// Each retry is reported, and a success after them is a recovery; a success
+/// on the first attempt reports nothing.
+#[nativelink_test]
+async fn retry_reports_retries_and_recovery() -> Result<(), Error> {
+    let (retrier, outcomes) = observed_retrier(5);
+    let run_count = AtomicI32::new(0);
+    Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            if run_count.fetch_add(1, Ordering::Relaxed) < 2 {
+                RetryResult::Retry(make_err!(Code::Unavailable, "Dummy failure"))
+            } else {
+                RetryResult::Ok(true)
+            }
+        }))
+        .await?;
+    assert_eq!(
+        *outcomes.lock().unwrap(),
+        vec![
+            RetryOutcome::Retried,
+            RetryOutcome::Retried,
+            RetryOutcome::Recovered
+        ]
+    );
+
+    let (retrier, outcomes) = observed_retrier(5);
+    Pin::new(&retrier)
+        .retry(repeat_with(|| RetryResult::Ok(true)))
+        .await?;
+    assert_eq!(*outcomes.lock().unwrap(), vec![]);
+    Ok(())
+}
+
+/// Retries that run out are reported as exhausted after the last retry.
+#[nativelink_test]
+async fn retry_reports_exhaustion() -> Result<(), Error> {
+    let (retrier, outcomes) = observed_retrier(2);
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            RetryResult::<bool>::Retry(make_err!(Code::Unavailable, "Dummy failure"))
+        }))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(
+        *outcomes.lock().unwrap(),
+        vec![
+            RetryOutcome::Retried,
+            RetryOutcome::Retried,
+            RetryOutcome::Exhausted
+        ]
+    );
+    Ok(())
+}
+
+/// An error that is never retried is reported as permanent, except
+/// `NotFound`, which on a store is an ordinary miss.
+#[nativelink_test]
+async fn retry_reports_permanent_errors_but_not_misses() -> Result<(), Error> {
+    let (retrier, outcomes) = observed_retrier(5);
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            RetryResult::<bool>::Retry(make_err!(Code::PermissionDenied, "Dummy failure"))
+        }))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(*outcomes.lock().unwrap(), vec![RetryOutcome::Permanent]);
+
+    let (retrier, outcomes) = observed_retrier(5);
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            RetryResult::<bool>::Retry(make_err!(Code::NotFound, "Dummy miss"))
+        }))
+        .await;
+    assert!(result.is_err());
+    assert_eq!(*outcomes.lock().unwrap(), vec![]);
     Ok(())
 }

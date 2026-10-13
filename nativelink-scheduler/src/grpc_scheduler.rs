@@ -109,7 +109,8 @@ impl GrpcScheduler {
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn.clone(),
                 spec.retry.clone(),
-            ),
+            )
+            .with_client("grpc_scheduler"),
             connection_manager: ConnectionManager::new(
                 core::iter::once(endpoint),
                 spec.connections_per_endpoint,
