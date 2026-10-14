@@ -201,6 +201,20 @@ fn create_test_store(
     retry: Option<Retry>,
     consider_expired_after_s: Option<u32>,
 ) -> Result<TestStore, Error> {
+    create_test_store_with_common(
+        mock,
+        CommonObjectSpec {
+            consider_expired_after_s: consider_expired_after_s.unwrap_or(0),
+            retry: retry.unwrap_or_default(),
+            ..Default::default()
+        },
+    )
+}
+
+fn create_test_store_with_common(
+    mock: Arc<MockTransport>,
+    common: CommonObjectSpec,
+) -> Result<TestStore, Error> {
     let mut options = BlobContainerClientOptions::default();
     // NativeLink's own `Retrier` wraps each operation, so disable the SDK's retry
     // policy to keep request counts deterministic.
@@ -217,11 +231,7 @@ fn create_test_store(
     let spec = ExperimentalAzureSpec {
         account_name: TEST_ACCOUNT.to_string(),
         container: TEST_CONTAINER.to_string(),
-        common: CommonObjectSpec {
-            consider_expired_after_s: consider_expired_after_s.unwrap_or(0),
-            retry: retry.unwrap_or_default(),
-            ..Default::default()
-        },
+        common,
         ..Default::default()
     };
 
@@ -845,5 +855,86 @@ async fn the_requested_range_starts_at_the_offset_plus_what_was_sent() -> Result
             "attempt {n} asked for {range:?}, expected it to start at {OFFSET}"
         );
     }
+    Ok(())
+}
+
+/// With adaptive read concurrency on, each throttled response halves the
+/// read limit (the two here are a retry wait apart, so they are two
+/// events), and a run of answered reads grows it back one at a time.
+#[nativelink_test(start_paused = true)]
+async fn throttled_reads_halve_the_read_limit_and_successes_regrow_it() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let store = create_test_store_with_common(
+        Arc::clone(&mock),
+        CommonObjectSpec {
+            retry: Retry {
+                max_retries: 0,
+                delay: 0.0,
+                jitter: 0.0,
+                ..Default::default()
+            },
+            max_concurrent_reads: 16,
+            adaptive_read_concurrency: true,
+            min_concurrent_reads: 2,
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(store.read_limit(), Some(16));
+
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 3);
+    assert_eq!(
+        store.read_limit(),
+        Some(4),
+        "two throttles, two halvings; the download that got through is one toward regrowth"
+    );
+
+    // Sixteen answered reads in a row (the download above was the first)
+    // add one permit.
+    for _ in 0..15 {
+        mock.push_properties(properties_ok(512));
+        store.has(create_test_digest()?).await?;
+    }
+    assert_eq!(store.read_limit(), Some(5));
+    Ok(())
+}
+
+/// Without `adaptive_read_concurrency` the bound is fixed at
+/// `max_concurrent_reads` whatever the store answers.
+#[nativelink_test(start_paused = true)]
+async fn a_fixed_read_limit_does_not_move_on_a_throttle() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let store = create_test_store_with_common(
+        Arc::clone(&mock),
+        CommonObjectSpec {
+            retry: Retry {
+                max_retries: 0,
+                delay: 0.0,
+                jitter: 0.0,
+                ..Default::default()
+            },
+            max_concurrent_reads: 8,
+            ..Default::default()
+        },
+    )?;
+
+    store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+    assert_eq!(store.read_limit(), Some(8));
     Ok(())
 }

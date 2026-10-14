@@ -1433,6 +1433,41 @@ pub struct CommonObjectSpec {
     /// Default: 120.0
     #[serde(default = "default_throttle_retry_budget_s")]
     pub throttle_retry_budget_s: f32,
+
+    /// Most reads (`GET` and `HEAD`) this process keeps in flight against
+    /// the object store at once. Further reads wait in the process for a
+    /// permit instead of being sent and refused, which turns an account
+    /// over its limit into queueing here rather than wasted requests and
+    /// retries in lockstep. 0 (the default) leaves reads unbounded, as
+    /// before.
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_reads: usize,
+
+    /// With `max_concurrent_reads` set, let the bound move: a throttled
+    /// response (503 `ServerBusy` or 429) halves it, not below
+    /// `min_concurrent_reads`, and a run of successful reads raises it by
+    /// one back toward `max_concurrent_reads`. Many processes behind one
+    /// account then converge on a share of its limit. Off, the bound is
+    /// fixed at `max_concurrent_reads`.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub adaptive_read_concurrency: bool,
+
+    /// Floor for the adaptive read bound.
+    ///
+    /// Default: 4
+    #[serde(
+        default = "default_min_concurrent_reads",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub min_concurrent_reads: usize,
+}
+
+const fn default_min_concurrent_reads() -> usize {
+    4
 }
 
 const fn default_throttle_retry_delay_s() -> f32 {
@@ -1460,6 +1495,9 @@ impl Default for CommonObjectSpec {
             throttle_retry_delay_s: default_throttle_retry_delay_s(),
             throttle_retry_max_delay_s: default_throttle_retry_max_delay_s(),
             throttle_retry_budget_s: default_throttle_retry_budget_s(),
+            max_concurrent_reads: 0,
+            adaptive_read_concurrency: false,
+            min_concurrent_reads: default_min_concurrent_reads(),
         }
     }
 }

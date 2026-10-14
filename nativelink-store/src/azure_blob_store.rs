@@ -35,6 +35,7 @@ use futures::{FutureExt, StreamExt, TryStreamExt};
 use nativelink_config::stores::ExperimentalAzureSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
+use nativelink_util::adaptive_permits::{AdaptivePermit, AdaptivePermits};
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
@@ -74,6 +75,9 @@ const DEFAULT_MAX_CONCURRENT_UPLOADS: usize = 10;
 // Default public Azure Blob Storage endpoint suffix.
 const DEFAULT_BLOB_ENDPOINT_SUFFIX: &str = "blob.core.windows.net";
 
+/// Successful reads in a row before the adaptive read limit grows by one.
+const READ_LIMIT_GROW_AFTER: usize = 16;
+
 #[derive(MetricsComponent)]
 pub struct AzureBlobStore<NowFn> {
     client: Arc<BlobContainerClient>,
@@ -91,6 +95,9 @@ pub struct AzureBlobStore<NowFn> {
     max_concurrent_uploads: usize,
     throttle_retry_delay: Duration,
     throttle_retry_max_delay: Duration,
+    /// Bounds `GET` and `HEAD` requests in flight; `None` leaves them
+    /// unbounded. See `CommonObjectSpec::max_concurrent_reads`.
+    read_permits: Option<Arc<AdaptivePermits>>,
 }
 
 impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
@@ -204,6 +211,18 @@ where
                 spec.common.throttle_retry_delay_s
             ));
         }
+        let read_permits = (spec.common.max_concurrent_reads > 0).then(|| {
+            let max = spec.common.max_concurrent_reads;
+            let (min, grow_after) = if spec.common.adaptive_read_concurrency {
+                (
+                    spec.common.min_concurrent_reads.min(max),
+                    READ_LIMIT_GROW_AFTER,
+                )
+            } else {
+                (max, 0)
+            };
+            AdaptivePermits::new("azure", max, min, max, grow_after)
+        });
         let throttle_retry_budget =
             Duration::try_from_secs_f32(spec.common.throttle_retry_budget_s).map_err(|e| {
                 make_err!(
@@ -239,7 +258,37 @@ where
                 .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS),
             throttle_retry_delay,
             throttle_retry_max_delay,
+            read_permits,
         }))
+    }
+
+    /// The read limit the permit pool stands at, or `None` with reads
+    /// unbounded.
+    pub fn read_limit(&self) -> Option<usize> {
+        self.read_permits.as_ref().map(|pool| pool.limit())
+    }
+
+    /// A read permit when reads are bounded. Held for the request, body
+    /// included, so what is in flight is what the limit says.
+    async fn read_permit(&self) -> Option<AdaptivePermit> {
+        match &self.read_permits {
+            Some(pool) => Some(pool.acquire().await),
+            None => None,
+        }
+    }
+
+    /// A read was answered (found or not): one toward growing the limit.
+    fn note_read_ok(&self) {
+        if let Some(pool) = &self.read_permits {
+            pool.record_success();
+        }
+    }
+
+    /// A read was throttled: the limit is cut.
+    fn note_read_throttled(&self) {
+        if let Some(pool) = &self.read_permits {
+            pool.record_throttle();
+        }
     }
 
     fn make_blob_path(&self, key: &StoreKey<'_>) -> String {
@@ -317,6 +366,7 @@ where
                 let blob_path = blob_path.clone();
                 let client = Arc::clone(&self.client);
                 async move {
+                    let _read_permit = self.read_permit().await;
                     let _permit = match fs::get_permit().await {
                         Ok(permit) => permit,
                         Err(e) => {
@@ -334,6 +384,7 @@ where
 
                     match result {
                         Ok(props) => {
+                            self.note_read_ok();
                             if self.consider_expired_after_s > 0
                                 && let Some(last_modified) = props.last_modified().ok().flatten()
                             {
@@ -368,19 +419,21 @@ where
                                         state,
                                     ));
                                 }
+                                self.note_read_ok();
                                 Some((RetryResult::Ok(None), state))
                             } else {
-                                Some((
-                                    self.retry_later(
-                                        &err,
-                                        "has",
-                                        make_err!(
-                                            Code::Unavailable,
-                                            "Failed to get blob properties: {err:?}"
-                                        ),
+                                let retry = self.retry_later(
+                                    &err,
+                                    "has",
+                                    make_err!(
+                                        Code::Unavailable,
+                                        "Failed to get blob properties: {err:?}"
                                     ),
-                                    state,
-                                ))
+                                );
+                                if matches!(retry, RetryResult::RetryAfter(..)) {
+                                    self.note_read_throttled();
+                                }
+                                Some((retry, state))
                             }
                         }
                     }
@@ -780,6 +833,9 @@ where
                 let client = Arc::clone(&self.client);
                 let blob_path = blob_path.clone();
                 async move {
+                    // Held through the body: what is in flight is what the
+                    // read limit says, not only what has been started.
+                    let _read_permit = self.read_permit().await;
                     let _permit = match fs::get_permit().await {
                         Ok(permit) => permit,
                         Err(e) => {
@@ -874,11 +930,18 @@ where
                     .await;
 
                     match result {
-                        Ok(()) => Some((RetryResult::Ok(()), writer)),
+                        Ok(()) => {
+                            self.note_read_ok();
+                            Some((RetryResult::Ok(()), writer))
+                        }
                         Err((e, _)) if e.code == Code::NotFound => {
+                            self.note_read_ok();
                             Some((RetryResult::Err(e), writer))
                         }
-                        Err((e, Some(wait))) => Some((RetryResult::RetryAfter(e, wait), writer)),
+                        Err((e, Some(wait))) => {
+                            self.note_read_throttled();
+                            Some((RetryResult::RetryAfter(e, wait), writer))
+                        }
                         Err((e, None)) => Some((RetryResult::Retry(e), writer)),
                     }
                 }
