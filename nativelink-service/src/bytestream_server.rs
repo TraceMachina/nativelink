@@ -629,6 +629,7 @@ impl ByteStreamServer {
         instance: &InstanceInfo,
         digest: DigestInfo,
         digest_function: DigestHasherFunc,
+        write_offset: i64,
     ) -> Result<ActiveStreamGuard, Error> {
         // Bind the digest function to the retained store future itself. The
         // future can outlive this RPC while an upload is idle, so it must not
@@ -666,7 +667,20 @@ impl ByteStreamServer {
                             .fetch_add(1, Ordering::Relaxed);
                         return Ok(idle_stream.into_active_stream(bytes_received, instance));
                     }
-                    // Case 3: Stream is active - generate a unique UUID to avoid collision.
+                    // Case 3a: Stream is active and the client is resuming (non-zero
+                    // offset). Only the owner of this UUID resumes it: the client has
+                    // given up on its previous stream (deadline, dropped connection) but
+                    // we have not observed that stream ending yet. A fresh UUID would
+                    // expect offset 0 and reject the resume as out of order, so ask the
+                    // client to retry; by then the old stream is idle and the resume
+                    // joins it (Case 2).
+                    if write_offset > 0 {
+                        return Err(make_err!(
+                            Code::Unavailable,
+                            "Upload {uuid_str} is still active on the server; retry resuming at offset {write_offset}"
+                        ));
+                    }
+                    // Case 3b: Stream is active - generate a unique UUID to avoid collision.
                     // Using nanosecond timestamp makes collision probability essentially zero.
                     let original_key = *entry.key();
                     let unique_key = Self::generate_unique_uuid_key(original_key);
@@ -959,8 +973,14 @@ impl ByteStreamServer {
             .uuid
             .as_ref()
             .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?;
-        let mut active_stream_guard =
-            self.create_or_join_upload_stream(uuid, instance_info, digest, digest_function)?;
+        let write_offset = stream.first_msg_write_offset().unwrap_or(0);
+        let mut active_stream_guard = self.create_or_join_upload_stream(
+            uuid,
+            instance_info,
+            digest,
+            digest_function,
+            write_offset,
+        )?;
         let expected_size = stream.resource_info.expected_size as u64;
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
