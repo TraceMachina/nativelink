@@ -181,6 +181,7 @@ tempfile = { version = "3.8.1", default-features = false }
 tokio = { version = "1.52.2", features = [
   "process",
   "sync",
+  "test-util",
 ], default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",

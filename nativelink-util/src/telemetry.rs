@@ -23,7 +23,7 @@ use ginepro::LoadBalancedChannel;
 use hyper::http::Response;
 use nativelink_error::{Code, ResultExt, make_err};
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
-use opentelemetry::propagation::TextMapCompositePropagator;
+use opentelemetry::propagation::{Injector, TextMapCompositePropagator, TextMapPropagator};
 use opentelemetry::trace::{TraceContextExt, Tracer, TracerProvider};
 use opentelemetry::{KeyValue, global};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
@@ -129,11 +129,7 @@ pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
         ))
         .build();
 
-    let propagator = TextMapCompositePropagator::new(vec![
-        Box::new(BaggagePropagator::new()),
-        Box::new(TraceContextPropagator::new()),
-    ]);
-    global::set_text_map_propagator(propagator);
+    init_propagator();
 
     let maybe_channel = maybe_load_balanced_channel().await;
 
@@ -416,6 +412,73 @@ impl<S> tower::Layer<S> for OtlpLayer {
     }
 }
 
+/// Installs the propagator the servers extract with and the forwarders inject
+/// with: W3C baggage and trace context.
+pub fn init_propagator() {
+    global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+        Box::new(BaggagePropagator::new()),
+        Box::new(TraceContextPropagator::new()),
+    ]));
+}
+
+/// Copies the nominated headers of the inbound client request, as the
+/// [`OtlpMiddleware`] stored them in the context, onto an outgoing request.
+/// This is how a client's credentials reach the upstream behind a forwarding
+/// store or scheduler; names match case-insensitively.
+pub fn forward_client_headers<T>(request: &mut tonic::Request<T>, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let Some(client_headers) = opentelemetry::Context::current()
+        .get::<ClientHeaders>()
+        .cloned()
+    else {
+        return;
+    };
+    for name in names {
+        if let Some(value) = client_headers.0.get(&name.to_lowercase())
+            && let (Ok(k), Ok(v)) = (
+                tonic::metadata::MetadataKey::from_bytes(name.as_bytes()),
+                tonic::metadata::MetadataValue::try_from(value.as_str()),
+            )
+        {
+            request.metadata_mut().insert(k, v);
+        }
+    }
+}
+
+/// Writes a context's trace and baggage into an outgoing gRPC request, so a
+/// service that forwards a call (a grpc store, a grpc scheduler) hands the
+/// upstream the identity, the client's build metadata and the trace it was
+/// given instead of a bare request.
+pub fn inject_context_with<T>(
+    propagator: &dyn TextMapPropagator,
+    context: &opentelemetry::Context,
+    request: &mut tonic::Request<T>,
+) {
+    struct MetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
+
+    impl Injector for MetadataInjector<'_> {
+        fn set(&mut self, key: &str, value: String) {
+            if let (Ok(k), Ok(v)) = (
+                tonic::metadata::MetadataKey::from_bytes(key.as_bytes()),
+                tonic::metadata::MetadataValue::try_from(&value),
+            ) {
+                self.0.insert(k, v);
+            }
+        }
+    }
+
+    propagator.inject_context(context, &mut MetadataInjector(request.metadata_mut()));
+}
+
+/// [`inject_context_with`] for the current context and the global propagator.
+pub fn inject_context<T>(request: &mut tonic::Request<T>) {
+    global::get_text_map_propagator(|propagator| {
+        inject_context_with(propagator, &opentelemetry::Context::current(), request);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use nativelink_macro::nativelink_test;
@@ -466,5 +529,23 @@ mod tests {
             result.is_some(),
             "Expected Some(channel) when {NL_OTEL_ENDPOINT} points to a valid URL"
         );
+    }
+
+    #[test]
+    fn inject_context_writes_baggage_into_request_metadata() {
+        use opentelemetry::baggage::BaggageExt;
+
+        let propagator = BaggagePropagator::new();
+        let context =
+            opentelemetry::Context::new().with_baggage(vec![KeyValue::new(ENDUSER_ID, "alice")]);
+        let mut request = tonic::Request::new(());
+        inject_context_with(&propagator, &context, &mut request);
+        let baggage = request
+            .metadata()
+            .get("baggage")
+            .expect("the baggage header is written")
+            .to_str()
+            .unwrap();
+        assert!(baggage.contains("enduser.id=alice"), "{baggage}");
     }
 }

@@ -54,14 +54,12 @@ use nativelink_util::proto_stream_utils::{
 use nativelink_util::resource_info::ResourceInfo;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
-use nativelink_util::telemetry::ClientHeaders;
+use nativelink_util::telemetry::{forward_client_headers, inject_context};
 use nativelink_util::wire_compression::{
     stream_decode_compressed_upload, stream_encode_compressed_download_from_reader,
 };
 use nativelink_util::{background_spawn, default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
-use opentelemetry::global;
-use opentelemetry::propagation::Injector;
 use parking_lot::Mutex;
 use prost::Message;
 use tokio::sync::{Semaphore, oneshot};
@@ -70,19 +68,6 @@ use tonic::metadata::{Ascii, MetadataKey, MetadataValue};
 use tonic::{Code, IntoRequest, Request, Response, Status, Streaming};
 use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
-
-struct TonicMetadataInjector<'a>(&'a mut tonic::metadata::MetadataMap);
-
-impl Injector for TonicMetadataInjector<'_> {
-    fn set(&mut self, key: &str, value: String) {
-        if let (Ok(k), Ok(v)) = (
-            MetadataKey::from_bytes(key.as_bytes()),
-            MetadataValue::try_from(&value),
-        ) {
-            self.0.insert(k, v);
-        }
-    }
-}
 
 /// Adds configured static headers, forwards nominated client request headers,
 /// and injects the current OpenTelemetry trace context into an outgoing gRPC
@@ -95,23 +80,8 @@ fn enrich_request<T>(
     for (key, value) in headers {
         request.metadata_mut().insert(key.clone(), value.clone());
     }
-    if !forward_headers.is_empty()
-        && let Some(client_headers) = Context::current().get::<ClientHeaders>()
-    {
-        for name in forward_headers {
-            if let Some(value) = client_headers.0.get(&name.to_lowercase())
-                && let (Ok(k), Ok(v)) = (
-                    MetadataKey::from_bytes(name.as_bytes()),
-                    MetadataValue::try_from(value.as_str()),
-                )
-            {
-                request.metadata_mut().insert(k, v);
-            }
-        }
-    }
-    global::get_text_map_propagator(|propagator| {
-        propagator.inject(&mut TonicMetadataInjector(request.metadata_mut()));
-    });
+    forward_client_headers(&mut request, forward_headers);
+    inject_context(&mut request);
     request
 }
 

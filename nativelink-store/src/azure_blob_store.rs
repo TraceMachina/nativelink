@@ -21,6 +21,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use azure_core::credentials::TokenCredential;
 use azure_core::error::ErrorKind;
+use azure_core::http::headers::{RETRY_AFTER, RETRY_AFTER_MS, X_MS_RETRY_AFTER_MS};
 use azure_core::http::{RequestContent, RetryOptions, StatusCode, Transport, Url};
 use azure_identity::WorkloadIdentityCredential;
 use azure_storage_blob::clients::{BlobContainerClient, BlobContainerClientOptions};
@@ -40,6 +41,7 @@ use nativelink_util::buf_channel::{
 use nativelink_util::fs;
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
+use nativelink_util::metrics::record_object_store_throttle;
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
     RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
@@ -87,6 +89,8 @@ pub struct AzureBlobStore<NowFn> {
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed")]
     max_concurrent_uploads: usize,
+    throttle_retry_delay: Duration,
+    throttle_retry_max_delay: Duration,
 }
 
 impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
@@ -183,6 +187,30 @@ where
         jitter_fn: Arc<dyn Fn(Duration) -> Duration + Send + Sync>,
         now_fn: NowFn,
     ) -> Result<Arc<Self>, Error> {
+        let throttle_retry_delay = Duration::try_from_secs_f32(spec.common.throttle_retry_delay_s)
+            .map_err(|e| make_err!(Code::InvalidArgument, "Invalid throttle_retry_delay_s: {e}"))?;
+        let throttle_retry_max_delay =
+            Duration::try_from_secs_f32(spec.common.throttle_retry_max_delay_s).map_err(|e| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Invalid throttle_retry_max_delay_s: {e}"
+                )
+            })?;
+        if throttle_retry_max_delay < throttle_retry_delay {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "throttle_retry_max_delay_s ({}) is less than throttle_retry_delay_s ({})",
+                spec.common.throttle_retry_max_delay_s,
+                spec.common.throttle_retry_delay_s
+            ));
+        }
+        let throttle_retry_budget =
+            Duration::try_from_secs_f32(spec.common.throttle_retry_budget_s).map_err(|e| {
+                make_err!(
+                    Code::InvalidArgument,
+                    "Invalid throttle_retry_budget_s: {e}"
+                )
+            })?;
         Ok(Arc::new(Self {
             client: Arc::new(client),
             now_fn,
@@ -198,7 +226,8 @@ where
                 jitter_fn,
                 spec.common.retry.clone(),
             )
-            .with_client("azure"),
+            .with_client("azure")
+            .with_throttle_budget(throttle_retry_budget),
             consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
                 .common
@@ -208,11 +237,76 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS),
+            throttle_retry_delay,
+            throttle_retry_max_delay,
         }))
     }
 
     fn make_blob_path(&self, key: &StoreKey<'_>) -> String {
         format!("{}{}", self.blob_prefix, key.as_str())
+    }
+
+    /// How long a throttled response (503 `ServerBusy` or 429) asked us to
+    /// wait, or `None` when the error is anything else. The wait is the
+    /// `Retry-After` header when present, never less than the configured
+    /// floor and never more than the configured cap.
+    fn throttle_wait(&self, err: &azure_core::Error, op: &'static str) -> Option<Duration> {
+        let ErrorKind::HttpResponse {
+            status,
+            error_code,
+            raw_response,
+        } = err.kind()
+        else {
+            return None;
+        };
+        let throttled = matches!(
+            status,
+            StatusCode::ServiceUnavailable | StatusCode::TooManyRequests
+        ) || error_code.as_deref() == Some(StorageErrorCode::ServerBusy.as_ref());
+        if !throttled {
+            return None;
+        }
+        record_object_store_throttle("azure", op);
+        let header_wait = raw_response.as_ref().and_then(|response| {
+            let headers = response.headers();
+            let millis = headers
+                .get_optional_str(&RETRY_AFTER_MS)
+                .or_else(|| headers.get_optional_str(&X_MS_RETRY_AFTER_MS))
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .map(Duration::from_millis);
+            millis.or_else(|| {
+                headers
+                    .get_optional_str(&RETRY_AFTER)
+                    .and_then(|value| value.trim().parse::<u64>().ok())
+                    .map(Duration::from_secs)
+            })
+        });
+        let asked = header_wait
+            .unwrap_or(Duration::ZERO)
+            .max(self.throttle_retry_delay);
+        if asked > self.throttle_retry_max_delay {
+            event!(
+                Level::WARN,
+                ?op,
+                asked_s = asked.as_secs_f32(),
+                cap_s = self.throttle_retry_max_delay.as_secs_f32(),
+                "Throttled response asked for a longer wait than throttle_retry_max_delay_s; waiting the cap"
+            );
+            return Some(self.throttle_retry_max_delay);
+        }
+        Some(asked)
+    }
+
+    fn retry_later<T>(
+        &self,
+        sdk_err: &azure_core::Error,
+        op: &'static str,
+        err: Error,
+    ) -> RetryResult<T> {
+        match self.throttle_wait(sdk_err, op) {
+            Some(wait) => RetryResult::RetryAfter(err, wait),
+            None => RetryResult::Retry(err),
+        }
     }
 
     async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
@@ -277,10 +371,14 @@ where
                                 Some((RetryResult::Ok(None), state))
                             } else {
                                 Some((
-                                    RetryResult::Retry(make_err!(
-                                        Code::Unavailable,
-                                        "Failed to get blob properties: {err:?}"
-                                    )),
+                                    self.retry_later(
+                                        &err,
+                                        "has",
+                                        make_err!(
+                                            Code::Unavailable,
+                                            "Failed to get blob properties: {err:?}"
+                                        ),
+                                    ),
                                     state,
                                 ))
                             }
@@ -393,23 +491,31 @@ where
                                         .upload(RequestContent::from(buffer), None)
                                         .await
                                         .map(|_| ())
-                                        .map_err(|e| make_err!(Code::Aborted, "{e:?}"))
+                                        .map_err(|e| {
+                                            (
+                                                make_err!(Code::Aborted, "{e:?}"),
+                                                self.throttle_wait(&e, "put"),
+                                            )
+                                        })
                                 },
                                 async { tx.bind_buffered(reader_ref).await }
                             );
 
                             match (upload_res, bind_res) {
                                 (Ok(()), Ok(())) => Ok(()),
-                                (Err(e), _) | (_, Err(e)) => Err(e),
+                                (Err(e), _) => Err(e),
+                                (_, Err(e)) => Err((e, None)),
                             }
-                            .err_tip(|| "Failed to upload blob in single chunk")
+                            .map_err(|(e, wait)| {
+                                (e.append("Failed to upload blob in single chunk"), wait)
+                            })
                         };
 
                         match result {
                             Ok(()) => {
                                 Some((RetryResult::Ok(reader.get_bytes_received()), reader))
                             }
-                            Err(mut err) => {
+                            Err((mut err, throttle_wait)) => {
                                 err.code = Code::Aborted;
                                 let bytes_received = reader.get_bytes_received();
 
@@ -436,7 +542,11 @@ where
                                         ?bytes_received,
                                         "Retryable Azure error"
                                     );
-                                    Some((RetryResult::Retry(err), reader))
+                                    let retry = match throttle_wait {
+                                        Some(wait) => RetryResult::RetryAfter(err, wait),
+                                        None => RetryResult::Retry(err),
+                                    };
+                                    Some((retry, reader))
                                 }
                             }
                         }
@@ -511,10 +621,14 @@ where
                                             .await
                                             .map_or_else(
                                                 |e| {
-                                                    RetryResult::Retry(make_err!(
-                                                        Code::Aborted,
-                                                        "Failed to upload block in Azure store: {e:?}"
-                                                    ))
+                                                    self.retry_later(
+                                                        &e,
+                                                        "put",
+                                                        make_err!(
+                                                            Code::Aborted,
+                                                            "Failed to upload block in Azure store: {e:?}"
+                                                        ),
+                                                    )
                                                 },
                                                 |_| RetryResult::Ok(block_id.clone()),
                                             );
@@ -600,7 +714,9 @@ where
                         .await
                         .map_or_else(
                             |e| {
-                                RetryResult::Retry(
+                                self.retry_later(
+                                    &e,
+                                    "put",
                                     Error::from_std_err(Code::Aborted, &e)
                                         .append("Failed to commit block list in Azure store:"),
                                 )
@@ -677,7 +793,8 @@ where
                         }
                     };
 
-                    let result: Result<(), Error> = async {
+                    // The error carries the wait a throttled response asked for.
+                    let result: Result<(), (Error, Option<Duration>)> = async {
                         let options = BlobClientDownloadOptions {
                             range,
                             ..Default::default()
@@ -688,18 +805,27 @@ where
                             .await
                             .map_err(|e| {
                                 if e.http_status() == Some(StatusCode::NotFound) {
-                                    make_err!(Code::NotFound, "Blob not found in Azure: {e:?}")
+                                    (
+                                        make_err!(Code::NotFound, "Blob not found in Azure: {e:?}"),
+                                        None,
+                                    )
                                 } else {
-                                    make_err!(
-                                        Code::Aborted,
-                                        "Failed to start download from Azure: {e:?}"
+                                    (
+                                        make_err!(
+                                            Code::Aborted,
+                                            "Failed to start download from Azure: {e:?}"
+                                        ),
+                                        self.throttle_wait(&e, "get"),
                                     )
                                 }
                             })?;
 
                         let mut body = response.body;
                         while let Some(chunk) = body.try_next().await.map_err(|e| {
-                            make_err!(Code::Aborted, "Error reading from Azure stream: {e:?}")
+                            (
+                                make_err!(Code::Aborted, "Error reading from Azure stream: {e:?}"),
+                                self.throttle_wait(&e, "get"),
+                            )
                         })? {
                             if chunk.is_empty() {
                                 continue;
@@ -724,7 +850,13 @@ where
                                 None => chunk,
                             };
                             writer.send(chunk).await.map_err(|e| {
-                                make_err!(Code::Aborted, "Failed to send data to writer: {e:?}")
+                                (
+                                    make_err!(
+                                        Code::Aborted,
+                                        "Failed to send data to writer: {e:?}"
+                                    ),
+                                    None,
+                                )
                             })?;
                             if max_bytes.is_some_and(|max| writer.get_bytes_written() >= max) {
                                 break;
@@ -732,7 +864,10 @@ where
                         }
 
                         writer.send_eof().map_err(|e| {
-                            make_err!(Code::Aborted, "Failed to send EOF to writer: {e:?}")
+                            (
+                                make_err!(Code::Aborted, "Failed to send EOF to writer: {e:?}"),
+                                None,
+                            )
                         })?;
                         Ok(())
                     }
@@ -740,13 +875,11 @@ where
 
                     match result {
                         Ok(()) => Some((RetryResult::Ok(()), writer)),
-                        Err(e) => {
-                            if e.code == Code::NotFound {
-                                Some((RetryResult::Err(e), writer))
-                            } else {
-                                Some((RetryResult::Retry(e), writer))
-                            }
+                        Err((e, _)) if e.code == Code::NotFound => {
+                            Some((RetryResult::Err(e), writer))
                         }
+                        Err((e, Some(wait))) => Some((RetryResult::RetryAfter(e, wait), writer)),
+                        Err((e, None)) => Some((RetryResult::Retry(e), writer)),
                     }
                 }
             }))

@@ -46,6 +46,8 @@ mod tests {
     use nativelink_config::stores::{
         EvictionPolicy, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
     };
+    #[cfg(target_family = "unix")]
+    use nativelink_error::make_err;
     use nativelink_error::{Code, Error, ResultExt, make_input_err};
     use nativelink_macro::nativelink_test;
     #[cfg(target_family = "unix")]
@@ -3952,6 +3954,122 @@ exit 0
     #[cfg(target_family = "unix")]
     default_health_status_indicator!(HangingStore);
 
+    /// A store that refuses the first `failures` reads of one digest with a
+    /// chosen code and serves it after that: a slow tier whose own retrier
+    /// gave up, as the worker sees it.
+    #[cfg(target_family = "unix")]
+    #[derive(Debug)]
+    struct FlakyStore {
+        inner: Store,
+        fail_on: DigestInfo,
+        failures: u64,
+        code: Code,
+        reads: AtomicU64,
+    }
+
+    #[cfg(target_family = "unix")]
+    impl FlakyStore {
+        fn new(
+            inner: Arc<MemoryStore>,
+            fail_on: DigestInfo,
+            failures: u64,
+            code: Code,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                inner: Store::new(inner),
+                fail_on,
+                failures,
+                code,
+                reads: AtomicU64::new(0),
+            })
+        }
+
+        /// Reads of the flaky digest so far, refused or served.
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MetricsComponent for FlakyStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    #[async_trait]
+    impl StoreDriver for FlakyStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            if key == StoreKey::Digest(self.fail_on) {
+                let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
+                if read <= self.failures {
+                    return Err(make_err!(self.code, "flaky store refused read {read}"));
+                }
+            }
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    default_health_status_indicator!(FlakyStore);
+
+    /// The one input file of the actions `fetch_setup` builds.
+    #[cfg(target_family = "unix")]
+    const FETCH_SETUP_FILE_CONTENT: &[u8] = b"never arrives";
+
     /// A manager whose CAS never finishes reading one input of the action it
     /// returns the digest of; the store comes back too, so a test can lift
     /// that or make writes hang instead.
@@ -3966,14 +4084,48 @@ exit 0
         ),
         Box<dyn core::error::Error>,
     > {
-        const FILE_CONTENT: &[u8] = b"never arrives";
+        fetch_setup(max_download_timeout, HangingStore::new).await
+    }
+
+    /// A manager whose CAS reads one input of the action it returns the
+    /// digest of through the store `make_slow` wraps around the memory store
+    /// holding everything; the wrapper comes back too.
+    #[cfg(target_family = "unix")]
+    async fn fetch_setup<S: StoreDriver>(
+        max_download_timeout: Duration,
+        make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
+    ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
+    {
+        fetch_setup_tree(max_download_timeout, None, false, make_slow).await
+    }
+
+    /// The second file of a nested `fetch_setup_tree`, at the root.
+    #[cfg(target_family = "unix")]
+    const FETCH_SETUP_OTHER_CONTENT: &[u8] = b"other input\n";
+
+    /// `fetch_setup` with the action's own timeout set and, when `nested`,
+    /// the flaky file under a subdirectory beside a second file at the
+    /// root, so that a failed attempt leaves a partly built tree behind.
+    #[cfg(target_family = "unix")]
+    async fn fetch_setup_tree<S: StoreDriver>(
+        max_download_timeout: Duration,
+        action_timeout: Option<Duration>,
+        nested: bool,
+        make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
+    ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
+    {
         let inner = MemoryStore::new(&MemorySpec::default());
-        let file_digest = DigestInfo::new([9u8; 32], FILE_CONTENT.len() as u64);
+        let file_digest = DigestInfo::new([9u8; 32], FETCH_SETUP_FILE_CONTENT.len() as u64);
         inner
             .as_ref()
-            .update_oneshot(file_digest, FILE_CONTENT.into())
+            .update_oneshot(file_digest, FETCH_SETUP_FILE_CONTENT.into())
             .await?;
-        let slow_store = HangingStore::new(inner.clone(), file_digest);
+        let other_digest = DigestInfo::new([8u8; 32], FETCH_SETUP_OTHER_CONTENT.len() as u64);
+        inner
+            .as_ref()
+            .update_oneshot(other_digest, FETCH_SETUP_OTHER_CONTENT.into())
+            .await?;
+        let slow_store = make_slow(inner.clone(), file_digest);
         let fast_config = FilesystemSpec {
             content_path: make_temp_path("content_path"),
             temp_path: make_temp_path("temp_path"),
@@ -3992,15 +4144,41 @@ exit 0
             Store::new(fast_store),
             Store::new(slow_store.clone()),
         );
-        let input_root_digest = serialize_and_upload_message(
-            &Directory {
+        let flaky_file = FileNode {
+            name: "input.txt".to_string(),
+            digest: Some(file_digest.into()),
+            ..Default::default()
+        };
+        let root = if nested {
+            let sub_digest = serialize_and_upload_message(
+                &Directory {
+                    files: vec![flaky_file],
+                    ..Default::default()
+                },
+                inner.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            Directory {
                 files: vec![FileNode {
-                    name: "input.txt".to_string(),
-                    digest: Some(file_digest.into()),
+                    name: "other.txt".to_string(),
+                    digest: Some(other_digest.into()),
                     ..Default::default()
                 }],
+                directories: vec![DirectoryNode {
+                    name: "sub".to_string(),
+                    digest: Some(sub_digest.into()),
+                }],
                 ..Default::default()
-            },
+            }
+        } else {
+            Directory {
+                files: vec![flaky_file],
+                ..Default::default()
+            }
+        };
+        let input_root_digest = serialize_and_upload_message(
+            &root,
             inner.as_pin(),
             &mut DigestHasherFunc::Sha256.hasher(),
         )
@@ -4018,6 +4196,10 @@ exit 0
             &Action {
                 command_digest: Some(command_digest.into()),
                 input_root_digest: Some(input_root_digest.into()),
+                timeout: action_timeout.map(|timeout| prost_types::Duration {
+                    seconds: i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX),
+                    nanos: 0,
+                }),
                 ..Default::default()
             },
             inner.as_pin(),
@@ -4147,6 +4329,253 @@ exit 0
             !Path::new(&action_directory).exists(),
             "the work directory is gone after cleanup"
         );
+        Ok(())
+    }
+
+    /// An input read that fails with a transient code is fetched again from
+    /// this worker, after 1 s then 2 s, and the action goes on once the
+    /// store answers; the retries are the worker's own, the scheduler sees
+    /// one action executing within its ceilings.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_retries_a_transient_fetch_failure()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let started = tokio::time::Instant::now();
+        let action = action.prepare_action().await?;
+        let elapsed = started.elapsed();
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        // Two backoffs of 1 s and 2 s, each shortened by up to a quarter.
+        assert!(elapsed > Duration::from_secs(2), "{elapsed:?}");
+        assert!(
+            elapsed <= Duration::from_secs(3) + Duration::from_millis(10),
+            "{elapsed:?}"
+        );
+        let staged = std::fs::read(format!("{}/input.txt", action.get_work_directory()))?;
+        assert_eq!(staged, FETCH_SETUP_FILE_CONTENT);
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A first attempt that fails after part of the tree is built (the
+    /// subdirectory exists, the file in it does not) is cleared before the
+    /// next, which stages the whole tree.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_restages_a_partly_built_tree() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup_tree(Duration::from_mins(10), None, true, |inner, digest| {
+                FlakyStore::new(inner, digest, 1, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 2, "one refused read, then the one served");
+        let work_directory = action.get_work_directory();
+        assert_eq!(
+            std::fs::read(format!("{work_directory}/sub/input.txt"))?,
+            FETCH_SETUP_FILE_CONTENT
+        );
+        assert_eq!(
+            std::fs::read(format!("{work_directory}/other.txt"))?,
+            FETCH_SETUP_OTHER_CONTENT
+        );
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A kill that lands during the pause before the next attempt ends the
+    /// prepare at once with `Aborted`, not at the end of the pause.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn a_kill_during_the_retry_pause_stops_prepare() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let started = tokio::time::Instant::now();
+        // Attempts at 0 s and ~1 s; the 2 s pause after the second runs
+        // until ~3 s, and the kill lands in the middle of it.
+        let killer = {
+            let manager = running_actions_manager.clone();
+            let operation_id = operation_id.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                manager.kill_operation(&operation_id).await
+            }
+        };
+        let (kill_res, prepare_res) = tokio::join!(killer, action.clone().prepare_action());
+        kill_res?;
+        let err = prepare_res.expect_err("a killed fetch must not complete");
+        assert_eq!(err.code, Code::Aborted, "{err:?}");
+        assert_eq!(store.reads(), 2, "{err:?}");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(2500),
+            "the kill ended the pause early: {elapsed:?}"
+        );
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        Ok(())
+    }
+
+    /// A missing input is not a store hiccup: it fails prepare at once, and
+    /// the store is asked exactly once.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_does_not_retry_a_missing_input()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::NotFound)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let started = tokio::time::Instant::now();
+        let err = action
+            .clone()
+            .prepare_action()
+            .await
+            .expect_err("a missing input must fail prepare");
+        assert_eq!(err.code, Code::NotFound, "{err:?}");
+        assert_eq!(store.reads(), 1, "no retry of a missing input");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A store that never recovers is retried only while the download
+    /// deadline leaves room for another attempt; then the last error comes
+    /// back, naming the attempts, before the deadline itself fires.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_at_the_download_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_secs(5), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action_directory = action.get_work_directory().clone();
+        let started = tokio::time::Instant::now();
+        let err = action
+            .clone()
+            .prepare_action()
+            .await
+            .expect_err("the store never recovers, prepare must fail");
+        let elapsed = started.elapsed();
+        // Attempts at 0 s, ~1 s and ~3 s; the 4 s pause after the third
+        // would end past the 5 s deadline.
+        assert_eq!(store.reads(), 3, "{err:?}");
+        assert_ne!(err.code, Code::DeadlineExceeded, "{err:?}");
+        assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        action.cleanup().await?;
+        assert!(
+            !Path::new(&action_directory).exists(),
+            "the work directory is gone after cleanup"
+        );
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// An action with its own timeout is not retried past it: the scheduler
+    /// ends the action soon after that passes, so a window of ten minutes
+    /// shrinks to the four seconds the action may take.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_at_the_action_timeout()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            Some(Duration::from_secs(4)),
+            false,
+            |inner, digest| FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable),
+        )
+        .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let started = tokio::time::Instant::now();
+        let err = action
+            .clone()
+            .prepare_action()
+            .await
+            .expect_err("the store never recovers, prepare must fail");
+        let elapsed = started.elapsed();
+        // Attempts at 0 s, under 1 s and under 3 s (each pause is shortened
+        // by up to a quarter); the pause after the third is at least 3 s
+        // and would end past the 4 s the action is allowed.
+        assert_eq!(store.reads(), 3, "{err:?}");
+        assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
         Ok(())
     }
 

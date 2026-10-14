@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::cmp::Reverse;
+use core::hash::{Hash, Hasher};
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -22,7 +25,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use async_lock::Mutex;
 use futures::{StreamExt, future};
 use lru::LruCache;
-use nativelink_config::schedulers::{MemoryEscalationSpec, WorkerAllocationStrategy};
+use nativelink_config::schedulers::{
+    MemoryEscalationSpec, ReservationHoldSpec, WorkerAllocationStrategy,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
@@ -34,11 +39,12 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ResourceOutcome, WorkerLoad,
 };
-use nativelink_util::action_messages::{ActionStage, OperationId, WorkerId};
+use nativelink_util::action_messages::{ActionStage, ActionUniqueQualifier, OperationId, WorkerId};
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
-    record_execution_peak_memory, record_worker_connected, record_worker_disconnected,
-    record_worker_keepalive, record_worker_keepalive_gap, record_worker_state,
+    record_execution_peak_memory, record_held_workers, record_worker_connected,
+    record_worker_disconnected, record_worker_hold, record_worker_keepalive,
+    record_worker_keepalive_gap, record_worker_state,
 };
 use nativelink_util::operation_state_manager::{
     Decline, Escalation, UpdateOperationType, WorkerStateManager,
@@ -133,6 +139,7 @@ pub struct SchedulerMetrics {
     pub dispatches_unacknowledged: AtomicU64,
 }
 
+use crate::awaited_action_db::PeerScheduler;
 use crate::match_outcome::{
     MatchOutcome, PropertyShape, UnsatisfiableReason, explain_unsatisfiable,
 };
@@ -176,6 +183,95 @@ impl MetricsComponent for Workers {
     }
 }
 
+/// A worker kept for one queued action that found no room anywhere.
+#[derive(Debug, Clone)]
+struct Hold {
+    /// The action the worker is kept for.
+    action: ActionUniqueQualifier,
+    /// When the hold is given up.
+    until: SystemTime,
+    /// The last matching pass that read the action, by `pass_generation`.
+    /// A pass that read the whole queue without meeting it means the
+    /// action is gone, and so is the reason to hold.
+    seen_in: u64,
+    /// Whether the action is on its way to a worker, which took it off the
+    /// queue: the passes meanwhile do not meet it, and the hold waits for
+    /// the worker to take it or send it back.
+    dispatched: bool,
+}
+
+/// An action whose hold expired: it is not held for again until `until`.
+#[derive(Debug, Clone)]
+struct HoldCooldown {
+    until: SystemTime,
+    /// Expiries in a row on a worker that was idle, each doubling the
+    /// cooldown, up to `MAX_IDLE_EXPIRY_DOUBLINGS`.
+    idle_expiries: u32,
+    /// The last matching pass that read the action; see `Hold::seen_in`.
+    seen_in: u64,
+}
+
+/// The longest a hold lasts whatever `max_hold_s` says, so that the time
+/// it ends at can always be computed.
+const HOLD_CEILING_S: u64 = 7 * 24 * 60 * 60;
+
+/// How many times in a row an expiry on an idle worker doubles the wait
+/// before the action is held for again: sixteen times `max_hold_s` at most.
+const MAX_IDLE_EXPIRY_DOUBLINGS: u32 = 4;
+
+fn hold_duration(spec: ReservationHoldSpec) -> Duration {
+    Duration::from_secs(spec.max_hold_s.min(HOLD_CEILING_S))
+}
+
+/// A queued action a matching pass asks a worker for: which action, so a
+/// worker held for it recognises it, and since when it has waited, for
+/// whether to hold a worker for it.
+#[derive(Debug, Clone, Copy)]
+pub struct QueuedAction<'a> {
+    pub unique_qualifier: &'a ActionUniqueQualifier,
+    pub insert_timestamp: SystemTime,
+}
+
+/// Which of `owners`, sorted, distinct and not empty, holds a worker for
+/// `action`: the same one on every scheduler that sees the same owners,
+/// by a hash of the action. Replicas run one binary, so the hash agrees.
+#[must_use]
+pub fn hold_owner<'a>(action: &ActionUniqueQualifier, owners: &[&'a str]) -> &'a str {
+    let mut hasher = DefaultHasher::new();
+    action.hash(&mut hasher);
+    let count = u64::try_from(owners.len()).unwrap_or(u64::MAX);
+    let index = usize::try_from(hasher.finish() % count).unwrap_or(0);
+    owners[index]
+}
+
+/// Whether `platform_properties` would fit `worker` once any one of its
+/// running actions finished: every `Minimum` it asks is within what the
+/// worker has left plus the largest reservation of that property among
+/// the actions running on it.
+fn fits_after_one_finishes(platform_properties: &PlatformProperties, worker: &Worker) -> bool {
+    platform_properties.properties.iter().all(|(name, value)| {
+        let PlatformPropertyValue::Minimum(needed) = value else {
+            return true;
+        };
+        let left = match worker.platform_properties.properties.get(name) {
+            Some(PlatformPropertyValue::Minimum(left)) => *left,
+            _ => 0,
+        };
+        let largest_running = worker
+            .running_action_infos
+            .values()
+            .filter_map(|pending| {
+                match pending.action_info.platform_properties.properties.get(name) {
+                    Some(PlatformPropertyValue::Minimum(reserved)) => Some(*reserved),
+                    _ => None,
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        *needed <= left.saturating_add(largest_running)
+    })
+}
+
 /// A collection of workers that are available to run tasks.
 #[derive(MetricsComponent)]
 struct ApiWorkerSchedulerImpl {
@@ -194,6 +290,19 @@ struct ApiWorkerSchedulerImpl {
     /// How a memory kill is turned into a retry with a larger reservation;
     /// unset means the kill fails the action.
     memory_escalation: Option<MemoryEscalationSpec>,
+    /// How a queued action that keeps finding no room gets a worker held
+    /// for it; unset means never.
+    reservation_hold: Option<ReservationHoldSpec>,
+    /// Workers held for one queued action each, by worker, and the same
+    /// holds by action. A held worker is offered nothing but its action.
+    holds: HashMap<WorkerId, Hold>,
+    holds_by_action: HashMap<ActionUniqueQualifier, WorkerId>,
+    /// Actions whose hold expired, and until when they are not held for
+    /// again, so one that never fits does not keep a worker idle in turns.
+    hold_cooldowns: HashMap<ActionUniqueQualifier, HoldCooldown>,
+    /// Counts matching passes, so a hold can record the last pass that
+    /// met its action; see `Hold::seen_in`.
+    pass_generation: u64,
     /// A channel to notify the matching engine that the worker pool has changed.
     worker_change_notify: Arc<Notify>,
     /// Bumped with every notification, under the same lock as placement, so
@@ -227,6 +336,14 @@ struct ApiWorkerSchedulerImpl {
     /// been read, and whenever reading them fails: an action is then never
     /// judged unsatisfiable, since a peer might have a worker for it.
     peer_fleet: Option<Vec<PlatformProperties>>,
+
+    /// The peers as the census last read them, sorted by id, for deciding
+    /// which scheduler holds a worker for an action; empty while the census
+    /// is unknown.
+    peer_schedulers: Vec<PeerScheduler>,
+
+    /// The id this scheduler publishes to its peers under.
+    scheduler_id: String,
 
     /// Whether this scheduler shares its state with peers. A non-shared db is
     /// the whole fleet, so peer-absence is authoritative at once; a shared one
@@ -471,6 +588,7 @@ impl ApiWorkerSchedulerImpl {
     /// Note: The caller is responsible for any rescheduling of any tasks that might be
     /// running.
     fn remove_worker(&mut self, worker_id: &WorkerId) -> Option<Worker> {
+        self.end_hold(worker_id, "released");
         // Remove from capability index
         self.capability_index.remove_worker(worker_id);
         // Pop before recomputing the shapes, or the departing worker still
@@ -518,19 +636,26 @@ impl ApiWorkerSchedulerImpl {
             .collect()
     }
 
-    fn set_peer_fleet(&mut self, peer_fleet: Option<Vec<PlatformProperties>>, now: SystemTime) {
+    fn set_peer_fleet(&mut self, peers: Option<Vec<PeerScheduler>>, now: SystemTime) {
         // Peers list their workers in no particular order and may share
         // shapes, so sort and dedup before comparing, or an unchanged fleet
         // would look changed on every exchange and empty `static_verdicts`.
-        let peer_fleet = peer_fleet.map(|peer_fleet| {
-            let mut keyed: Vec<_> = peer_fleet
-                .into_iter()
-                .map(|totals| (PropertyShape::from(&totals), totals))
+        let peer_fleet = peers.as_ref().map(|peers| {
+            let mut keyed: Vec<_> = peers
+                .iter()
+                .flat_map(|peer| peer.workers.iter())
+                .map(|totals| (PropertyShape::from(totals), totals.clone()))
                 .collect();
             keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             keyed.dedup_by(|a, b| a.0 == b.0);
             keyed.into_iter().map(|(_, totals)| totals).collect()
         });
+        // Which scheduler holds a worker for which action goes by the
+        // peers' ids as well as their shapes, so the peers are kept as read
+        // even when the union of shapes did not move.
+        let mut peer_schedulers = peers.unwrap_or_default();
+        peer_schedulers.sort_unstable_by(|a, b| a.scheduler_id.cmp(&b.scheduler_id));
+        self.peer_schedulers = peer_schedulers;
         // Freshness bookkeeping: update the warm-up /
         // staleness clocks BEFORE the unchanged-shapes early return, so a
         // successful exchange that happens to return the same shapes still
@@ -571,8 +696,316 @@ impl ApiWorkerSchedulerImpl {
             record_worker_state("draining", is_draining);
         }
         worker.is_draining = is_draining;
+        if is_draining {
+            // A draining worker takes nothing, its holder included.
+            self.end_hold(worker_id, "released");
+        }
         self.capacity_changed();
         Ok(())
+    }
+
+    /// Ends the hold on `worker_id`, if any, for `outcome`. The worker is
+    /// room the fleet did not have a moment ago, so the matcher is woken.
+    /// An action placed starts over with its cooldown.
+    fn end_hold(&mut self, worker_id: &WorkerId, outcome: &'static str) {
+        let Some(hold) = self.holds.remove(worker_id) else {
+            return;
+        };
+        self.holds_by_action.remove(&hold.action);
+        if outcome == "placed" {
+            self.hold_cooldowns.remove(&hold.action);
+        }
+        info!(?worker_id, action = ?hold.action, outcome, "Worker hold ended");
+        record_worker_hold(outcome);
+        record_held_workers(self.holds.len());
+        self.capacity_changed();
+    }
+
+    /// Ends the hold for `action`, if any, for `outcome`.
+    fn end_hold_for_action(&mut self, action: &ActionUniqueQualifier, outcome: &'static str) {
+        if let Some(worker_id) = self.holds_by_action.get(action).cloned() {
+            self.end_hold(&worker_id, outcome);
+        }
+    }
+
+    /// Records that the held action was sent to a worker (`true`), or came
+    /// back from one untried (`false`); see `Hold::dispatched`.
+    fn note_hold_dispatched(&mut self, action: &ActionUniqueQualifier, dispatched: bool) {
+        if let Some(worker_id) = self.holds_by_action.get(action)
+            && let Some(hold) = self.holds.get_mut(worker_id)
+        {
+            hold.dispatched = dispatched;
+        }
+    }
+
+    /// A queued action found no room. Once it has waited `hold_after_s`,
+    /// if it fits no busy worker until more than one of that worker's
+    /// actions finish, and it is this scheduler's turn to hold for it, a
+    /// worker is held for it here, under the lock the match ran under.
+    fn consider_hold(
+        &mut self,
+        asking: Option<QueuedAction<'_>>,
+        platform_properties: &PlatformProperties,
+        now: SystemTime,
+        full_worker_logging: bool,
+    ) {
+        let (Some(spec), Some(asking)) = (self.reservation_hold, asking) else {
+            return;
+        };
+        let action = asking.unique_qualifier;
+        if self.holds_by_action.contains_key(action) {
+            return;
+        }
+        let waited = now
+            .duration_since(asking.insert_timestamp)
+            .unwrap_or_default();
+        if waited < Duration::from_secs(spec.hold_after_s) {
+            return;
+        }
+        if self
+            .hold_cooldowns
+            .get(action)
+            .is_some_and(|cooldown| now < cooldown.until)
+        {
+            return;
+        }
+        let cap = if spec.max_held_workers == 0 {
+            (self.workers.len() / 10).max(1)
+        } else {
+            spec.max_held_workers
+        };
+        if self.holds.len() >= cap {
+            return;
+        }
+        if !self.only_an_idle_worker_fits(platform_properties) {
+            if full_worker_logging {
+                info!("No hold: one action finishing on some worker would make room for this one");
+            }
+            return;
+        }
+        if !self.owns_hold(action, platform_properties) {
+            if full_worker_logging {
+                info!("No hold here: a peer scheduler holds a worker for this action");
+            }
+            return;
+        }
+        self.hold_worker_for(action, platform_properties, now, spec);
+    }
+
+    /// Whether `platform_properties` fits no matching worker that has an
+    /// action running until more than one of its actions finish: on each
+    /// such worker some `Minimum` the action asks exceeds what the worker
+    /// has left plus the most any one of its running actions reserved. An
+    /// action one completion would make room for is only waiting its turn,
+    /// which the pass order gives it; a hold for it would idle slots for
+    /// nothing. False too when no matching worker is busy: the idle ones
+    /// refuse it for a reason a hold does not change.
+    fn only_an_idle_worker_fits(&self, platform_properties: &PlatformProperties) -> bool {
+        let mut any_busy = false;
+        for (_, worker) in self.workers.iter() {
+            if worker.is_draining
+                || worker.running_action_infos.is_empty()
+                || !platform_properties.is_satisfied_by(&worker.total_platform_properties, false)
+            {
+                continue;
+            }
+            any_busy = true;
+            if fits_after_one_finishes(platform_properties, worker) {
+                return false;
+            }
+        }
+        any_busy
+    }
+
+    /// Whether `action`, which found no room, is this scheduler's to hold a
+    /// worker for. Every replica reads the same queue in the same order, so
+    /// left to themselves they would each drain a worker of their own for
+    /// the same action. The schedulers with a worker that would fit it idle
+    /// (this one, and the peers as the census last read them) take turns
+    /// by a hash of the action; while the census cannot be read, this one
+    /// holds.
+    fn owns_hold(
+        &self,
+        action: &ActionUniqueQualifier,
+        platform_properties: &PlatformProperties,
+    ) -> bool {
+        let fits_here = self.workers.iter().any(|(_, worker)| {
+            platform_properties.is_satisfied_by(&worker.total_platform_properties, false)
+        });
+        if !fits_here {
+            return false;
+        }
+        if self.peer_fleet.is_none() {
+            return true;
+        }
+        let mut owners: Vec<&str> = self
+            .peer_schedulers
+            .iter()
+            .filter(|peer| {
+                peer.workers
+                    .iter()
+                    .any(|totals| platform_properties.is_satisfied_by(totals, false))
+            })
+            .map(|peer| peer.scheduler_id.as_str())
+            .collect();
+        if owners.is_empty() {
+            return true;
+        }
+        owners.push(self.scheduler_id.as_str());
+        owners.sort_unstable();
+        owners.dedup();
+        hold_owner(action, &owners) == self.scheduler_id
+    }
+
+    /// Holds a worker for `action`: of the workers neither draining nor
+    /// held that would fit it idle and have not declined that much while
+    /// idle, the one with the fewest actions running and then the most
+    /// memory free, as last reported or else as the ledger has it. Nothing
+    /// is held when no connected worker would fit the action even idle,
+    /// which is not a matter of waiting.
+    fn hold_worker_for(
+        &mut self,
+        action: &ActionUniqueQualifier,
+        platform_properties: &PlatformProperties,
+        now: SystemTime,
+        spec: ReservationHoldSpec,
+    ) {
+        let needed_kb = self.live_memory_veto_kb(platform_properties);
+        let memory_property = self.live_memory_veto.as_deref();
+        let memory_free = |worker: &Worker| {
+            worker
+                .last_load
+                .map(|load| load.free_memory_kb)
+                .or_else(|| {
+                    match memory_property
+                        .and_then(|property| worker.platform_properties.properties.get(property))
+                    {
+                        Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
+                        _ => None,
+                    }
+                })
+                .unwrap_or(0)
+        };
+        let holds = &self.holds;
+        let chosen = self
+            .workers
+            .iter()
+            .filter(|(worker_id, worker)| !worker.is_draining && !holds.contains_key(*worker_id))
+            .filter(|(_, worker)| {
+                platform_properties.is_satisfied_by(&worker.total_platform_properties, false)
+            })
+            // A worker that declined this much while idle is not offered
+            // it again until it reports that much free; a hold on it would
+            // wait for the worker, not for its actions.
+            .filter(|(_, worker)| {
+                !matches!(
+                    (needed_kb, worker.idle_declined_kb),
+                    (Some(needed_kb), Some(declined_kb)) if needed_kb >= declined_kb
+                )
+            })
+            .min_by_key(|(_, worker)| {
+                (
+                    worker.running_action_infos.len(),
+                    Reverse(memory_free(worker)),
+                )
+            })
+            .map(|(worker_id, _)| worker_id.clone());
+        let Some(worker_id) = chosen else {
+            return;
+        };
+        info!(
+            ?worker_id,
+            ?action,
+            max_hold_s = spec.max_hold_s,
+            "Holding a worker for a queued action that fits only an idle one"
+        );
+        self.holds.insert(
+            worker_id.clone(),
+            Hold {
+                action: action.clone(),
+                until: now.checked_add(hold_duration(spec)).unwrap_or(now),
+                seen_in: self.pass_generation,
+                dispatched: false,
+            },
+        );
+        self.holds_by_action.insert(action.clone(), worker_id);
+        record_worker_hold("held");
+        record_held_workers(self.holds.len());
+    }
+
+    /// A matching pass begins; returns its generation, which the holds it
+    /// meets record and `end_pass_holds` compares against.
+    const fn begin_pass_holds(&mut self) -> u64 {
+        self.pass_generation += 1;
+        self.pass_generation
+    }
+
+    /// Ends the holds past their time, whose action is then not held for
+    /// again for as long (twice as long for each such expiry in a row on a
+    /// worker that was idle, up to a bound: nothing kept the action off it
+    /// but the action itself), and the ones no pass since `pass` began has
+    /// met, whose action is gone. A hold whose action is in flight to a
+    /// worker is not met by passes either and waits for the worker to
+    /// answer. Judged by generation rather than a flag so that two passes
+    /// in flight at once (a test entry point beside the matcher's own loop)
+    /// cannot clear each other's marks. A cooldown no pass has met since is
+    /// dropped the same way.
+    fn end_pass_holds(&mut self, pass: u64, now: SystemTime) {
+        let ended: Vec<(WorkerId, &'static str)> = self
+            .holds
+            .iter()
+            .filter_map(|(worker_id, hold)| {
+                if hold.until <= now {
+                    Some((worker_id.clone(), "expired"))
+                } else if hold.seen_in < pass && !hold.dispatched {
+                    Some((worker_id.clone(), "released"))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (worker_id, outcome) in ended {
+            if outcome == "expired"
+                && let Some(spec) = self.reservation_hold
+                && let Some(hold) = self.holds.get(&worker_id)
+            {
+                let idle = self
+                    .workers
+                    .peek(&worker_id)
+                    .is_some_and(|worker| worker.running_action_infos.is_empty());
+                let cooldown =
+                    self.hold_cooldowns
+                        .entry(hold.action.clone())
+                        .or_insert(HoldCooldown {
+                            until: now,
+                            idle_expiries: 0,
+                            seen_in: pass,
+                        });
+                if idle {
+                    cooldown.idle_expiries =
+                        (cooldown.idle_expiries + 1).min(MAX_IDLE_EXPIRY_DOUBLINGS);
+                }
+                cooldown.until = now
+                    .checked_add(hold_duration(spec) * (1 << cooldown.idle_expiries))
+                    .unwrap_or(now);
+            }
+            self.end_hold(&worker_id, outcome);
+        }
+        self.hold_cooldowns
+            .retain(|_, cooldown| cooldown.seen_in >= pass);
+    }
+
+    /// Marks the hold and the cooldown for `action`, if any, as met by the
+    /// pass under way.
+    fn note_held_action_seen(&mut self, action: &ActionUniqueQualifier) {
+        if let Some(worker_id) = self.holds_by_action.get(action)
+            && let Some(hold) = self.holds.get_mut(worker_id)
+        {
+            hold.seen_in = self.pass_generation;
+        }
+        if let Some(cooldown) = self.hold_cooldowns.get_mut(action) {
+            cooldown.seen_in = self.pass_generation;
+        }
     }
 
     /// Whether peer-absence can be trusted to fail an action right now — a
@@ -671,6 +1104,7 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         candidates: &HashSet<WorkerId>,
         full_worker_logging: bool,
+        asking: Option<&ActionUniqueQualifier>,
     ) -> Option<WorkerId> {
         // Check function for availability AND dynamic Minimum property verification.
         // The index only does presence checks for Minimum properties since their
@@ -686,6 +1120,16 @@ impl ApiWorkerSchedulerImpl {
                         w.running_action_infos.len(),
                         w.max_inflight_tasks
                     );
+                }
+                return false;
+            }
+
+            // A held worker takes nothing but the action it is held for.
+            if let Some(hold) = self.holds.get(*worker_id)
+                && asking != Some(&hold.action)
+            {
+                if full_worker_logging {
+                    info!("Worker {worker_id} is held for another action");
                 }
                 return false;
             }
@@ -782,7 +1226,31 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
         now: SystemTime,
+        asking: Option<QueuedAction<'_>>,
     ) -> MatchOutcome {
+        let outcome = self.match_worker_for_action(
+            platform_properties,
+            full_worker_logging,
+            now,
+            asking.map(|action| action.unique_qualifier),
+        );
+        if matches!(outcome, MatchOutcome::WaitingForCapacity) {
+            self.consider_hold(asking, platform_properties, now, full_worker_logging);
+        }
+        outcome
+    }
+
+    /// The match itself; `inner_find_worker_for_action` adds the hold.
+    fn match_worker_for_action(
+        &mut self,
+        platform_properties: &PlatformProperties,
+        full_worker_logging: bool,
+        now: SystemTime,
+        asking: Option<&ActionUniqueQualifier>,
+    ) -> MatchOutcome {
+        if let Some(action) = asking {
+            self.note_held_action_seen(action);
+        }
         if self.workers.is_empty() {
             if full_worker_logging {
                 info!("No workers available to match!");
@@ -798,9 +1266,12 @@ impl ApiWorkerSchedulerImpl {
             let candidates = self
                 .capability_index
                 .find_matching_workers(platform_properties, full_worker_logging);
-            if let Some(worker_id) =
-                self.find_available_worker(platform_properties, &candidates, full_worker_logging)
-            {
+            if let Some(worker_id) = self.find_available_worker(
+                platform_properties,
+                &candidates,
+                full_worker_logging,
+                asking,
+            ) {
                 return MatchOutcome::Matched(worker_id);
             }
             Some(candidates)
@@ -1046,6 +1517,28 @@ impl ApiWorkerSchedulerImpl {
         operation_id: &OperationId,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
+        // Any word from the worker about an action it was sent, other than
+        // sending it back, is the worker taking it: a hold for it ends as
+        // placed. A decline or a disconnect requeues the action, and its
+        // hold waits for it in the queue again.
+        let held_for = self
+            .workers
+            .peek(worker_id)
+            .and_then(|worker| worker.running_action_infos.get(operation_id))
+            .map(|pending| pending.action_info.inner.unique_qualifier.clone())
+            .filter(|action| self.holds_by_action.contains_key(action));
+        if let Some(action) = held_for {
+            if matches!(
+                update,
+                UpdateOperationType::UpdateWithDecline(_)
+                    | UpdateOperationType::UpdateWithDisconnect
+            ) {
+                self.note_hold_dispatched(&action, false);
+            } else {
+                self.end_hold_for_action(&action, "placed");
+            }
+        }
+
         let worker = self.workers.get_mut(worker_id).err_tip(|| {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
         })?;
@@ -1245,6 +1738,10 @@ impl ApiWorkerSchedulerImpl {
                     .await;
                 return Result::<(), _>::Err(err).merge(evicted).merge(requeued);
             }
+            // A worker held for the action keeps its hold until the worker
+            // the action went to takes it; a decline sends the action back
+            // to the queue, and the hold waits for it there again.
+            self.note_hold_dispatched(&action_info.inner.unique_qualifier, true);
             Ok(())
         } else {
             warn!(
@@ -1274,6 +1771,13 @@ impl ApiWorkerSchedulerImpl {
             return;
         };
         if worker.mark_accepted(operation_id) {
+            let action = worker
+                .running_action_infos
+                .get(operation_id)
+                .map(|pending| pending.action_info.inner.unique_qualifier.clone());
+            if let Some(action) = action {
+                self.end_hold_for_action(&action, "placed");
+            }
             return;
         }
         // Messages from a worker arrive in order and the acknowledgement
@@ -1314,6 +1818,11 @@ impl ApiWorkerSchedulerImpl {
             return Ok(false);
         }
         info!(?worker_id, %operation_id, %reason, ?needs_kb, "Worker declined dispatch");
+        let declined_action = self
+            .workers
+            .peek(worker_id)
+            .and_then(|worker| worker.running_action_infos.get(operation_id))
+            .map(|pending| pending.action_info.inner.unique_qualifier.clone());
         self.update_action(
             worker_id,
             operation_id,
@@ -1348,6 +1857,25 @@ impl ApiWorkerSchedulerImpl {
             } else {
                 worker.pause_needs_kb = needs_kb;
             }
+        }
+        // A hold on this worker for the declined action outlives the
+        // decline: the worker is paused until it reports room, and is
+        // offered the action again then. Unless it declined the action
+        // idle: it is then not offered that much again until a keepalive
+        // says it has it free, which waits on the worker rather than on
+        // its actions, so the hold ends and the next pass holds another.
+        if let (Some(action), Some(needs_kb)) = (declined_action, needs_kb)
+            && self
+                .holds
+                .get(worker_id)
+                .is_some_and(|hold| hold.action == action)
+            && self.workers.peek(worker_id).is_some_and(|worker| {
+                worker
+                    .idle_declined_kb
+                    .is_some_and(|declined_kb| needs_kb >= declined_kb)
+            })
+        {
+            self.end_hold(worker_id, "declined");
         }
         Ok(true)
     }
@@ -1518,6 +2046,8 @@ pub struct ApiWorkerScheduler {
     /// See `ApiWorkerSchedulerImpl::capacity_generation`; read here without
     /// the lock.
     capacity_generation: Arc<AtomicU64>,
+    /// See `ApiWorkerSchedulerImpl::scheduler_id`; read here without the lock.
+    scheduler_id: String,
     #[metric(group = "platform_property_manager")]
     platform_property_manager: Arc<PlatformPropertyManager>,
 
@@ -1569,6 +2099,7 @@ impl ApiWorkerScheduler {
         allocation_strategy: WorkerAllocationStrategy,
         live_memory_veto: Option<String>,
         memory_escalation: Option<MemoryEscalationSpec>,
+        reservation_hold: Option<ReservationHoldSpec>,
         worker_change_notify: Arc<Notify>,
         worker_timeout_s: u64,
         unacknowledged_kill_timeout_s: u64,
@@ -1577,10 +2108,15 @@ impl ApiWorkerScheduler {
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
         has_peers: bool,
         record_ttl: Duration,
+        scheduler_id: String,
     ) -> Arc<Self> {
         debug_assert!(
             !record_ttl.is_zero(),
             "record_ttl must be non-zero; a zero TTL degenerates the census warm-up/staleness checks"
+        );
+        debug_assert!(
+            reservation_hold.is_none_or(|hold| hold.hold_after_s > 0 && hold.max_hold_s > 0),
+            "reservation_hold.hold_after_s and max_hold_s must be above zero; the factory refuses them"
         );
         let local_fleet_change_notify = Arc::new(Notify::new());
         let capacity_generation = Arc::new(AtomicU64::new(0));
@@ -1591,6 +2127,11 @@ impl ApiWorkerScheduler {
                 allocation_strategy,
                 live_memory_veto,
                 memory_escalation,
+                reservation_hold,
+                holds: HashMap::new(),
+                holds_by_action: HashMap::new(),
+                hold_cooldowns: HashMap::new(),
+                pass_generation: 0,
                 worker_change_notify,
                 capacity_generation: capacity_generation.clone(),
                 worker_registry: worker_registry.clone(),
@@ -1600,6 +2141,8 @@ impl ApiWorkerScheduler {
                 fleet_shape_set: BTreeSet::new(),
                 // Without peers there is nothing to wait for.
                 peer_fleet: (!has_peers).then(Vec::new),
+                peer_schedulers: Vec::new(),
+                scheduler_id: scheduler_id.clone(),
                 shared: has_peers,
                 record_ttl,
                 peer_fleet_known_since: None,
@@ -1616,7 +2159,14 @@ impl ApiWorkerScheduler {
             maybe_origin_event_tx,
             local_fleet_change_notify,
             capacity_generation,
+            scheduler_id,
         })
+    }
+
+    /// The id this scheduler publishes to its peers under.
+    #[must_use]
+    pub fn scheduler_id(&self) -> &str {
+        &self.scheduler_id
     }
 
     /// Whether no worker is connected here and, as far as a trusted census
@@ -1746,12 +2296,13 @@ impl ApiWorkerScheduler {
 
     /// Records what the workers connected to peer schedulers can run, or
     /// `None` when that is not known.
-    pub async fn set_peer_fleet(
-        &self,
-        peer_fleet: Option<Vec<PlatformProperties>>,
-        now: SystemTime,
-    ) {
-        self.inner.lock().await.set_peer_fleet(peer_fleet, now);
+    pub async fn set_peer_fleet(&self, peers: Option<Vec<PeerScheduler>>, now: SystemTime) {
+        self.inner.lock().await.set_peer_fleet(peers, now);
+    }
+
+    /// The workers held for a queued action right now.
+    pub async fn held_workers_for_test(&self) -> Vec<WorkerId> {
+        self.inner.lock().await.holds.keys().cloned().collect()
     }
 
     /// Woken when a worker joins or leaves this scheduler.
@@ -1769,10 +2320,23 @@ impl ApiWorkerScheduler {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
         now: SystemTime,
+        asking: Option<QueuedAction<'_>>,
     ) -> MatchOutcome {
-        self.find_worker_for_action_observed(platform_properties, full_worker_logging, now)
+        self.find_worker_for_action_observed(platform_properties, full_worker_logging, now, asking)
             .await
             .0
+    }
+
+    /// A matching pass is about to read the queue; returns the pass, for
+    /// `end_pass_holds`.
+    pub async fn begin_pass_holds(&self) -> u64 {
+        self.inner.lock().await.begin_pass_holds()
+    }
+
+    /// The pass read the whole queue: release the holds no pass since it
+    /// began has met, and the ones past their time.
+    pub async fn end_pass_holds(&self, pass: u64, now: SystemTime) {
+        self.inner.lock().await.end_pass_holds(pass, now);
     }
 
     /// `find_worker_for_action`, also returning the capacity generation read
@@ -1785,6 +2349,7 @@ impl ApiWorkerScheduler {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
         now: SystemTime,
+        asking: Option<QueuedAction<'_>>,
     ) -> (MatchOutcome, u64) {
         let start = Instant::now();
         self.metrics
@@ -1793,8 +2358,12 @@ impl ApiWorkerScheduler {
 
         let mut inner = self.inner.lock().await;
         let worker_count = inner.workers.len() as u64;
-        let result =
-            inner.inner_find_worker_for_action(platform_properties, full_worker_logging, now);
+        let result = inner.inner_find_worker_for_action(
+            platform_properties,
+            full_worker_logging,
+            now,
+            asking,
+        );
         let generation = inner.capacity_generation.load(Ordering::Relaxed);
 
         // Track workers iterated (worst case is all workers)

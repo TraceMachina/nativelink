@@ -23,7 +23,7 @@ use nativelink_config::stores::RedisSpec;
 use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
 use nativelink_redis_tester::FakeRedisBackend;
-use nativelink_scheduler::awaited_action_db::AwaitedActionDb;
+use nativelink_scheduler::awaited_action_db::{AwaitedActionDb, PeerScheduler};
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::store_awaited_action_db::StoreAwaitedActionDb;
 use nativelink_scheduler::worker::Worker;
@@ -88,18 +88,29 @@ async fn schedulers_see_each_others_fleet_but_not_their_own() -> Result<(), Erro
     let peers = db_a
         .exchange_fleet_capabilities("a", vec![shape(0)], TTL)
         .await?;
-    assert_eq!(peers, Vec::<PlatformProperties>::new());
+    assert_eq!(peers, Vec::<PeerScheduler>::new());
 
     let peers = db_b
         .exchange_fleet_capabilities("b", vec![shape(1), shape(2)], TTL)
         .await?;
-    assert_eq!(peers, vec![shape(0)]);
+    assert_eq!(
+        peers,
+        vec![PeerScheduler {
+            scheduler_id: "a".to_string(),
+            workers: vec![shape(0)],
+        }]
+    );
 
-    let mut peers = db_a
+    let peers = db_a
         .exchange_fleet_capabilities("a", vec![shape(0)], TTL)
         .await?;
-    peers.sort_by_key(|p| p.properties["gpu_count"].as_str().into_owned());
-    assert_eq!(peers, vec![shape(1), shape(2)]);
+    assert_eq!(
+        peers,
+        vec![PeerScheduler {
+            scheduler_id: "b".to_string(),
+            workers: vec![shape(1), shape(2)],
+        }]
+    );
 
     // Each record expires on its own once its scheduler stops refreshing it.
     let expiries = fake_redis_backend.expiries.lock().unwrap();
@@ -120,7 +131,14 @@ async fn republishing_replaces_the_previous_record() -> Result<(), Error> {
     db_b.exchange_fleet_capabilities("b", vec![], TTL).await?;
 
     let peers = db_a.exchange_fleet_capabilities("a", vec![], TTL).await?;
-    assert_eq!(peers, Vec::<PlatformProperties>::new());
+    assert_eq!(
+        peers,
+        vec![PeerScheduler {
+            scheduler_id: "b".to_string(),
+            workers: vec![],
+        }],
+        "the peer is still there, with no workers"
+    );
     Ok(())
 }
 

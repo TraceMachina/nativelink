@@ -46,6 +46,17 @@ pub const RPC_STATUS_CODE: &str = "rpc.grpc.status_code";
 pub const SCHEDULER_MATCH_RESULT: &str = "scheduler.match.result";
 /// The platform properties no worker could satisfy, comma separated.
 pub const SCHEDULER_UNSATISFIABLE_PROPERTIES: &str = "scheduler.unsatisfiable.properties";
+pub const SCHEDULER_HOLD_OUTCOME: &str = "scheduler.hold.outcome";
+/// The age bucket of a queued or executing action.
+pub const SCHEDULER_ACTION_AGE: &str = "scheduler.action.age";
+
+// Metric attribute keys for the worker.
+pub const WORKER_PREPARE_OUTCOME: &str = "worker.prepare.outcome";
+pub const WORKER_RELINK_KIND: &str = "worker.relink.kind";
+
+// Metric attribute keys for object stores.
+pub const STORE_OBJECT_PROVIDER: &str = "store.object.provider";
+pub const STORE_OBJECT_OPERATION: &str = "store.object.operation";
 
 // Metric attribute keys for tiered stores.
 pub const STORE_TIER: &str = "store.tier";
@@ -902,7 +913,12 @@ pub static WORKER_METRICS: LazyLock<WorkerMetrics> = LazyLock::new(|| {
 
         input_relinks: meter
             .u64_counter("worker.input.relinks")
-            .with_description("Input hardlinks made again because the fast store evicted their source while the tree was staged, by kind: plain, executable")
+            .with_description("Input hardlinks made again because the fast store evicted their source while the tree was staged, by kind: plain, executable, or exhausted when the retries ran out")
+            .build(),
+
+        prepare_retries: meter
+            .u64_counter("worker.prepare.retries")
+            .with_description("Input fetches tried again on the same worker after a transient store failure: retried per attempt made again, then one of recovered, exhausted when the download deadline ran out, failed when a later attempt failed for good, or abandoned when a kill or the download timeout ended the fetch mid-retry")
             .build(),
 
         dispatch_requeues: meter
@@ -954,6 +970,8 @@ pub struct WorkerMetrics {
     pub worker_disconnections: metrics::Counter<u64>,
     /// Input hardlinks made again after their source was evicted mid-staging, by kind.
     pub input_relinks: metrics::Counter<u64>,
+    /// Input fetches tried again on the worker after a transient store failure: `retried` per attempt made again, then one of `recovered`, `exhausted`, `failed` or `abandoned`.
+    pub prepare_retries: metrics::Counter<u64>,
     /// Dispatches requeued untried, by reason.
     pub dispatch_requeues: metrics::Counter<u64>,
     /// Keepalives received, cumulative.
@@ -1009,12 +1027,23 @@ pub fn record_dispatch_requeue(reason: &'static str) {
 }
 
 /// Records an input hardlink made again because the fast store evicted its
-/// source between resolving the tree and linking it. A steady rate says the
-/// store runs at its ceiling.
+/// source between resolving the tree and linking it, or `exhausted` when the
+/// fetch retries ran out. A steady rate says the store runs at its ceiling.
 pub fn record_input_relink(kind: &'static str) {
     WORKER_METRICS
         .input_relinks
-        .add(1, &[KeyValue::new("kind", kind)]);
+        .add(1, &[KeyValue::new(WORKER_RELINK_KIND, kind)]);
+}
+
+/// Records an input fetch the worker tried again after a transient store
+/// failure: `retried` per attempt made again, then one terminal outcome,
+/// `recovered`, `exhausted` (the download deadline ran out), `failed` (a
+/// later attempt failed for good) or `abandoned` (a kill or the download
+/// timeout ended it mid-retry).
+pub fn record_prepare_retry(outcome: &'static str) {
+    WORKER_METRICS
+        .prepare_retries
+        .add(1, &[KeyValue::new(WORKER_PREPARE_OUTCOME, outcome)]);
 }
 
 /// Records a keepalive from a worker.
@@ -1130,6 +1159,38 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_unit("{action}")
             .build(),
 
+        queue_age: meter
+            .u64_gauge("scheduler.queue.age")
+            .with_description(
+                "Queued actions the last matching pass read, by how long ago their client submitted them",
+            )
+            .with_unit("{action}")
+            .build(),
+
+        queue_oldest_age: meter
+            .f64_gauge("scheduler.queue.oldest_age")
+            .with_description(
+                "Seconds since the client submitted the oldest action the last matching pass read",
+            )
+            .with_unit("s")
+            .build(),
+
+        executing_age: meter
+            .u64_gauge("scheduler.executing.age")
+            .with_description(
+                "Executing actions the last executing sweep read, by how long they have been executing",
+            )
+            .with_unit("{action}")
+            .build(),
+
+        executing_oldest_age: meter
+            .f64_gauge("scheduler.executing.oldest_age")
+            .with_description(
+                "Seconds the longest-executing action the last executing sweep read has been executing",
+            )
+            .with_unit("s")
+            .build(),
+
         queue_retired: meter
             .u64_counter("scheduler.queue.retired")
             .with_description("Queued actions retired because no client was listening any more")
@@ -1142,6 +1203,20 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
                 "Queued actions dispatched onto room that opened while the matching pass was past them, taken ahead of the newer actions the pass was reading",
             )
             .with_unit("{action}")
+            .build(),
+
+        worker_holds: meter
+            .u64_counter("scheduler.worker.holds")
+            .with_description(
+                "Workers held for a queued action that kept finding no room, by outcome: held when the hold began, placed when a worker took the action, released when the action or the worker left, declined when the held worker declined the action idle, expired when max_hold_s passed first",
+            )
+            .with_unit("{hold}")
+            .build(),
+
+        held_workers: meter
+            .u64_gauge("scheduler.worker.held")
+            .with_description("Workers this scheduler holds for a queued action right now")
+            .with_unit("{worker}")
             .build(),
 
         awaited_action_orphans: meter
@@ -1188,11 +1263,25 @@ pub struct SchedulerOtlpMetrics {
     pub unsatisfiable_failed: metrics::Counter<u64>,
     /// Queued actions the last matching pass read.
     pub queue_depth: metrics::Gauge<u64>,
+    /// Queued actions the last matching pass read, by age bucket.
+    pub queue_age: metrics::Gauge<u64>,
+    /// Age of the oldest action the last matching pass read, in seconds.
+    pub queue_oldest_age: metrics::Gauge<f64>,
+    /// Executing actions the last executing sweep read, by age bucket.
+    pub executing_age: metrics::Gauge<u64>,
+    /// How long the longest-executing action the last sweep read has been
+    /// executing, in seconds.
+    pub executing_oldest_age: metrics::Gauge<f64>,
     /// Queued actions retired for having no client.
     pub queue_retired: metrics::Counter<u64>,
     /// Actions a pass parked for want of room and dispatched when room
     /// opened before the pass ended, ahead of the newer actions it was reading.
     pub parked_dispatched: metrics::Counter<u64>,
+    /// Workers held for a queued action that kept finding no room, by what
+    /// began or ended the hold.
+    pub worker_holds: metrics::Counter<u64>,
+    /// Workers held for such an action right now.
+    pub held_workers: metrics::Gauge<u64>,
     /// Listed operations whose record was gone on read, by site.
     pub awaited_action_orphans: metrics::Counter<u64>,
     /// Abandoned-queue sweeps that failed before finishing.
@@ -1225,6 +1314,91 @@ pub fn record_queue_depth(count: u64) {
     SCHEDULER_METRICS.queue_depth.record(count, &[]);
 }
 
+/// Upper bounds of the action age buckets; anything older falls in the last,
+/// open bucket. Matches how an operator asks about a backlog: how much has
+/// waited over a minute, five, fifteen, thirty, an hour.
+const AGE_BUCKET_BOUNDS: [core::time::Duration; 5] = [
+    core::time::Duration::from_mins(1),
+    core::time::Duration::from_mins(5),
+    core::time::Duration::from_mins(15),
+    core::time::Duration::from_mins(30),
+    core::time::Duration::from_hours(1),
+];
+
+/// The `age` attribute values, one per bucket, in bound order.
+pub const AGE_BUCKET_LABELS: [&str; 6] =
+    ["lt_1m", "1m_5m", "5m_15m", "15m_30m", "30m_60m", "ge_60m"];
+
+/// Counts actions into age buckets as a pass reads them, for one gauge
+/// sample per bucket at the end of the pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AgeBuckets {
+    counts: [u64; AGE_BUCKET_LABELS.len()],
+    oldest: core::time::Duration,
+}
+
+impl AgeBuckets {
+    /// Counts one action of the given age.
+    pub fn observe(&mut self, age: core::time::Duration) {
+        let bucket = AGE_BUCKET_BOUNDS
+            .iter()
+            .position(|bound| age < *bound)
+            .unwrap_or(AGE_BUCKET_BOUNDS.len());
+        self.counts[bucket] += 1;
+        self.oldest = self.oldest.max(age);
+    }
+
+    /// Counts one action from the time its age is measured from. A time
+    /// after `now` (clock skew between replicas) counts as no age at all.
+    pub fn observe_since(&mut self, since: SystemTime, now: SystemTime) {
+        self.observe(now.duration_since(since).unwrap_or_default());
+    }
+
+    /// The count in each bucket, in [`AGE_BUCKET_LABELS`] order.
+    #[must_use]
+    pub const fn counts(&self) -> [u64; AGE_BUCKET_LABELS.len()] {
+        self.counts
+    }
+
+    /// The oldest age counted, zero when nothing was.
+    #[must_use]
+    pub const fn oldest(&self) -> core::time::Duration {
+        self.oldest
+    }
+}
+
+/// Records the ages of the queued actions a matching pass read. Every bucket
+/// is written, empty ones as zero, so a gauge never holds a count from a
+/// backlog that has since drained.
+pub fn record_queue_ages(ages: &AgeBuckets) {
+    record_age_buckets(
+        &SCHEDULER_METRICS.queue_age,
+        &SCHEDULER_METRICS.queue_oldest_age,
+        ages,
+    );
+}
+
+/// Records the ages of the executing actions an executing sweep read, the
+/// same way as [`record_queue_ages`].
+pub fn record_executing_ages(ages: &AgeBuckets) {
+    record_age_buckets(
+        &SCHEDULER_METRICS.executing_age,
+        &SCHEDULER_METRICS.executing_oldest_age,
+        ages,
+    );
+}
+
+fn record_age_buckets(
+    by_bucket: &metrics::Gauge<u64>,
+    oldest: &metrics::Gauge<f64>,
+    ages: &AgeBuckets,
+) {
+    for (label, count) in AGE_BUCKET_LABELS.iter().zip(ages.counts()) {
+        by_bucket.record(count, &[KeyValue::new(SCHEDULER_ACTION_AGE, *label)]);
+    }
+    oldest.record(ages.oldest().as_secs_f64(), &[]);
+}
+
 /// Records queued actions retired by the abandoned sweep.
 pub fn record_queue_retired(count: u64) {
     if count > 0 {
@@ -1239,6 +1413,24 @@ pub fn record_parked_dispatched(count: u64) {
     if count > 0 {
         SCHEDULER_METRICS.parked_dispatched.add(count, &[]);
     }
+}
+
+/// Records a worker hold beginning (`held`) or ending: `placed` when a
+/// worker took the action, `released` when the action left the queue or
+/// the worker left or drained, `declined` when the held worker declined
+/// the action idle and another is held instead, `expired` when `max_hold_s`
+/// passed first.
+pub fn record_worker_hold(outcome: &'static str) {
+    SCHEDULER_METRICS
+        .worker_holds
+        .add(1, &[KeyValue::new(SCHEDULER_HOLD_OUTCOME, outcome)]);
+}
+
+/// Records how many workers are held right now.
+pub fn record_held_workers(count: usize) {
+    SCHEDULER_METRICS
+        .held_workers
+        .record(u64::try_from(count).unwrap_or(u64::MAX), &[]);
 }
 
 /// Records an operation the queue listed whose record was gone when read;
@@ -1273,6 +1465,37 @@ pub fn record_unsatisfiable_failed(properties: String) {
             SCHEDULER_UNSATISFIABLE_PROPERTIES,
             properties,
         )],
+    );
+}
+
+/// Global object-store metrics.
+pub static STORE_METRICS: LazyLock<StoreMetrics> = LazyLock::new(|| {
+    let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());
+
+    StoreMetrics {
+        object_throttles: meter
+            .u64_counter("store.object.throttles")
+            .with_description("Object store responses that asked the client to slow down (HTTP 503 ServerBusy or 429), by provider and operation")
+            .with_unit("{response}")
+            .build(),
+    }
+});
+
+/// Object-store metrics shared by the cloud backends.
+#[derive(Debug)]
+pub struct StoreMetrics {
+    /// Throttled responses, by provider and operation.
+    pub object_throttles: metrics::Counter<u64>,
+}
+
+/// Records a response from an object store that asked the client to slow down.
+pub fn record_object_store_throttle(provider: &'static str, op: &'static str) {
+    STORE_METRICS.object_throttles.add(
+        1,
+        &[
+            KeyValue::new(STORE_OBJECT_PROVIDER, provider),
+            KeyValue::new(STORE_OBJECT_OPERATION, op),
+        ],
     );
 }
 

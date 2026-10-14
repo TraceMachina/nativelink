@@ -31,8 +31,8 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
-    EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult, ExecutionStage,
-    record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
+    AgeBuckets, EXECUTION_METRICS, EXECUTION_RESULT, EXECUTION_STAGE, ExecutionResult,
+    ExecutionStage, record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -44,7 +44,8 @@ use opentelemetry::KeyValue;
 use tracing::{debug, info, trace, warn};
 
 use super::awaited_action_db::{
-    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedActionState,
+    AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, PeerScheduler,
+    SortedAwaitedActionState,
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
@@ -57,6 +58,9 @@ pub struct ExecutingSweepReport {
     pub requeued: u64,
     /// Could not be moved this sweep; they are tried again on the next.
     pub failed: u64,
+    /// How long each executing action the sweep read had been executing,
+    /// counted before any was retired or requeued.
+    pub ages: AgeBuckets,
 }
 
 /// Why the scheduler times out an executing action.
@@ -615,6 +619,9 @@ where
             if !matches!(awaited_action.state().stage, ActionStage::Executing) {
                 continue;
             }
+            report
+                .ages
+                .observe_since(awaited_action.state().last_transition_timestamp, now);
             let operation_id = awaited_action.operation_id().clone();
 
             if self.timeout_cause(&awaited_action).await.is_some() {
@@ -784,7 +791,7 @@ where
         scheduler_id: &str,
         local: Vec<PlatformProperties>,
         ttl: Duration,
-    ) -> Result<Vec<PlatformProperties>, Error> {
+    ) -> Result<Vec<PeerScheduler>, Error> {
         self.action_db
             .exchange_fleet_capabilities(scheduler_id, local, ttl)
             .await

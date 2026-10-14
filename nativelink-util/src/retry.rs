@@ -50,6 +50,11 @@ pub(crate) type JitterFn = Arc<dyn Fn(Duration) -> Duration + Send + Sync>;
 pub enum RetryResult<T> {
     Ok(T),
     Retry(Error),
+    /// Retryable, and the server asked for at least this long before the
+    /// next attempt. Within the retrier's throttle budget the wait is taken
+    /// as is and spends no attempt; past it the backoff still applies when
+    /// it is longer and the attempt counts.
+    RetryAfter(Error, Duration),
     Err(Error),
 }
 
@@ -57,7 +62,9 @@ pub enum RetryResult<T> {
 /// Recorded as `retry.outcomes`, labeled with the retrier's client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryOutcome {
-    /// An attempt failed with a retryable error and another follows.
+    /// An attempt failed with a retryable error and another follows. A
+    /// throttle waited out within the throttle budget counts, though it
+    /// spends no attempt.
     Retried,
     /// The operation succeeded after at least one retry.
     Recovered,
@@ -89,6 +96,9 @@ pub struct Retrier {
     config: Retry,
     client: &'static str,
     outcome_fn: Option<OutcomeFn>,
+    /// How long one `retry` call may spend on `RetryAfter` waits before
+    /// they start spending attempts. Zero means they always do.
+    throttle_budget: Duration,
 }
 
 impl core::fmt::Debug for Retrier {
@@ -129,6 +139,7 @@ impl Retrier {
             config,
             client: "unknown",
             outcome_fn: None,
+            throttle_budget: Duration::ZERO,
         }
     }
 
@@ -145,6 +156,14 @@ impl Retrier {
     #[must_use]
     pub fn with_outcome_fn(mut self, outcome_fn: OutcomeFn) -> Self {
         self.outcome_fn = Some(outcome_fn);
+        self
+    }
+
+    /// Lets one `retry` call spend up to `budget` waiting on `RetryAfter`
+    /// results without counting those tries as attempts.
+    #[must_use]
+    pub const fn with_throttle_budget(mut self, budget: Duration) -> Self {
+        self.throttle_budget = budget;
         self
     }
 
@@ -205,9 +224,10 @@ impl Retrier {
             let mut iter = self.get_retry_config();
             tokio::pin!(operation);
             let mut attempt = 0;
+            let mut throttled = Duration::ZERO;
             loop {
                 attempt += 1;
-                match operation.next().await {
+                let (err, min_wait, is_throttle) = match operation.next().await {
                     None => {
                         return Err(make_err!(
                             Code::Internal,
@@ -215,7 +235,9 @@ impl Retrier {
                         ));
                     }
                     Some(RetryResult::Ok(value)) => {
-                        if attempt > 1 {
+                        // A throttle within the budget is a retry too,
+                        // though it leaves `attempt` where it was.
+                        if attempt > 1 || !throttled.is_zero() {
                             self.report(RetryOutcome::Recovered);
                         }
                         return Ok(value);
@@ -223,25 +245,39 @@ impl Retrier {
                     Some(RetryResult::Err(e)) => {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
-                    Some(RetryResult::Retry(err)) => {
-                        if !self.should_retry(err.code) {
-                            if err.code == Code::NotFound {
-                                info!(?err, "Not found, not retrying");
-                            } else {
-                                self.report(RetryOutcome::Permanent);
-                                error!(?attempt, ?err, "Not retrying permanent error");
-                            }
-                            return Err(err);
-                        }
-                        let Some(delay) = iter.next() else {
-                            self.report(RetryOutcome::Exhausted);
-                            warn!(client = self.client, ?attempt, ?err, "Retries exhausted");
-                            return Err(err.append(format!("On attempt {attempt}")));
-                        };
-                        self.report(RetryOutcome::Retried);
-                        (self.sleep_fn)(delay).await;
+                    Some(RetryResult::Retry(err)) => (err, Duration::ZERO, false),
+                    Some(RetryResult::RetryAfter(err, min_wait)) => (err, min_wait, true),
+                };
+                if !self.should_retry(err.code) {
+                    if err.code == Code::NotFound {
+                        info!(?err, "Not found, not retrying");
+                    } else {
+                        self.report(RetryOutcome::Permanent);
+                        error!(?attempt, ?err, "Not retrying permanent error");
                     }
+                    return Err(err);
                 }
+                // A throttle within the budget waits what was asked and is
+                // not an attempt: the server said when to come back, and
+                // the budget bounds how long that is listened to. A zero
+                // wait would spin, so it goes through the backoff instead.
+                if is_throttle
+                    && !min_wait.is_zero()
+                    && throttled.saturating_add(min_wait) <= self.throttle_budget
+                {
+                    throttled = throttled.saturating_add(min_wait);
+                    attempt -= 1;
+                    self.report(RetryOutcome::Retried);
+                    (self.sleep_fn)(min_wait).await;
+                    continue;
+                }
+                let Some(backoff) = iter.next() else {
+                    self.report(RetryOutcome::Exhausted);
+                    warn!(client = self.client, ?attempt, ?err, "Retries exhausted");
+                    return Err(err.append(format!("On attempt {attempt}")));
+                };
+                self.report(RetryOutcome::Retried);
+                (self.sleep_fn)(backoff.max(min_wait)).await;
             }
         }
     }
