@@ -999,7 +999,8 @@ impl DirectoryCache {
     /// This imposes two correctness rules, both handled here:
     ///  * Executable files (`FileNode.is_executable`) need the `+x` bit, which
     ///    cannot be applied to a shared CAS inode. They are given their own
-    ///    private inode via fetch+write and then chmod'd — never hardlinked.
+    ///    private inode, copied from the same CAS blob, and then chmod'd.
+    ///    They are never hardlinked.
     ///  * If the blob is not locally hardlinkable (the fast tier is not a
     ///    `FilesystemStore`, or the blob is not present in it / was evicted),
     ///    fall back to fetch+write for that file rather than failing.
@@ -1028,16 +1029,17 @@ impl DirectoryCache {
             return Ok(());
         }
 
-        // Executable files need their own inode to carry the +x bit without
-        // mutating the shared CAS blob — copy, never hardlink.
-        if file_node.is_executable {
-            return self.copy_file_to(&digest, &file_path, true).await;
-        }
-
-        // Non-executable file: try to hardlink the CAS blob directly.
+        // Materialize from the CAS blob on disk: a hardlink, or for an
+        // executable a private copy (its own inode carries the +x bit without
+        // mutating the shared CAS blob).
         if let Some(filesystem_store) = &self.filesystem_store {
             match self
-                .hardlink_cas_blob(filesystem_store, &digest, &file_path)
+                .materialize_cas_blob(
+                    filesystem_store,
+                    &digest,
+                    &file_path,
+                    file_node.is_executable,
+                )
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -1048,34 +1050,45 @@ impl DirectoryCache {
                     trace!(
                         ?digest,
                         ?file_path,
-                        "CAS blob not locally hardlinkable, copying instead"
+                        "CAS blob not locally materializable, fetching instead"
                     );
                 }
                 Err(e) => return Err(e),
             }
         }
 
-        // Fallback: fetch the blob and write a private copy. Non-executable,
-        // but still made read-only (0o444) by copy_file_to so the materialized
-        // input is immutable like the hardlink path.
-        self.copy_file_to(&digest, &file_path, false).await
+        // Fallback: fetch the blob and write a private copy, made read-only
+        // (0o555 or 0o444) by copy_file_to so the materialized input is
+        // immutable like the hardlink path.
+        self.copy_file_to(&digest, &file_path, file_node.is_executable)
+            .await
     }
 
-    /// Hardlinks the `FilesystemStore` CAS blob for `digest` into `file_path`.
+    /// Materializes the `FilesystemStore` CAS blob for `digest` at
+    /// `file_path`: a hardlink, or a private read-only copy when `executable`.
     /// Mirrors `download_to_directory`: populate the fast store, resolve the
-    /// blob's on-disk path under the entry lock, then `fs::hard_link`.
+    /// blob's on-disk path under the entry lock, then `fs::hard_link` (or
+    /// `fs::copy`).
+    ///
+    /// Executables go through the fast store too, rather than being read with
+    /// `get_part`, so that concurrent constructions needing the same blob
+    /// share one download however long it takes: `populate_fast_store` makes
+    /// every caller wait for the in-flight download, while `get_part` gives a
+    /// waiting reader up after `LEADER_WAIT_TIMEOUT` and has it read the whole
+    /// blob from the slow store again.
     ///
     /// Returns a `NotFound` error if the blob is not present in the filesystem
     /// tier; callers fall back to fetch+write in that case.
-    async fn hardlink_cas_blob(
+    async fn materialize_cas_blob(
         &self,
         filesystem_store: &FilesystemStore,
         digest: &DigestInfo,
         file_path: &Path,
+        executable: bool,
     ) -> Result<(), Error> {
         // Ensure the blob is in the fast (filesystem) tier so it has an
-        // on-disk file we can hardlink. This may fetch from the slow store,
-        // so it holds a fetch permit.
+        // on-disk file we can hardlink or copy. This may fetch from the slow
+        // store, so it holds a fetch permit.
         {
             let _permit = self.acquire_fetch_permit().await?;
             self.cas_store
@@ -1087,19 +1100,35 @@ impl DirectoryCache {
         let file_entry = filesystem_store
             .get_file_entry_for_digest(digest)
             .await
-            .err_tip(|| "Resolving CAS file entry for hardlink")?;
+            .err_tip(|| "Resolving CAS file entry")?;
 
-        let file_path = file_path.to_path_buf();
+        let dst = file_path.to_path_buf();
         file_entry
             .get_file_path_locked(move |src| async move {
-                fs::hard_link(&src, &file_path).await.err_tip(|| {
-                    format!(
-                        "Failed to hardlink CAS blob into cache entry: {}",
-                        file_path.display()
-                    )
-                })
+                if executable {
+                    // A private inode; `std::fs::copy` clones on APFS and
+                    // uses copy_file_range on Linux.
+                    fs::copy(&src, &dst).await.map(|_| ()).err_tip(|| {
+                        format!(
+                            "Failed to copy CAS blob into cache entry: {}",
+                            dst.display()
+                        )
+                    })
+                } else {
+                    fs::hard_link(&src, &dst).await.err_tip(|| {
+                        format!(
+                            "Failed to hardlink CAS blob into cache entry: {}",
+                            dst.display()
+                        )
+                    })
+                }
             })
-            .await
+            .await?;
+
+        if executable {
+            Self::set_read_only(file_path, true).await?;
+        }
+        Ok(())
     }
 
     /// Fetches the blob for `digest` from the CAS and writes a private copy at
@@ -1124,22 +1153,28 @@ impl DirectoryCache {
             .await
             .err_tip(|| format!("Failed to write file: {}", file_path.display()))?;
 
+        Self::set_read_only(file_path, executable).await
+    }
+
+    /// Chmods a private copy read-only: `0o555` when `executable`, else
+    /// `0o444`. Never call it on a hardlink, which shares the CAS blob's inode.
+    async fn set_read_only(file_path: &Path, executable: bool) -> Result<(), Error> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             // Read-only, matching the hermeticity contract for materialized
             // inputs: 0o555 (r-xr-xr-x) for executables so the +x bit survives,
-            // 0o444 (r--r--r--) for data files. This file has its own private
-            // inode (just written above), so chmoding it cannot affect any CAS
-            // blob or another action's hardlink — unlike the hardlink path,
-            // where the shared read-only blob must never be chmod'd.
+            // 0o444 (r--r--r--) for data files. The file has its own private
+            // inode, so chmoding it cannot affect any CAS blob or another
+            // action's hardlink, unlike the hardlink path, where the shared
+            // read-only blob must never be chmod'd.
             let mode = if executable { 0o555 } else { 0o444 };
             fs::set_permissions(file_path, std::fs::Permissions::from_mode(mode))
                 .await
                 .err_tip(|| format!("Failed to set permissions: {}", file_path.display()))?;
         }
         #[cfg(not(unix))]
-        let _ = executable;
+        let _ = (file_path, executable);
 
         Ok(())
     }
