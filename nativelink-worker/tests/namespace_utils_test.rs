@@ -25,7 +25,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_worker::namespace_utils;
+use nativelink_worker::persistent_worker::{LiveWorker, Namespacing, WireFormat, WorkRequest};
 use pretty_assertions::assert_eq;
+use utils::network_test_utils::{
+    host_interfaces_beyond_loopback, interface_names, only_loopback, skip,
+};
+
+mod utils {
+    pub(crate) mod network_test_utils;
+}
 
 /// Returns a path under `dir` that is unique for this test run.
 fn unique_path(dir: &Path, prefix: &str) -> PathBuf {
@@ -59,6 +67,7 @@ fn namespaced_sh(script: &str, isolate_tmp: bool, root_path: &Path, action_path:
         command.pre_exec(move || {
             namespace_utils::configure_namespace(
                 true,
+                false,
                 tmp_dir_c.as_deref(),
                 &root_dir_c,
                 &action_dir_c,
@@ -73,16 +82,16 @@ async fn test_namespaces_supported() -> Result<(), Error> {
     // This test is a smoke test to ensure that the namespace detection logic
     // runs without crashing. The result of this function is dependent on the
     // environment it is run in, so we don't assert the result.
-    let _supported = namespace_utils::namespaces_supported(false, false);
+    let _supported = namespace_utils::namespaces_supported(false, false, false);
     // Isolating /tmp is only possible inside a mount namespace, regardless of
     // what the host supports.
-    assert!(!namespace_utils::namespaces_supported(false, true));
+    assert!(!namespace_utils::namespaces_supported(false, true, false));
     Ok(())
 }
 
 #[nativelink_test]
 async fn test_configure_namespace_isolate_tmp_hides_host_tmp() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(true, true) {
+    if !namespace_utils::namespaces_supported(true, true, false) {
         return Ok(());
     }
 
@@ -134,7 +143,7 @@ async fn test_configure_namespace_isolate_tmp_hides_host_tmp() -> Result<(), Err
 #[nativelink_test]
 async fn test_configure_namespace_isolate_tmp_keeps_action_directory_under_tmp() -> Result<(), Error>
 {
-    if !namespace_utils::namespaces_supported(true, true) {
+    if !namespace_utils::namespaces_supported(true, true, false) {
         return Ok(());
     }
 
@@ -183,7 +192,7 @@ async fn test_configure_namespace_isolate_tmp_keeps_action_directory_under_tmp()
 #[nativelink_test]
 async fn test_configure_namespace_isolate_tmp_concurrent_actions_do_not_collide()
 -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(true, true) {
+    if !namespace_utils::namespaces_supported(true, true, false) {
         return Ok(());
     }
 
@@ -242,7 +251,7 @@ async fn test_configure_namespace_isolate_tmp_concurrent_actions_do_not_collide(
 
 #[nativelink_test]
 async fn test_configure_namespace_mount_without_isolate_tmp_keeps_host_tmp() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(true, false) {
+    if !namespace_utils::namespaces_supported(true, false, false) {
         return Ok(());
     }
 
@@ -273,7 +282,7 @@ async fn test_configure_namespace_mount_without_isolate_tmp_keeps_host_tmp() -> 
 
 #[nativelink_test]
 async fn test_configure_namespace() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false, false) {
+    if !namespace_utils::namespaces_supported(false, false, false) {
         return Ok(());
     }
 
@@ -288,7 +297,7 @@ async fn test_configure_namespace() -> Result<(), Error> {
     // child, and the original child process will continue to execute the command.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, false, None, &root_dir, &action_dir)
         });
     }
 
@@ -311,7 +320,7 @@ async fn test_configure_namespace() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(true, false) {
+    if !namespace_utils::namespaces_supported(true, false, false) {
         return Ok(());
     }
 
@@ -347,7 +356,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
 
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(true, None, &root_dir_c, &action1_dir_c)
+            namespace_utils::configure_namespace(true, false, None, &root_dir_c, &action1_dir_c)
         });
     }
 
@@ -365,7 +374,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
     let action1_dir_c = CString::new(action1_path.to_str().unwrap()).unwrap();
     unsafe {
         command_access.pre_exec(move || {
-            namespace_utils::configure_namespace(true, None, &root_dir_c, &action1_dir_c)
+            namespace_utils::configure_namespace(true, false, None, &root_dir_c, &action1_dir_c)
         });
     }
     let output_access = command_access.output()?;
@@ -383,7 +392,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
 /// cleanup before the SIGKILL that follows the grace.
 #[nativelink_test]
 async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false, false) {
+    if !namespace_utils::namespaces_supported(false, false, false) {
         return Ok(());
     }
     let marker = std::env::temp_dir().join(format!(
@@ -409,7 +418,7 @@ async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> 
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, false, None, &root_dir, &action_dir)
         });
     }
     let child = command.spawn()?;
@@ -439,7 +448,7 @@ async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> 
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false, false) {
+    if !namespace_utils::namespaces_supported(false, false, false) {
         return Ok(());
     }
 
@@ -459,7 +468,7 @@ async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, false, None, &root_dir, &action_dir)
         });
     }
 
@@ -527,7 +536,7 @@ async fn test_maybe_namespaced_child_non_namespaced_kill() -> Result<(), Error> 
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false, false) {
+    if !namespace_utils::namespaces_supported(false, false, false) {
         return Ok(());
     }
 
@@ -541,7 +550,7 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, false, None, &root_dir, &action_dir)
         });
     }
 
@@ -559,7 +568,7 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
 
 #[nativelink_test]
 async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
-    if !namespace_utils::namespaces_supported(false, false) {
+    if !namespace_utils::namespaces_supported(false, false, false) {
         return Ok(());
     }
 
@@ -570,7 +579,7 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     let action_dir = CString::new("/tmp/action").unwrap();
     unsafe {
         command_running.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, false, None, &root_dir, &action_dir)
         });
     }
     let child_running = command_running.spawn()?;
@@ -595,7 +604,7 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     command_exited.args(["-c", &format!("exit {expected_exit_code}")]);
     unsafe {
         command_exited.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, false, None, &root_dir, &action_dir)
         });
     }
     let child_exited = command_exited.spawn()?;
@@ -609,5 +618,281 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     let status = namespaced_child_exited.try_wait()?;
     assert_eq!(status.and_then(|s| s.code()), Some(expected_exit_code));
 
+    Ok(())
+}
+
+/// An address of this host outside loopback, with a listener behind it, or
+/// None when the host has no route out (then there is nothing beyond
+/// loopback for an action to reach in the first place). Connecting a UDP
+/// socket sends nothing; it only picks the source address a packet to
+/// TEST-NET-1 would leave from.
+fn outside_listener() -> Option<(std::net::TcpListener, libc::sockaddr_in)> {
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    probe.connect("192.0.2.1:9").ok()?;
+    let std::net::SocketAddr::V4(local) = probe.local_addr().ok()? else {
+        return None;
+    };
+    if local.ip().is_loopback() || local.ip().is_unspecified() {
+        return None;
+    }
+    let listener = std::net::TcpListener::bind((*local.ip(), 0)).ok()?;
+    let std::net::SocketAddr::V4(listening) = listener.local_addr().ok()? else {
+        return None;
+    };
+    Some((listener, sockaddr_in(listening)))
+}
+
+fn sockaddr_in(addr: std::net::SocketAddrV4) -> libc::sockaddr_in {
+    // SAFETY: sockaddr_in is plain old data, for which all zeroes is valid.
+    let mut sockaddr: libc::sockaddr_in = unsafe { core::mem::zeroed() };
+    sockaddr.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap();
+    sockaddr.sin_port = addr.port().to_be();
+    sockaddr.sin_addr.s_addr = u32::from(*addr.ip()).to_be();
+    sockaddr
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const SOCKADDR_IN_LEN: libc::socklen_t = size_of::<libc::sockaddr_in>() as libc::socklen_t;
+
+fn last_errno() -> i32 {
+    std::io::Error::last_os_error()
+        .raw_os_error()
+        .unwrap_or(libc::EIO)
+}
+
+/// Connect a TCP socket to `addr` from between fork and exec: raw libc and
+/// no allocation. Non-blocking, so a connect that the kernel would start
+/// (EINPROGRESS) returns at once instead of waiting on a remote host; only
+/// "no route at all" fails synchronously with ENETUNREACH.
+fn connect_signal_safe(addr: &libc::sockaddr_in, nonblocking: bool) -> Result<(), i32> {
+    let mut kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    if nonblocking {
+        kind |= libc::SOCK_NONBLOCK;
+    }
+    // SAFETY: socket takes only integers.
+    let fd = unsafe { libc::socket(libc::AF_INET, kind, 0) };
+    if fd < 0 {
+        return Err(last_errno());
+    }
+    // SAFETY: addr is a valid sockaddr_in of SOCKADDR_IN_LEN bytes.
+    let rc = unsafe { libc::connect(fd, core::ptr::from_ref(addr).cast(), SOCKADDR_IN_LEN) };
+    let result = if rc == 0 { Ok(()) } else { Err(last_errno()) };
+    // SAFETY: fd is ours.
+    unsafe { libc::close(fd) };
+    result
+}
+
+/// Listen on 127.0.0.1 and connect to it, from between fork and exec.
+fn loopback_round_trip_signal_safe() -> Result<(), i32> {
+    // SAFETY: socket takes only integers.
+    let listener =
+        unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if listener < 0 {
+        return Err(last_errno());
+    }
+    let mut addr = sockaddr_in(std::net::SocketAddrV4::new(
+        std::net::Ipv4Addr::LOCALHOST,
+        0,
+    ));
+    let mut len = SOCKADDR_IN_LEN;
+    // SAFETY: addr and len are valid for a sockaddr_in on our stack.
+    let result =
+        if unsafe { libc::bind(listener, core::ptr::from_ref(&addr).cast(), SOCKADDR_IN_LEN) } != 0
+            || unsafe { libc::listen(listener, 1) } != 0
+            || unsafe {
+                libc::getsockname(
+                    listener,
+                    core::ptr::from_mut(&mut addr).cast(),
+                    &raw mut len,
+                )
+            } != 0
+        {
+            Err(last_errno())
+        } else {
+            connect_signal_safe(&addr, false)
+        };
+    // SAFETY: listener is ours.
+    unsafe { libc::close(listener) };
+    result
+}
+
+/// Checks the network from inside the action's process. Registered as a
+/// second `pre_exec` hook, it runs after `configure_namespace` has put the
+/// process in its namespaces and forked it into the PID namespace, so it
+/// sees exactly the network the action's program would; the stub never
+/// returns from the first hook. A failed expectation is returned as an
+/// errno, which makes the spawn fail with it.
+///
+/// Loopback has to work either way. With the network isolated, the host's
+/// own outside address and TEST-NET-1 have to be unreachable, with
+/// ENETUNREACH and at once; otherwise the host's outside address has to
+/// accept the connection. EISCONN stands for "connected where it should
+/// not have": no connect here can return it on its own.
+fn check_network(
+    isolated: bool,
+    outside: Option<libc::sockaddr_in>,
+    test_net: libc::sockaddr_in,
+) -> std::io::Result<()> {
+    let fail = std::io::Error::from_raw_os_error;
+    loopback_round_trip_signal_safe().map_err(fail)?;
+    if isolated {
+        for addr in outside.iter().chain(core::iter::once(&test_net)) {
+            match connect_signal_safe(addr, true) {
+                Err(libc::ENETUNREACH) => {}
+                Err(libc::EINPROGRESS) | Ok(()) => return Err(fail(libc::EISCONN)),
+                Err(errno) => return Err(fail(errno)),
+            }
+        }
+    } else if let Some(addr) = outside {
+        connect_signal_safe(&addr, false).map_err(fail)?;
+    }
+    Ok(())
+}
+
+/// Runs `sh` in fresh namespaces, with or without the network isolated,
+/// checks the network from inside it, and returns the interfaces it saw.
+fn run_network_probe(
+    isolate_network: bool,
+    outside: Option<libc::sockaddr_in>,
+) -> Result<std::collections::BTreeSet<String>, Error> {
+    let test_net = sockaddr_in(std::net::SocketAddrV4::new(
+        std::net::Ipv4Addr::new(192, 0, 2, 1),
+        9,
+    ));
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    let mut command = Command::new("sh");
+    // Builtins only, so this needs nothing on PATH beyond sh itself.
+    command.args([
+        "-c",
+        "while read -r line; do echo \"$line\"; done < /proc/net/dev",
+    ]);
+    // SAFETY: Both hooks are async-signal-safe and intended for pre_exec.
+    unsafe {
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(
+                false,
+                isolate_network,
+                None,
+                &root_dir,
+                &action_dir,
+            )
+        });
+        command.pre_exec(move || check_network(isolate_network, outside, test_net));
+    }
+    let output = command.output().map_err(|err| {
+        Error::from_std_err(nativelink_error::Code::Internal, &err).append(
+            "The network check inside the namespace failed; EISCONN means an address outside loopback was reachable",
+        )
+    })?;
+    assert!(output.status.success(), "{output:?}");
+    Ok(interface_names(&String::from_utf8_lossy(&output.stdout)))
+}
+
+const NO_NETWORK_NAMESPACES: &str = "network namespaces are unavailable here";
+
+#[nativelink_test]
+async fn test_isolate_network_keeps_loopback_and_nothing_else() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(false, false, true) {
+        skip(
+            "test_isolate_network_keeps_loopback_and_nothing_else",
+            NO_NETWORK_NAMESPACES,
+        );
+        return Ok(());
+    }
+    let outside = outside_listener();
+    let interfaces = run_network_probe(true, outside.as_ref().map(|(_, addr)| *addr))?;
+    assert_eq!(
+        interfaces,
+        only_loopback(),
+        "an isolated action should see only its own loopback interface"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_without_isolate_network_the_host_network_stays_reachable() -> Result<(), Error> {
+    const TEST: &str = "test_without_isolate_network_the_host_network_stays_reachable";
+    if !namespace_utils::namespaces_supported(false, false, false) {
+        skip(TEST, "namespaces are unavailable here");
+        return Ok(());
+    }
+    let Some(host_interfaces) = host_interfaces_beyond_loopback(TEST) else {
+        return Ok(());
+    };
+    let outside = outside_listener();
+    let interfaces = run_network_probe(false, outside.as_ref().map(|(_, addr)| *addr))?;
+    assert_eq!(
+        interfaces, host_interfaces,
+        "without isolate_network an action shares the worker's network namespace"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn test_namespaces_supported_checks_the_network_namespace() -> Result<(), Error> {
+    // Where a network namespace cannot be made the answer is false, which
+    // is the startup failure; where it can, the probe brings loopback up in
+    // it like an action's namespace does, and must not fail on that.
+    if !namespace_utils::namespaces_supported(false, false, false) {
+        skip(
+            "test_namespaces_supported_checks_the_network_namespace",
+            "namespaces are unavailable here",
+        );
+        return Ok(());
+    }
+    let with_network = namespace_utils::namespaces_supported(false, false, true);
+    let can_unshare_net = run_network_probe(true, None).is_ok();
+    assert_eq!(with_network, can_unshare_net);
+    Ok(())
+}
+
+/// A persistent worker process started with the network isolated sees only
+/// loopback, as a one-shot action does. It answers its one request with the
+/// interface names in its own `/proc/net/dev`.
+#[nativelink_test]
+async fn test_isolate_network_applies_to_persistent_worker_processes() -> Result<(), Error> {
+    const TEST: &str = "test_isolate_network_applies_to_persistent_worker_processes";
+    if !namespace_utils::namespaces_supported(false, false, true) {
+        skip(TEST, NO_NETWORK_NAMESPACES);
+        return Ok(());
+    }
+    if host_interfaces_beyond_loopback(TEST).is_none() {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let script = dir.path().join("worker.sh");
+    std::fs::write(
+        &script,
+        r#"read -r request
+names=
+{ read -r header; read -r header; while read -r l; do names="$names ${l%%:*}"; done; } < /proc/net/dev
+echo "{\"exitCode\":0,\"output\":\"$names\"}"
+"#,
+    )?;
+    let mut worker = LiveWorker::spawn(
+        Path::new("/bin/sh"),
+        &[script.display().to_string()],
+        WireFormat::Json,
+        dir.path(),
+        &[(
+            "PATH".to_string(),
+            std::env::var("PATH").unwrap_or_default(),
+        )],
+        Namespacing::Yes {
+            isolate_network: true,
+        },
+    )?;
+    let response = worker.dispatch(&WorkRequest::default()).await?;
+    worker.shutdown(Duration::from_secs(1)).await;
+    assert_eq!(response.exit_code, 0, "{response:?}");
+    assert_eq!(
+        response
+            .output
+            .split_whitespace()
+            .map(String::from)
+            .collect::<std::collections::BTreeSet<_>>(),
+        only_loopback(),
+    );
     Ok(())
 }

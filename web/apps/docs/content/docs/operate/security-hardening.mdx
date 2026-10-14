@@ -328,15 +328,30 @@ through, predictable paths there (`isolate_tmp: false` keeps the host's
 `noexec` included, not the host `/tmp`'s); the rest of the host filesystem
 stays visible.
 
-Note what is absent from that flag list: **`CLONE_NEWNET`**. No network
-namespace is created. An action has the worker's full network access, including to port
-50061 on your scheduler, and to anything else on the worker's network.
+Note what is absent from that flag list by default: **`CLONE_NEWNET`**. No
+network namespace is created. An action has the worker's full network access,
+including to port 50061 on your scheduler, and to anything else on the
+worker's network.
+
+With
+[`isolate_network: true`](/reference/nativelink-config/main#localworkerconfig)
+the flag list gains `CLONE_NEWNET` and the worker brings up the loopback
+interface of the new namespace, so an action reaches `127.0.0.1` (and `::1`
+with IPv6) and no other address. Read what that does not cover before you count on it:
+
+- **Unix sockets are not network.** A socket on the filesystem the action can
+  see, such as the Docker socket, is as reachable as before. Only abstract
+  sockets, which belong to the network namespace, are cut off.
+- **The worker is not isolated.** Only the action's processes lose the
+  network. The worker process that fetches the action's inputs and uploads
+  its outputs keeps its own, as it must.
 
 An action can, by design:
 
 - Read and write every file the worker's user can, outside its work directory
 - Open a connection to the worker API and register as a worker
-- Reach any internal service the worker host can reach
+- Reach any internal service the worker host can reach, unless
+  `isolate_network` is on
 - Consume the whole host's memory and CPU, since there is no per-action limit
   of any kind in the configuration; the only bound is
   [`max_inflight_tasks` and the container's own limits](/operate/runbooks#a-worker-is-oom-killed)

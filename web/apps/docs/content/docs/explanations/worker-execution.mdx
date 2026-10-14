@@ -102,12 +102,13 @@ suggests. Here is the complete list, in both directions:
 
 | Provided when enabled | **Not** provided, even when enabled |
 | --- | --- |
-| PID namespace | Network namespace; the action has the host's network |
-| IPC namespace | seccomp filtering; every syscall is available |
-| UTS namespace | cgroups; no CPU or memory limit is applied |
-| User namespace (identity map only) | `chroot` / `pivot_root`; the host filesystem is visible |
-| An init-stub reaper, via double fork | Any privilege drop; the uid map is identity, range 1 |
-| Optional mount namespace that tmpfs-masks sibling action directories | Anything at all on macOS or Windows |
+| PID namespace | seccomp filtering; every syscall is available |
+| IPC namespace | cgroups; no CPU or memory limit is applied |
+| UTS namespace | `chroot` / `pivot_root`; the host filesystem is visible |
+| User namespace (identity map only) | Any privilege drop; the uid map is identity, range 1 |
+| An init-stub reaper, via double fork | Anything at all on macOS or Windows |
+| Optional mount namespace that tmpfs-masks sibling action directories | A network policy: an action is either cut off or has the host's network |
+| Optional network namespace with only loopback (`isolate_network`) | Isolation from the host's filesystem Unix sockets |
 
 The user namespace maps one uid to itself. It does not sandbox the action's
 identity; it exists so the other namespaces can be created without
@@ -123,6 +124,46 @@ not a silent no-op you can leave enabled in a mixed fleet.
   inside Docker, creating namespaces requires a privileged container, which
   trades away more than it buys back.
 </Callout>
+
+### Keeping actions off the network [#keeping-actions-off-the-network]
+
+A build or test that quietly downloads something is not hermetic, and it
+fails in ways that are hard to trace back. With `isolate_network: true` (it
+requires `use_namespaces: true`) every action gets a network namespace of its
+own that holds a loopback interface and nothing else. The worker brings
+loopback up, so an action can still listen on and connect to `127.0.0.1` (and
+`::1` where the host has IPv6): a test that starts its own local server keeps
+working. Any other address fails at once with "network unreachable" rather
+than hanging until a timeout. A Unix socket on the filesystem the action can
+see stays reachable, while abstract Unix sockets belong to the network
+namespace and are cut off. A name lookup answered over a filesystem socket
+(`nscd`, `systemd-resolved`, `sssd`) can therefore still succeed, but
+connecting to the address fails. The worker itself keeps its network, which
+it needs for the CAS and the scheduler. It is off by default, and a host that
+cannot create a network namespace fails at startup, not on the first action.
+
+Every action creates and drops a network namespace, and the kernel frees
+them asynchronously, so at very high action rates the live count can reach
+the `user.max_net_namespaces` limit, and actions then fail to start with
+`ENOSPC`.
+
+```json5
+workers: [{
+  local: {
+    // ...
+    use_namespaces: true,
+    isolate_network: true,
+  },
+}]
+```
+
+The setting applies to every action the worker runs, persistent worker
+processes included. Actions that need the network (a test against a real
+service, a repository rule run remotely) belong on workers without it; give
+those workers a platform property of their own, declared `exact` on the
+scheduler, and set it on the actions that need them.
+[Security hardening](/operate/security-hardening#the-sandbox-is-not-a-security-boundary)
+covers what this does not protect against.
 
 ## The environment is built from nothing [#the-environment-is-built-from-nothing]
 
@@ -277,8 +318,9 @@ and
   </Accordion>
   <Accordion title="Is it safe to run untrusted actions on a NativeLink worker?" id="untrusted-actions">
     Not on the strength of NativeLink's own isolation. With defaults there is
-    none; with namespaces enabled there is still no network isolation, no
-    seccomp, no cgroups, no filesystem root change and no privilege drop. Put
+    none; with namespaces enabled there is still no seccomp, no cgroups, no
+    filesystem root change and no privilege drop, and no network isolation
+    unless `isolate_network` is on. Put
     the boundary in the `entrypoint` wrapper or in the container the worker
     runs in, and size that boundary for genuinely hostile input.
   </Accordion>

@@ -704,6 +704,75 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
     Ok(())
 }
 
+/// `isolate_network` without the namespaces it needs is refused at startup,
+/// as `isolate_tmp` without its mount namespace is, rather than running
+/// actions with less isolation than the operator wrote down.
+#[nativelink_test]
+async fn new_local_worker_rejects_isolate_network_without_namespaces() -> Result<(), Error> {
+    let cas_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            // Note: These are not needed for this test, so we put dummy memory stores here.
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(
+            <FilesystemStore>::new(&FilesystemSpec {
+                content_path: make_temp_path("content_path"),
+                temp_path: make_temp_path("temp_path"),
+                ..Default::default()
+            })
+            .await?,
+        ),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    ));
+    for (config, expected) in [
+        (
+            LocalWorkerConfig {
+                isolate_network: Some(true),
+                ..Default::default()
+            },
+            if cfg!(target_os = "linux") {
+                "isolate_network requires use_namespaces to be true"
+            } else {
+                "isolate_network is not supported on non-Linux OSes"
+            },
+        ),
+        (
+            LocalWorkerConfig {
+                use_namespaces: Some(false),
+                isolate_network: Some(true),
+                ..Default::default()
+            },
+            if cfg!(target_os = "linux") {
+                "isolate_network requires use_namespaces to be true"
+            } else {
+                "isolate_network is not supported on non-Linux OSes"
+            },
+        ),
+    ] {
+        let err = new_local_worker(
+            Arc::new(LocalWorkerConfig {
+                work_directory: make_temp_path("foo"),
+                ..config
+            }),
+            cas_store.clone(),
+            None,
+            cas_store.clone(),
+        )
+        .await
+        .err()
+        .ok_or_else(|| make_input_err!("Expected the config to be refused: {expected}"))?;
+        assert!(
+            err.message_string().contains(expected),
+            "expected {expected:?}, got {err:?}"
+        );
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn experimental_precondition_script_fails() -> Result<(), Error> {
     #[cfg(target_family = "unix")]

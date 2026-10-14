@@ -28,7 +28,7 @@ pub mod live_worker;
 pub mod pool;
 pub mod protocol;
 
-pub use live_worker::LiveWorker;
+pub use live_worker::{LiveWorker, Namespacing};
 pub use pool::{
     DEFAULT_IDLE_TIMEOUT, DEFAULT_MAX_REQUESTS_PER_WORKER, DEFAULT_MAX_WORKERS_PER_KEY, Lease,
     PersistentWorkerPool, PoolConfig, WorkerKey,

@@ -178,7 +178,8 @@ apply to it, and some of it did not apply until v1.7.3.
 
 **Process namespaces, but not the mount namespace.** With `use_namespaces`
 the worker process gets its own PID, user, IPC and UTS namespaces, as an
-ordinary action does, so its children are reaped with it. It never gets a
+ordinary action does, so its children are reaped with it, and with
+`isolate_network` a network namespace with only loopback. It never gets a
 mount namespace or the private `/tmp` (`isolate_tmp`): both are per action,
 and the process is not. Persistent workers see the host's `/tmp` and the
 whole of the worker's filesystem, whatever `use_mount_namespace` says.

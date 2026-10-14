@@ -81,6 +81,7 @@ rust_test_suite(
     compile_data = [
         "tests/utils/local_worker_test_utils.rs",
         "tests/utils/mock_running_actions_manager.rs",
+        "tests/utils/network_test_utils.rs",
     ],
     proc_macro_deps = [
         "//nativelink-macro",
