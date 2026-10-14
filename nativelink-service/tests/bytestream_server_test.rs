@@ -1130,7 +1130,7 @@ pub async fn zstd_write_rejects_mismatched_compressed_write_offset_before_decomp
 }
 
 #[nativelink_test]
-pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
+pub async fn zstd_write_query_status_restarts_interrupted_upload_at_zero()
 -> Result<(), Box<dyn core::error::Error>> {
     let raw_data = "compressed query progress ".repeat(128);
     let compressed_data = zstd::bulk::compress(raw_data.as_bytes(), 3)?;
@@ -1142,24 +1142,28 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
         make_bytestream_server_with_remote_cache_compression(store_manager.as_ref(), None, true)
             .expect("Failed to make server"),
     );
+    let store = store_manager.get_store("main_cas").unwrap();
 
-    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    // The first attempt sends half the blob and then goes quiet, as a client
+    // whose connection dropped does before the server notices the stream ended.
+    let (stalled_tx, stalled_join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
     let hash = sha256_hex(raw_data.as_bytes());
     let resource_name = make_compressed_resource_name(
         "4dcec57e-1389-4ab5-b188-4a59f22ceb51",
         &hash,
         raw_data.len(),
     );
+    stalled_tx
+        .send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: resource_name.clone(),
+            write_offset: 0,
+            finish_write: false,
+            data: Bytes::copy_from_slice(&compressed_data[..first_chunk_len]),
+        })?))
+        .await?;
 
-    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
-        resource_name: resource_name.clone(),
-        write_offset: 0,
-        finish_write: false,
-        data: Bytes::copy_from_slice(&compressed_data[..first_chunk_len]),
-    })?))
-    .await?;
-
-    let mut status_response = None;
+    // However much of that half the server has decoded, the only offset a new
+    // Write can resume a compressed upload at is 0.
     for _ in 0..100 {
         yield_now().await;
         let response = bs_server
@@ -1168,27 +1172,25 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
             }))
             .await?
             .into_inner();
-        if response.committed_size == first_chunk_len.try_into().unwrap_or(i64::MAX) {
-            status_response = Some(response);
-            break;
-        }
+        assert_eq!(
+            response,
+            QueryWriteStatusResponse {
+                committed_size: 0,
+                complete: false,
+            }
+        );
     }
-    assert_eq!(
-        status_response.err_tip(|| "compressed write progress was not reported")?,
-        QueryWriteStatusResponse {
-            committed_size: first_chunk_len.try_into().unwrap_or(i64::MAX),
-            complete: false,
-        }
-    );
 
+    // The client retries from the offset it was given, while the first stream
+    // is still open, and the retry completes.
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
     tx.send(Frame::data(encode_stream_proto(&WriteRequest {
         resource_name,
-        write_offset: first_chunk_len.try_into().unwrap_or(i64::MAX),
+        write_offset: 0,
         finish_write: true,
-        data: Bytes::copy_from_slice(&compressed_data[first_chunk_len..]),
+        data: compressed_data.clone().into(),
     })?))
     .await?;
-
     let server_result = join_handle
         .await
         .expect("Failed to join")
@@ -1197,6 +1199,15 @@ pub async fn zstd_write_query_status_reports_compressed_wire_bytes()
         server_result.into_inner().committed_size,
         compressed_data.len().try_into().unwrap_or(i64::MAX)
     );
+
+    let digest = DigestInfo::try_new(&hash, raw_data.len())?;
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?.as_ref(),
+        raw_data.as_bytes()
+    );
+
+    drop(stalled_tx);
+    drop(stalled_join_handle.await.expect("Failed to join"));
 
     Ok(())
 }

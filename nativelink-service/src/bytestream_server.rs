@@ -1346,15 +1346,26 @@ impl ByteStreamServer {
             .take()
             .ok_or_else(|| make_input_err!("UUID must be set if querying write status"))?;
         let uuid_key = parse_uuid_to_key(&uuid_str);
+        let wire_compressor = crate::wire_compression::resolve_wire_compressor(
+            resource_info.compressor.as_deref(),
+            instance.remote_cache_compression_enabled,
+        )?;
 
         {
             let active_uploads = instance.active_uploads.lock();
             if let Some((received_bytes, _maybe_idle_stream)) = active_uploads.get(&uuid_key) {
+                // A compressed upload cannot be resumed: every Write starts a
+                // fresh decoder, which only accepts offset 0. Reporting the
+                // compressed bytes received so far would send the client back
+                // at an offset the next Write rejects with InvalidArgument,
+                // which clients treat as fatal. Zero restarts it cleanly.
+                let committed_size = if wire_compressor == compressor::Value::Identity {
+                    received_bytes.load(Ordering::Acquire)
+                } else {
+                    0
+                };
                 return Ok(Response::new(QueryWriteStatusResponse {
-                    committed_size: received_bytes
-                        .load(Ordering::Acquire)
-                        .try_into()
-                        .unwrap_or(i64::MAX),
+                    committed_size: committed_size.try_into().unwrap_or(i64::MAX),
                     // If we are in the active_uploads map, but the value is None,
                     // it means the stream is not complete.
                     complete: false,
