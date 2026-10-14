@@ -1003,6 +1003,21 @@ pub struct FastSlowSpec {
     /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
+
+    /// Answer existence checks from the fast store when it has the blob,
+    /// and ask the slow store only for the rest. Off, every check reaches
+    /// the slow store, so a blob that exists only in the fast tier is
+    /// uploaded again. On, a blob the fast tier holds is taken to be in the
+    /// slow store too: the store drops its fast copy when a slow write
+    /// fails, so the two tiers do not disagree by its own doing, but a blob
+    /// removed behind its back (a lifecycle rule, a hand deletion) is still
+    /// reported present until the fast tier evicts it. Use it where the
+    /// slow store is the cost (a cloud object store billed per request and
+    /// throttled per account) and nothing else deletes from it.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub trust_fast_store_for_has: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]

@@ -64,6 +64,8 @@ pub struct FastSlowStore {
     slow_direction: StoreDirection,
     /// See [`FastSlowSpec::bypass_dedup_threshold_bytes`].
     bypass_dedup_threshold_bytes: u64,
+    /// See [`FastSlowSpec::trust_fast_store_for_has`].
+    trust_fast_store_for_has: bool,
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
@@ -166,6 +168,7 @@ impl FastSlowStore {
             slow_direction: spec.slow_direction,
             // 0 (default) disables the bypass entirely (always dedup).
             bypass_dedup_threshold_bytes: spec.bypass_dedup_threshold_bytes,
+            trust_fast_store_for_has: spec.trust_fast_store_for_has,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
@@ -504,8 +507,32 @@ impl StoreDriver for FastSlowStore {
             return self.fast_store.has_with_results(key, results).await;
         }
 
-        // Check with the slow store first.
-        self.slow_store.has_with_results(key, results).await?;
+        if self.trust_fast_store_for_has {
+            // The fast tier answers for what it holds; only the rest goes
+            // to the slow store. See the note at the end of this function
+            // for what the default protects against and why this is opt in.
+            self.fast_store.has_with_results(key, results).await?;
+            let missing: Vec<usize> = results
+                .iter()
+                .enumerate()
+                .filter_map(|(i, result)| result.is_none().then_some(i))
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let missing_keys: Vec<StoreKey<'_>> =
+                missing.iter().map(|&i| key[i].borrow()).collect();
+            let mut missing_results = vec![None; missing.len()];
+            self.slow_store
+                .has_with_results(&missing_keys, &mut missing_results)
+                .await?;
+            for (i, result) in missing.into_iter().zip(missing_results) {
+                results[i] = result;
+            }
+        } else {
+            // Check with the slow store first.
+            self.slow_store.has_with_results(key, results).await?;
+        }
 
         // Check for any in-flight requests to the slow store next.
         let mut in_flight_futs = FuturesUnordered::new();
@@ -527,12 +554,14 @@ impl StoreDriver for FastSlowStore {
             results[i] = size;
         }
 
-        // NOTE: We intentionally *NEVER* check the fast store, this is to
-        // ensure that we re-upload data to the slow store if it only exists
-        // in the fast store.  This does not affect workers as they do not
-        // check existence through `has` and instead go direct to loading the
-        // data which bypasses the check and will load from the fast store if
-        // it does not exist in the slow store.
+        // NOTE: By default we intentionally *NEVER* check the fast store,
+        // this is to ensure that we re-upload data to the slow store if it
+        // only exists in the fast store.  This does not affect workers as
+        // they do not check existence through `has` and instead go direct
+        // to loading the data which bypasses the check and will load from
+        // the fast store if it does not exist in the slow store.
+        // `trust_fast_store_for_has` trades that guarantee for a slow store
+        // that is asked about nothing the fast tier already holds.
 
         Ok(())
     }
@@ -651,6 +680,23 @@ impl StoreDriver for FastSlowStore {
             slow_in_flight_guard.complete(Some(size));
         } else {
             drop(slow_in_flight_guard);
+            // With the fast tier trusted for existence checks, a fast copy
+            // of a blob the slow store never got would be reported present
+            // and never uploaded again. Drop it so the next check is a miss.
+            if self.trust_fast_store_for_has
+                && fast_res.is_ok()
+                && let Err(e) = self
+                    .fast_store
+                    .as_store_driver_pin()
+                    .remove(key.borrow())
+                    .await
+            {
+                warn!(
+                    key = %key_debug,
+                    ?e,
+                    "FastSlowStore::update: slow write failed and the fast copy could not be removed",
+                );
+            }
         }
 
         let total_elapsed = update_start.elapsed();
