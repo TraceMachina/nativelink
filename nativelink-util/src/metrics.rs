@@ -1676,3 +1676,43 @@ pub fn record_connection_reconnect(pool: &'static str) {
         .reconnects
         .add(1, &[KeyValue::new(CONNECTION_POOL, pool)]);
 }
+
+// Metric attribute keys for retried operations.
+pub const RETRY_CLIENT: &str = "retry.client";
+pub const RETRY_OUTCOME: &str = "retry.outcome";
+
+/// Global metrics for operations run under a [`crate::retry::Retrier`].
+pub static RETRY_METRICS: LazyLock<RetryMetrics> = LazyLock::new(|| {
+    let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());
+
+    RetryMetrics {
+        outcomes: meter
+            .u64_counter("retry.outcomes")
+            .with_description(
+                "Retried operations by client and outcome: each retry (retried), a success after at least one retry (recovered), retries run out (exhausted), or an error that is never retried, NotFound aside (permanent)",
+            )
+            .with_unit("{event}")
+            .build(),
+    }
+});
+
+/// Metrics for operations run under a [`crate::retry::Retrier`].
+#[derive(Debug)]
+pub struct RetryMetrics {
+    /// Retry events, by client and outcome.
+    pub outcomes: metrics::Counter<u64>,
+}
+
+/// Records one retry event. `client` names what is retrying (`azure`, `s3`,
+/// `grpc_store`, ...), `outcome` is one of `retried`, `recovered`,
+/// `exhausted` or `permanent`. An `exhausted` count rising is a backend that
+/// stayed down, or throttled, for longer than the retry policy waits.
+pub fn record_retry_outcome(client: &'static str, outcome: &'static str) {
+    RETRY_METRICS.outcomes.add(
+        1,
+        &[
+            KeyValue::new(RETRY_CLIENT, client),
+            KeyValue::new(RETRY_OUTCOME, outcome),
+        ],
+    );
+}

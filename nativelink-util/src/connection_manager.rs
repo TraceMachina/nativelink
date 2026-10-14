@@ -169,7 +169,8 @@ impl ConnectionManager {
                 Arc::new(|duration| Box::pin(tokio::time::sleep(duration))),
                 jitter_fn,
                 retry,
-            ),
+            )
+            .with_client("connection"),
         };
         background_spawn!("connection_manager_worker_spawn", async move {
             worker

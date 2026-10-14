@@ -204,7 +204,8 @@ where
                 Arc::new(|duration| Box::pin(sleep(duration))),
                 jitter_fn,
                 spec.common.retry.clone(),
-            ),
+            )
+            .with_client("ontap_s3"),
             consider_expired_after_s: u64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
                 .common

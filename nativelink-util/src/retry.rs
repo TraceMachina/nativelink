@@ -20,7 +20,9 @@ use futures::future::Future;
 use futures::stream::StreamExt;
 use nativelink_config::stores::{ErrorCode, Retry};
 use nativelink_error::{Code, Error, make_err};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+use crate::metrics::record_retry_outcome;
 
 struct ExponentialBackoff {
     current: Duration,
@@ -56,12 +58,44 @@ pub enum RetryResult<T> {
     Err(Error),
 }
 
+/// What became of an operation, or one attempt of it, under a [`Retrier`].
+/// Recorded as `retry.outcomes`, labeled with the retrier's client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryOutcome {
+    /// An attempt failed with a retryable error and another follows. A
+    /// throttle waited out within the throttle budget counts, though it
+    /// spends no attempt.
+    Retried,
+    /// The operation succeeded after at least one retry.
+    Recovered,
+    /// The operation failed with a retryable error and the retries ran out.
+    Exhausted,
+    /// The operation failed with an error that is never retried. `NotFound`
+    /// is left out: on a store it is the ordinary miss.
+    Permanent,
+}
+
+impl RetryOutcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retried => "retried",
+            Self::Recovered => "recovered",
+            Self::Exhausted => "exhausted",
+            Self::Permanent => "permanent",
+        }
+    }
+}
+
+type OutcomeFn = Arc<dyn Fn(RetryOutcome) + Send + Sync>;
+
 /// Class used to retry a job with a sleep function in between each retry.
 #[derive(Clone)]
 pub struct Retrier {
     sleep_fn: SleepFn,
     jitter_fn: JitterFn,
     config: Retry,
+    client: &'static str,
+    outcome_fn: Option<OutcomeFn>,
     /// How long one `retry` call may spend on `RetryAfter` waits before
     /// they start spending attempts. Zero means they always do.
     throttle_budget: Duration,
@@ -71,6 +105,7 @@ impl core::fmt::Debug for Retrier {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Retrier")
             .field("config", &self.config)
+            .field("client", &self.client)
             .finish_non_exhaustive()
     }
 }
@@ -102,8 +137,26 @@ impl Retrier {
             sleep_fn,
             jitter_fn,
             config,
+            client: "unknown",
+            outcome_fn: None,
             throttle_budget: Duration::ZERO,
         }
+    }
+
+    /// Names what this retrier retries for (`azure`, `s3`, `grpc_store`,
+    /// ...), the `retry.client` label on its `retry.outcomes`.
+    #[must_use]
+    pub const fn with_client(mut self, client: &'static str) -> Self {
+        self.client = client;
+        self
+    }
+
+    /// Also hands every outcome to `outcome_fn`, after it is recorded as a
+    /// metric. For tests, which cannot read the meter.
+    #[must_use]
+    pub fn with_outcome_fn(mut self, outcome_fn: OutcomeFn) -> Self {
+        self.outcome_fn = Some(outcome_fn);
+        self
     }
 
     /// Lets one `retry` call spend up to `budget` waiting on `RetryAfter`
@@ -112,6 +165,13 @@ impl Retrier {
     pub const fn with_throttle_budget(mut self, budget: Duration) -> Self {
         self.throttle_budget = budget;
         self
+    }
+
+    fn report(&self, outcome: RetryOutcome) {
+        record_retry_outcome(self.client, outcome.as_str());
+        if let Some(outcome_fn) = &self.outcome_fn {
+            outcome_fn(outcome);
+        }
     }
 
     /// This should only return true if the error code should be interpreted as
@@ -174,7 +234,14 @@ impl Retrier {
                             "Retry stream ended abruptly on attempt {attempt}",
                         ));
                     }
-                    Some(RetryResult::Ok(value)) => return Ok(value),
+                    Some(RetryResult::Ok(value)) => {
+                        // A throttle within the budget is a retry too,
+                        // though it leaves `attempt` where it was.
+                        if attempt > 1 || !throttled.is_zero() {
+                            self.report(RetryOutcome::Recovered);
+                        }
+                        return Ok(value);
+                    }
                     Some(RetryResult::Err(e)) => {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
@@ -185,6 +252,7 @@ impl Retrier {
                     if err.code == Code::NotFound {
                         info!(?err, "Not found, not retrying");
                     } else {
+                        self.report(RetryOutcome::Permanent);
                         error!(?attempt, ?err, "Not retrying permanent error");
                     }
                     return Err(err);
@@ -199,12 +267,16 @@ impl Retrier {
                 {
                     throttled = throttled.saturating_add(min_wait);
                     attempt -= 1;
+                    self.report(RetryOutcome::Retried);
                     (self.sleep_fn)(min_wait).await;
                     continue;
                 }
-                let backoff = iter
-                    .next()
-                    .ok_or_else(|| err.append(format!("On attempt {attempt}")))?;
+                let Some(backoff) = iter.next() else {
+                    self.report(RetryOutcome::Exhausted);
+                    warn!(client = self.client, ?attempt, ?err, "Retries exhausted");
+                    return Err(err.append(format!("On attempt {attempt}")));
+                };
+                self.report(RetryOutcome::Retried);
                 (self.sleep_fn)(backoff.max(min_wait)).await;
             }
         }
