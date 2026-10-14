@@ -3,6 +3,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.7](https://github.com/TraceMachina/nativelink/compare/v1.7.6..v1.7.7) - 2026-10-14
+
+
+
+### ⛰️  Features
+
+- Count retries, recoveries and exhausted retries per client ([#2930](https://github.com/TraceMachina/nativelink/issues/2930)) - ([9ff16ea](https://github.com/TraceMachina/nativelink/commit/9ff16ea8c354b4406aefec31f4e490733e70d365))
+- Hold a worker for a queued action whose reservation only fits an idle one ([#2933](https://github.com/TraceMachina/nativelink/issues/2933)) - ([0fd9cd2](https://github.com/TraceMachina/nativelink/commit/0fd9cd26545794e4f71f867147d739bd17d91df9))
+- Retry an action's input fetch on the worker after a transient store failure ([#2932](https://github.com/TraceMachina/nativelink/issues/2932)) - ([1911c9c](https://github.com/TraceMachina/nativelink/commit/1911c9c308a21a6fe1feac77ec6dbf4162937efe))
+- Honor Retry-After on throttled Azure blob responses ([#2931](https://github.com/TraceMachina/nativelink/issues/2931)) - ([00d3b7f](https://github.com/TraceMachina/nativelink/commit/00d3b7f0a66ae0f821fb5fa2bc1967e83d2ca612))
+- Report queued and executing actions by age ([#2929](https://github.com/TraceMachina/nativelink/issues/2929)) - ([d06d9c9](https://github.com/TraceMachina/nativelink/commit/d06d9c9b4fb2ba64cbeb51784712a2bbbb10cc03))
+
+### 🐛 Bug Fixes
+
+- Clear a read-only tree without changing the mode of the files it links to ([#2934](https://github.com/TraceMachina/nativelink/issues/2934)) - ([c6ae7d1](https://github.com/TraceMachina/nativelink/commit/c6ae7d14cd965d664858daa1e61bc145768c9063))
+- Fetch an input again when the store evicts it between fetch, lookup and link ([#2928](https://github.com/TraceMachina/nativelink/issues/2928)) - ([4ad28b3](https://github.com/TraceMachina/nativelink/commit/4ad28b363048fe767ddf288d72c64a5091830460))
+- Resolve a forwarded operation name by its configured instance and carry the request context to the upstream scheduler ([#2927](https://github.com/TraceMachina/nativelink/issues/2927)) - ([23d54fd](https://github.com/TraceMachina/nativelink/commit/23d54fd665323b30dd06e5da709281b7b6950381))
+- Relink an input whose blob was evicted during staging and count variant hits as blob use ([#2926](https://github.com/TraceMachina/nativelink/issues/2926)) - ([a435beb](https://github.com/TraceMachina/nativelink/commit/a435bebaf437760ee3018109b5fdbc2997c16f8d))
+- Report running operations on the worker keepalive and requeue what the worker no longer runs ([#2925](https://github.com/TraceMachina/nativelink/issues/2925)) - ([beba0fe](https://github.com/TraceMachina/nativelink/commit/beba0fe08d0b07d91366f3f1cc9cd3be7a150888))
+- Sweep executing actions on the scheduler's clock and keep a result the store refuses until it is resent ([#2923](https://github.com/TraceMachina/nativelink/issues/2923)) - ([963000e](https://github.com/TraceMachina/nativelink/commit/963000ed84ac6d565743114a3618bc01d02ed1d2))
+- Worker match logging off by default, and listing only queued and executing operations when on ([#2924](https://github.com/TraceMachina/nativelink/issues/2924)) - ([b5bdf36](https://github.com/TraceMachina/nativelink/commit/b5bdf36a74c501c1d9de9a49ea782e070eea36e7))
+
+### 🧪 Testing & CI
+
+- cut CI log noise so real failures stand out ([#2911](https://github.com/TraceMachina/nativelink/issues/2911)) - ([8aac783](https://github.com/TraceMachina/nativelink/commit/8aac783f08c9844cb5d8382d6188aadc1391cba1))
+
+### ⚙️ Miscellaneous
+
+- Record the input fetch retry outcome under a prefixed attribute ([#2935](https://github.com/TraceMachina/nativelink/issues/2935)) - ([0c669b6](https://github.com/TraceMachina/nativelink/commit/0c669b6f927f4e9232f2a1ddb0e8208d40ff5a48))
+
 ## [1.7.6](https://github.com/TraceMachina/nativelink/compare/v1.7.5..v1.7.6) - 2026-10-08
 
 
