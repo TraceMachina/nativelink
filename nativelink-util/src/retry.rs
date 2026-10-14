@@ -99,6 +99,10 @@ pub struct Retrier {
     /// How long one `retry` call may spend on `RetryAfter` waits before
     /// they start spending attempts. Zero means they always do.
     throttle_budget: Duration,
+    /// Longest a throttle wait may grow to. Set, each consecutive throttle
+    /// doubles the wait the store asked for, capped here, and jitters it.
+    /// Unset, the wait is what was asked.
+    throttle_max_wait: Option<Duration>,
 }
 
 impl core::fmt::Debug for Retrier {
@@ -140,6 +144,7 @@ impl Retrier {
             client: "unknown",
             outcome_fn: None,
             throttle_budget: Duration::ZERO,
+            throttle_max_wait: None,
         }
     }
 
@@ -165,6 +170,33 @@ impl Retrier {
     pub const fn with_throttle_budget(mut self, budget: Duration) -> Self {
         self.throttle_budget = budget;
         self
+    }
+
+    /// Lets consecutive throttles wait longer each time: the n-th in a row
+    /// waits what the server asked times `2^(n-1)`, no more than
+    /// `max_wait`, then jittered, and never less than what was asked. A
+    /// store that is told to slow down with no `Retry-After` otherwise has
+    /// every client retry in lockstep at the configured floor.
+    #[must_use]
+    pub const fn with_throttle_max_wait(mut self, max_wait: Duration) -> Self {
+        self.throttle_max_wait = Some(max_wait);
+        self
+    }
+
+    /// The wait for the `n`-th consecutive throttle that asked for
+    /// `min_wait`.
+    fn throttle_wait(&self, min_wait: Duration, throttles_in_a_row: u32) -> Duration {
+        let Some(max_wait) = self.throttle_max_wait else {
+            return min_wait;
+        };
+        let grown = min_wait
+            .checked_mul(
+                1u32.checked_shl(throttles_in_a_row.saturating_sub(1))
+                    .unwrap_or(u32::MAX),
+            )
+            .unwrap_or(Duration::MAX)
+            .min(max_wait);
+        (self.jitter_fn)(grown).max(min_wait)
     }
 
     fn report(&self, outcome: RetryOutcome) {
@@ -225,6 +257,7 @@ impl Retrier {
             tokio::pin!(operation);
             let mut attempt = 0;
             let mut throttled = Duration::ZERO;
+            let mut throttles_in_a_row: u32 = 0;
             loop {
                 attempt += 1;
                 let (err, min_wait, is_throttle) = match operation.next().await {
@@ -245,8 +278,15 @@ impl Retrier {
                     Some(RetryResult::Err(e)) => {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
-                    Some(RetryResult::Retry(err)) => (err, Duration::ZERO, false),
-                    Some(RetryResult::RetryAfter(err, min_wait)) => (err, min_wait, true),
+                    Some(RetryResult::Retry(err)) => {
+                        throttles_in_a_row = 0;
+                        (err, Duration::ZERO, false)
+                    }
+                    Some(RetryResult::RetryAfter(err, min_wait)) => {
+                        throttles_in_a_row = throttles_in_a_row.saturating_add(1);
+                        let wait = self.throttle_wait(min_wait, throttles_in_a_row);
+                        (err, wait, true)
+                    }
                 };
                 if !self.should_retry(err.code) {
                     if err.code == Code::NotFound {

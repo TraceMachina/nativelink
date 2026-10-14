@@ -535,3 +535,182 @@ async fn throttles_within_the_budget_report_retries_and_recovery() -> Result<(),
     );
     Ok(())
 }
+
+fn growing_retrier(
+    max_retries: usize,
+    budget: Duration,
+    cap: Duration,
+    sleeps: &Arc<Mutex<Vec<Duration>>>,
+) -> Retrier {
+    let sleeps = Arc::clone(sleeps);
+    Retrier::new(
+        Arc::new(move |duration| {
+            sleeps.lock().unwrap().push(duration);
+            Box::pin(ready(()))
+        }),
+        Arc::new(|delay| delay),
+        Retry {
+            max_retries,
+            ..Default::default()
+        },
+    )
+    .with_throttle_budget(budget)
+    .with_throttle_max_wait(cap)
+}
+
+/// With a throttle cap the n-th consecutive throttle waits the ask times
+/// `2^(n-1)`, no more than the cap, and the budget counts the grown waits.
+#[nativelink_test]
+async fn consecutive_throttles_double_their_wait_up_to_the_cap() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = growing_retrier(
+        1,
+        Duration::from_secs(100),
+        Duration::from_secs(30),
+        &sleeps,
+    );
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            if run_count.fetch_add(1, Ordering::Relaxed) < 6 {
+                return RetryResult::RetryAfter(
+                    make_err!(Code::Unavailable, "Throttled"),
+                    Duration::from_secs(2),
+                );
+            }
+            RetryResult::Ok(true)
+        }))
+        .await?;
+
+    assert_eq!(result, true);
+    assert_eq!(run_count.load(Ordering::Relaxed), 7);
+    assert_eq!(
+        *sleeps.lock().unwrap(),
+        [2, 4, 8, 16, 30, 30]
+            .into_iter()
+            .map(Duration::from_secs)
+            .collect::<Vec<_>>(),
+        "each throttle doubles the last, capped"
+    );
+    Ok(())
+}
+
+/// The grown waits are what the budget is spent on: 2 + 4 + 8 fits a 15 s
+/// budget and the fourth throttle (16 s) falls through to the backoff
+/// ladder, where it spends the one allowed attempt.
+#[nativelink_test]
+async fn grown_waits_spend_the_budget() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = growing_retrier(1, Duration::from_secs(15), Duration::from_secs(60), &sleeps);
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            run_count.fetch_add(1, Ordering::Relaxed);
+            RetryResult::<bool>::RetryAfter(
+                make_err!(Code::Unavailable, "Throttled"),
+                Duration::from_secs(2),
+            )
+        }))
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        run_count.load(Ordering::Relaxed),
+        5,
+        "three budgeted throttles, then one attempt and its retry"
+    );
+    assert_eq!(
+        *sleeps.lock().unwrap(),
+        [2, 4, 8, 16]
+            .into_iter()
+            .map(Duration::from_secs)
+            .collect::<Vec<_>>(),
+        "the fourth wait is the grown ask, longer than the 2 s backoff"
+    );
+    Ok(())
+}
+
+/// A transient error that is not a throttle ends the streak: the next
+/// throttle waits the plain ask again.
+#[nativelink_test]
+async fn a_plain_retry_resets_the_throttle_streak() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = growing_retrier(
+        5,
+        Duration::from_secs(100),
+        Duration::from_secs(60),
+        &sleeps,
+    );
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            match run_count.fetch_add(1, Ordering::Relaxed) {
+                0 | 1 | 3 => RetryResult::RetryAfter(
+                    make_err!(Code::Unavailable, "Throttled"),
+                    Duration::from_secs(2),
+                ),
+                2 => RetryResult::Retry(make_err!(Code::Unavailable, "Blip")),
+                _ => RetryResult::Ok(true),
+            }
+        }))
+        .await?;
+
+    assert_eq!(result, true);
+    let sleeps = sleeps.lock().unwrap();
+    assert_eq!(sleeps[0], Duration::from_secs(2));
+    assert_eq!(sleeps[1], Duration::from_secs(4));
+    // sleeps[2] is the backoff ladder's first step (delay 0 by default).
+    assert_eq!(
+        sleeps[3],
+        Duration::from_secs(2),
+        "the streak restarted after the plain retry"
+    );
+    Ok(())
+}
+
+/// Jitter never lands below what the server asked for.
+#[nativelink_test]
+async fn throttle_jitter_is_floored_at_the_ask() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = Retrier::new(
+        Arc::new({
+            let sleeps = Arc::clone(&sleeps);
+            move |duration| {
+                sleeps.lock().unwrap().push(duration);
+                Box::pin(ready(()))
+            }
+        }),
+        // A jitter that always lands low.
+        Arc::new(|delay| delay / 10),
+        Retry {
+            max_retries: 1,
+            ..Default::default()
+        },
+    )
+    .with_throttle_budget(Duration::from_secs(100))
+    .with_throttle_max_wait(Duration::from_secs(60));
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            if run_count.fetch_add(1, Ordering::Relaxed) < 2 {
+                return RetryResult::RetryAfter(
+                    make_err!(Code::Unavailable, "Throttled"),
+                    Duration::from_secs(10),
+                );
+            }
+            RetryResult::Ok(true)
+        }))
+        .await?;
+
+    assert_eq!(result, true);
+    assert_eq!(
+        *sleeps.lock().unwrap(),
+        vec![Duration::from_secs(10); 2],
+        "10 s asked, 1 s and 2 s jittered, 10 s waited"
+    );
+    Ok(())
+}
