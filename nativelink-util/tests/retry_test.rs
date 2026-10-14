@@ -602,7 +602,7 @@ async fn consecutive_throttles_double_their_wait_up_to_the_cap() -> Result<(), E
 #[nativelink_test]
 async fn grown_waits_spend_the_budget() -> Result<(), Error> {
     let sleeps = Arc::new(Mutex::new(Vec::new()));
-    let retrier = growing_retrier(1, Duration::from_secs(15), Duration::from_secs(60), &sleeps);
+    let retrier = growing_retrier(1, Duration::from_secs(15), Duration::from_mins(1), &sleeps);
     let run_count = Arc::new(AtomicI32::new(0));
 
     let result = Pin::new(&retrier)
@@ -640,7 +640,7 @@ async fn a_plain_retry_resets_the_throttle_streak() -> Result<(), Error> {
     let retrier = growing_retrier(
         5,
         Duration::from_secs(100),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         &sleeps,
     );
     let run_count = Arc::new(AtomicI32::new(0));
@@ -691,7 +691,7 @@ async fn throttle_jitter_is_floored_at_the_ask() -> Result<(), Error> {
         },
     )
     .with_throttle_budget(Duration::from_secs(100))
-    .with_throttle_max_wait(Duration::from_secs(60));
+    .with_throttle_max_wait(Duration::from_mins(1));
     let run_count = Arc::new(AtomicI32::new(0));
 
     let result = Pin::new(&retrier)
