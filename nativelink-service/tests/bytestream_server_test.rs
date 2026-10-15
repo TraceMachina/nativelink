@@ -357,6 +357,61 @@ pub async fn chunked_stream_receives_all_data() -> Result<(), Box<dyn core::erro
     Ok(())
 }
 
+// Regression: a Write that signals finish_write before sending the full
+// declared blob size MUST be rejected, even for a store with no size/hash
+// verification (e.g. a plain memory/filesystem fast tier). Otherwise the CAS
+// admits a truncated artifact that later reads serve under a digest it does not
+// hash to -- silent build corruption.
+#[nativelink_test]
+pub async fn short_finish_write_is_rejected_and_not_committed()
+-> Result<(), Box<dyn core::error::Error>> {
+    const SHORT_PREFIX: usize = 5;
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    let raw_data = b"12456789abcdefghijk";
+    let declared_len = raw_data.len();
+
+    let (tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
+
+    // Declare the full length in the resource name, but only send a short
+    // prefix and immediately set finish_write=true.
+    let resource_name = format!(
+        "{}/uploads/{}/blobs/{}/{}",
+        INSTANCE_NAME, "4dcec57e-1389-4ab5-b188-4a59f22ceb4b", HASH1, declared_len
+    );
+    let write_request = WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: true,
+        data: raw_data[..SHORT_PREFIX].into(),
+    };
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
+
+    // The write MUST fail (not return OK with a full committed_size).
+    let server_result = join_handle.await.expect("Failed to join");
+    assert!(
+        server_result.is_err(),
+        "Short finish_write must be rejected, got Ok: {server_result:?}"
+    );
+
+    // The blob MUST NOT be present under its declared digest.
+    assert!(
+        store
+            .has(DigestInfo::try_new(HASH1, declared_len)?)
+            .await?
+            .is_none(),
+        "Truncated blob must not be committed to the store",
+    );
+
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn sha256_write_without_digest_segment_populates_cache()
 -> Result<(), Box<dyn core::error::Error>> {
@@ -1848,6 +1903,62 @@ pub async fn test_query_write_status_smoke_test() -> Result<(), Box<dyn core::er
     Ok(())
 }
 
+// Regression: a client that declares a digest of N bytes but sends fewer and
+// then sets finish_write must be rejected, and must not leave a readable,
+// hash-mismatched partial blob behind. Previously the server accepted the short
+// stream, reported committed_size == N, stored the partial bytes, and served
+// them on a subsequent Read with OK (found by the rechaos chaos monkey).
+#[nativelink_test]
+pub async fn short_finish_write_is_rejected() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+
+    // Declare a 19-byte blob, but only send 12 bytes across two messages and
+    // then finish_write (multi-message forces the streaming write path).
+    let raw_data = b"12456789abcdefghijk";
+    let resource_name = format!(
+        "{}/uploads/{}/blobs/{}/{}",
+        INSTANCE_NAME,
+        "4dcec57e-1389-4ab5-b188-4a59f22ceb4b",
+        HASH1,
+        raw_data.len()
+    );
+    let (tx, join_handle) =
+        make_stream_and_writer_spawn(bs_server, Some(CompressionEncoding::Gzip));
+
+    let mut write_request = WriteRequest {
+        resource_name,
+        write_offset: 0,
+        finish_write: false,
+        data: raw_data[..8].into(),
+    };
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
+    // Short final chunk: total 12 < declared 19.
+    write_request.write_offset = 8;
+    write_request.data = raw_data[8..12].into();
+    write_request.finish_write = true;
+    tx.send(Frame::data(encode_stream_proto(&write_request)?))
+        .await?;
+
+    let server_result = join_handle.await.expect("Failed to join");
+    assert!(
+        server_result.is_err(),
+        "short finish_write must be rejected, got {server_result:?}"
+    );
+    assert!(
+        store
+            .has(DigestInfo::try_new(HASH1, raw_data.len())?)
+            .await?
+            .is_none(),
+        "a rejected short upload must not leave a readable partial blob",
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error::Error>> {
     const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB.
@@ -1876,9 +1987,12 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
 
     {
         // Test to ensure if we send exactly our max message size, it will succeed.
-        let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
+        let data_len = MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE;
+        let data = Bytes::from(vec![0u8; data_len]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            // The declared blob size must equal the bytes actually sent, otherwise
+            // the server (correctly) rejects it as a short finish_write.
+            resource_name: make_resource_name(data_len),
             write_offset: 0,
             finish_write: true,
             data,
@@ -1899,7 +2013,9 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
             MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1
         ]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(
+                MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1,
+            ),
             write_offset: 0,
             finish_write: true,
             data,
