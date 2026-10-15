@@ -12,9 +12,11 @@ on:
     paths-ignore:
       - '.github/styles/**'
       - 'web/**'
-  # The Cargo Dev lane (nix-cargo) runs nightly only — see its per-job `if`. The
-  # other jobs here (Bazel Dev, installation, integration, RBE) stay on the
-  # per-PR path and are skipped on the schedule via `if: != 'schedule'`.
+  # Two jobs here run only on the nightly schedule and on demand: Cargo Dev
+  # (nix-cargo) and the end-to-end integration tests (buildstream, buck2,
+  # mongo). See their per-job `if`. The rest (Bazel Dev, installation and the
+  # RBE toolchain matrix) stay on the per-PR path and skip the nightly run via
+  # `if: != 'schedule'`.
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
   workflow_dispatch:
