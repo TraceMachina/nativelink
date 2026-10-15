@@ -1,6 +1,8 @@
 version: 2
 updates:
   - package-ecosystem: "bun"
-    directory: "/web"
+    directories:
+      - "/web"
+      - "/nativelink-store/tests/azurite_runner/"
     schedule:
       interval: "weekly"
