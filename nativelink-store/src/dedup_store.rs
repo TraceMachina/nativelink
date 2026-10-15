@@ -345,6 +345,55 @@ impl StoreDriver for DedupStore {
                     .await
                     .err_tip(|| "Failed to get_part in content_store in dedup_store")?;
 
+                // Content chunks are content-addressed and whole: a chunk must
+                // contain exactly the number of bytes its index entry declares.
+                // If the content store returns a chunk of any other size (a
+                // torn or partial read, or an index/content size disagreement)
+                // the streaming loop below would either panic on the
+                // `bytes_to_skip` assert or silently under-deliver and send EOF
+                // as success. Reject the mismatch here so it surfaces as an
+                // error instead.
+                let declared = index_entry.size_bytes();
+                let actual = data.len() as u64;
+                if actual != declared {
+                    // Every blob that references this chunk is unreadable while
+                    // it stays, and nothing else would notice: `has()` sums the
+                    // sizes the content store reports, and `update()` skips any
+                    // chunk the content store already has, so a re-upload would
+                    // keep the bad copy. Drop it, as `VerifyStore` drops a copy
+                    // that fails verification, so `has()` reports those blobs
+                    // missing and the next upload writes the chunk again. This
+                    // is best effort: a content store that does not support
+                    // `remove` keeps the chunk.
+                    match self
+                        .content_store
+                        .as_store_driver_pin()
+                        .remove(index_entry.into())
+                        .await
+                    {
+                        Ok(removed) => warn!(
+                            %index_entry,
+                            actual,
+                            declared,
+                            removed,
+                            "Dropped a dedup content chunk whose size does not match its digest"
+                        ),
+                        Err(err) => warn!(
+                            %index_entry,
+                            ?err,
+                            "Could not drop a dedup content chunk whose size does not match its digest"
+                        ),
+                    }
+                    // NotFound rather than the DataLoss `VerifyStore` returns: a
+                    // `FastSlowStore` above falls back to its slow tier only on
+                    // NotFound, and the slow tier may hold a good copy.
+                    return Err(make_err!(
+                        Code::NotFound,
+                        "DedupStore content chunk {} is {actual} bytes but its index entry declares {declared}; refusing to serve a torn read as success",
+                        index_entry,
+                    ));
+                }
+
                 Result::<_, Error>::Ok(data)
             })
             .buffered(self.max_concurrent_fetch_per_get);
