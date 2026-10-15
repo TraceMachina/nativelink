@@ -625,6 +625,51 @@ async fn the_first_throttle_waits_the_ask_not_the_cap() -> Result<(), Error> {
     Ok(())
 }
 
+/// A jitter function that zeroes every delay, as tests install to keep
+/// backoffs instant, cannot flatten the growth back to the ask.
+#[nativelink_test]
+async fn a_zeroing_jitter_does_not_undo_the_growth() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&sleeps);
+    let retrier = Retrier::new(
+        Arc::new(move |duration| {
+            recorded.lock().unwrap().push(duration);
+            Box::pin(ready(()))
+        }),
+        Arc::new(|_| Duration::ZERO),
+        Retry {
+            max_retries: 1,
+            ..Default::default()
+        },
+    )
+    .with_throttle_budget(Duration::from_secs(100))
+    .with_throttle_max_wait(Duration::from_secs(30));
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            if run_count.fetch_add(1, Ordering::Relaxed) < 4 {
+                return RetryResult::RetryAfter(
+                    make_err!(Code::Unavailable, "Throttled"),
+                    Duration::from_secs(2),
+                );
+            }
+            RetryResult::Ok(true)
+        }))
+        .await?;
+
+    assert_eq!(result, true);
+    assert_eq!(
+        *sleeps.lock().unwrap(),
+        [2, 4, 8, 16]
+            .into_iter()
+            .map(Duration::from_secs)
+            .collect::<Vec<_>>(),
+        "the growth stands when the jitter returns nothing"
+    );
+    Ok(())
+}
+
 /// The grown waits are what the budget is spent on: 2 + 4 + 8 fits a 15 s
 /// budget and the fourth throttle (16 s) falls through to the backoff
 /// ladder, where it spends the one allowed attempt.
@@ -695,7 +740,8 @@ async fn a_plain_retry_resets_the_throttle_streak() -> Result<(), Error> {
     Ok(())
 }
 
-/// Jitter never lands below what the server asked for.
+/// A jitter that lands below what the server asked for is not applied: the
+/// first throttle waits the ask, the second the doubled ask, not the tenth.
 #[nativelink_test]
 async fn throttle_jitter_is_floored_at_the_ask() -> Result<(), Error> {
     let sleeps = Arc::new(Mutex::new(Vec::new()));
@@ -733,8 +779,8 @@ async fn throttle_jitter_is_floored_at_the_ask() -> Result<(), Error> {
     assert_eq!(result, true);
     assert_eq!(
         *sleeps.lock().unwrap(),
-        vec![Duration::from_secs(10); 2],
-        "10 s asked, 1 s and 2 s jittered, 10 s waited"
+        vec![Duration::from_secs(10), Duration::from_secs(20)],
+        "10 s asked, 1 s and 2 s jittered, the grown 10 s and 20 s waited"
     );
     Ok(())
 }

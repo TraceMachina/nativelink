@@ -187,7 +187,7 @@ impl Retrier {
 
     /// The wait for the `n`-th consecutive throttle whose server asked for
     /// `asked`: `asked` itself for the first, doubled once per throttle
-    /// before it, capped at the configured ceiling.
+    /// before it, capped at the configured ceiling, then jittered.
     fn throttle_wait(&self, asked: Duration, throttles_in_a_row: u32) -> Duration {
         let Some(max_wait) = self.throttle_max_wait else {
             return asked;
@@ -196,7 +196,12 @@ impl Retrier {
         // multiplier would overflow and the ceiling applies anyway.
         let doublings = throttles_in_a_row.saturating_sub(1).min(31);
         let grown = asked.saturating_mul(1 << doublings).min(max_wait);
-        (self.jitter_fn)(grown).max(asked)
+        // The jitter spreads the grown wait a little either way, as
+        // `Retry::make_jitter_fn` does. It may not undo the growth: a
+        // result below the ask (a jitter function that zeroes delays, as
+        // tests install) leaves the grown wait as it is.
+        let jittered = (self.jitter_fn)(grown);
+        if jittered < asked { grown } else { jittered }
     }
 
     fn report(&self, outcome: RetryOutcome) {
