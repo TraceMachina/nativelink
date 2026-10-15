@@ -114,6 +114,25 @@ impl AdaptivePermits {
         }
     }
 
+    /// Settles one owed permit if any is owed. True when it did.
+    fn take_owed(&self) -> bool {
+        let mut owed = self.owed.load(Ordering::Acquire);
+        loop {
+            if owed == 0 {
+                return false;
+            }
+            match self.owed.compare_exchange_weak(
+                owed,
+                owed - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(current) => owed = current,
+            }
+        }
+    }
+
     /// The limit as it stands.
     pub fn limit(&self) -> usize {
         self.limit.load(Ordering::Acquire)
@@ -142,13 +161,7 @@ impl AdaptivePermits {
         }
         // A permit still owed from a cut is cancelled instead of a new one
         // being added, so the pool never holds more than `limit`.
-        if self
-            .owed
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owed| {
-                owed.checked_sub(1)
-            })
-            .is_err()
-        {
+        if !self.take_owed() {
             self.semaphore.add_permits(1);
         }
         self.limit.store(limit + 1, Ordering::Release);
@@ -195,14 +208,7 @@ impl Drop for AdaptivePermit {
         let Some(permit) = self.inner.take() else {
             return;
         };
-        if self
-            .pool
-            .owed
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owed| {
-                owed.checked_sub(1)
-            })
-            .is_ok()
-        {
+        if self.pool.take_owed() {
             permit.forget();
         } else {
             drop(permit);
