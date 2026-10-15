@@ -596,6 +596,35 @@ async fn consecutive_throttles_double_their_wait_up_to_the_cap() -> Result<(), E
     Ok(())
 }
 
+/// The cap is a ceiling, not the wait: a single throttle under a large cap
+/// waits only what was asked.
+#[nativelink_test]
+async fn the_first_throttle_waits_the_ask_not_the_cap() -> Result<(), Error> {
+    let sleeps = Arc::new(Mutex::new(Vec::new()));
+    let retrier = growing_retrier(1, Duration::from_secs(100), Duration::from_mins(1), &sleeps);
+    let run_count = Arc::new(AtomicI32::new(0));
+
+    let result = Pin::new(&retrier)
+        .retry(repeat_with(|| {
+            if run_count.fetch_add(1, Ordering::Relaxed) < 1 {
+                return RetryResult::RetryAfter(
+                    make_err!(Code::Unavailable, "Throttled"),
+                    Duration::from_secs(2),
+                );
+            }
+            RetryResult::Ok(true)
+        }))
+        .await?;
+
+    assert_eq!(result, true);
+    assert_eq!(
+        *sleeps.lock().unwrap(),
+        vec![Duration::from_secs(2)],
+        "one throttle waits the ask, not the 60 s cap"
+    );
+    Ok(())
+}
+
 /// The grown waits are what the budget is spent on: 2 + 4 + 8 fits a 15 s
 /// budget and the fourth throttle (16 s) falls through to the backoff
 /// ladder, where it spends the one allowed attempt.

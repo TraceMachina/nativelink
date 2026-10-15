@@ -172,31 +172,31 @@ impl Retrier {
         self
     }
 
-    /// Lets consecutive throttles wait longer each time: the n-th in a row
-    /// waits what the server asked times `2^(n-1)`, no more than
-    /// `max_wait`, then jittered, and never less than what was asked. A
-    /// store that is told to slow down with no `Retry-After` otherwise has
-    /// every client retry in lockstep at the configured floor.
+    /// Lets consecutive throttles wait longer each time. The first throttle
+    /// in a row waits what the server asked, the second twice that, the
+    /// third four times, and so on; `max_wait` is the ceiling that growth
+    /// stops at, not a wait of its own. The grown wait is jittered and never
+    /// less than what was asked. A store that is told to slow down with no
+    /// `Retry-After` otherwise has every client retry in lockstep at the
+    /// configured floor.
     #[must_use]
     pub const fn with_throttle_max_wait(mut self, max_wait: Duration) -> Self {
         self.throttle_max_wait = Some(max_wait);
         self
     }
 
-    /// The wait for the `n`-th consecutive throttle that asked for
-    /// `min_wait`.
-    fn throttle_wait(&self, min_wait: Duration, throttles_in_a_row: u32) -> Duration {
+    /// The wait for the `n`-th consecutive throttle whose server asked for
+    /// `asked`: `asked` itself for the first, doubled once per throttle
+    /// before it, capped at the configured ceiling.
+    fn throttle_wait(&self, asked: Duration, throttles_in_a_row: u32) -> Duration {
         let Some(max_wait) = self.throttle_max_wait else {
-            return min_wait;
+            return asked;
         };
-        let grown = min_wait
-            .checked_mul(
-                1u32.checked_shl(throttles_in_a_row.saturating_sub(1))
-                    .unwrap_or(u32::MAX),
-            )
-            .unwrap_or(Duration::MAX)
-            .min(max_wait);
-        (self.jitter_fn)(grown).max(min_wait)
+        // One doubling per earlier throttle in the row; past 31 the
+        // multiplier would overflow and the ceiling applies anyway.
+        let doublings = throttles_in_a_row.saturating_sub(1).min(31);
+        let grown = asked.saturating_mul(1 << doublings).min(max_wait);
+        (self.jitter_fn)(grown).max(asked)
     }
 
     fn report(&self, outcome: RetryOutcome) {
