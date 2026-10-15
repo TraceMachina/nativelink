@@ -2,8 +2,8 @@ version: 2
 updates:
   - package-ecosystem: "docker" # See documentation for possible values
     directories: 
-      - "toolchain-buck2"
-      - "toolchain-drake"
-      - "toolchain-nativelink"
+      - "tools/toolchain-buck2"
+      - "tools/toolchain-drake"
+      - "tools/toolchain-nativelink"
     schedule:
       interval: "weekly"
