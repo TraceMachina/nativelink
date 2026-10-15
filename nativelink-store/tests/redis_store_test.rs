@@ -2892,14 +2892,6 @@ where
                 Value::BulkString(b"KA".into()),
             )])),
         ),
-        MockCmd::with_values(
-            redis::pipe()
-                .cmd("STRLEN")
-                .arg(&real_key)
-                .cmd("EXISTS")
-                .arg(&real_key),
-            Ok(vec![Value::Int(2), Value::Boolean(true)]),
-        ),
         MockCmd::new(
             redis::cmd("SETRANGE")
                 .arg(&temp_key)
