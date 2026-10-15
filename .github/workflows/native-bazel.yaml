@@ -2,16 +2,15 @@
 name: Bazel Native
 
 on:
+  # Bazel Native (the non-Nix Bazel toolchain, across Bazel 9.1.1 + 8.7.0) is
+  # deferred off the per-PR path: the per-PR build/test signal is carried by the
+  # Nix "Bazel Dev" lane. This runs as a nightly cross-check and on every merge
+  # to main, plus on-demand.
   push:
     branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  workflow_dispatch:
 
 permissions: read-all
 
