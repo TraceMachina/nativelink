@@ -711,6 +711,62 @@ async fn file_gets_cleans_up_on_cache_eviction() -> Result<(), Error> {
     check_storage_dir_empty(&temp_path).await
 }
 
+// Bounding background deletes with `max_concurrent_deletes` must not change the
+// correctness of eviction: an evicted entry's backing file is still removed.
+// This exercises the bounded (semaphore) delete path — permit acquired, held
+// for the lifetime of the delete, then released. The default unbounded path is
+// covered by the rest of this suite; the inline-overflow fallback (which fires
+// only under saturation) is exercised under real load by the furnace via the
+// `inline_deletes` metric.
+#[nativelink_test]
+async fn bounded_delete_semaphore_still_removes_evicted_files() -> Result<(), Error> {
+    static DELETES_FINISHED: AtomicU32 = AtomicU32::new(0);
+    struct LocalHooks {}
+    impl FileEntryHooks for LocalHooks {
+        fn on_drop<Fe: FileEntry>(_file_entry: &Fe) {
+            DELETES_FINISHED.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let digest1 = DigestInfo::try_new(HASH1, VALUE1.len())?;
+    let digest2 = DigestInfo::try_new(HASH2, VALUE2.len())?;
+    let content_path = make_temp_path("content_path");
+    let temp_path = make_temp_path("temp_path");
+
+    let store = Arc::new(
+        FilesystemStore::<TestFileEntry<LocalHooks>>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: temp_path.clone(),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            // The bound under test. With it set, the delete routes through the
+            // semaphore path rather than the unconditional spawn.
+            max_concurrent_deletes: 1,
+            block_size: 1,
+            read_buffer_size: 1,
+            ..Default::default()
+        })
+        .await?,
+    );
+
+    // Insert, then evict digest1 by inserting digest2 (max_count == 1).
+    store.update_oneshot(digest1, VALUE1.into()).await?;
+    store.update_oneshot(digest2, VALUE2.into()).await?;
+
+    // Wait for the eviction's background delete to finish.
+    loop {
+        if DELETES_FINISHED.load(Ordering::Relaxed) == 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    // The evicted file must be gone from the temp staging area.
+    check_storage_dir_empty(&temp_path).await
+}
+
 // Test to ensure that if we are holding a reference to `FileEntry` and the contents are
 // replaced, the `FileEntry` continues to use the old data.
 // `FileEntry` file contents should be immutable for the lifetime of the object.
