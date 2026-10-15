@@ -93,6 +93,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
     #[cfg(target_family = "unix")]
+    use nativelink_worker::running_actions_manager::download_to_directory_bounded;
+    #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::free_disk_kb;
     use nativelink_worker::running_actions_manager::{
         Callbacks, ExecutionConfiguration, KillReason, PersistentWorkersSettings,
@@ -102,6 +104,8 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
+    #[cfg(target_family = "unix")]
+    use tokio::sync::Semaphore;
     use tokio::sync::oneshot;
     #[cfg(target_family = "unix")]
     use tokio::sync::watch;
@@ -2907,6 +2911,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -3079,6 +3084,7 @@ exit 0
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -3726,6 +3732,201 @@ exit 0
             // SAFETY: signal 0 checks for existence and sends nothing.
             let alive = unsafe { libc::kill(pid, 0) } == 0;
             assert!(!alive, "child {pid} outlived the timed-out action");
+        }
+        Ok(())
+    }
+
+    /// A memory store that counts the reads in flight against it, standing
+    /// in for the CAS or the object store a worker fetches inputs from.
+    /// Unix only, with the one test that drives it.
+    #[cfg(target_family = "unix")]
+    #[derive(Debug)]
+    struct MeteredSlowStore {
+        inner: Arc<MemoryStore>,
+        in_flight: AtomicU64,
+        max_in_flight: AtomicU64,
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MeteredSlowStore {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: MemoryStore::new(&MemorySpec::default()),
+                in_flight: AtomicU64::new(0),
+                max_in_flight: AtomicU64::new(0),
+            })
+        }
+
+        fn max_in_flight(&self) -> u64 {
+            self.max_in_flight.load(Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    impl MetricsComponent for MeteredSlowStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    #[async_trait]
+    impl StoreDriver for MeteredSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            let now_in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight
+                .fetch_max(now_in_flight, Ordering::SeqCst);
+            // Let every other read that is ready start before this one
+            // answers, so an unbounded caller shows as one.
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+            let result = self
+                .inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await;
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    default_health_status_indicator!(MeteredSlowStore);
+
+    /// Every blob fetched into the store takes a permit from the one pool,
+    /// so a tree of many cold files never has more reads open against the
+    /// slow store than the pool holds.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn download_to_directory_bounds_fetches_by_the_pool()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILES: u8 = 40;
+        const PERMITS: usize = 3;
+
+        let fast_config = FilesystemSpec {
+            content_path: make_temp_path("content_path"),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: None,
+            ..Default::default()
+        };
+        let fast_store = FilesystemStore::new(&fast_config).await?;
+        let slow_store = MeteredSlowStore::new();
+        let cas_store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(fast_config),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(fast_store.clone()),
+            Store::new(slow_store.clone()),
+        );
+
+        let mut files = Vec::new();
+        for i in 0..FILES {
+            let content = format!("{i:032}");
+            let digest = DigestInfo::new([i + 1; 32], content.len() as u64);
+            slow_store
+                .inner
+                .as_ref()
+                .update_oneshot(digest, content.into())
+                .await?;
+            files.push(FileNode {
+                name: format!("f{i}"),
+                digest: Some(digest.into()),
+                is_executable: false,
+                node_properties: None,
+            });
+        }
+        let root_digest = DigestInfo::new([0xEE; 32], 32);
+        let root = Directory {
+            files,
+            ..Default::default()
+        };
+        slow_store
+            .inner
+            .as_ref()
+            .update_oneshot(root_digest, root.encode_to_vec().into())
+            .await?;
+
+        let download_dir = make_temp_path("download_dir");
+        fs::create_dir_all(&download_dir).await?;
+        let downloads = Semaphore::new(PERMITS);
+        download_to_directory_bounded(
+            cas_store.as_ref(),
+            fast_store.as_pin(),
+            &root_digest,
+            &download_dir,
+            &downloads,
+        )
+        .await?;
+
+        let peak = slow_store.max_in_flight();
+        assert!(
+            peak >= 1 && peak <= PERMITS as u64,
+            "{peak} reads in flight against a pool of {PERMITS}"
+        );
+        for i in 0..FILES {
+            let data = tokio::fs::read(format!("{download_dir}/f{i}")).await?;
+            assert_eq!(data, format!("{i:032}").into_bytes());
         }
         Ok(())
     }
@@ -6051,6 +6252,7 @@ exit 1
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -8609,6 +8811,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
@@ -8763,6 +8966,7 @@ done
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: root_action_directory.clone(),
                 execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: 0,
                     persistent_workers: PersistentWorkersSettings::default(),
                     max_captured_output_bytes: 0,
                     resource_enforcement: None,
