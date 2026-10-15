@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use nativelink_config::stores::{DedupSpec, MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
@@ -447,18 +449,14 @@ async fn empty_cas_upload_does_not_publish_dedup_index() -> Result<(), Error> {
     Ok(())
 }
 
-// Regression: a content chunk must contain exactly the number of bytes its
-// index entry declares. If the content store returns a short chunk (a torn or
-// partial read, or an index/content size disagreement), `DedupStore::get_part`
-// previously either panicked on the `bytes_to_skip` assert or silently
-// under-delivered and sent EOF, serving a truncated read as success. This test
-// hand-builds an index whose single entry declares more bytes than the stored
-// content and asserts the read now surfaces an error.
-#[nativelink_test]
-async fn get_part_short_chunk_is_error_test() -> Result<(), Error> {
-    const DECLARED_SIZE: usize = 100;
-    const ACTUAL_SIZE: usize = 10;
-
+/// Builds a `DedupStore` whose index for `VALID_HASH1` names one content chunk
+/// of `declared_size` bytes, and stores `stored` under that chunk's digest. A
+/// `stored` of any other length is a chunk whose bytes disagree with its index
+/// entry, as a torn write or a misbehaving content store would leave it.
+async fn store_with_one_chunk(
+    declared_size: usize,
+    stored: Vec<u8>,
+) -> Result<(Arc<DedupStore>, Arc<MemoryStore>, DigestInfo, DigestInfo), Error> {
     let index_store = MemoryStore::new(&MemorySpec::default());
     let content_store = MemoryStore::new(&MemorySpec::default());
     let store = DedupStore::new(
@@ -467,11 +465,11 @@ async fn get_part_short_chunk_is_error_test() -> Result<(), Error> {
         Store::new(content_store.clone()),
     )?;
 
-    let chunk_digest = DigestInfo::try_new(VALID_HASH2, DECLARED_SIZE).unwrap();
+    let chunk_digest = DigestInfo::try_new(VALID_HASH2, declared_size).unwrap();
     content_store
-        .update_oneshot(chunk_digest, vec![7u8; ACTUAL_SIZE].into())
+        .update_oneshot(chunk_digest, stored.into())
         .await
-        .err_tip(|| "Failed to write short content chunk")?;
+        .err_tip(|| "Failed to write content chunk")?;
 
     let serialized = wincode::config::serialize(
         &DedupIndex {
@@ -480,20 +478,118 @@ async fn get_part_short_chunk_is_error_test() -> Result<(), Error> {
         WincodeConfig::new(),
     )
     .unwrap();
-    let top_digest = DigestInfo::try_new(VALID_HASH1, DECLARED_SIZE).unwrap();
-    Store::new(index_store.clone())
+    let top_digest = DigestInfo::try_new(VALID_HASH1, declared_size).unwrap();
+    index_store
         .update_oneshot(top_digest, serialized.into())
         .await
         .err_tip(|| "Failed to write index entry")?;
+    Ok((store, content_store, top_digest, chunk_digest))
+}
 
-    let result = store
-        .get_part_unchunked(top_digest, 0, Some(DECLARED_SIZE as u64))
-        .await;
-    assert!(
-        result.is_err(),
-        "Expected short-chunk read to error, got Ok with {} bytes",
-        result.map_or(0, |d| d.len())
+// A content chunk must contain exactly the number of bytes its index entry
+// declares. A short chunk used to be served as a truncated read that ended in a
+// normal EOF. The read must fail with NotFound, and the bad chunk must be gone
+// afterwards so `has()` stops reporting the blob as present.
+#[nativelink_test]
+async fn get_part_short_chunk_is_error_test() -> Result<(), Error> {
+    let (store, content_store, top_digest, chunk_digest) =
+        store_with_one_chunk(100, vec![7u8; 10]).await?;
+
+    let result = store.get_part_unchunked(top_digest, 0, Some(100)).await;
+    let err = result.expect_err("a short chunk must not be served as a successful read");
+    assert_eq!(err.code, Code::NotFound, "unexpected error: {err:?}");
+
+    assert_eq!(
+        content_store.has(chunk_digest).await?,
+        None,
+        "the short chunk must be dropped from the content store"
     );
+    assert_eq!(
+        store.has(top_digest).await?,
+        None,
+        "a blob whose chunk was dropped must no longer be reported as present"
+    );
+    Ok(())
+}
+
+// A read that starts inside a short chunk used to trip the `bytes_to_skip`
+// assert and panic. It must fail like any other read of that chunk.
+#[nativelink_test]
+async fn get_part_offset_inside_short_chunk_is_error_test() -> Result<(), Error> {
+    let (store, _content_store, top_digest, _chunk_digest) =
+        store_with_one_chunk(100, vec![7u8; 10]).await?;
+
+    let result = store.get_part_unchunked(top_digest, 50, Some(10)).await;
+    let err = result.expect_err("a read inside a short chunk must fail, not panic");
+    assert_eq!(err.code, Code::NotFound, "unexpected error: {err:?}");
+    Ok(())
+}
+
+// A chunk longer than its index entry declares is just as wrong as a short one.
+#[nativelink_test]
+async fn get_part_long_chunk_is_error_test() -> Result<(), Error> {
+    let (store, content_store, top_digest, chunk_digest) =
+        store_with_one_chunk(100, vec![7u8; 150]).await?;
+
+    let result = store.get_part_unchunked(top_digest, 0, None).await;
+    let err = result.expect_err("a long chunk must not be served as a successful read");
+    assert_eq!(err.code, Code::NotFound, "unexpected error: {err:?}");
+    assert_eq!(content_store.has(chunk_digest).await?, None);
+    Ok(())
+}
+
+// End to end: a blob with one corrupted chunk fails to read, is then reported
+// missing, and the client's re-upload makes it readable again. Before the bad
+// chunk was dropped, `update()` skipped it because the content store still had
+// a value under its digest, so the blob stayed unreadable forever.
+#[nativelink_test]
+async fn short_chunk_is_rewritten_by_the_next_upload_test() -> Result<(), Error> {
+    let index_store = MemoryStore::new(&MemorySpec::default());
+    let content_store = MemoryStore::new(&MemorySpec::default());
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(index_store.clone()),
+        Store::new(content_store.clone()),
+    )?;
+
+    let original_data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ).unwrap();
+    store
+        .update_oneshot(digest, original_data.clone().into())
+        .await
+        .err_tip(|| "Failed to write data to dedup store")?;
+
+    // Truncate one chunk from the middle of the blob in place.
+    let index_bytes = index_store.get_part_unchunked(digest, 0, None).await?;
+    let index: DedupIndex =
+        wincode::config::deserialize(&index_bytes, WincodeConfig::new()).unwrap();
+    assert!(index.entries.len() > 2, "expected several chunks");
+    let victim = index.entries[index.entries.len() / 2];
+    let victim_bytes = content_store.get_part_unchunked(victim, 0, None).await?;
+    content_store
+        .update_oneshot(victim, victim_bytes.slice(..victim_bytes.len() / 2))
+        .await?;
+
+    let err = store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("a blob with a truncated chunk must not read back");
+    assert_eq!(err.code, Code::NotFound, "unexpected error: {err:?}");
+    assert_eq!(
+        store.has(digest).await?,
+        None,
+        "the blob must now be missing"
+    );
+
+    store
+        .update_oneshot(digest, original_data.clone().into())
+        .await
+        .err_tip(|| "Failed to re-upload data to dedup store")?;
+    let rt_data = store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .err_tip(|| "The re-uploaded blob must read back")?;
+    assert_eq!(rt_data, original_data, "Expected round trip data to match");
     Ok(())
 }
 
