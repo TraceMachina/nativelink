@@ -637,12 +637,7 @@ async fn grown_waits_spend_the_budget() -> Result<(), Error> {
 #[nativelink_test]
 async fn a_plain_retry_resets_the_throttle_streak() -> Result<(), Error> {
     let sleeps = Arc::new(Mutex::new(Vec::new()));
-    let retrier = growing_retrier(
-        5,
-        Duration::from_secs(100),
-        Duration::from_mins(1),
-        &sleeps,
-    );
+    let retrier = growing_retrier(5, Duration::from_secs(100), Duration::from_mins(1), &sleeps);
     let run_count = Arc::new(AtomicI32::new(0));
 
     let result = Pin::new(&retrier)
