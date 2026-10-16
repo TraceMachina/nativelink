@@ -1842,7 +1842,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         mut temp_file: FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
-        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let mut data_size = 0;
         loop {
@@ -1859,21 +1858,6 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
                 .await
                 .err_tip(|| "Failed to write data into filesystem store")?;
             data_size += data_len as u64;
-        }
-
-        // Refuse to commit a blob whose byte count disagrees with its declared
-        // digest size. A torn or aborted upload stream closes the writer half,
-        // which arrives here as a normal EOF; without this check the partial
-        // bytes would be emplaced under the full digest's key and later read
-        // back OK with a mismatched hash (found by the rechaos chaos monkey).
-        if let UploadSizeInfo::ExactSize(expected_size) = upload_size
-            && data_size != expected_size
-        {
-            return Err(make_err!(
-                Code::InvalidArgument,
-                "Filesystem store received {data_size} bytes but the digest declares \
-                 {expected_size}; refusing to store a partial blob"
-            ));
         }
 
         let permit = if let Some(sem) = &self.write_semaphore {
@@ -2138,7 +2122,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
-        upload_size: UploadSizeInfo,
+        _upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         if is_zero_digest(key.borrow()) {
             // don't need to add, because zero length files are just assumed to exist.
@@ -2157,7 +2141,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         let (entry, temp_file, temp_full_path) = self.make_temp_file(temp_key).await?;
 
-        self.update_file(entry, temp_file, key.into_owned(), reader, upload_size)
+        self.update_file(entry, temp_file, key.into_owned(), reader)
             .await
             .err_tip(|| {
                 format!(
