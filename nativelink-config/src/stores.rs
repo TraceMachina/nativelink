@@ -1434,21 +1434,24 @@ pub struct CommonObjectSpec {
     #[serde(default = "default_throttle_retry_budget_s")]
     pub throttle_retry_budget_s: f32,
 
-    /// Most reads (`GET` and `HEAD`) this process keeps in flight against
-    /// the object store at once. Further reads wait in the process for a
-    /// permit instead of being sent and refused, which turns an account
-    /// over its limit into queueing here rather than wasted requests and
-    /// retries in lockstep. 0 (the default) leaves reads unbounded, as
-    /// before.
+    /// Most downloads (`GET`) this process keeps in flight against the
+    /// object store at once, each counted until its body has been sent on.
+    /// Further downloads wait in the process for a permit instead of being
+    /// sent and refused, which turns an account over its limit into
+    /// queueing here rather than wasted requests and retries in lockstep.
+    /// Existence checks (`HEAD`) are not counted: they move no bytes, so
+    /// they never wait behind a body going to a slow client, and a
+    /// throttled `HEAD` does not move the limit. 0 (the default) leaves
+    /// downloads unbounded, as before.
     ///
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_reads: usize,
 
     /// With `max_concurrent_reads` set, let the bound move: a throttled
-    /// response (503 `ServerBusy` or 429) halves it, not below
-    /// `min_concurrent_reads`, and a run of successful reads raises it by
-    /// one back toward `max_concurrent_reads`. Many processes behind one
+    /// download (503 `ServerBusy` or 429) halves it, not below
+    /// `min_concurrent_reads`, and a run of answered downloads raises it
+    /// by one back toward `max_concurrent_reads`. Many processes behind one
     /// account then converge on a share of its limit. Off, the bound is
     /// fixed at `max_concurrent_reads`.
     ///

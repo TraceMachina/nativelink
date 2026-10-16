@@ -268,8 +268,11 @@ where
         self.read_permits.as_ref().map(|pool| pool.limit())
     }
 
-    /// A read permit when reads are bounded. Held for the request, body
-    /// included, so what is in flight is what the limit says.
+    /// A download permit when reads are bounded. Held for the request,
+    /// body included, so what is in flight is what the limit says. Only
+    /// `get_part` takes one: a `HEAD` moves no bytes and must not wait
+    /// behind a body still being sent to a slow client, and a throttle
+    /// on either side says nothing about the other.
     async fn read_permit(&self) -> Option<AdaptivePermit> {
         match &self.read_permits {
             Some(pool) => Some(pool.acquire().await),
@@ -366,7 +369,6 @@ where
                 let blob_path = blob_path.clone();
                 let client = Arc::clone(&self.client);
                 async move {
-                    let _read_permit = self.read_permit().await;
                     let _permit = match fs::get_permit().await {
                         Ok(permit) => permit,
                         Err(e) => {
@@ -384,7 +386,6 @@ where
 
                     match result {
                         Ok(props) => {
-                            self.note_read_ok();
                             if self.consider_expired_after_s > 0
                                 && let Some(last_modified) = props.last_modified().ok().flatten()
                             {
@@ -419,21 +420,19 @@ where
                                         state,
                                     ));
                                 }
-                                self.note_read_ok();
                                 Some((RetryResult::Ok(None), state))
                             } else {
-                                let retry = self.retry_later(
-                                    &err,
-                                    "has",
-                                    make_err!(
-                                        Code::Unavailable,
-                                        "Failed to get blob properties: {err:?}"
+                                Some((
+                                    self.retry_later(
+                                        &err,
+                                        "has",
+                                        make_err!(
+                                            Code::Unavailable,
+                                            "Failed to get blob properties: {err:?}"
+                                        ),
                                     ),
-                                );
-                                if matches!(retry, RetryResult::RetryAfter(..)) {
-                                    self.note_read_throttled();
-                                }
-                                Some((retry, state))
+                                    state,
+                                ))
                             }
                         }
                     }

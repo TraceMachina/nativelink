@@ -898,13 +898,55 @@ async fn throttled_reads_halve_the_read_limit_and_successes_regrow_it() -> Resul
         "two throttles, two halvings; the download that got through is one toward regrowth"
     );
 
-    // Sixteen answered reads in a row (the download above was the first)
+    // Sixteen answered downloads in a row (the one above was the first)
     // add one permit.
     for _ in 0..15 {
+        mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+        store
+            .get_part_unchunked(create_test_digest()?, 0, None)
+            .await?;
+    }
+    assert_eq!(store.read_limit(), Some(5));
+    Ok(())
+}
+
+/// Existence checks are outside the download pool: a throttled `HEAD`
+/// does not cut the limit and an answered one does not grow it.
+#[nativelink_test(start_paused = true)]
+async fn existence_checks_do_not_move_the_read_limit() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(error_response(StatusCode::ServiceUnavailable));
+    mock.push_properties(properties_ok(512));
+
+    let store = create_test_store_with_common(
+        Arc::clone(&mock),
+        CommonObjectSpec {
+            retry: Retry {
+                max_retries: 0,
+                delay: 0.0,
+                jitter: 0.0,
+                ..Default::default()
+            },
+            max_concurrent_reads: 16,
+            adaptive_read_concurrency: true,
+            min_concurrent_reads: 2,
+            ..Default::default()
+        },
+    )?;
+
+    assert_eq!(store.has(create_test_digest()?).await?, Some(512));
+    assert_eq!(mock.request_count(), 2, "the throttled HEAD was retried");
+    assert_eq!(
+        store.read_limit(),
+        Some(16),
+        "a throttled HEAD cuts nothing"
+    );
+
+    for _ in 0..16 {
         mock.push_properties(properties_ok(512));
         store.has(create_test_digest()?).await?;
     }
-    assert_eq!(store.read_limit(), Some(5));
+    assert_eq!(store.read_limit(), Some(16), "answered HEADs grow nothing");
     Ok(())
 }
 

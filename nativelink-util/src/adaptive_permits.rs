@@ -188,10 +188,10 @@ impl AdaptivePermits {
         }
         let cut = limit - target;
         // Take back what is idle now; the rest is owed and leaves with the
-        // permits that hold it.
-        let idle = self.semaphore.available_permits().min(cut);
-        self.semaphore.forget_permits(idle);
-        self.owed.fetch_add(cut - idle, Ordering::AcqRel);
+        // permits that hold it. `acquire` does not take this lock, so the
+        // count forgotten is what counts, not what looked idle a moment ago.
+        let taken = self.semaphore.forget_permits(cut);
+        self.owed.fetch_add(cut - taken, Ordering::AcqRel);
         self.limit.store(target, Ordering::Release);
         record_object_store_read_limit(self.name, target);
         info!(
