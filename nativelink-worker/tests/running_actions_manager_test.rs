@@ -7239,6 +7239,12 @@ exit 1
             static CLOCK: AtomicU64 = AtomicU64::new(0);
             monotonic_clock(&CLOCK)
         }
+        // The job leaves the session with util-linux's `setsid`; an environment
+        // without it (the coverage build's nix sandbox) has nothing to measure.
+        if which::which("setsid").is_err() {
+            eprintln!("skipping: setsid is not on PATH");
+            return Ok(());
+        }
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
         let root_action_directory = make_temp_path("root_action_directory");
@@ -7353,6 +7359,13 @@ exit 1
         fn test_monotonic_clock() -> SystemTime {
             static CLOCK: AtomicU64 = AtomicU64::new(0);
             monotonic_clock(&CLOCK)
+        }
+        // The job leaves the session with util-linux's `setsid` and holds its
+        // memory from python3; an environment without either (the coverage
+        // build's nix sandbox) has nothing to measure.
+        if which::which("setsid").is_err() || which::which("python3").is_err() {
+            eprintln!("skipping: setsid or python3 is not on PATH");
+            return Ok(());
         }
 
         let (_, _, cas_store, ac_store) = setup_stores().await?;
