@@ -4792,6 +4792,12 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
+    /// Permits free in the input fetch pool right now; with nothing staging,
+    /// the pool's size.
+    pub fn free_input_downloads(&self) -> usize {
+        self.input_downloads.available_permits()
+    }
+
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,

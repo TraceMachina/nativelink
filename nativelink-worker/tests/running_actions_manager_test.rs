@@ -3850,16 +3850,17 @@ exit 0
     #[cfg(target_family = "unix")]
     default_health_status_indicator!(MeteredSlowStore);
 
-    /// Every blob fetched into the store takes a permit from the one pool,
-    /// so a tree of many cold files never has more reads open against the
-    /// slow store than the pool holds.
+    /// A fast filesystem tier over a metered slow store, as a worker's CAS
+    /// is laid out.
     #[cfg(target_family = "unix")]
-    #[nativelink_test]
-    async fn download_to_directory_bounds_fetches_by_the_pool()
-    -> Result<(), Box<dyn core::error::Error>> {
-        const FILES: u8 = 40;
-        const PERMITS: usize = 3;
-
+    async fn metered_cas() -> Result<
+        (
+            Arc<FilesystemStore>,
+            Arc<MeteredSlowStore>,
+            Arc<FastSlowStore>,
+        ),
+        Error,
+    > {
         let fast_config = FilesystemSpec {
             content_path: make_temp_path("content_path"),
             temp_path: make_temp_path("temp_path"),
@@ -3879,26 +3880,44 @@ exit 0
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
         );
+        Ok((fast_store, slow_store, cas_store))
+    }
 
-        let mut files = Vec::new();
-        for i in 0..FILES {
-            let content = format!("{i:032}");
-            let digest = DigestInfo::new([i + 1; 32], content.len() as u64);
+    #[cfg(target_family = "unix")]
+    const fn digest_bytes(tree: u8, index: u8) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[0] = tree;
+        bytes[1] = index;
+        bytes
+    }
+
+    /// A flat tree of `files` cold files `f0..` in the slow store, every
+    /// digest distinct per `tree`, so two trees never share a blob.
+    #[cfg(target_family = "unix")]
+    async fn seed_tree(
+        slow_store: &MeteredSlowStore,
+        tree: u8,
+        files: u8,
+    ) -> Result<DigestInfo, Error> {
+        let mut nodes = Vec::new();
+        for i in 0..files {
+            let content = format!("{tree}:{i:030}");
+            let digest = DigestInfo::new(digest_bytes(tree, i + 1), content.len() as u64);
             slow_store
                 .inner
                 .as_ref()
                 .update_oneshot(digest, content.into())
                 .await?;
-            files.push(FileNode {
+            nodes.push(FileNode {
                 name: format!("f{i}"),
                 digest: Some(digest.into()),
                 is_executable: false,
                 node_properties: None,
             });
         }
-        let root_digest = DigestInfo::new([0xEE; 32], 32);
+        let root_digest = DigestInfo::new(digest_bytes(tree, 0xEE), 32);
         let root = Directory {
-            files,
+            files: nodes,
             ..Default::default()
         };
         slow_store
@@ -3906,6 +3925,30 @@ exit 0
             .as_ref()
             .update_oneshot(root_digest, root.encode_to_vec().into())
             .await?;
+        Ok(root_digest)
+    }
+
+    #[cfg(target_family = "unix")]
+    async fn assert_tree_downloaded(dir: &str, tree: u8, files: u8) -> Result<(), Error> {
+        for i in 0..files {
+            let data = tokio::fs::read(format!("{dir}/f{i}")).await?;
+            assert_eq!(data, format!("{tree}:{i:030}").into_bytes());
+        }
+        Ok(())
+    }
+
+    /// Every blob fetched into the store takes a permit from the one pool,
+    /// so a tree of many cold files never has more reads open against the
+    /// slow store than the pool holds.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn download_to_directory_bounds_fetches_by_the_pool()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const FILES: u8 = 40;
+        const PERMITS: usize = 3;
+
+        let (fast_store, slow_store, cas_store) = metered_cas().await?;
+        let root_digest = seed_tree(&slow_store, 1, FILES).await?;
 
         let download_dir = make_temp_path("download_dir");
         fs::create_dir_all(&download_dir).await?;
@@ -3924,9 +3967,87 @@ exit 0
             peak >= 1 && peak <= PERMITS as u64,
             "{peak} reads in flight against a pool of {PERMITS}"
         );
-        for i in 0..FILES {
-            let data = tokio::fs::read(format!("{download_dir}/f{i}")).await?;
-            assert_eq!(data, format!("{i:032}").into_bytes());
+        assert_tree_downloaded(&download_dir, 1, FILES).await?;
+        Ok(())
+    }
+
+    /// The pool is the worker's, not the call's: two actions staging cold
+    /// trees at the same time share its permits, so together they never
+    /// have more reads open against the slow store than it holds.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test]
+    async fn concurrent_downloads_share_one_pool() -> Result<(), Box<dyn core::error::Error>> {
+        const FILES: u8 = 40;
+        const PERMITS: usize = 3;
+
+        let (fast_store, slow_store, cas_store) = metered_cas().await?;
+        let root_a = seed_tree(&slow_store, 1, FILES).await?;
+        let root_b = seed_tree(&slow_store, 2, FILES).await?;
+        let dir_a = make_temp_path("download_dir_a");
+        let dir_b = make_temp_path("download_dir_b");
+        fs::create_dir_all(&dir_a).await?;
+        fs::create_dir_all(&dir_b).await?;
+
+        let downloads = Semaphore::new(PERMITS);
+        tokio::try_join!(
+            download_to_directory_bounded(
+                cas_store.as_ref(),
+                fast_store.as_pin(),
+                &root_a,
+                &dir_a,
+                &downloads,
+            ),
+            download_to_directory_bounded(
+                cas_store.as_ref(),
+                fast_store.as_pin(),
+                &root_b,
+                &dir_b,
+                &downloads,
+            ),
+        )?;
+
+        let peak = slow_store.max_in_flight();
+        assert!(
+            peak >= 1 && peak <= PERMITS as u64,
+            "{peak} reads in flight across two downloads sharing a pool of {PERMITS}"
+        );
+        assert_tree_downloaded(&dir_a, 1, FILES).await?;
+        assert_tree_downloaded(&dir_b, 2, FILES).await?;
+        Ok(())
+    }
+
+    /// `max_concurrent_input_downloads` of 0 takes the default pool of 64;
+    /// any other value is the pool's size.
+    #[nativelink_test]
+    async fn input_download_pool_defaults_to_sixty_four() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (_, _, cas_store, _) = setup_stores().await?;
+        for (configured, expected) in [(0, 64), (7, 7)] {
+            let manager = RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: make_temp_path("root_action_directory"),
+                execution_configuration: ExecutionConfiguration {
+                    max_concurrent_input_downloads: configured,
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::from_mins(10),
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?;
+            assert_eq!(manager.free_input_downloads(), expected);
         }
         Ok(())
     }
