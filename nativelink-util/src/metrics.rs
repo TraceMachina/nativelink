@@ -1478,6 +1478,18 @@ pub static STORE_METRICS: LazyLock<StoreMetrics> = LazyLock::new(|| {
             .with_description("Object store responses that asked the client to slow down (HTTP 503 ServerBusy or 429), by provider and operation")
             .with_unit("{response}")
             .build(),
+
+        object_read_limit: meter
+            .u64_gauge("store.object.read_limit")
+            .with_description("Reads this process keeps in flight against an object store at most, as the adaptive permit pool stands: halved on a throttled response, raised by one after a run of successes")
+            .with_unit("{request}")
+            .build(),
+
+        object_read_waits: meter
+            .u64_counter("store.object.read_waits")
+            .with_description("Object store reads that found every read permit taken and waited for one, by provider")
+            .with_unit("{request}")
+            .build(),
     }
 });
 
@@ -1486,6 +1498,25 @@ pub static STORE_METRICS: LazyLock<StoreMetrics> = LazyLock::new(|| {
 pub struct StoreMetrics {
     /// Throttled responses, by provider and operation.
     pub object_throttles: metrics::Counter<u64>,
+    /// The adaptive read limit as it stands, by provider.
+    pub object_read_limit: metrics::Gauge<u64>,
+    /// Reads that waited for a read permit, by provider.
+    pub object_read_waits: metrics::Counter<u64>,
+}
+
+/// Records the read limit an object store's permit pool settled on.
+pub fn record_object_store_read_limit(provider: &'static str, limit: usize) {
+    STORE_METRICS.object_read_limit.record(
+        u64::try_from(limit).unwrap_or(u64::MAX),
+        &[KeyValue::new(STORE_OBJECT_PROVIDER, provider)],
+    );
+}
+
+/// Records a read that found no permit free and waited for one.
+pub fn record_object_store_read_wait(provider: &'static str) {
+    STORE_METRICS
+        .object_read_waits
+        .add(1, &[KeyValue::new(STORE_OBJECT_PROVIDER, provider)]);
 }
 
 /// Records a response from an object store that asked the client to slow down.
