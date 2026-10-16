@@ -504,6 +504,36 @@ impl StoreDriver for FastSlowStore {
             return self.fast_store.has_with_results(key, results).await;
         }
 
+        // A read-only slow store receives no uploads: the fast store is
+        // where writes land and the only place a new blob can be, so it
+        // counts toward presence, and the slow store answers for whatever
+        // predates it. Without this, a client asking a second instance
+        // about a blob the first just stored is told to upload it again,
+        // and a reader that misses the fast tier is told it does not exist.
+        if matches!(
+            self.slow_direction,
+            StoreDirection::ReadOnly | StoreDirection::Get
+        ) {
+            self.fast_store.has_with_results(key, results).await?;
+            let missing: Vec<usize> = results
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.is_none().then_some(i))
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let keys: Vec<StoreKey<'_>> = missing.iter().map(|&i| key[i].borrow()).collect();
+            let mut slow_results = vec![None; keys.len()];
+            self.slow_store
+                .has_with_results(&keys, &mut slow_results)
+                .await?;
+            for (i, r) in missing.into_iter().zip(slow_results) {
+                results[i] = r;
+            }
+            return Ok(());
+        }
+
         // Check with the slow store first.
         self.slow_store.has_with_results(key, results).await?;
 
@@ -527,9 +557,9 @@ impl StoreDriver for FastSlowStore {
             results[i] = size;
         }
 
-        // NOTE: We intentionally *NEVER* check the fast store, this is to
-        // ensure that we re-upload data to the slow store if it only exists
-        // in the fast store.  This does not affect workers as they do not
+        // NOTE: With a writable slow store we intentionally *NEVER* check
+        // the fast store, this is to ensure that we re-upload data to the
+        // slow store if it only exists in the fast store.  This does not affect workers as they do not
         // check existence through `has` and instead go direct to loading the
         // data which bypasses the check and will load from the fast store if
         // it does not exist in the slow store.

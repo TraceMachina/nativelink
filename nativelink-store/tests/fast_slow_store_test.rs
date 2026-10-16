@@ -2187,3 +2187,51 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn has_counts_the_fast_store_when_the_slow_store_is_read_only() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::Both, StoreDirection::ReadOnly);
+
+    // An upload lands in the fast store only: the slow one is read-only.
+    let uploaded = DigestInfo::try_new(VALID_HASH, 3)?;
+    fast_slow_store
+        .update_oneshot(uploaded, Bytes::from_static(b"new"))
+        .await?;
+    assert_eq!(slow_store.has(uploaded).await?, None);
+    assert_eq!(fast_store.has(uploaded).await?, Some(3));
+
+    // A blob that predates the fast tier sits in the slow store alone.
+    let old = DigestInfo::try_new(VALID_HASH_B, 3)?;
+    slow_store
+        .update_oneshot(old, Bytes::from_static(b"old"))
+        .await?;
+
+    let absent = DigestInfo::try_new(VALID_HASH_C, 3)?;
+
+    let mut results = [None, None, None];
+    fast_slow_store
+        .has_with_results(&[uploaded.into(), old.into(), absent.into()], &mut results)
+        .await?;
+    assert_eq!(
+        results,
+        [Some(3), Some(3), None],
+        "presence covers the fast store, where uploads land, and the slow one, where the old data is"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_still_skips_the_fast_store_when_the_slow_store_is_writable() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, _slow_store) = make_stores();
+    let only_in_fast = DigestInfo::try_new(VALID_HASH, 4)?;
+    fast_store
+        .update_oneshot(only_in_fast, Bytes::from_static(b"fast"))
+        .await?;
+    assert_eq!(
+        fast_slow_store.has(only_in_fast).await?,
+        None,
+        "a blob only the fast store holds is reported missing so the client re-uploads it to the slow store"
+    );
+    Ok(())
+}
