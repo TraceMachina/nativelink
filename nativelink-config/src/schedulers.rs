@@ -375,7 +375,7 @@ pub struct SimpleSpec {
     /// operation from the store, on every scheduler replica: with a shared
     /// Redis that is a full index read per interval per replica, which is
     /// why it is off unless asked for. Turn it on for a look, not for good.
-    /// Defaults to -1 (disabled). Any positive value enables it.
+    /// Defaults to `-1` (disabled). Any positive value enables it.
     #[serde(
         default = "default_worker_match_logging_interval_s",
         deserialize_with = "convert_duration_with_shellexpand_and_negative"

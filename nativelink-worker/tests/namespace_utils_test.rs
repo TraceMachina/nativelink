@@ -622,7 +622,7 @@ async fn readonly_input_mount_is_private_and_source_survives_masking() -> Result
         eprintln!("SKIP: mount namespaces unavailable");
         return Ok(());
     }
-    let root = std::path::PathBuf::from(nativelink_util::common::make_temp_path("readonly_mount"));
+    let root = PathBuf::from(nativelink_util::common::make_temp_path("readonly_mount"));
     let action = root.join("action");
     let target = action.join("sdk");
     // Intentionally put the source under the root that configure_namespace
