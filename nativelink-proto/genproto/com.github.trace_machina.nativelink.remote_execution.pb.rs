@@ -158,8 +158,8 @@ pub struct ActionResourceUsage {
     #[prost(string, tag = "4")]
     pub worker_id: ::prost::alloc::string::String,
     /// / Total CPU time consumed by the action process tree, in milliseconds.
-    /// / User and system time combined, summed across every process in the
-    /// / action's process group.
+    /// / User and system time combined, of every process the action started:
+    /// / the kernel's total of everything the action's stub reaped.
     #[prost(uint64, tag = "5")]
     pub cpu_time_ms: u64,
     /// / Wall time from spawn to exit, in milliseconds; cores used is

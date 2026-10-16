@@ -62,6 +62,7 @@ fn namespaced_sh(script: &str, isolate_tmp: bool, root_path: &Path, action_path:
                 tmp_dir_c.as_deref(),
                 &root_dir_c,
                 &action_dir_c,
+                -1,
             )
         });
     }
@@ -288,7 +289,7 @@ async fn test_configure_namespace() -> Result<(), Error> {
     // child, and the original child process will continue to execute the command.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir, -1)
         });
     }
 
@@ -347,7 +348,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
 
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(true, None, &root_dir_c, &action1_dir_c)
+            namespace_utils::configure_namespace(true, None, &root_dir_c, &action1_dir_c, -1)
         });
     }
 
@@ -365,7 +366,7 @@ async fn test_configure_namespace_mount_isolation() -> Result<(), Error> {
     let action1_dir_c = CString::new(action1_path.to_str().unwrap()).unwrap();
     unsafe {
         command_access.pre_exec(move || {
-            namespace_utils::configure_namespace(true, None, &root_dir_c, &action1_dir_c)
+            namespace_utils::configure_namespace(true, None, &root_dir_c, &action1_dir_c, -1)
         });
     }
     let output_access = command_access.output()?;
@@ -409,12 +410,12 @@ async fn test_namespaced_action_gets_sigterm_not_sigkill() -> Result<(), Error> 
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir, -1)
         });
     }
     let child = command.spawn()?;
     let pgid = i32::try_from(child.id().unwrap()).unwrap();
-    let mut namespaced_child = namespace_utils::MaybeNamespacedChild::new(true, child);
+    let mut namespaced_child = namespace_utils::ActionStubChild::new(child);
     // Let the shell install its trap and fork the sleep.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -459,12 +460,12 @@ async fn test_maybe_namespaced_child_kill_reaps_orphans() -> Result<(), Error> {
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir, -1)
         });
     }
 
     let child = command.spawn()?;
-    let mut namespaced_child = namespace_utils::MaybeNamespacedChild::new(true, child);
+    let mut namespaced_child = namespace_utils::ActionStubChild::new(child);
 
     // Give the shell time to fork the background sleep processes.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -509,7 +510,7 @@ async fn test_maybe_namespaced_child_non_namespaced_kill() -> Result<(), Error> 
     command.arg("10"); // Sleep for 10 seconds, should be killed before then.
 
     let child = command.spawn()?;
-    let mut non_namespaced_child = namespace_utils::MaybeNamespacedChild::new(false, child);
+    let mut non_namespaced_child = namespace_utils::ActionStubChild::new(child);
 
     // Give the process a moment to start.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -541,12 +542,12 @@ async fn test_maybe_namespaced_child_namespaced_natural_exit() -> Result<(), Err
     // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
     unsafe {
         command.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir, -1)
         });
     }
 
     let child = command.spawn()?;
-    let mut namespaced_child = namespace_utils::MaybeNamespacedChild::new(true, child);
+    let mut namespaced_child = namespace_utils::ActionStubChild::new(child);
 
     // Wait for the child to exit naturally.
     let status = namespaced_child.wait().await?;
@@ -570,12 +571,11 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     let action_dir = CString::new("/tmp/action").unwrap();
     unsafe {
         command_running.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir, -1)
         });
     }
     let child_running = command_running.spawn()?;
-    let mut namespaced_child_running =
-        namespace_utils::MaybeNamespacedChild::new(true, child_running);
+    let mut namespaced_child_running = namespace_utils::ActionStubChild::new(child_running);
 
     // Give it a moment to start
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -595,12 +595,11 @@ async fn test_maybe_namespaced_child_try_wait() -> Result<(), Error> {
     command_exited.args(["-c", &format!("exit {expected_exit_code}")]);
     unsafe {
         command_exited.pre_exec(move || {
-            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir, -1)
         });
     }
     let child_exited = command_exited.spawn()?;
-    let mut namespaced_child_exited =
-        namespace_utils::MaybeNamespacedChild::new(true, child_exited);
+    let mut namespaced_child_exited = namespace_utils::ActionStubChild::new(child_exited);
 
     // Wait for it to exit
     tokio::time::sleep(Duration::from_millis(50)).await;

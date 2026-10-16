@@ -19,13 +19,17 @@ rust_library(
         "src/persistent_worker/mod.rs",
         "src/persistent_worker/pool.rs",
         "src/persistent_worker/protocol.rs",
+        "src/process_tree.rs",
         "src/qos.rs",
         "src/reaper.rs",
         "src/running_actions_manager.rs",
         "src/worker_api_client_wrapper.rs",
         "src/worker_utils.rs",
     ] + select({
-        "@platforms//os:linux": ["src/namespace_utils.rs"],
+        "@platforms//os:linux": [
+            "src/action_stub.rs",
+            "src/namespace_utils.rs",
+        ],
         "//conditions:default": [],
     }),
     proc_macro_deps = [

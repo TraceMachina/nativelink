@@ -16,60 +16,50 @@ use std::io::Error;
 
 use tracing::error;
 
-/// A wrapper around a Child that may be the stub of a PID namespace. A
-/// SIGTERM to the stub is passed on to the action; a SIGKILL to the stub
-/// ends the whole namespace, which is the hard kill.
+/// The action's stub (`crate::action_stub`), which may be outside a PID
+/// namespace the action is the init of. A SIGTERM to the stub is passed on
+/// to the action; the hard kill ends every descendant of the stub, and then
+/// the stub.
 #[derive(Debug)]
-pub struct MaybeNamespacedChild {
-    namespaced: bool,
+pub struct ActionStubChild {
     child: tokio::process::Child,
 }
 
-/// SIGKILL to every process in the group `pgid` leads. ESRCH means the
-/// group is already gone, which is the outcome wanted; anything else, EPERM
-/// above all, means a survivor and is reported.
-#[cfg(target_os = "linux")]
-fn kill_process_group(pgid: u32) {
-    let Ok(pgid) = i32::try_from(pgid) else {
-        return;
-    };
-    // SAFETY: killpg only takes integers and has no memory safety
-    // considerations; a stale group id is reported as ESRCH, not acted on.
-    let rc = unsafe { libc::killpg(pgid, libc::SIGKILL) };
-    if rc != 0 {
-        let err = Error::last_os_error();
-        if err.raw_os_error() != Some(libc::ESRCH) {
-            error!(
-                pgid,
-                ?err,
-                "Could not kill the action's process group; a descendant may have survived"
-            );
-        }
+/// SIGKILL to every descendant of the stub, repeated until none is left
+/// alive (`crate::process_tree::signal_descendants`). A descendant that
+/// survives that is reported.
+fn kill_descendants(stub: u32) {
+    crate::process_tree::signal_descendants(stub, libc::SIGKILL);
+    let survivors = crate::process_tree::tree_members(stub)
+        .iter()
+        .filter(|(pid, stat)| *pid != stub && !crate::process_tree::is_zombie_stat(stat))
+        .count();
+    if survivors > 0 {
+        error!(
+            stub,
+            survivors, "Could not kill the action's processes; a descendant may have survived"
+        );
     }
 }
 
-impl MaybeNamespacedChild {
-    pub const fn new(namespaced: bool, child: tokio::process::Child) -> Self {
-        Self { namespaced, child }
+impl ActionStubChild {
+    pub const fn new(child: tokio::process::Child) -> Self {
+        Self { child }
     }
 
     pub fn id(&self) -> Option<u32> {
         self.child.id()
     }
 
-    /// SIGKILL the child and wait for it. Namespaced, the child is the
-    /// stub and the init of the action's PID namespace, so its death takes
-    /// the action and everything the action spawned with it; the stub also
-    /// set `PR_SET_PDEATHSIG` on the action for the same end. Not
-    /// namespaced, the child is its own group leader, so the group gets the
-    /// SIGKILL first: a timed-out or cancelled action used to lose only its
-    /// direct child while its descendants ran on (issue #225).
+    /// SIGKILL the action and wait for its stub. The stub's descendants go
+    /// first, so none is orphaned to the worker by the stub's death; a
+    /// timed-out or cancelled action used to lose only its direct child
+    /// while its descendants ran on (issue #225). Namespaced, the action is
+    /// the init of its PID namespace, whose death takes the namespace with
+    /// it as well.
     pub async fn kill(&mut self) -> Result<(), Error> {
-        #[cfg(target_os = "linux")]
-        if !self.namespaced
-            && let Some(pgid) = self.child.id()
-        {
-            kill_process_group(pgid);
+        if let Some(stub) = self.child.id() {
+            kill_descendants(stub);
         }
         self.child.kill().await
     }
@@ -289,40 +279,6 @@ fn write_signal_safe(file_name: &core::ffi::CStr, data: &[u8]) -> Result<(), cor
         Err(libc::EIO)
     } else {
         Ok(())
-    }
-}
-
-/// An async-signal-safe method to close all open file descriptors for the
-/// current process.  This function is unsafe as any existing handles to
-/// file descriptors will be invalidated.  None may be used after calling
-/// this function.
-unsafe fn close_all_fds() {
-    // SAFETY: It is safe to call close on all file descriptors as this is
-    // the purpose of the function.
-    if unsafe { libc::syscall(libc::SYS_close_range, 0, libc::INT_MAX, 0) } == 0 {
-        return;
-    }
-    // Since we're <5.9 kernel, we need to get the max FD count.
-    let mut rlim = core::mem::MaybeUninit::<libc::rlimit>::uninit();
-    // SAFETY: We just allocated the memory for this and getrlimit is async-signal-safe.
-    let max_fd = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, rlim.as_mut_ptr()) } == 0 {
-        // SAFETY: We just initialised this in getrlimit above that succeeded.
-        let cur = unsafe { rlim.assume_init().rlim_cur };
-        if cur == libc::RLIM_INFINITY {
-            // Sane fallback for unlimited environments
-            0x0001_0000
-        } else {
-            core::ffi::c_int::try_from(cur).unwrap_or(0x0001_0000)
-        }
-    } else {
-        // Fallback for getrlimit failure.
-        4096
-    };
-    for fd in 0..max_fd {
-        // SAFETY: It is safe to close a file descriptor that is not open and
-        // we also want to close all, so there's no issue with closing file
-        // descriptors that others may have handles to.
-        unsafe { libc::close(fd) };
     }
 }
 
@@ -584,6 +540,7 @@ pub fn configure_namespace(
     tmp_directory: Option<&core::ffi::CStr>,
     root_action_directory: &core::ffi::CStr,
     action_directory: &core::ffi::CStr,
+    report_fd: core::ffi::c_int,
 ) -> std::io::Result<()> {
     // SAFETY: It is always safe to call geteuid on Posix.
     let uid = unsafe { libc::geteuid() };
@@ -641,89 +598,8 @@ pub fn configure_namespace(
         }
     }
 
-    // Fork to enter the PID namespace.
-    // SAFETY: We are already in a required async-signal-safe environment, we
-    // will continue to ensure that ongoing.
-    match unsafe { libc::fork() } {
-        0 => {
-            // SAFETY: This function is async-signal-safe and references no memory or resources.
-            if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
-                exit(1);
-            }
-            Ok(())
-        }
-        pid if pid > 0 => {
-            // Ensure that any children spawned by the action are re-parented to
-            // this process if their parent dies. This is effectively a sub-reaper.
-            // SAFETY: prctl is async-signal-safe.
-            unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
-
-            // SAFETY: All operations below simply _exit and therefore there
-            // are no issues with dangling file descriptor handles.
-            unsafe { close_all_fds() };
-
-            let mut sigset = core::mem::MaybeUninit::<libc::sigset_t>::uninit();
-            // SAFETY: sigset is on the stack and we are initializing it.
-            unsafe {
-                libc::sigemptyset(sigset.as_mut_ptr());
-                libc::sigaddset(sigset.as_mut_ptr(), libc::SIGTERM);
-                libc::sigaddset(sigset.as_mut_ptr(), libc::SIGCHLD);
-                libc::sigprocmask(libc::SIG_BLOCK, sigset.as_ptr(), core::ptr::null_mut());
-            }
-
-            loop {
-                // Reap all exited children.
-                loop {
-                    let mut status = 0;
-                    // SAFETY: The status is on the stack and waitpid is otherwise
-                    // safe to call.
-                    let res = unsafe { libc::waitpid(-1, &raw mut status, libc::WNOHANG) };
-                    if res == pid {
-                        if libc::WIFEXITED(status) {
-                            exit(libc::WEXITSTATUS(status));
-                        } else if libc::WIFSIGNALED(status) {
-                            // Try to exit with the same signal as the child.
-                            // SAFETY: The sigset was previously allocated and used on the stack.
-                            unsafe {
-                                libc::sigprocmask(
-                                    libc::SIG_UNBLOCK,
-                                    sigset.as_ptr(),
-                                    core::ptr::null_mut(),
-                                )
-                            };
-                            // SAFETY: It's always safe to raise and as a fallback we _exit below.
-                            unsafe { libc::raise(libc::WTERMSIG(status)) };
-                            // We shouldn't get here, but it's a fallback in case.
-                            exit(libc::WTERMSIG(status));
-                        }
-                    } else if res <= 0 {
-                        // SAFETY: We just called a libc function that failed.
-                        if res == -1 && unsafe { *libc::__errno_location() } != libc::EINTR {
-                            exit(255);
-                        }
-                        // Break the reaping loop to wait for signals.
-                        break;
-                    }
-                }
-
-                let mut siginfo = core::mem::MaybeUninit::<libc::siginfo_t>::uninit();
-                // SAFETY: sigset is initialized and siginfo is on the stack.
-                let sig = unsafe { libc::sigwaitinfo(sigset.as_ptr(), siginfo.as_mut_ptr()) };
-
-                if sig == libc::SIGTERM {
-                    // Pass the SIGTERM on, so the action gets the grace the
-                    // worker's kill_grace_ms promises to write its own
-                    // cleanup. The stub used to turn it into SIGKILL, which
-                    // ended the action at once under namespaces while the
-                    // same action got its grace without them. The hard kill
-                    // is a SIGKILL to the stub itself: as this PID
-                    // namespace's init, its death takes every process in
-                    // the namespace with it.
-                    // SAFETY: pid is valid and we are sending a signal.
-                    unsafe { libc::kill(pid, libc::SIGTERM) };
-                }
-            }
-        }
-        _ => Err(Error::last_os_error()),
-    }
+    // Fork to enter the PID namespace: the action is its init, and the
+    // stub outside it is the action's parent, as without namespaces.
+    // SAFETY: We are in pre_exec and report_fd is the report pipe's write end.
+    unsafe { crate::action_stub::fork_stub(report_fd) }
 }
