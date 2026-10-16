@@ -563,6 +563,49 @@ async fn throttles_do_not_spend_the_retry_budget() -> Result<(), Error> {
     Ok(())
 }
 
+/// Consecutive throttles with no header double from the floor up to the
+/// cap: 2, 4, 8, 16, 32 s for five of them under the 60 s default cap, 62 s
+/// in all, where five floors would be 10 s.
+#[nativelink_test(start_paused = true)]
+async fn consecutive_throttles_double_from_the_floor_up_to_the_cap() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    for _ in 0..5 {
+        mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    }
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let retry = Retry {
+        max_retries: 0,
+        delay: 0.0,
+        jitter: 0.0,
+        ..Default::default()
+    };
+    let store = create_test_store(Arc::clone(&mock), Some(retry), None)?;
+    let floor = Duration::from_secs_f32(CommonObjectSpec::default().throttle_retry_delay_s);
+    let cap = Duration::from_secs_f32(CommonObjectSpec::default().throttle_retry_max_delay_s);
+    let doubled = floor + floor * 2 + floor * 4 + floor * 8 + floor * 16;
+    assert!(
+        floor * 16 < cap,
+        "the fifth wait must still be under the cap"
+    );
+
+    let started = tokio::time::Instant::now();
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 6);
+    assert!(
+        started.elapsed() >= doubled && started.elapsed() < doubled + floor,
+        "waited {:?}, expected the doubled waits of {doubled:?}, not five floors",
+        started.elapsed()
+    );
+    Ok(())
+}
+
 #[nativelink_test(start_paused = true)]
 async fn a_throttled_download_without_a_header_waits_the_configured_floor() -> Result<(), Error> {
     const VALUE: &str = "test_content";
