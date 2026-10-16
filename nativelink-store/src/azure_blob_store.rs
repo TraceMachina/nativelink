@@ -227,7 +227,8 @@ where
                 spec.common.retry.clone(),
             )
             .with_client("azure")
-            .with_throttle_budget(throttle_retry_budget),
+            .with_throttle_budget(throttle_retry_budget)
+            .with_throttle_max_wait(throttle_retry_max_delay),
             consider_expired_after_s: i64::from(spec.common.consider_expired_after_s),
             max_retry_buffer_per_request: spec
                 .common
