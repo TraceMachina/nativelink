@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use nativelink_config::stores::MemorySpec;
-use nativelink_error::Error;
+use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, Directory, DirectoryNode, FileNode, OutputDirectory,
     OutputFile, Tree,
@@ -24,9 +27,13 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
 use nativelink_store::ac_utils::serialize_and_upload_message;
 use nativelink_store::completeness_checking_store::CompletenessCheckingStore;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 
 const ROOT_FILE: DigestInfo = DigestInfo::new([0u8; 32], 0);
 const ROOT_DIRECTORY: DigestInfo = DigestInfo::new([1u8; 32], 0);
@@ -242,6 +249,127 @@ async fn verify_completeness_get() -> Result<(), Error> {
             ".get() should fail with item missing in CAS",
         );
     }
+
+    Ok(())
+}
+
+/// A store driver whose reads always fail with a configurable, non-`NotFound`
+/// backend error. Used to prove that a genuine backend read failure on the
+/// action-result record is surfaced with its real code rather than laundered
+/// into a `NotFound` "miss".
+#[derive(Debug, MetricsComponent)]
+struct AlwaysErrStore {
+    code: Code,
+}
+
+#[async_trait]
+impl StoreDriver for AlwaysErrStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        _results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Err(make_err!(
+            self.code,
+            "injected backend failure in has_with_results"
+        ))
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        Err(make_err!(self.code, "injected backend failure in update"))
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        _writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        Err(make_err!(self.code, "injected backend failure in get_part"))
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: Arc<dyn RemoveItemCallback>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(AlwaysErrStore);
+
+/// Regression: a real backend read/decode failure on the action-result record
+/// must propagate with its underlying, non-`NotFound` code — it must NOT be
+/// collapsed into `Code::NotFound`. A `NotFound` miss tells the client the
+/// result does not exist and to re-execute; a backend fault (unavailable
+/// Redis, decode failure) is transient and retryable, and serving it as a
+/// clean miss silently discards a valid cached result. The genuine
+/// eviction-miss path (referent absent) is covered by
+/// `verify_has_function_call_checks_cas` and stays `NotFound`.
+#[nativelink_test]
+async fn backend_error_on_record_propagates_as_non_not_found() -> Result<(), Error> {
+    let make_store = || {
+        let ac_store = Store::new(Arc::new(AlwaysErrStore {
+            code: Code::Unavailable,
+        }));
+        let cas_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+        CompletenessCheckingStore::new(ac_store, cas_store)
+    };
+    let some_digest = DigestInfo::new([9u8; 32], 123);
+
+    // get_part path (nix narinfo GET / Bazel AC get).
+    let get_err = make_store()
+        .get_part_unchunked(some_digest, 0, None)
+        .await
+        .expect_err("a backend read failure must not be swallowed into a hit");
+    assert_ne!(
+        get_err.code,
+        Code::NotFound,
+        "backend fault must not masquerade as a NotFound miss (would 404)"
+    );
+    assert_eq!(
+        get_err.code,
+        Code::Unavailable,
+        "backend fault must propagate with its real code"
+    );
+
+    // has path (nix narinfo HEAD / Bazel AC has).
+    let has_err = make_store()
+        .has(some_digest)
+        .await
+        .expect_err("a backend read failure on has must not be swallowed into a miss");
+    assert_ne!(
+        has_err.code,
+        Code::NotFound,
+        "backend fault on has must not masquerade as a NotFound miss (would 404)"
+    );
+    assert_eq!(
+        has_err.code,
+        Code::Unavailable,
+        "backend fault on has must propagate with its real code"
+    );
 
     Ok(())
 }
