@@ -12,19 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use core::time::Duration;
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{
     EvictionPolicy, ExistenceCacheSpec, MemorySpec, NoopSpec, StoreSpec,
 };
 use nativelink_error::{Error, ResultExt};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::store_trait::{
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
@@ -194,5 +202,167 @@ async fn copes_with_dropped_items() -> Result<(), Error> {
         "Failed item: {unwrapped_store:#?}"
     );
 
+    Ok(())
+}
+
+/// A store that loses entries without telling anyone: Redis under
+/// allkeys-lru whose keyspace events never reach the subscriber, which is
+/// what the September 2026 capture showed. The remove callback is accepted
+/// and never called.
+#[derive(Debug, MetricsComponent)]
+struct SilentlyEvictingStore {
+    inner: Arc<MemoryStore>,
+}
+
+impl SilentlyEvictingStore {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: MemoryStore::new(&MemorySpec::default()),
+        })
+    }
+
+    /// The eviction nobody hears about.
+    async fn lose(&self, digest: DigestInfo) {
+        assert!(self.inner.remove_entry(digest.into()).await);
+    }
+}
+
+#[async_trait]
+impl StoreDriver for SilentlyEvictingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(keys, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        Pin::new(self.inner.as_ref())
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SilentlyEvictingStore);
+
+/// The September failure. A blob the cache has seen is lost by the tier under
+/// it, and the cache is not told. Within its TTL the cache keeps saying
+/// present, which is the accepted window; what must never happen is the
+/// upload of a client that sends the blob anyway being thrown away, because
+/// that turns a late answer into a blob nothing holds.
+#[nativelink_test]
+async fn an_upload_for_a_blob_the_cache_believes_present_still_lands() -> Result<(), Error> {
+    const VALUE: &str = "123";
+    let lossy = SilentlyEvictingStore::new();
+    let store = ExistenceCacheStore::new(
+        &ExistenceCacheSpec {
+            backend: StoreSpec::Noop(NoopSpec::default()),
+            eviction_policy: Some(EvictionPolicy {
+                max_seconds: 1800,
+                ..Default::default()
+            }),
+        },
+        Store::new(lossy.clone()),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+    store.update_oneshot(digest, VALUE.into()).await?;
+    assert!(store.exists_in_cache(&digest).await);
+
+    lossy.lose(digest).await;
+    assert_eq!(
+        lossy.inner.has(digest).await?,
+        None,
+        "the tier lost the blob"
+    );
+    assert_eq!(
+        store.has(digest).await?,
+        Some(VALUE.len() as u64),
+        "within the TTL the cache still answers present; that is the accepted window"
+    );
+
+    // A client uploads it anyway: another pod said missing, or a retry.
+    store.update_oneshot(digest, VALUE.into()).await?;
+    assert_eq!(
+        lossy.inner.has(digest).await?,
+        Some(VALUE.len() as u64),
+        "the upload was discarded because the cache believed the blob present"
+    );
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        VALUE.as_bytes(),
+        "the blob is not readable after its re-upload"
+    );
+    Ok(())
+}
+
+/// The TTL, not a callback, is what bounds a stale positive: once an entry is
+/// older than `max_seconds` the cache asks the inner store again.
+#[nativelink_test]
+async fn an_aged_positive_asks_the_inner_store_again() -> Result<(), Error> {
+    const VALUE: &str = "123";
+    let lossy = SilentlyEvictingStore::new();
+    let store = ExistenceCacheStore::new_with_time(
+        &ExistenceCacheSpec {
+            backend: StoreSpec::Noop(NoopSpec::default()),
+            eviction_policy: Some(EvictionPolicy {
+                max_seconds: 600,
+                ..Default::default()
+            }),
+        },
+        Store::new(lossy.clone()),
+        MockInstantWrapped::default(),
+    );
+    let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+    store.update_oneshot(digest, VALUE.into()).await?;
+    lossy.lose(digest).await;
+
+    MockClock::advance(Duration::from_secs(599));
+    assert_eq!(store.has(digest).await?, Some(VALUE.len() as u64));
+    MockClock::advance(Duration::from_secs(2));
+    assert_eq!(
+        store.has(digest).await?,
+        None,
+        "a positive older than max_seconds must not be trusted"
+    );
     Ok(())
 }

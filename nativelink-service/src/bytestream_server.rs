@@ -944,6 +944,17 @@ impl ByteStreamServer {
                     return Err(make_input_err!("Received more bytes than expected"));
                 }
                 if write_request.finish_write {
+                    // The client declared the blob size in the resource name. If it
+                    // signals completion before sending that many bytes, the upload
+                    // is incomplete and MUST be rejected: committing it would admit a
+                    // truncated artifact into the CAS under a digest it does not hash
+                    // to, which later reads would serve as if it were complete.
+                    let bytes_written = tx.get_bytes_written();
+                    if bytes_written != expected_size {
+                        return Err(make_input_err!(
+                            "Client finished writing before sending all data. Expected {expected_size} bytes but received {bytes_written}"
+                        ));
+                    }
                     // Gracefully close our stream.
                     tx.send_eof()
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
@@ -1058,6 +1069,14 @@ impl ByteStreamServer {
             }
 
             if write_request.finish_write {
+                // Reject an incomplete upload: a finish_write before the declared
+                // size would otherwise commit a truncated blob under a digest it
+                // does not hash to. See inner_write for the full rationale.
+                if bytes_received != expected_size {
+                    return Err(make_input_err!(
+                        "Client finished writing before sending all data. Expected {expected_size} bytes but received {bytes_received}"
+                    ));
+                }
                 break;
             }
         }
@@ -1373,9 +1392,17 @@ impl ByteStreamServer {
                 complete: false,
             }));
         };
+        // `item_size` is the store's reported size; for the filesystem store
+        // that is the block-rounded on-disk footprint, not the logical byte
+        // count. Clamp the reported committed_size to the declared digest size
+        // and only report `complete` once the store holds at least that many
+        // bytes, so QueryWriteStatus never over-reports nor falsely completes.
+        let expected_size = digest.size_bytes();
+        let complete = item_size >= expected_size;
+        let committed_size = if complete { expected_size } else { item_size };
         Ok(Response::new(QueryWriteStatusResponse {
-            committed_size: item_size.try_into().unwrap_or(i64::MAX),
-            complete: true,
+            committed_size: committed_size.try_into().unwrap_or(i64::MAX),
+            complete,
         }))
     }
 }
