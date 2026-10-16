@@ -1316,6 +1316,17 @@ pub struct LocalWorkerConfig {
     )]
     pub max_download_timeout_s: usize,
 
+    /// How many input blobs this worker fetches into its store at once,
+    /// across every action it is staging. Each fetch is a read from the
+    /// CAS or the object store, so this bounds what one worker asks of
+    /// them at a time: several cold actions share this many fetches
+    /// instead of each opening its own. Blobs already in the store are
+    /// linked without one.
+    ///
+    /// Default: 64
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_input_downloads: usize,
+
     /// Maximum time to wait for action directory cleanup before timing out.
     /// Value in seconds.
     ///
