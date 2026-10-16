@@ -80,7 +80,7 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{Notify, Semaphore, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, SemaphorePermit, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
@@ -728,6 +728,16 @@ fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
 /// overhead.
 const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 
+/// One permit per blob fetched into the worker's store, from the pool the
+/// worker shares across every action it is staging. The pool is never
+/// closed, so a refusal here is a bug, not a condition.
+async fn acquire_download_permit(downloads: &Semaphore) -> Result<SemaphorePermit<'_>, Error> {
+    downloads
+        .acquire()
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Input download pool closed: {e:?}"))
+}
+
 /// Keeps every digest used by an action present in locally eviction-managed
 /// CAS tiers.
 ///
@@ -835,7 +845,39 @@ pub fn download_to_directory<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
-    download_to_directory_with_lease(cas_store, filesystem_store, digest, current_directory, None)
+    async move {
+        // A pool of this call's own; the worker's shared one arrives through
+        // `prepare_action_inputs`.
+        let downloads = Semaphore::new(DOWNLOAD_TO_DIRECTORY_CONCURRENCY);
+        download_to_directory_bounded(
+            cas_store,
+            filesystem_store,
+            digest,
+            current_directory,
+            &downloads,
+        )
+        .await
+    }
+    .boxed()
+}
+
+/// `download_to_directory` drawing its fetches from `downloads`, the pool
+/// the worker shares across the actions it stages.
+pub fn download_to_directory_bounded<'a>(
+    cas_store: &'a FastSlowStore,
+    filesystem_store: Pin<&'a FilesystemStore>,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    downloads: &'a Semaphore,
+) -> BoxFuture<'a, Result<(), Error>> {
+    download_to_directory_with_lease(
+        cas_store,
+        filesystem_store,
+        digest,
+        current_directory,
+        None,
+        downloads,
+    )
 }
 
 fn download_to_directory_with_lease<'a>(
@@ -844,21 +886,24 @@ fn download_to_directory_with_lease<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
     input_lease: Option<Arc<ActionInputLease>>,
+    downloads: &'a Semaphore,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
         let (dirs, files, inline_nodes) =
-            collect_download_links(cas_store, digest, current_directory, input_lease).await?;
+            collect_download_links(cas_store, digest, current_directory, input_lease, downloads)
+                .await?;
 
         let (exec_files, plain_files): (Vec<_>, Vec<_>) =
             files.into_iter().partition(|file| file.executable);
-        let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
-        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+        let mut links =
+            resolve_plain_files(cas_store, filesystem_store, plain_files, downloads).await?;
+        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files, downloads).await?);
 
         // Every directory exists before anything is written into one, so no
         // later pass has to create a parent it happens to need.
         fs::create_dir_many(dirs).await?;
-        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes).await?;
-        materialize_links(cas_store, filesystem_store, links).await
+        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes, downloads).await?;
+        materialize_links(cas_store, filesystem_store, links, downloads).await
     }
     .boxed()
 }
@@ -1054,6 +1099,7 @@ async fn materialize_links(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     links: Vec<PendingLink>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     let pairs = links
         .iter()
@@ -1081,7 +1127,7 @@ async fn materialize_links(
     // once, so they are fetched back together, not one round trip each.
     let repairs: Vec<BoxFuture<'_, Result<(), Error>>> = evicted
         .into_iter()
-        .map(|link| relink_and_report(cas_store, filesystem_store, link).boxed())
+        .map(|link| relink_and_report(cas_store, filesystem_store, link, downloads).boxed())
         .collect();
     futures::stream::iter(repairs)
         .buffer_unordered(INPUT_RELINK_CONCURRENCY)
@@ -1093,7 +1139,9 @@ async fn relink_and_report(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     link: &PendingLink,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
+    let _permit = acquire_download_permit(downloads).await?;
     info!(
         digest = %link.digest,
         src_path = ?link.src,
@@ -1201,6 +1249,7 @@ async fn resolve_plain_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let mut tasks = Vec::with_capacity(files.len());
     for file in files {
@@ -1211,6 +1260,7 @@ async fn resolve_plain_files(
             {
                 entry
             } else {
+                let _permit = acquire_download_permit(downloads).await?;
                 fetch_and_resolve(
                     file.digest,
                     || cas_store.populate_fast_store(file.digest.into()),
@@ -1259,6 +1309,7 @@ async fn resolve_exec_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
     let sources = filesystem_store
@@ -1271,6 +1322,7 @@ async fn resolve_exec_files(
             let src_path = if let Ok(src_path) = source {
                 src_path
             } else {
+                let _permit = acquire_download_permit(downloads).await?;
                 fetch_and_resolve(
                     file.digest,
                     || cas_store.populate_fast_store(file.digest.into()),
@@ -1302,14 +1354,21 @@ fn collect_download_links<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
     input_lease: Option<Arc<ActionInputLease>>,
+    downloads: &'a Semaphore,
 ) -> BoxFuture<'a, Result<CollectedTree, Error>> {
     async move {
         if let Some(input_lease) = &input_lease {
             input_lease.lease_digest(digest);
         }
-        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
-            .await
-            .err_tip(|| "Converting digest to Directory")?;
+        // The permit covers the fetch alone, never the walk below it: a
+        // parent holding one while its children wait for theirs would
+        // deadlock a tree deeper than the pool.
+        let directory = {
+            let _permit = acquire_download_permit(downloads).await?;
+            get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
+                .await
+                .err_tip(|| "Converting digest to Directory")?
+        };
         let mut futures = Vec::new();
         let mut pending_files = Vec::new();
         let mut inline_nodes = Vec::new();
@@ -1372,6 +1431,7 @@ fn collect_download_links<'a>(
                         &digest,
                         &new_directory_path,
                         input_lease,
+                        downloads,
                     )
                     .await
                     .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
@@ -1466,6 +1526,7 @@ async fn materialize_inline_nodes(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     nodes: Vec<InlineNode>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     let mut futures = Vec::with_capacity(nodes.len());
     for node in nodes {
@@ -1482,7 +1543,10 @@ async fn materialize_inline_nodes(
                     mtime,
                     custom_unix_mode,
                 } => {
-                    cas_store.populate_fast_store(digest.into()).await?;
+                    {
+                        let _permit = acquire_download_permit(downloads).await?;
+                        cas_store.populate_fast_store(digest.into()).await?;
+                    }
                     async move {
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
@@ -1572,6 +1636,7 @@ pub async fn prepare_action_inputs(
     filesystem_store: Pin<&FilesystemStore>,
     digest: &DigestInfo,
     work_directory: &str,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     prepare_action_inputs_with_lease(
         directory_cache,
@@ -1580,6 +1645,7 @@ pub async fn prepare_action_inputs(
         digest,
         work_directory,
         None,
+        downloads,
     )
     .await
 }
@@ -1591,6 +1657,7 @@ async fn prepare_action_inputs_with_lease(
     digest: &DigestInfo,
     work_directory: &str,
     input_lease: Option<Arc<ActionInputLease>>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     // Try cache first if available. Cache hits are safe while an action lease
     // is active because the directory cache pins its own materialized tree
@@ -1662,6 +1729,7 @@ async fn prepare_action_inputs_with_lease(
         digest,
         work_directory,
         input_lease,
+        downloads,
     )
     .await
 }
@@ -2455,6 +2523,7 @@ impl RunningActionImpl {
                         &self.action_info.input_root_digest,
                         &self.work_directory,
                         self.input_lease.clone(),
+                        &self.running_actions_manager.input_downloads,
                     ));
             let err = match try_join(command_fut, inputs_fut).await {
                 Ok((command, ())) => {
@@ -4335,6 +4404,9 @@ pub struct ExecutionConfiguration {
     pub kill_grace: Duration,
     /// Point `TMPDIR` at a directory of the action's own, removed with it.
     pub set_tmpdir: bool,
+    /// How many input blobs the worker fetches into its store at once,
+    /// across every action it is staging; 0 takes the default of 64.
+    pub max_concurrent_input_downloads: usize,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -4709,6 +4781,10 @@ pub struct RunningActionsManagerImpl {
     /// Whether active action inputs are leased against eviction in the local
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
+    /// The pool every input fetch draws a permit from, shared by all the
+    /// actions this worker stages; see
+    /// `ExecutionConfiguration::max_concurrent_input_downloads`.
+    input_downloads: Semaphore,
     persistent_worker_pool: PersistentWorkerPool,
     /// Retires idle persistent workers; ends with the manager.
     _persistent_worker_sweeper: JoinHandleDropGuard<()>,
@@ -4716,6 +4792,12 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
+    /// Permits free in the input fetch pool right now; with nothing staging,
+    /// the pool's size.
+    pub fn free_input_downloads(&self) -> usize {
+        self.input_downloads.available_permits()
+    }
+
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
@@ -4734,9 +4816,16 @@ impl RunningActionsManagerImpl {
         let persistent_worker_pool =
             PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
         let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
+        let input_downloads = Semaphore::new(
+            match args.execution_configuration.max_concurrent_input_downloads {
+                0 => DOWNLOAD_TO_DIRECTORY_CONCURRENCY,
+                n => n,
+            },
+        );
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
+            input_downloads,
             cas_store: args.cas_store,
             filesystem_store,
             upload_action_results: UploadActionResults::new(

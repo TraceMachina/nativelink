@@ -1245,6 +1245,7 @@ pub async fn new_local_worker(
                     Duration::from_millis(config.kill_grace_ms)
                 },
                 set_tmpdir: config.set_tmpdir,
+                max_concurrent_input_downloads: config.max_concurrent_input_downloads,
                 persistent_workers: persistent_worker_settings(
                     config.persistent_workers.as_ref(),
                     persistent_workers_namespaced,
