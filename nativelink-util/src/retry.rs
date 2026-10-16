@@ -175,10 +175,13 @@ impl Retrier {
     /// Lets consecutive throttles wait longer each time. The first throttle
     /// in a row waits what the server asked, the second twice that, the
     /// third four times, and so on; `max_wait` is the ceiling that growth
-    /// stops at, not a wait of its own. The grown wait is jittered and never
-    /// less than what was asked. A store that is told to slow down with no
-    /// `Retry-After` otherwise has every client retry in lockstep at the
-    /// configured floor.
+    /// stops at, not a wait of its own. The grown wait is spread upward by
+    /// the jitter and never less than what was asked. Growth applies to the
+    /// waits the throttle budget pays for; once the budget is spent the
+    /// backoff ladder takes over and waits at least the plain ask, so the
+    /// ladder's total stays what the retry config says. A store that is
+    /// told to slow down with no `Retry-After` otherwise has every client
+    /// retry in lockstep at the configured floor.
     #[must_use]
     pub const fn with_throttle_max_wait(mut self, max_wait: Duration) -> Self {
         self.throttle_max_wait = Some(max_wait);
@@ -196,12 +199,17 @@ impl Retrier {
         // multiplier would overflow and the ceiling applies anyway.
         let doublings = throttles_in_a_row.saturating_sub(1).min(31);
         let grown = asked.saturating_mul(1 << doublings).min(max_wait);
-        // The jitter spreads the grown wait a little either way, as
-        // `Retry::make_jitter_fn` does. It may not undo the growth: a
-        // result below the ask (a jitter function that zeroes delays, as
-        // tests install) leaves the grown wait as it is.
+        // `Retry::make_jitter_fn` spreads a delay either way, and on the
+        // first throttle half of every fleet would land at or below the
+        // ask and retry in lockstep. A low result is mirrored above the
+        // grown wait instead, so every step spreads upward only; a jitter
+        // that zeroes delays (as tests install) leaves the grown wait.
         let jittered = (self.jitter_fn)(grown);
-        if jittered < asked { grown } else { jittered }
+        if jittered.is_zero() {
+            grown
+        } else {
+            grown + jittered.abs_diff(grown)
+        }
     }
 
     fn report(&self, outcome: RetryOutcome) {
@@ -289,8 +297,7 @@ impl Retrier {
                     }
                     Some(RetryResult::RetryAfter(err, min_wait)) => {
                         throttles_in_a_row = throttles_in_a_row.saturating_add(1);
-                        let wait = self.throttle_wait(min_wait, throttles_in_a_row);
-                        (err, wait, true)
+                        (err, min_wait, true)
                     }
                 };
                 if !self.should_retry(err.code) {
@@ -306,15 +313,20 @@ impl Retrier {
                 // not an attempt: the server said when to come back, and
                 // the budget bounds how long that is listened to. A zero
                 // wait would spin, so it goes through the backoff instead.
-                if is_throttle
-                    && !min_wait.is_zero()
-                    && throttled.saturating_add(min_wait) <= self.throttle_budget
-                {
-                    throttled = throttled.saturating_add(min_wait);
-                    attempt -= 1;
-                    self.report(RetryOutcome::Retried);
-                    (self.sleep_fn)(min_wait).await;
-                    continue;
+                // The grown wait is what the budget pays for. Past the
+                // budget the backoff ladder below waits at least the plain
+                // ask, never the grown one, so the ladder's total stays what
+                // the retry config says and the caller's own deadline (a
+                // worker's download window, Bazel's remote timeout) holds.
+                if is_throttle && !min_wait.is_zero() {
+                    let wait = self.throttle_wait(min_wait, throttles_in_a_row);
+                    if throttled.saturating_add(wait) <= self.throttle_budget {
+                        throttled = throttled.saturating_add(wait);
+                        attempt -= 1;
+                        self.report(RetryOutcome::Retried);
+                        (self.sleep_fn)(wait).await;
+                        continue;
+                    }
                 }
                 let Some(backoff) = iter.next() else {
                     self.report(RetryOutcome::Exhausted);

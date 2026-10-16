@@ -671,8 +671,9 @@ async fn a_zeroing_jitter_does_not_undo_the_growth() -> Result<(), Error> {
 }
 
 /// The grown waits are what the budget is spent on: 2 + 4 + 8 fits a 15 s
-/// budget and the fourth throttle (16 s) falls through to the backoff
-/// ladder, where it spends the one allowed attempt.
+/// budget and the fourth throttle (16 s grown) falls through to the backoff
+/// ladder, where it spends the one allowed attempt and waits the plain ask,
+/// not the grown one, so the ladder's total stays what the config says.
 #[nativelink_test]
 async fn grown_waits_spend_the_budget() -> Result<(), Error> {
     let sleeps = Arc::new(Mutex::new(Vec::new()));
@@ -697,11 +698,11 @@ async fn grown_waits_spend_the_budget() -> Result<(), Error> {
     );
     assert_eq!(
         *sleeps.lock().unwrap(),
-        [2, 4, 8, 16]
+        [2, 4, 8, 2]
             .into_iter()
             .map(Duration::from_secs)
             .collect::<Vec<_>>(),
-        "the fourth wait is the grown ask, longer than the 2 s backoff"
+        "the fourth wait is the backoff against the plain 2 s ask"
     );
     Ok(())
 }
@@ -740,10 +741,10 @@ async fn a_plain_retry_resets_the_throttle_streak() -> Result<(), Error> {
     Ok(())
 }
 
-/// A jitter that lands below what the server asked for is not applied: the
-/// first throttle waits the ask, the second the doubled ask, not the tenth.
+/// A jitter that lands low is mirrored above the grown wait, so no throttle
+/// ever sits on the floor: a tenth of the wait becomes nine tenths on top.
 #[nativelink_test]
-async fn throttle_jitter_is_floored_at_the_ask() -> Result<(), Error> {
+async fn a_low_jitter_is_mirrored_above_the_grown_wait() -> Result<(), Error> {
     let sleeps = Arc::new(Mutex::new(Vec::new()));
     let retrier = Retrier::new(
         Arc::new({
@@ -779,8 +780,8 @@ async fn throttle_jitter_is_floored_at_the_ask() -> Result<(), Error> {
     assert_eq!(result, true);
     assert_eq!(
         *sleeps.lock().unwrap(),
-        vec![Duration::from_secs(10), Duration::from_secs(20)],
-        "10 s asked, 1 s and 2 s jittered, the grown 10 s and 20 s waited"
+        vec![Duration::from_secs(19), Duration::from_secs(38)],
+        "10 s asked, jittered to a tenth, mirrored above: 19 s, then 38 s on the doubled wait"
     );
     Ok(())
 }
