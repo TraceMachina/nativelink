@@ -850,3 +850,38 @@ async fn regression_test_range_start_not_greater_than_end() -> Result<(), Error>
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn has_reports_the_size_the_digest_declares_not_the_compressed_one() -> Result<(), Error> {
+    let inner_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        },
+        inner_store.clone(),
+    )?;
+    let store = Pin::new(store.as_ref());
+
+    // Highly compressible, so the framed object is far smaller than the blob.
+    let data = vec![b'a'; 4096];
+    let digest = DigestInfo::try_new(VALID_HASH, data.len())?;
+    store.update_oneshot(digest, data.into()).await?;
+
+    let compressed = inner_store
+        .has(digest)
+        .await?
+        .expect("the inner store holds the object");
+    assert!(
+        compressed < 4096,
+        "the inner object should be compressed, got {compressed}"
+    );
+    assert_eq!(
+        store.has(digest).await?,
+        Some(4096),
+        "a fast-slow tier sizes its copy from this answer, so it has to be the decompressed length"
+    );
+    Ok(())
+}
