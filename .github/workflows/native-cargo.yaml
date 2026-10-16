@@ -2,16 +2,12 @@
 name: Cargo Native
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+  # Cargo Native (Linux + Windows) is deferred to a nightly schedule +
+  # on-demand. Per-PR build/test signal is covered by the Nix (Bazel Dev) lane;
+  # this keeps full cargo and cross-platform coverage running daily against main.
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  workflow_dispatch:
 
 permissions: read-all
 
