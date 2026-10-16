@@ -1214,11 +1214,26 @@ where
         let mut attempt: u32 = 0;
         let blob_len = loop {
             attempt += 1;
-            let blob_len: usize = client
-                .connection_manager
-                .strlen(&temp_key)
-                .await
-                .err_tip(|| format!("In RedisStore::update strlen check for {temp_key}"))?;
+            // The master can go away between the chunk writes and this check
+            // too, and the connection then waits out the command timeout on a
+            // dead peer. Re-resolve the master and ask it, like every other
+            // step here does, instead of failing the upload.
+            let blob_len: usize = match client.connection_manager.strlen(&temp_key).await {
+                Ok(len) => len,
+                Err(err)
+                    if is_retryable_redis_error(&err) && attempt < MAX_REDIS_RETRY_ATTEMPTS =>
+                {
+                    let (connection_manager, uuid) =
+                        self.connection_manager.reconnect(client.uuid).await?;
+                    client.connection_manager = connection_manager;
+                    client.uuid = uuid;
+                    continue;
+                }
+                Err(err) => {
+                    return Err(Error::from(err)
+                        .append(format!("In RedisStore::update strlen check for {temp_key}")));
+                }
+            };
             // Safety check: reject if a retried append double-wrote the data.
             if blob_len > expected_len {
                 return Err(make_input_err!(

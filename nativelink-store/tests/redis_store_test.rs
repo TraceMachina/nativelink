@@ -3116,6 +3116,49 @@ async fn update_retries_the_ttl_after_a_failover() -> Result<(), Error> {
     Ok(())
 }
 
+/// A failover between the chunk writes and the length check used to fail the
+/// upload after the command timeout on the dead master. Seen on a bed where a
+/// Redis master kill failed every CAS upload for forty seconds.
+#[nativelink_test]
+async fn update_retries_the_length_check_after_a_failover() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+
+    let store = make_mock_store(vec![
+        MockCmd::new(
+            redis::cmd("SETRANGE")
+                .arg(&temp_key)
+                .arg(0)
+                .arg(data.to_vec()),
+            Ok(Value::Int(0)),
+        ),
+        // The master goes away right as the length is checked.
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(&temp_key),
+            Err::<Value, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out",
+            ))),
+        ),
+        // After re-resolving the master the check runs against the new one.
+        MockCmd::new(
+            redis::cmd("STRLEN").arg(&temp_key),
+            Ok(Value::Int(data.len().try_into().unwrap_or(i64::MAX))),
+        ),
+        MockCmd::new(
+            redis::cmd("RENAME").arg(&temp_key).arg(&real_key),
+            Ok(Value::Nil),
+        ),
+    ])
+    .await;
+
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
 /// The default must stay off. The same store type backs the CAS fast tier and
 /// the scheduler, and expiring scheduler state would drop in-flight actions.
 ///
