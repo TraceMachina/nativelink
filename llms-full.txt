@@ -15330,6 +15330,15 @@ not your pipeline.
   </Accordion>
 </Accordions>
 
+## Experimental input mounts [#experimental-input-mounts]
+
+Workers emit `worker.input_mount.cache_hits` and `cache_misses` to show
+whether selected directories are reused or rebuilt. `worker.input_mount.fallbacks`
+counts actions using ordinary input setup despite configured mounts;
+`worker.input_mount.prepare_failures` counts failed preparations retried without
+mounts. These counters describe preparation, not successful command execution.
+These names use OTLP notation; see [Prometheus naming conventions](/reference/metrics#how-an-instrument-becomes-a-prometheus-series) for the conversion.
+
 ## What's next [#whats-next]
 
 <NextStep href="/reference/metrics" title="The metrics reference">
@@ -18442,6 +18451,9 @@ the merge rule, the ordering rule and the retry rule.
 
 A worker fetches the action's inputs from the CAS, materialises them into a
 directory, runs the command, uploads the outputs, and reports back.
+Linux workers can optionally share cached input directories between actions
+through [read-only mounts](/reference/nativelink-config/main#localworkerconfig),
+avoiding repeated directory creation.
 
 Workers hold no durable state. A worker that dies mid-action costs you that
 action, not your cache. What they do hold is a local filesystem that is

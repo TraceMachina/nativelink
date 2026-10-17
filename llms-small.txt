@@ -3212,6 +3212,14 @@ No. The binary has no scrape endpoint, at any configuration, and
     forwards into Prometheus's OTLP receiver, with the renaming described in
     [what happens if you skip the collector](#wha…
 
+## Experimental input mounts
+
+Workers emit `worker.input_mount.cache_hits` and `cache_misses` to show
+whether selected directories are reused or rebuilt. `worker.input_mount.fallbacks`
+counts actions using ordinary input setup despite configured mounts;
+`worker.input_mount.prepare_failures` counts failed preparations retried without
+mounts. These counters describe preparation, not successful command execution.
+
 ## What's next
 
 # https://docs.nativelink.com/operate/security-hardening
@@ -3761,6 +3769,9 @@ same commit wait on one execution rather than two.
 
 A worker fetches the action's inputs from the CAS, materialises them into a
 directory, runs the command, uploads the outputs, and reports back.
+Linux workers can optionally share cached input directories between actions
+through [read-only mounts](/reference/nativelink-config/main#localworkerconfig),
+avoiding repeated directory creation.
 
 ## One build, twice
 
