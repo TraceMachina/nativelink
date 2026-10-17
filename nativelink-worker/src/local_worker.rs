@@ -1234,6 +1234,14 @@ pub async fn new_local_worker(
     #[cfg(not(target_os = "linux"))]
     let persistent_workers_namespaced = false;
 
+    #[cfg(not(target_os = "linux"))]
+    if !config.experimental_readonly_input_mounts.is_empty() {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Read-only input mounts not supported on non-Linux OSes"
+        ));
+    }
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -1270,6 +1278,8 @@ pub async fn new_local_worker(
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
             active_input_leases: config.experimental_active_input_leases,
+            #[cfg(target_os = "linux")]
+            readonly_input_mounts: config.experimental_readonly_input_mounts.clone(),
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
