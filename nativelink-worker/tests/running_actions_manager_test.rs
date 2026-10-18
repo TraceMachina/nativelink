@@ -209,6 +209,276 @@ mod tests {
             .await
     }
 
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn readonly_inputs_reuse_subtrees_and_fall_back_for_outputs() -> Result<(), Error> {
+        if !namespace_utils::namespaces_supported(true, true) {
+            assert!(
+                env::var_os("NATIVELINK_REQUIRE_MOUNT_TESTS").is_none(),
+                "mount namespaces required by NATIVELINK_REQUIRE_MOUNT_TESTS"
+            );
+            eprintln!("SKIP: mount namespaces unavailable");
+            return Ok(());
+        }
+        let (_fast, _slow, cas, _ac) = setup_stores().await?;
+        let root = make_temp_path("readonly_actions");
+        fs::create_dir_all(&root).await?;
+        let cache = Arc::new(
+            DirectoryCache::new(
+                DirectoryCacheConfig {
+                    cache_root: PathBuf::from(&root).join("cache"),
+                    ..Default::default()
+                },
+                cas.clone(),
+            )
+            .await?,
+        );
+        let manager = Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+            root_action_directory: root.clone(),
+            execution_configuration: ExecutionConfiguration::default(),
+            cas_store: cas.clone(),
+            ac_store: None,
+            historical_store: Store::new(cas.clone()),
+            upload_action_result_config: &UploadActionResultConfig {
+                upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                ..Default::default()
+            },
+            max_action_timeout: Duration::from_secs(30),
+            max_upload_timeout: Duration::from_secs(30),
+            max_download_timeout: Duration::from_secs(30),
+            max_cleanup_wait: Duration::from_secs(30),
+            max_cleanup_backoff: Duration::from_millis(10),
+            timeout_handled_externally: false,
+            active_input_leases: true,
+            readonly_input_mounts: vec!["sdk".into()],
+            directory_cache: Some(cache.clone()),
+            // The private /tmp is the default with a mount namespace; with
+            // the test root under /tmp it also hides the cache sources.
+            use_namespaces:
+                nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
+                    isolate_tmp: true,
+                },
+        })?);
+        let tool = Bytes::from_static(b"#!/bin/sh\nif [ $# -gt 0 ]; then printf sdk-content > \"$1\"; else printf sdk-content; fi");
+        let tool_digest = compute_buf_digest(&tool, &mut DigestHasherFunc::Sha256.hasher());
+        cas.as_ref().update_oneshot(tool_digest, tool).await?;
+        let sdk_digest = serialize_and_upload_message(
+            &Directory {
+                files: vec![FileNode {
+                    name: "tool".into(),
+                    digest: Some(tool_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                }],
+                symlinks: vec![
+                    SymlinkNode {
+                        name: "alias".into(),
+                        target: "tool".into(),
+                        ..Default::default()
+                    },
+                    SymlinkNode {
+                        name: "escape".into(),
+                        target: "/bin/sh".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            cas.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let empty_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        for i in 0..8 {
+            let sdk_digest = if i == 7 {
+                // Force a new SDK entry to fail construction while CAS remains usable.
+                let directory = Directory {
+                    files: vec![FileNode {
+                        name: "tool".into(),
+                        digest: Some(tool_digest.into()),
+                        is_executable: true,
+                        ..Default::default()
+                    }],
+                    symlinks: vec![SymlinkNode {
+                        name: "alias".into(),
+                        target: "./tool".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                };
+                fs::remove_dir_all(PathBuf::from(&root).join("cache")).await?;
+                tokio::fs::write(PathBuf::from(&root).join("cache"), b"blocked").await?;
+                serialize_and_upload_message(
+                    &directory,
+                    cas.as_pin(),
+                    &mut DigestHasherFunc::Sha256.hasher(),
+                )
+                .await?
+            } else {
+                sdk_digest
+            };
+            // Change an unrelated input path, keeping the SDK digest stable.
+            let input_digest = serialize_and_upload_message(
+                &Directory {
+                    directories: vec![
+                        DirectoryNode {
+                            name: format!("other{i}"),
+                            digest: Some(empty_digest.into()),
+                        },
+                        DirectoryNode {
+                            name: "sdk".into(),
+                            digest: Some(sdk_digest.into()),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let output_path = if i == 2 { "sdk/result" } else { "result" };
+            let script = if i == 2 {
+                "./sdk/alias > sdk/result"
+            } else if i == 7 {
+                "./sdk/alias > result"
+            } else {
+                "./sdk/alias > result && ! touch sdk/forbidden"
+            };
+            let command_digest = serialize_and_upload_message(
+                &Command {
+                    arguments: if (4..=6).contains(&i) {
+                        // Execute the mounted tool directly, including from a nested cwd.
+                        let program = match i {
+                            5 => "../sdk/alias",
+                            6 => "./sdk/escape",
+                            _ => "./sdk/alias",
+                        };
+                        vec![program.into(), "result".into()]
+                    } else {
+                        vec!["/bin/sh".into(), "-c".into(), script.into()]
+                    },
+                    working_directory: if i == 5 {
+                        format!("other{i}")
+                    } else {
+                        String::new()
+                    },
+                    environment_variables: vec![EnvironmentVariable {
+                        name: "PATH".into(),
+                        value: env::var("PATH").unwrap(),
+                    }],
+                    output_paths: vec![output_path.into()],
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action_digest = serialize_and_upload_message(
+                &Action {
+                    command_digest: Some(command_digest.into()),
+                    input_root_digest: Some(input_digest.into()),
+                    ..Default::default()
+                },
+                cas.as_pin(),
+                &mut DigestHasherFunc::Sha256.hasher(),
+            )
+            .await?;
+            let action = manager
+                .create_and_add_action(
+                    "test-worker".into(),
+                    StartExecute {
+                        execute_request: Some(ExecuteRequest {
+                            action_digest: Some(action_digest.into()),
+                            digest_function: ProtoDigestFunction::Sha256.into(),
+                            ..Default::default()
+                        }),
+                        operation_id: OperationId::default().to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await?
+                .prepare_action()
+                .await?;
+            if i == 7 {
+                assert!(
+                    PathBuf::from(action.get_work_directory())
+                        .join("sdk/tool")
+                        .is_file()
+                );
+                assert_eq!(cache.stats().await.in_use_entries, 0);
+            }
+            if i < 2 {
+                assert!(
+                    fs::read_dir(format!("{}/sdk", action.get_work_directory()))
+                        .await?
+                        .as_mut()
+                        .next_entry()
+                        .await?
+                        .is_none(),
+                    "parent workspace must contain only a mount point"
+                );
+                assert_eq!(
+                    cache.stats().await.entries,
+                    1,
+                    "changed roots must reuse the SDK entry"
+                );
+                assert_eq!(cache.stats().await.in_use_entries, 1);
+            }
+            if i == 3 {
+                // An abandoned prepared action must keep its source pinned
+                // until background cleanup removes the workspace, then release it.
+                let work_directory = action.get_work_directory().clone();
+                assert_eq!(cache.stats().await.in_use_entries, 1);
+                drop(action);
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while cache.stats().await.in_use_entries != 0 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+                .await?;
+                assert!(!PathBuf::from(&work_directory).exists());
+                continue;
+            }
+            if i == 6 {
+                let error =
+                    action.clone().execute().await.expect_err(
+                        "an executable symlink escaping the mounted tree must be rejected",
+                    );
+                assert_eq!(error.code, Code::InvalidArgument);
+                action.cleanup().await?;
+                continue;
+            }
+            let result = action
+                .clone()
+                .execute()
+                .await?
+                .upload_results()
+                .await?
+                .get_finished_result()
+                .await?;
+            assert_eq!(result.exit_code, 0);
+            assert_eq!(result.output_files.len(), 1);
+            let output = cas
+                .as_ref()
+                .get_part_unchunked(result.output_files[0].digest, 0, None)
+                .await?;
+            assert_eq!(output.as_ref(), b"sdk-content");
+            action.cleanup().await?;
+            assert_eq!(
+                cache.stats().await.in_use_entries,
+                0,
+                "cleanup must release the tree pin"
+            );
+        }
+        fs::remove_dir_all(root).await?;
+        Ok(())
+    }
+
     const NOW_TIME: u64 = 10000;
 
     fn make_system_time(add_time: u64) -> SystemTime {
@@ -405,6 +675,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: true,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: Some(directory_cache),
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -566,6 +838,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: Some(directory_cache),
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1366,6 +1640,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1496,6 +1772,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1628,6 +1906,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -1815,6 +2095,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2004,6 +2286,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2262,6 +2546,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2418,6 +2704,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2565,6 +2853,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2707,6 +2997,8 @@ mod tests {
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -2935,6 +3227,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3125,6 +3419,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3302,6 +3598,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3552,6 +3850,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -3649,6 +3949,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 // Host pids and a host-visible pid file: the point is what the kill
                 // reaches, not the namespaces.
@@ -4043,6 +4345,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -4548,6 +4852,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5005,6 +5311,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5144,6 +5452,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5325,6 +5635,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 // The namespaced stub turns SIGTERM into SIGKILL for its child,
                 // so the grace period is only observable without it.
@@ -5469,6 +5781,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5579,6 +5893,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5737,6 +6053,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5859,6 +6177,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -5930,6 +6250,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6094,6 +6416,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6145,6 +6469,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6213,6 +6539,8 @@ exit 0
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6400,6 +6728,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6494,6 +6824,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6574,6 +6906,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6661,6 +6995,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6769,6 +7105,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6821,6 +7159,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -6894,6 +7234,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7018,6 +7360,8 @@ exit 1
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     active_input_leases: false,
+                    #[cfg(target_os = "linux")]
+                    readonly_input_mounts: Vec::new(),
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -7112,6 +7456,8 @@ exit 1
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     active_input_leases: false,
+                    #[cfg(target_os = "linux")]
+                    readonly_input_mounts: Vec::new(),
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -7206,6 +7552,8 @@ exit 1
                     max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                     timeout_handled_externally: false,
                     active_input_leases: false,
+                    #[cfg(target_os = "linux")]
+                    readonly_input_mounts: Vec::new(),
                     directory_cache: None,
                     #[cfg(target_os = "linux")]
                     use_namespaces: use_namespaces(),
@@ -7301,6 +7649,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7463,6 +7813,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7640,6 +7992,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7754,6 +8108,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -7870,6 +8226,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 // Pin namespaces off so this exercises the no-pre_exec/posix_spawn
                 // path regardless of what the host kernel supports.
@@ -7990,6 +8348,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 use_namespaces:
                     nativelink_worker::running_actions_manager::UseNamespaces::YesAndMount {
@@ -8117,6 +8477,8 @@ exit 1
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8282,6 +8644,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: nativelink_worker::running_actions_manager::UseNamespaces::No,
@@ -8534,6 +8898,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8635,6 +9001,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8822,6 +9190,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -8956,6 +9326,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -9111,6 +9483,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -9227,6 +9601,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -9373,6 +9749,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -9550,6 +9928,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
@@ -9711,6 +10091,8 @@ done
                 max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
                 timeout_handled_externally: false,
                 active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
                 directory_cache: None,
                 #[cfg(target_os = "linux")]
                 use_namespaces: use_namespaces(),
