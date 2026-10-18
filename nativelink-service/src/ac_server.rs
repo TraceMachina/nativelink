@@ -40,6 +40,7 @@ use tracing::{Instrument, Level, error, error_span, instrument};
 pub struct AcStoreInfo {
     store: Store,
     read_only: bool,
+    discard_failed_results: bool,
 }
 
 pub struct AcServer {
@@ -67,6 +68,7 @@ impl AcServer {
                 AcStoreInfo {
                     store,
                     read_only: config.read_only,
+                    discard_failed_results: config.discard_failed_results,
                 },
             );
         }
@@ -140,6 +142,15 @@ impl AcServer {
             .clone()
             .err_tip(|| "Action digest was not set in message")?
             .try_into()?;
+
+        // Acknowledge a failed result without storing it, so the action is
+        // executed again instead of being served from the cache.
+        if store_info.discard_failed_results
+            && let Some(action_result) = &request.action_result
+            && action_result.exit_code != 0
+        {
+            return Ok(Response::new(action_result.clone()));
+        }
 
         // If we are a GrpcStore we shortcut here, as this is a special store.
         if let Some(grpc_store) = store_info

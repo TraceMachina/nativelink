@@ -122,6 +122,16 @@ pub struct AcStoreConfig {
     /// it is only possible to read from the Action Cache.
     #[serde(default)]
     pub read_only: bool,
+
+    /// If set to true, `UpdateActionResult` requests whose `ActionResult` has
+    /// a non-zero exit code are acknowledged but not stored. A failed action
+    /// is then executed again instead of being served from the Action Cache,
+    /// so a transient failure (for example a network error) does not get
+    /// cached for every client.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub discard_failed_results: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
