@@ -1,8 +1,7 @@
 # Delaying retries after throttled input downloads
 
-Status: proposed design for
-[TRA-1471](https://linear.app/tracemachina/issue/TRA-1471/nativelink-n12-design-hold-an-action-whose-input-fetch-timed-out-on-a).
-This proposal does not change runtime behavior or add configuration fields.
+Status: proposed design. This proposal does not change runtime behavior
+or add configuration fields.
 
 When an input download exhausts its deadline during an upstream throttle,
 retrying the action immediately on another cold worker adds demand to the
