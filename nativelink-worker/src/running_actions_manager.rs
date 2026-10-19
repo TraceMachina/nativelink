@@ -68,7 +68,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::metrics::{record_input_relink, record_prepare_retry};
+use nativelink_util::metrics::{INPUT_MOUNT_METRICS, record_input_relink, record_prepare_retry};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
@@ -80,7 +80,7 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{Notify, Semaphore, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, SemaphorePermit, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
@@ -88,6 +88,7 @@ use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::buck2_file_capture::Buck2FileCapture;
+use crate::input_mounts::InputMounts;
 use crate::persistent_worker::{
     Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
     WorkerKey,
@@ -728,6 +729,16 @@ fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
 /// overhead.
 const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 
+/// One permit per blob fetched into the worker's store, from the pool the
+/// worker shares across every action it is staging. The pool is never
+/// closed, so a refusal here is a bug, not a condition.
+async fn acquire_download_permit(downloads: &Semaphore) -> Result<SemaphorePermit<'_>, Error> {
+    downloads
+        .acquire()
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Input download pool closed: {e:?}"))
+}
+
 /// Keeps every digest used by an action present in locally eviction-managed
 /// CAS tiers.
 ///
@@ -835,30 +846,73 @@ pub fn download_to_directory<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
-    download_to_directory_with_lease(cas_store, filesystem_store, digest, current_directory, None)
+    async move {
+        // A pool of this call's own; the worker's shared one arrives through
+        // `prepare_action_inputs`.
+        let downloads = Semaphore::new(DOWNLOAD_TO_DIRECTORY_CONCURRENCY);
+        download_to_directory_bounded(
+            cas_store,
+            filesystem_store,
+            digest,
+            current_directory,
+            &downloads,
+        )
+        .await
+    }
+    .boxed()
 }
 
-fn download_to_directory_with_lease<'a>(
+/// `download_to_directory` drawing its fetches from `downloads`, the pool
+/// the worker shares across the actions it stages.
+pub fn download_to_directory_bounded<'a>(
+    cas_store: &'a FastSlowStore,
+    filesystem_store: Pin<&'a FilesystemStore>,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    downloads: &'a Semaphore,
+) -> BoxFuture<'a, Result<(), Error>> {
+    download_to_directory_with_mounts(
+        cas_store,
+        filesystem_store,
+        digest,
+        current_directory,
+        None,
+        None,
+        downloads,
+    )
+}
+
+fn download_to_directory_with_mounts<'a>(
     cas_store: &'a FastSlowStore,
     filesystem_store: Pin<&'a FilesystemStore>,
     digest: &'a DigestInfo,
     current_directory: &'a str,
     input_lease: Option<Arc<ActionInputLease>>,
+    input_mounts: Option<Arc<InputMounts>>,
+    downloads: &'a Semaphore,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
-        let (dirs, files, inline_nodes) =
-            collect_download_links(cas_store, digest, current_directory, input_lease).await?;
+        let (dirs, files, inline_nodes) = collect_download_links(
+            cas_store,
+            digest,
+            current_directory,
+            input_lease,
+            input_mounts,
+            downloads,
+        )
+        .await?;
 
         let (exec_files, plain_files): (Vec<_>, Vec<_>) =
             files.into_iter().partition(|file| file.executable);
-        let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
-        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+        let mut links =
+            resolve_plain_files(cas_store, filesystem_store, plain_files, downloads).await?;
+        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files, downloads).await?);
 
         // Every directory exists before anything is written into one, so no
         // later pass has to create a parent it happens to need.
         fs::create_dir_many(dirs).await?;
-        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes).await?;
-        materialize_links(cas_store, filesystem_store, links).await
+        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes, downloads).await?;
+        materialize_links(cas_store, filesystem_store, links, downloads).await
     }
     .boxed()
 }
@@ -1054,6 +1108,7 @@ async fn materialize_links(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     links: Vec<PendingLink>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     let pairs = links
         .iter()
@@ -1081,7 +1136,7 @@ async fn materialize_links(
     // once, so they are fetched back together, not one round trip each.
     let repairs: Vec<BoxFuture<'_, Result<(), Error>>> = evicted
         .into_iter()
-        .map(|link| relink_and_report(cas_store, filesystem_store, link).boxed())
+        .map(|link| relink_and_report(cas_store, filesystem_store, link, downloads).boxed())
         .collect();
     futures::stream::iter(repairs)
         .buffer_unordered(INPUT_RELINK_CONCURRENCY)
@@ -1093,7 +1148,9 @@ async fn relink_and_report(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     link: &PendingLink,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
+    let _permit = acquire_download_permit(downloads).await?;
     info!(
         digest = %link.digest,
         src_path = ?link.src,
@@ -1201,6 +1258,7 @@ async fn resolve_plain_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let mut tasks = Vec::with_capacity(files.len());
     for file in files {
@@ -1211,6 +1269,7 @@ async fn resolve_plain_files(
             {
                 entry
             } else {
+                let _permit = acquire_download_permit(downloads).await?;
                 fetch_and_resolve(
                     file.digest,
                     || cas_store.populate_fast_store(file.digest.into()),
@@ -1259,6 +1318,7 @@ async fn resolve_exec_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
     let sources = filesystem_store
@@ -1271,6 +1331,7 @@ async fn resolve_exec_files(
             let src_path = if let Ok(src_path) = source {
                 src_path
             } else {
+                let _permit = acquire_download_permit(downloads).await?;
                 fetch_and_resolve(
                     file.digest,
                     || cas_store.populate_fast_store(file.digest.into()),
@@ -1302,14 +1363,33 @@ fn collect_download_links<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
     input_lease: Option<Arc<ActionInputLease>>,
+    input_mounts: Option<Arc<InputMounts>>,
+    downloads: &'a Semaphore,
 ) -> BoxFuture<'a, Result<CollectedTree, Error>> {
     async move {
         if let Some(input_lease) = &input_lease {
             input_lease.lease_digest(digest);
         }
-        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
-            .await
-            .err_tip(|| "Converting digest to Directory")?;
+        if let Some(mounts) = &input_mounts {
+            let lease = input_lease
+                .as_deref()
+                .map(|lease| -> &dyn crate::directory_cache::DigestLease { lease });
+            if mounts
+                .prepare(Path::new(current_directory), *digest, lease)
+                .await?
+            {
+                return Ok((Vec::new(), Vec::new(), Vec::new()));
+            }
+        }
+        // The permit covers the fetch alone, never the walk below it: a
+        // parent holding one while its children wait for theirs would
+        // deadlock a tree deeper than the pool.
+        let directory = {
+            let _permit = acquire_download_permit(downloads).await?;
+            get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
+                .await
+                .err_tip(|| "Converting digest to Directory")?
+        };
         let mut futures = Vec::new();
         let mut pending_files = Vec::new();
         let mut inline_nodes = Vec::new();
@@ -1365,6 +1445,7 @@ fn collect_download_links<'a>(
                 input_lease.lease_digest(&digest);
             }
             let input_lease = input_lease.clone();
+            let input_mounts = input_mounts.clone();
             futures.push(
                 async move {
                     let (mut sub_dirs, files, inline) = collect_download_links(
@@ -1372,6 +1453,8 @@ fn collect_download_links<'a>(
                         &digest,
                         &new_directory_path,
                         input_lease,
+                        input_mounts,
+                        downloads,
                     )
                     .await
                     .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
@@ -1466,6 +1549,7 @@ async fn materialize_inline_nodes(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     nodes: Vec<InlineNode>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     let mut futures = Vec::with_capacity(nodes.len());
     for node in nodes {
@@ -1482,7 +1566,10 @@ async fn materialize_inline_nodes(
                     mtime,
                     custom_unix_mode,
                 } => {
-                    cas_store.populate_fast_store(digest.into()).await?;
+                    {
+                        let _permit = acquire_download_permit(downloads).await?;
+                        cas_store.populate_fast_store(digest.into()).await?;
+                    }
                     async move {
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
@@ -1572,6 +1659,7 @@ pub async fn prepare_action_inputs(
     filesystem_store: Pin<&FilesystemStore>,
     digest: &DigestInfo,
     work_directory: &str,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     prepare_action_inputs_with_lease(
         directory_cache,
@@ -1580,6 +1668,7 @@ pub async fn prepare_action_inputs(
         digest,
         work_directory,
         None,
+        downloads,
     )
     .await
 }
@@ -1591,6 +1680,7 @@ async fn prepare_action_inputs_with_lease(
     digest: &DigestInfo,
     work_directory: &str,
     input_lease: Option<Arc<ActionInputLease>>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     // Try cache first if available. Cache hits are safe while an action lease
     // is active because the directory cache pins its own materialized tree
@@ -1656,12 +1746,14 @@ async fn prepare_action_inputs_with_lease(
     }
 
     // Traditional path (cache disabled or failed)
-    download_to_directory_with_lease(
+    download_to_directory_with_mounts(
         cas_store,
         filesystem_store,
         digest,
         work_directory,
         input_lease,
+        None,
+        downloads,
     )
     .await
 }
@@ -2337,6 +2429,7 @@ struct RunningActionImplState {
     // that prevented the action from running, upload failures, timeouts, exc...
     // but we have (or could have) the action results (like stderr/stdout).
     error: Option<Error>,
+    input_mounts: Option<Arc<InputMounts>>,
 }
 
 #[derive(Debug)]
@@ -2395,6 +2488,7 @@ impl RunningActionImpl {
                 resource_usage: None,
                 execution_metadata,
                 error: None,
+                input_mounts: None,
             }),
             // Set to true only after the action is inserted into the manager.
             // The constructor can fail the operation-id uniqueness check
@@ -2428,34 +2522,28 @@ impl RunningActionImpl {
     /// against the same struggling store. The two fetches are retried
     /// together: a Command read that fails during the same storm would
     /// otherwise fail the action while the inputs were still being retried.
+    /// A `prefetched_command`, read earlier to choose the read-only input
+    /// mounts, is used instead of reading the Command again.
     async fn fetch_with_retry(
         &self,
         filesystem_store: Pin<&FilesystemStore>,
         deadline: Option<Instant>,
+        prefetched_command: Option<ProtoCommand>,
     ) -> Result<ProtoCommand, Error> {
         let started = Instant::now();
         let mut attempt: u32 = 1;
         let mut retries = PrepareRetries::new(record_prepare_outcome);
         loop {
-            let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
-                get_and_decode_digest::<ProtoCommand>(
-                    self.running_actions_manager.cas_store.as_ref(),
-                    self.action_info.command_digest.into(),
-                )
-                .await
-                .err_tip(|| "Converting command_digest to Command")
-            });
-            let inputs_fut =
-                self.metrics()
-                    .download_to_directory
-                    .wrap(prepare_action_inputs_with_lease(
-                        &self.running_actions_manager.directory_cache,
-                        &self.running_actions_manager.cas_store,
-                        filesystem_store,
-                        &self.action_info.input_root_digest,
-                        &self.work_directory,
-                        self.input_lease.clone(),
-                    ));
+            let command_fut = async {
+                match &prefetched_command {
+                    Some(command) => Ok(command.clone()),
+                    None => self.fetch_command().await,
+                }
+            };
+            let inputs_fut = self
+                .metrics()
+                .download_to_directory
+                .wrap(self.download_inputs(filesystem_store));
             let err = match try_join(command_fut, inputs_fut).await {
                 Ok((command, ())) => {
                     if attempt > 1 {
@@ -2519,6 +2607,147 @@ impl RunningActionImpl {
             .err_tip(|| format!("Error recreating work directory {}", self.work_directory))
     }
 
+    /// Fetches and decodes the action's Command.
+    async fn fetch_command(&self) -> Result<ProtoCommand, Error> {
+        self.metrics()
+            .get_proto_command_from_store
+            .wrap(async {
+                get_and_decode_digest::<ProtoCommand>(
+                    self.running_actions_manager.cas_store.as_ref(),
+                    self.action_info.command_digest.into(),
+                )
+                .await
+                .err_tip(|| "Converting command_digest to Command")
+            })
+            .await
+    }
+
+    /// Chooses the read-only input mounts for this action and keeps them in
+    /// its state, where their cache pins are held through cleanup. Whether
+    /// mounts apply depends on the Command's output paths, so with mounts
+    /// configured the Command is read here and returned for the fetch to
+    /// reuse; without them nothing is read, and the Command and inputs are
+    /// fetched concurrently. A failure here only means ordinary input setup:
+    /// the fetch that follows reads the Command and inputs with its retries.
+    async fn select_input_mounts(&self) -> Option<ProtoCommand> {
+        let manager = &self.running_actions_manager;
+        #[cfg(target_os = "linux")]
+        let mount_paths = &manager.readonly_input_mounts;
+        #[cfg(not(target_os = "linux"))]
+        let mount_paths: &[String] = &[];
+        if mount_paths.is_empty() {
+            return None;
+        }
+        let command = if action_supports_persistent_workers(&self.action_info).is_none() {
+            match self.fetch_command().await {
+                Ok(command) => Some(command),
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "Reading the Command to choose input mounts failed; using ordinary input setup"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut input_mounts = match (&command, &manager.directory_cache) {
+            (Some(command), Some(cache)) => InputMounts::for_command(
+                cache.clone(),
+                mount_paths,
+                Path::new(&self.work_directory),
+                command,
+            ),
+            _ => None,
+        };
+        if input_mounts.is_some() {
+            match crate::input_mounts::has_mountable_inputs(
+                &manager.cas_store,
+                self.action_info.input_root_digest,
+                mount_paths,
+                self.input_lease
+                    .as_deref()
+                    .map(|lease| -> &dyn crate::directory_cache::DigestLease { lease }),
+            )
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => input_mounts = None,
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "Checking for mountable inputs failed; using ordinary input setup"
+                    );
+                    input_mounts = None;
+                }
+            }
+        }
+        if input_mounts.is_none() {
+            INPUT_MOUNT_METRICS.fallbacks.add(1, &[]);
+        }
+        self.state.lock().input_mounts.clone_from(&input_mounts);
+        command
+    }
+
+    /// Materializes the input tree into the work directory: through the
+    /// read-only input mounts chosen for this action, which leave a mount
+    /// point for each selected subtree, or else through the directory cache
+    /// when one is configured. If preparing the mounts fails, they are
+    /// dropped and the tree is downloaded without them; later attempts of
+    /// the fetch then take the ordinary path.
+    async fn download_inputs(&self, filesystem_store: Pin<&FilesystemStore>) -> Result<(), Error> {
+        let manager = &self.running_actions_manager;
+        let downloads = &manager.input_downloads;
+        let input_mounts = self.state.lock().input_mounts.clone();
+        if input_mounts.is_none() {
+            return prepare_action_inputs_with_lease(
+                &manager.directory_cache,
+                &manager.cas_store,
+                filesystem_store,
+                &self.action_info.input_root_digest,
+                &self.work_directory,
+                self.input_lease.clone(),
+                downloads,
+            )
+            .await;
+        }
+        let result = download_to_directory_with_mounts(
+            &manager.cas_store,
+            filesystem_store,
+            &self.action_info.input_root_digest,
+            &self.work_directory,
+            self.input_lease.clone(),
+            input_mounts,
+            downloads,
+        )
+        .await;
+        if let Err(error) = result {
+            INPUT_MOUNT_METRICS.prepare_failures.add(1, &[]);
+            INPUT_MOUNT_METRICS.fallbacks.add(1, &[]);
+            warn!(
+                ?error,
+                "Input mount preparation failed; retrying without mounts"
+            );
+            // No child has started. Discard partial inputs before
+            // releasing pins and retrying the ordinary download once.
+            fs::remove_dir_all(&self.work_directory).await?;
+            self.state.lock().input_mounts.take();
+            fs::create_dir(&self.work_directory).await?;
+            download_to_directory_with_mounts(
+                &manager.cas_store,
+                filesystem_store,
+                &self.action_info.input_root_digest,
+                &self.work_directory,
+                self.input_lease.clone(),
+                None,
+                downloads,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn inner_prepare_action(
         self: Arc<Self>,
         download_deadline: Option<Instant>,
@@ -2569,6 +2798,7 @@ impl RunningActionImpl {
         let command = {
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
+            let prefetched_command = self.select_input_mounts().await;
             fs::create_dir(&self.work_directory)
                 .await
                 .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
@@ -2576,7 +2806,7 @@ impl RunningActionImpl {
             self.did_cleanup.store(false, Ordering::Release);
             // Fetch and decode the Command and download the input tree into
             // the work directory, retried together after a store failure.
-            self.fetch_with_retry(filesystem_store_pin, download_deadline)
+            self.fetch_with_retry(filesystem_store_pin, download_deadline, prefetched_command)
                 .await
                 .map_err(tag_missing_input)?
         };
@@ -2632,6 +2862,12 @@ impl RunningActionImpl {
         arg: &OsStr,
         working_directory: &String,
     ) -> Result<PathBuf, Error> {
+        #[cfg(target_os = "linux")]
+        if let Some(mounts) = self.state.lock().input_mounts.as_ref()
+            && let Some(path) = mounts.executable_path(working_directory, arg)?
+        {
+            return Ok(path);
+        }
         // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
         Ok(if Path::new(arg).components().count() > 1 {
             let canonical_path = PathBuf::from(&self.work_directory)
@@ -3067,15 +3303,22 @@ impl RunningActionImpl {
                     None
                 };
 
+                let input_mounts = self.state.lock().input_mounts.clone();
+                let bind_mounts = input_mounts
+                    .as_ref()
+                    .map(|mounts| mounts.bind_mounts())
+                    .transpose()?
+                    .unwrap_or_default();
                 // SAFETY: This function is specifically designed to operate in a async-signal-safe
                 // environment.
                 unsafe {
                     command_builder.pre_exec(move || {
-                        crate::namespace_utils::configure_namespace(
+                        crate::namespace_utils::configure_namespace_with_input_mounts(
                             mount,
                             tmp_directory.as_deref(),
                             &root_action_directory,
                             &action_directory,
+                            &bind_mounts,
                         )
                     });
                 }
@@ -3969,9 +4212,11 @@ impl Drop for RunningActionImpl {
         let running_actions_manager = self.running_actions_manager.clone();
         let action_directory = self.action_directory.clone();
         let input_lease = self.input_lease.clone();
+        let input_mounts = self.state.get_mut().input_mounts.take();
         background_spawn!("running_action_impl_drop", async move {
             let cleanup_result =
                 do_cleanup(&running_actions_manager, &operation_id, &action_directory).await;
+            drop(input_mounts);
             if let Some(input_lease) = input_lease {
                 input_lease.release().await;
             }
@@ -4158,6 +4403,7 @@ impl RunningAction for RunningActionImpl {
                 .await;
                 self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
+                self.state.lock().input_mounts.take();
                 // The work directory and manager entry are gone before the
                 // lease is released. If this future is cancelled while the
                 // release task is finishing, Drop still observes a completed
@@ -4335,6 +4581,9 @@ pub struct ExecutionConfiguration {
     pub kill_grace: Duration,
     /// Point `TMPDIR` at a directory of the action's own, removed with it.
     pub set_tmpdir: bool,
+    /// How many input blobs the worker fetches into its store at once,
+    /// across every action it is staging; 0 takes the default of 64.
+    pub max_concurrent_input_downloads: usize,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -4643,6 +4892,8 @@ pub struct RunningActionsManagerArgs<'a> {
     /// exceed their configured `max_bytes` / `max_count` eviction limits.
     pub active_input_leases: bool,
     #[cfg(target_os = "linux")]
+    pub readonly_input_mounts: Vec<String>,
+    #[cfg(target_os = "linux")]
     pub use_namespaces: UseNamespaces,
 }
 
@@ -4709,6 +4960,12 @@ pub struct RunningActionsManagerImpl {
     /// Whether active action inputs are leased against eviction in the local
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
+    /// The pool every input fetch draws a permit from, shared by all the
+    /// actions this worker stages; see
+    /// `ExecutionConfiguration::max_concurrent_input_downloads`.
+    input_downloads: Semaphore,
+    #[cfg(target_os = "linux")]
+    readonly_input_mounts: Vec<String>,
     persistent_worker_pool: PersistentWorkerPool,
     /// Retires idle persistent workers; ends with the manager.
     _persistent_worker_sweeper: JoinHandleDropGuard<()>,
@@ -4716,10 +4973,29 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
+    /// Permits free in the input fetch pool right now; with nothing staging,
+    /// the pool's size.
+    pub fn free_input_downloads(&self) -> usize {
+        self.input_downloads.available_permits()
+    }
+
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
     ) -> Result<Self, Error> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::input_mounts::validate_paths(&args.readonly_input_mounts)?;
+            if !args.readonly_input_mounts.is_empty()
+                && (!matches!(args.use_namespaces, UseNamespaces::YesAndMount { .. })
+                    || args.directory_cache.is_none())
+            {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Read-only input mounts require Linux mount namespaces and a directory cache"
+                ));
+            }
+        }
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
         let filesystem_store = args
             .cas_store
@@ -4734,9 +5010,16 @@ impl RunningActionsManagerImpl {
         let persistent_worker_pool =
             PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
         let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
+        let input_downloads = Semaphore::new(
+            match args.execution_configuration.max_concurrent_input_downloads {
+                0 => DOWNLOAD_TO_DIRECTORY_CONCURRENCY,
+                n => n,
+            },
+        );
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
+            input_downloads,
             cas_store: args.cas_store,
             filesystem_store,
             upload_action_results: UploadActionResults::new(
@@ -4764,6 +5047,8 @@ impl RunningActionsManagerImpl {
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             active_input_leases: args.active_input_leases,
+            #[cfg(target_os = "linux")]
+            readonly_input_mounts: args.readonly_input_mounts,
             persistent_worker_pool,
             _persistent_worker_sweeper: persistent_worker_sweeper,
             buck2_captures: Mutex::new(HashMap::new()),

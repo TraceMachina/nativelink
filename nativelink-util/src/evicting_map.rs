@@ -634,7 +634,13 @@ where
         let (removal_futures, data_to_unref) = {
             let mut state = self.state.lock();
 
-            let lru_len = state.lru.len();
+            // Working copy of the resident count, decremented as entries are
+            // reaped below. Evaluating `should_evict` against a length
+            // snapshotted once for the whole batch would keep reporting
+            // over-count for every remaining key after the first reap brings
+            // the map back to its limit, cascading into evicting every
+            // queried entry — reachable from a plain `has()` batch.
+            let mut lru_len = state.lru.len();
             let mut data_to_unref = Vec::new();
             let mut removal_futures = Vec::new();
             for (key, result) in keys.into_iter().zip(results.iter_mut()) {
@@ -656,6 +662,7 @@ where
                         if !is_leased && self.should_evict(lru_len, entry, 0, u64::MAX) {
                             *result = None;
                             if let Some((key, eviction_item)) = state.lru.pop_entry(key.borrow()) {
+                                lru_len -= 1;
                                 info!(?key, "Item expired, evicting");
                                 let (data, futures) =
                                     state.remove(key.borrow(), &eviction_item, false);
@@ -1040,5 +1047,101 @@ where
 
     pub fn add_remove_callback(&self, callback: C) {
         self.state.lock().add_remove_callback(callback);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nativelink_config::stores::EvictionPolicy;
+    use nativelink_macro::nativelink_test;
+    use pretty_assertions::assert_eq;
+
+    use super::{EvictingMap, EvictionItem, LenEntry};
+    use crate::instant_wrapper::MockInstantWrapped;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TestEntry(u64);
+
+    impl LenEntry for TestEntry {
+        fn len(&self) -> u64 {
+            self.0
+        }
+        fn is_empty(&self) -> bool {
+            self.0 == 0
+        }
+    }
+
+    /// A batch existence check (`has()` → `sizes_for_keys`) over resident
+    /// keys, run while the map is pinned one entry over `max_count` by a
+    /// leased entry, must evict at most the genuine overage — never every
+    /// queried key.
+    ///
+    /// The bug: `sizes_for_keys` snapshotted `lru.len()` once for the whole
+    /// batch and re-used that stale value in `should_evict` for every key.
+    /// After the first queried entry was reaped (bringing the map back to
+    /// `max_count`), every remaining queried key still saw the stale
+    /// over-count and was popped too. A plain `has()` batch would then
+    /// destroy all N resident blobs and report them all missing.
+    ///
+    /// White-box: the pinning entry is planted with a raw leased `State::put`
+    /// (no eviction pass), modeling the window in which an action-input lease
+    /// holds the map over its count limit while unleased blobs stay resident.
+    #[nativelink_test("crate")]
+    async fn size_check_batch_evicts_at_most_the_overage() {
+        let map = EvictingMap::<String, String, TestEntry, MockInstantWrapped>::new(
+            &EvictionPolicy {
+                max_bytes: 0,
+                evict_bytes: 0,
+                max_seconds: 0,
+                max_count: 3,
+            },
+            MockInstantWrapped::default(),
+        );
+
+        map.insert("k1".to_string(), TestEntry(10)).await;
+        map.insert("k2".to_string(), TestEntry(20)).await;
+        map.insert("k3".to_string(), TestEntry(30)).await;
+
+        // Pin the map one over `max_count` with a leased entry, bypassing the
+        // insert-time eviction pass exactly as an already-held lease does.
+        {
+            let mut state = map.state.lock();
+            state.lease("pinned".to_string());
+            let replaced = state.put(
+                &"pinned".to_string(),
+                EvictionItem {
+                    seconds_since_anchor: 0,
+                    data: TestEntry(1),
+                },
+            );
+            assert!(replaced.is_none());
+            state.sum_store_size += 1;
+        }
+        assert_eq!(map.len_for_test(), 4);
+
+        let keys = ["k1".to_string(), "k2".to_string(), "k3".to_string()];
+        let mut results = [None, None, None];
+        map.sizes_for_keys(keys.iter(), &mut results[..], false)
+            .await;
+
+        // The overage is a single entry, so at most the first queried key may
+        // be reaped. The rest of the batch must stay resident and report size.
+        assert_eq!(
+            results[1],
+            Some(20),
+            "k2 must survive a batch size check: {results:?}"
+        );
+        assert_eq!(
+            results[2],
+            Some(30),
+            "k3 must survive a batch size check: {results:?}"
+        );
+        assert_eq!(
+            map.len_for_test(),
+            3,
+            "only the genuine overage may be evicted by a size query"
+        );
+        assert_eq!(map.size_for_key(&"k2".to_string()).await, Some(20));
+        assert_eq!(map.size_for_key(&"k3".to_string()).await, Some(30));
     }
 }
