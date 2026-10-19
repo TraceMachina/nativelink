@@ -4,6 +4,12 @@ description: "Installs Bun and the Azurite emulator needed for AzureBlobStore te
 runs:
   using: "composite"
   steps:
+    - name: Set up Node.js
+      uses: >- # v6
+        actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      with:
+        node-version: "22"
+
     - name: Set up Bun
       uses: >- # v2.2.0
         oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -12,5 +18,10 @@ runs:
 
     - name: Install Azurite
       run: bun install --frozen-lockfile
+      shell: bash -euo pipefail {0}
+      working-directory: nativelink-store/tests/azurite_runner
+
+    - name: Test Azurite dependencies
+      run: bun run test
       shell: bash -euo pipefail {0}
       working-directory: nativelink-store/tests/azurite_runner

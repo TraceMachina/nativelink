@@ -128,7 +128,8 @@ in {
   shfmt = {
     args = ["--indent" "4" "--space-redirects"];
     enable = true;
-    inherit excludes;
+    # Messes with COMMANDS formatting
+    excludes = ["toolchain-examples/rbe/cmds.sh"] ++ excludes;
   };
 
   # Starlark
