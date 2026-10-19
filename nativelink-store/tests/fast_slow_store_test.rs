@@ -2188,18 +2188,24 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
     Ok(())
 }
 
-#[nativelink_test]
-async fn has_counts_the_fast_store_when_the_slow_store_is_read_only() -> Result<(), Error> {
+/// Both directions that keep uploads out of the slow store take the branch.
+async fn has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(
+    slow_direction: StoreDirection,
+) -> Result<(), Error> {
     let (fast_slow_store, fast_store, slow_store) =
-        make_stores_direction(StoreDirection::Both, StoreDirection::ReadOnly);
+        make_stores_direction(StoreDirection::Both, slow_direction);
 
-    // An upload lands in the fast store only: the slow one is read-only.
+    // An upload lands in the fast store only: the slow one takes no writes.
     let uploaded = DigestInfo::try_new(VALID_HASH, 3)?;
     fast_slow_store
         .update_oneshot(uploaded, Bytes::from_static(b"new"))
         .await?;
-    assert_eq!(slow_store.has(uploaded).await?, None);
-    assert_eq!(fast_store.has(uploaded).await?, Some(3));
+    assert_eq!(slow_store.has(uploaded).await?, None, "{slow_direction:?}");
+    assert_eq!(
+        fast_store.has(uploaded).await?,
+        Some(3),
+        "{slow_direction:?}"
+    );
 
     // A blob that predates the fast tier sits in the slow store alone.
     let old = DigestInfo::try_new(VALID_HASH_B, 3)?;
@@ -2216,9 +2222,19 @@ async fn has_counts_the_fast_store_when_the_slow_store_is_read_only() -> Result<
     assert_eq!(
         results,
         [Some(3), Some(3), None],
-        "presence covers the fast store, where uploads land, and the slow one, where the old data is"
+        "{slow_direction:?}: presence covers the fast store, where uploads land, and the slow one, where the old data is"
     );
     Ok(())
+}
+
+#[nativelink_test]
+async fn has_counts_the_fast_store_when_the_slow_store_is_read_only() -> Result<(), Error> {
+    has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(StoreDirection::ReadOnly).await
+}
+
+#[nativelink_test]
+async fn has_counts_the_fast_store_when_the_slow_store_is_get_only() -> Result<(), Error> {
+    has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(StoreDirection::Get).await
 }
 
 #[nativelink_test]

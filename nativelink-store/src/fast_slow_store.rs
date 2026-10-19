@@ -507,9 +507,17 @@ impl StoreDriver for FastSlowStore {
         // A read-only slow store receives no uploads: the fast store is
         // where writes land and the only place a new blob can be, so it
         // counts toward presence, and the slow store answers for whatever
-        // predates it. Without this, a client asking a second instance
-        // about a blob the first just stored is told to upload it again,
-        // and a reader that misses the fast tier is told it does not exist.
+        // predates it. Without this a reader that misses the fast tier is
+        // told the blob does not exist, and a blob is re-uploaded on every
+        // check even though the upload can only land where it already is.
+        // Across instances this holds when the fast store is shared (a
+        // compression tier over one backend); a per-instance fast tier
+        // such as memory or a local filesystem only answers for what that
+        // instance stored.
+        //
+        // The two lookups stay sequential on purpose: the slow store is
+        // asked only about the fast store's misses, so the second round
+        // trip is paid on a shrinking share of keys instead of every key.
         if matches!(
             self.slow_direction,
             StoreDirection::ReadOnly | StoreDirection::Get
@@ -559,10 +567,10 @@ impl StoreDriver for FastSlowStore {
 
         // NOTE: With a writable slow store we intentionally *NEVER* check
         // the fast store, this is to ensure that we re-upload data to the
-        // slow store if it only exists in the fast store.  This does not affect workers as they do not
-        // check existence through `has` and instead go direct to loading the
-        // data which bypasses the check and will load from the fast store if
-        // it does not exist in the slow store.
+        // slow store if it only exists in the fast store. Workers depend on
+        // this: `upload_file` asks `has` before uploading an output and
+        // skips the upload when the digest is present, so consulting a
+        // worker's local fast tier here would stop outputs reaching the CAS.
 
         Ok(())
     }
