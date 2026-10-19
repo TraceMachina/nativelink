@@ -330,8 +330,10 @@ impl StoreDriver for CompressionStore {
         self.inner_has_with_results(digests, results).await?;
         // The inner store holds the framed, compressed bytes, so the sizes it
         // reports are the compressed ones. Callers size fast-tier writes and
-        // buffers from this answer, so report the length the digest declares,
-        // which is what a read of this store delivers.
+        // buffers from this answer, so for a digest key report the length the
+        // digest declares, which is what a read of this store delivers. A
+        // string key declares no length and keeps the stored size; reading
+        // the uncompressed one back from the frame header is a follow-up.
         for (key, result) in digests.iter().zip(results.iter_mut()) {
             if let (StoreKey::Digest(digest), Some(_)) = (key.borrow(), result.as_ref()) {
                 *result = Some(digest.size_bytes());
