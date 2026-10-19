@@ -673,6 +673,10 @@
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodejs}
             ''
+            + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              # Sharp's prebuilt Linux addon needs the C++ runtime at load time.
+              export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc.lib]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+            ''
             # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
               export CC_x86_64_unknown_linux_gnu=customClang
