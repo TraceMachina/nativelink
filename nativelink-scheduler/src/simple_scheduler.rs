@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -801,6 +801,7 @@ impl SimpleScheduler {
         async fn place_parked(
             parked: &mut Parked,
             placement: &mut Placement,
+            contended: &mut HashSet<PropertyShape>,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
@@ -812,7 +813,7 @@ impl SimpleScheduler {
             let mut blocked: HashSet<PropertyShape> = HashSet::new();
             let mut still_parked = VecDeque::with_capacity(parked.queue.len());
             while let Some((shape, loaded)) = parked.queue.pop_front() {
-                if blocked.contains(&shape) {
+                if blocked.contains(&shape) || contended.contains(&shape) {
                     still_parked.push_back((shape, loaded));
                     continue;
                 }
@@ -845,7 +846,10 @@ impl SimpleScheduler {
                 .await
                 {
                     Ok(Dispatch::Sent) => placement.dispatched += 1,
-                    Ok(Dispatch::LostRace) => placement.lost_race += 1,
+                    Ok(Dispatch::LostRace) => {
+                        placement.lost_race += 1;
+                        contended.insert(shape);
+                    }
                     Err(err) => {
                         placement.failed += 1;
                         result = result.merge(Err(err));
@@ -907,6 +911,11 @@ impl SimpleScheduler {
         let maybe_origin_event_tx = self.maybe_origin_event_tx.as_ref();
         let mut parked = Parked::default();
         let mut placement = Placement::default();
+        // Once a peer wins an assignment, let it advance through that
+        // property shape for this pass. Other shapes can still use this
+        // scheduler's workers, and the next pass tries every shape again.
+        let mut contended = HashSet::new();
+        let mut oldest_queued = Vec::new();
         let hold_pass = workers.begin_pass_holds().await;
         let mut capacity_seen = workers.capacity_generation();
         let mut queued_seen: u64 = 0;
@@ -914,7 +923,7 @@ impl SimpleScheduler {
         // it, requeues included: the pass already reads every queued action,
         // so the ages cost nothing more from the store.
         let mut queued_ages = AgeBuckets::default();
-        while let Some(action_state_result) = stream.next().await {
+        'actions: while let Some(action_state_result) = stream.next().await {
             queued_seen += 1;
             let loaded = match load_action(
                 action_state_result,
@@ -934,6 +943,15 @@ impl SimpleScheduler {
                 loaded.action_info.inner.insert_timestamp,
                 unsatisfiable_pass.now,
             );
+            if full_worker_logging {
+                oldest_queued.push(loaded.action_info.inner.clone());
+                oldest_queued.sort_unstable_by_key(|action| action.insert_timestamp);
+                oldest_queued.truncate(5);
+            }
+            let shape = PropertyShape::from(&loaded.action_info.platform_properties);
+            if contended.contains(&shape) {
+                continue;
+            }
 
             // Room that opened since the pass last placed anything belongs
             // to the oldest action still waiting, not to this one, which is
@@ -960,6 +978,7 @@ impl SimpleScheduler {
                     place_parked(
                         &mut parked,
                         &mut placement,
+                        &mut contended,
                         workers,
                         matching_engine_state_manager,
                         maybe_origin_event_tx,
@@ -969,6 +988,9 @@ impl SimpleScheduler {
                     )
                     .await,
                 );
+                if contended.contains(&shape) {
+                    continue 'actions;
+                }
             };
 
             match outcome {
@@ -984,7 +1006,11 @@ impl SimpleScheduler {
                             self.now_fn.as_ref(),
                         )
                         .await
-                        .map(|_| ()),
+                        .map(|dispatch| {
+                            if dispatch == Dispatch::LostRace {
+                                contended.insert(shape);
+                            }
+                        }),
                     );
                 }
                 // A worker could run it once one has room. The match
@@ -1032,6 +1058,7 @@ impl SimpleScheduler {
                 place_parked(
                     &mut parked,
                     &mut placement,
+                    &mut contended,
                     workers,
                     matching_engine_state_manager,
                     maybe_origin_event_tx,
@@ -1073,6 +1100,13 @@ impl SimpleScheduler {
         record_unsatisfiable_queued(unsatisfiable_queued);
         record_queue_depth(queued_seen);
         record_queue_ages(&queued_ages);
+        if full_worker_logging {
+            let actions: Vec<_> = oldest_queued
+                .iter()
+                .map(|action| (&action.unique_qualifier, action.insert_timestamp))
+                .collect();
+            info!(?actions, queued_seen, "Oldest actions in the matching pass");
+        }
         // Remember this pass's backlog so the next pass can size its fail cap:
         // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
         self.last_unsatisfiable_backlog.store(
@@ -1488,75 +1522,6 @@ impl SimpleScheduler {
 
                                 let res = scheduler.do_try_match(full_worker_logging).await;
                                 if full_worker_logging {
-                                    // Queued and executing only: completed
-                                    // records are kept for a while and say
-                                    // nothing about matching, and listing
-                                    // them too is what made this log a full
-                                    // read of the store.
-                                    let operations_stream = scheduler
-                                        .matching_engine_state_manager
-                                        .filter_operations(OperationFilter {
-                                            stages: OperationStageFlags::Queued
-                                                | OperationStageFlags::Executing,
-                                            ..OperationFilter::default()
-                                        })
-                                        .await
-                                        .err_tip(|| "In action_scheduler getting filter result");
-
-                                    let mut oldest_actions_in_state: HashMap<
-                                        String,
-                                        BTreeSet<Arc<ActionState>>,
-                                    > = HashMap::new();
-                                    let max_items = 5;
-
-                                    match operations_stream {
-                                        Ok(stream) => {
-                                            let actions = stream
-                                                .filter_map(|item| async move {
-                                                    match item.as_ref().as_state().await {
-                                                        Ok((action_state, _origin_metadata)) => {
-                                                            Some(action_state)
-                                                        }
-                                                        Err(e) => {
-                                                            error!(
-                                                                ?e,
-                                                                "Failed to get action state!"
-                                                            );
-                                                            None
-                                                        }
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .await;
-                                            for action_state in &actions {
-                                                let name = action_state.stage.name();
-                                                if let Some(values) =
-                                                    oldest_actions_in_state.get_mut(&name)
-                                                {
-                                                    values.insert(action_state.clone());
-                                                    if values.len() > max_items {
-                                                        values.pop_first();
-                                                    }
-                                                } else {
-                                                    let mut values = BTreeSet::new();
-                                                    values.insert(action_state.clone());
-                                                    oldest_actions_in_state.insert(name, values);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(?e, "Failed to get operations list!");
-                                        }
-                                    }
-
-                                    for value in oldest_actions_in_state.values() {
-                                        let mut items = vec![];
-                                        for item in value {
-                                            items.push(item.to_string());
-                                        }
-                                        info!(?items, "Oldest actions in state");
-                                    }
-
                                     worker_match_logging_last.replace(now);
                                 }
                                 res
