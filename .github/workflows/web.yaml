@@ -51,7 +51,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun install && bun run build
+            bun install --frozen-lockfile && bun run test && bun run build
           "
 
       - name: Teardown Worker
