@@ -1,7 +1,7 @@
-import { defineDocs, defineConfig } from "fumadocs-mdx/config";
+import { defineDocs, defineConfig, type DocsCollection } from "fumadocs-mdx/config";
 import { rehypeCodeDefaultOptions } from "fumadocs-core/mdx-plugins";
 
-export const docs = defineDocs({
+export const docs: DocsCollection = defineDocs({
   dir: "content/docs",
 });
 
