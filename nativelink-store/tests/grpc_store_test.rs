@@ -120,6 +120,8 @@ struct FakeStreamServer {
     /// Take this many `WriteRequest`s of the next upload, then fail it, as a
     /// server that restarts mid-upload does. Zero is off.
     fail_mid_upload: Arc<Mutex<usize>>,
+    failure_code: tonic::Code,
+    require_zero_start: bool,
 }
 
 impl FakeStreamServer {
@@ -131,6 +133,8 @@ impl FakeStreamServer {
             committed_size_override: None,
             fail_after_commit: Arc::new(Mutex::new(false)),
             fail_mid_upload: Arc::new(Mutex::new(0)),
+            failure_code: tonic::Code::Unavailable,
+            require_zero_start: false,
         }
     }
 
@@ -201,12 +205,20 @@ impl ByteStream for FakeStreamServer {
                     self.write_requests.lock().await.push(req?);
                 }
             }
-            return Err(Status::unavailable("simulated restart mid-upload"));
+            return Err(Status::new(
+                self.failure_code,
+                "simulated failure mid-upload",
+            ));
         }
         if self.drain_all {
             let mut committed_size = 0i64;
             while let Some(req) = stream.next().await {
                 let req = req?;
+                if self.require_zero_start && committed_size == 0 && req.write_offset != 0 {
+                    return Err(Status::invalid_argument(
+                        "upstream lost the upload; expected offset 0",
+                    ));
+                }
                 committed_size += i64::try_from(req.data.len()).unwrap();
                 self.write_requests.lock().await.push(req);
             }
@@ -314,6 +326,89 @@ async fn write_update_works() -> Result<(), Error> {
 async fn write_update_works_with_legacy_resource_names() -> Result<(), Error> {
     let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
     write_update_works_core(true, upload_pattern).await
+}
+
+#[nativelink_test]
+async fn cas_update_restarts_from_zero_after_upstream_loses_the_upload() -> Result<(), Error> {
+    let server = FakeStreamServer {
+        require_zero_start: true,
+        ..FakeStreamServer::new_draining()
+    };
+    // More than the two cached messages: replaying them cannot restart this upload.
+    *server.fail_mid_upload.lock().await = 3;
+    let (server, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    spec.retry.max_retries = 1;
+    spec.rpc_timeout_s = 30;
+    let store = GrpcStore::new(&spec)?;
+    let payload: Vec<u8> = (0..=3 * MAX_WRITE_REQUEST_DATA_BYTES)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let digest = DigestInfo::try_new(VALID_HASH, payload.len())?;
+
+    let err = store
+        .update_oneshot(digest, payload.clone().into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, tonic::Code::Unavailable, "{err:?}");
+    assert_eq!(server.write_requests.lock().await.len(), 3);
+
+    // The caller can now retry the entire blob in a fresh upload.
+    store.update_oneshot(digest, payload.clone().into()).await?;
+    let requests = server.write_requests.lock().await;
+    let (cut_off, retry) = requests.split_at(3);
+    assert_eq!(retry[0].write_offset, 0);
+    assert_ne!(retry[0].resource_name, cut_off[0].resource_name);
+    let mut offset = 0;
+    for request in retry {
+        assert_eq!(request.write_offset, offset);
+        offset += i64::try_from(request.data.len()).unwrap();
+    }
+    assert_eq!(
+        retry
+            .iter()
+            .flat_map(|request| request.data.iter().copied())
+            .collect::<Vec<_>>(),
+        payload
+    );
+    assert!(retry.last().unwrap().finish_write);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cas_update_preserves_permanent_errors_and_makes_transient_errors_retryable()
+-> Result<(), Error> {
+    for (failure_code, expected_code) in [
+        (tonic::Code::Internal, tonic::Code::Unavailable),
+        (tonic::Code::DeadlineExceeded, tonic::Code::Unavailable),
+        (tonic::Code::ResourceExhausted, tonic::Code::Unavailable),
+        (tonic::Code::InvalidArgument, tonic::Code::InvalidArgument),
+        (tonic::Code::PermissionDenied, tonic::Code::PermissionDenied),
+    ] {
+        let server = FakeStreamServer {
+            failure_code,
+            ..FakeStreamServer::new_draining()
+        };
+        *server.fail_mid_upload.lock().await = 1;
+        let (_, port) = spawn_bytestream_server(server).await;
+        let mut spec = test_spec(format!("http://localhost:{port}"), false);
+        spec.retry.max_retries = 1;
+        let store = GrpcStore::new(&spec)?;
+        let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len())?;
+        let err = store
+            .update_oneshot(digest, RAW_INPUT.into())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code, expected_code,
+            "upstream returned {failure_code:?}: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("simulated failure mid-upload"),
+            "{err:?}"
+        );
+    }
+    Ok(())
 }
 
 #[nativelink_test]
