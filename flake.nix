@@ -501,7 +501,11 @@
             mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
               inherit nativelink mongodb wait4x bazelisk;
             };
-            rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
+            rbe-toolchain-list = pkgs.callPackage toolchain-examples/rbe/list.nix {
+              rbe-toolchain-cmd = builtins.readFile toolchain-examples/rbe/cmds.sh;
+            };
+            rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe/test.nix {
+              rbe-toolchain-cmd = builtins.readFile toolchain-examples/rbe/cmds.sh;
               inherit nativelink bazel-retry bazel;
             };
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
