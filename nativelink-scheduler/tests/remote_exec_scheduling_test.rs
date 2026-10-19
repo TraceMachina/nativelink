@@ -46,15 +46,7 @@ async fn test_remote_exec_scheduling_exit_code_and_output_buffer_flush() -> Resu
         stderr_digest,
         execution_metadata: ExecutionMetadata {
             worker: "worker_node_1".to_string(),
-            queued_timestamp: SystemTime::UNIX_EPOCH,
-            worker_start_timestamp: SystemTime::UNIX_EPOCH,
-            worker_completed_timestamp: SystemTime::UNIX_EPOCH,
-            input_fetch_start_timestamp: SystemTime::UNIX_EPOCH,
-            input_fetch_completed_timestamp: SystemTime::UNIX_EPOCH,
-            execution_start_timestamp: SystemTime::UNIX_EPOCH,
-            execution_completed_timestamp: SystemTime::UNIX_EPOCH,
-            output_upload_start_timestamp: SystemTime::UNIX_EPOCH,
-            output_upload_completed_timestamp: SystemTime::UNIX_EPOCH,
+            ..ExecutionMetadata::default()
         },
         server_logs: HashMap::default(),
         error: None,
