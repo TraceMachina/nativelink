@@ -504,6 +504,44 @@ impl StoreDriver for FastSlowStore {
             return self.fast_store.has_with_results(key, results).await;
         }
 
+        // A read-only slow store receives no uploads: the fast store is
+        // where writes land and the only place a new blob can be, so it
+        // counts toward presence, and the slow store answers for whatever
+        // predates it. Without this a reader that misses the fast tier is
+        // told the blob does not exist, and a blob is re-uploaded on every
+        // check even though the upload can only land where it already is.
+        // Across instances this holds when the fast store is shared (a
+        // compression tier over one backend); a per-instance fast tier
+        // such as memory or a local filesystem only answers for what that
+        // instance stored.
+        //
+        // The two lookups stay sequential on purpose: the slow store is
+        // asked only about the fast store's misses, so the second round
+        // trip is paid on a shrinking share of keys instead of every key.
+        if matches!(
+            self.slow_direction,
+            StoreDirection::ReadOnly | StoreDirection::Get
+        ) {
+            self.fast_store.has_with_results(key, results).await?;
+            let missing: Vec<usize> = results
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.is_none().then_some(i))
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let keys: Vec<StoreKey<'_>> = missing.iter().map(|&i| key[i].borrow()).collect();
+            let mut slow_results = vec![None; keys.len()];
+            self.slow_store
+                .has_with_results(&keys, &mut slow_results)
+                .await?;
+            for (i, r) in missing.into_iter().zip(slow_results) {
+                results[i] = r;
+            }
+            return Ok(());
+        }
+
         // Check with the slow store first.
         self.slow_store.has_with_results(key, results).await?;
 
@@ -527,12 +565,12 @@ impl StoreDriver for FastSlowStore {
             results[i] = size;
         }
 
-        // NOTE: We intentionally *NEVER* check the fast store, this is to
-        // ensure that we re-upload data to the slow store if it only exists
-        // in the fast store.  This does not affect workers as they do not
-        // check existence through `has` and instead go direct to loading the
-        // data which bypasses the check and will load from the fast store if
-        // it does not exist in the slow store.
+        // NOTE: With a writable slow store we intentionally *NEVER* check
+        // the fast store, this is to ensure that we re-upload data to the
+        // slow store if it only exists in the fast store. Workers depend on
+        // this: `upload_file` asks `has` before uploading an output and
+        // skips the upload when the digest is present, so consulting a
+        // worker's local fast tier here would stop outputs reaching the CAS.
 
         Ok(())
     }
