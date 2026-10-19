@@ -184,6 +184,7 @@ jobs:
         uses: ./.github/actions/prepare-nix
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          skip_free_disk: true # because we don't need much for this action
 
       - name: Get commands list
         run: |
