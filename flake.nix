@@ -615,7 +615,7 @@
               pkgs.kubectx
 
               # Web
-              pkgs.bun
+              pkgs.pnpm
               pkgs.lychee
               pkgs.nodejs_22 # For pagefind search
               pkgs.playwright-driver

@@ -51,7 +51,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun install && bun run build
+            pnpm install && pnpm run build
           "
 
       - name: Teardown Worker

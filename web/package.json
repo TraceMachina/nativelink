@@ -3,6 +3,7 @@
   "type": "module",
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
+    "next": "~16.3.3",
     "turbo": "^2.3.0",
     "typescript": "^7.0.0"
   },
@@ -15,7 +16,7 @@
     "postcss": "^8.5.23",
     "sharp": "^0.35.4"
   },
-  "packageManager": "bun@1.2.21",
+  "packageManager": "pnpm@11.22.0",
   "private": true,
   "scripts": {
     "build": "turbo run build",
@@ -27,9 +28,5 @@
     "format": "biome format --write .",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck"
-  },
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ]
+  }
 }

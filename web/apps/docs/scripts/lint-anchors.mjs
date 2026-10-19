@@ -14,8 +14,8 @@
 // current wording, so a heading can be rewritten without breaking a citation.
 //
 // Usage, from web/:
-//   bun --filter @nativelink/docs lint:anchors
-//   bun --filter @nativelink/docs lint:anchors --fix
+//   pnpm run --filter @nativelink/docs lint:anchors
+//   pnpm run --filter @nativelink/docs lint:anchors --fix
 // or directly:
 //   node scripts/lint-anchors.mjs [--fix]
 //
@@ -246,7 +246,7 @@ function main() {
 
   console.error(`\n${problems.length} missing anchor(s):`);
   for (const p of problems) console.error(`  ${p.file}:${p.line}  ${p.message}`);
-  console.error("\nRun `bun --filter @nativelink/docs lint:anchors --fix` to pin them.");
+  console.error("\nRun `pnpm run --filter @nativelink/docs lint:anchors --fix` to pin them.");
   process.exitCode = 1;
 }
 

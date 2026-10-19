@@ -358,8 +358,8 @@ history. Privacy requests go to privacy@tracemachina.com.
 - [From One Robot to 1,000 with rules_omniverse](https://nativelink.com/resources/blog/rules-omniverse-0-3-0) (2026-08-27): Today we are releasing our first official Bazel ruleset for physical AI. It is built to carry robotics work from research to production.
 - [Case Study: LastMile AI](https://nativelink.com/resources/blog/case-study-last-mile-ai) (2025-09-25): LastMile AI is an AI startup creating tools to enable developers to build AI agents. The team comes from backgrounds in top research and engineering organizations, building infrastructure and devel…
 - [Supercharge Your C/C++ Builds without Migrating to Bazel: A Tutorial for CMake, Nativelink and BuildStream](https://nativelink.com/resources/blog/accelerating-cmake-with-nativelink) (2025-08-12): Slow build times can be a major drag on developer productivity. Waiting for your code to compile and build can interrupt your flow and waste valuable time. Lots of companies have moved to Bazel and…
-- [Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink](https://nativelink.com/resources/blog/finetune-with-bazel-nativelink) (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
 - [Trust Root Support in Nativelink](https://nativelink.com/resources/blog/adding-trust-roots-to-nativelink) (2025-05-15): Open source thrives on community contributions, and today’s story is a perfect example of why. External engineer Sam Eskandar identified a pain point in Nativelink's TLS configuration and delivered…
+- [Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink](https://nativelink.com/resources/blog/finetune-with-bazel-nativelink) (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
 - [Thirdwave Automation and NativeLink](https://nativelink.com/resources/blog/case-study-thirdwave-automation) (2025-03-06): “Our business relies on delivering autonomous systems with an exceptional level of safety. With NativeLink’s massively-parallel cloud service, we can now iterate faster and continuously learn from…
 - [Fortune 50 Manufacturer Uses NativeLink For 20x Accelerated Build Speed and 30x Improved Storage Density](https://nativelink.com/resources/blog/case-study-fortune-50-manufacturer) (2025-01-21): A Fortune 50 Manufacturer builds a Chromium-based browser, and it has been an integral part of their product lineup, requiring robust and efficient build infrastructure to keep up with its evolving…
 - [NativeLink for Semiconductors](https://nativelink.com/resources/blog/semiconductors) (2024-12-04): NativeLink has become a critical architectural component for companies developing custom silicon. From the outset, our mission was to build an open-source simulation platform designed to scale with…
@@ -1253,99 +1253,6 @@ You have now successfully set up a project with BuildStream and Nativelink for a
 
 If you have any questions or want to learn more, feel free to reach out to **contact@nativelink.com**. Happy building\! 🚀
 
-# https://nativelink.com/resources/blog/finetune-with-bazel-nativelink
-
-**Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink** (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
-
-## Introduction
-
-The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU-based fine-tuning demonstrating that with intelligent resource management through NativeLink, impressive results can be achieved without expensive GPU or TPU infrastructure. As compute becomes increasingly costly, competitive advantage will shift toward teams that optimize resource efficiency rather than those deploying state-of-the-art hardware.
-
-This guide demonstrates how to establish an optimized AI development pipeline by integrating several key technologies:<br></br>
-1\. **Bazel Build System**: For efficient repository management. A repository managed by Bazel allows your team to work in a unified codebase while maintaining clean separation of concerns.<br></br>
-2\. **NativeLink**: A remote execution system hosted in your cloud. With NativeLink's remote execution capabilities, you can leverage your cloud resources optimally without wasteful duplication of work.<br></br>
-3\. **Hugging Face Transformers**: For integrating with the rich ecosystem of open-source models that you can run locally or deploy anywhere. The transformers library also provides a sophisticated caching mechanism for optimizing loading model weights.
-
-
-## Setting Up Your Repository With Bazel
-
-Bazel is a build system designed for repositories that allows you to organize code into logical components while maintaining dependency relationships. For AI workloads, this is particularly valuable as it lets you separate model definitions, data processing pipelines, training code, and inference services.
-
-### Prerequisites
-
-1\. A recent version of Bazel ([installation instructions](https://bazel.build/install)). <br></br>
-2\. [NativeLink 0.6.0](https://github.com/TraceMachina/nativelink/releases/tag/v0.6.0) (Apache-licensed)
-
-### Initial Setup
-
-First, let's download all the files. From the folder where you want to download the files, run the following commands:
-
-<div style="max-height: 250px; max-width: 50vw; overflow: auto;">
-
-```bash
-# Clone the entire repository
-git clone https://github.com/TraceMachina/nativelink-blogs.git
-
-# Navigate to the subdirectory
-cd nativelink-blogs/finetuning_on_cpu
-```
-</div>
-
-
-Here's a description of some of the files:<br></br>
-1\. `README.md` - Instructions on how to connect/use NativeLink and how to run the code locally as well as remotely<br></br>
-2\. `requirements.lock` - Ensures consistent Python dependencies across all environments<br></br>
-3\. `.bazelrc` - Main Bazel configuration file setting global options for hermetic builds and remote execution<br></br>
-4\. `MODULE.bazel` - Configures the project as a Bazel module, tells Bazel we'll need Python, `pip` and CPU-only PyTorch, and manages external dependencies<br></br>
-5\. `pyproject.toml` - Python package configuration specifying dependencies and development tools<br></br>
-6\. `BUILD.bazel` (root) - Root build file defining lock targets for Python dependency management<br></br>
-7\. `platforms/BUILD` - Defines Linux x86_64 execution platform running in Ubuntu 24.04 for remote builds<br></br>
-8\. `training/BUILD` - Defines the model training targets and their dependencies<br></br>
-9\. `training/main.py` - Main script that handles fine-tuning of language models on CPU using efficient training techniques<br></br>
-
-
-## Important Note About Bazel’s Remote Execution Support
-
-Bazel supports remote execution for building (compiling) and testing, but `bazel run` uses the host platform as its target platform, meaning the executable will be invoked locally rather than on remote machines. To execute binaries on remote servers, a workaround is to design tests that execute the binary, effectively leveraging `bazel test` which runs on the target platform.
-
-**DRAWBACK:**
-
-Logging and print statements that track progress (like "Starting to fine tune model" or "Exiting this function") behave differently in remote execution. Unlike local runs where these appear in real-time, remote testing collects all logs on the server and only displays them after test completion when control returns to the local machine. The expected output is still fully preserved - just delayed until the process finishes running.
-
-
-## Aside - Configuring Remote Execution For ARM (Apple Silicon)
-
-
-Most cloud infrastructure (including NativeLink) runs on x86_64 processors, while Apple Silicon Macs use ARM64. Dependencies such as PyTorch are built for specified architectures and setting up Bazel to handle platform-specific dependencies is complex.
-
-If you want to run this code and you only have a Mac, the simplest way would be to run this code via a cloud-based Linux VM (GCP/AWS). If you don't want to use a cloud server, you could create a minimal docker container for x86_64 (`FROM --platform=linux/amd64 ubuntu:24.04` with just `curl` and `Bazelisk` installed) with **Rosetta enabled** and run from your Mac's terminal using this container. However, we highly recommend against this approach; the correct approach here would be to use toolchain transitions from a local mac platform to the remote Linux runner, but that's outside of the scope of this article.
-
-
-## The NativeLink Difference
-
-To demonstrate NativeLink’s efficacy, consistency, and reliability, we ran the same fine-tuning job on the CPU of an M1 Pro MacBook Pro, the free version of Google Colab on CPU, and [NativeLink](https://github.com/TraceMachina/nativelink), which is free and open-source. We executed the fine-tuning task 5 times and this is what we observed:
-
-1\. The Mac: the quickest run took 18 minutes while the slowest/longest took 20 minutes
-
-2\. Free version of Google Colab: the quickest run took 10 minutes while the slowest/longest took 20 minutes. The execution time was widely varied. We suspect varying traffic on Google’s servers and how Colab allocates its compute resources played a part in this variability.
-
-3\. Free NativeLink: the quickest run took 4 minutes of compute time while the slowest/longest took 6 minutes. NativeLink provided the quickest execution times by far.
-
-<img src="https://github.com/user-attachments/assets/c2bf8e0e-1500-4ee7-a0f7-6b4ca2196257" width="1000" alt="Model Fine-Tuning Times"></img>
-
-
-## Conclusion: Optimizing AI Development Through Resource Efficiency
-
-As demonstrated through this tutorial, the integration of Bazel's repository management, NativeLink's CPU-optimized remote execution, and Hugging Face's transformers library creates a development ecosystem that prioritizes computational efficiency over raw processing power. This approach addresses several critical challenges facing modern AI teams:
-
-1\. **Resource Optimization**: By leveraging NativeLink's intelligent scheduling and optimization on CPU infrastructure, teams can achieve impressive fine-tuning results without the capital expenditure of specialized GPU/TPU hardware.<br></br>
-2\. **Strategic Advantage**: This CPU-focused approach provides a competitive edge through efficient resource utilization, enabling teams to allocate budget toward innovation rather than hardware acquisition.<br></br>
-3\. **Sustainable Scaling**: As models grow in size and complexity, the ability to efficiently distribute workloads across existing CPU infrastructure provides a more sustainable path to scale than continuously upgrading to the latest accelerators.<br></br>
-
-For forward-thinking AI teams, this infrastructure stack represents a shift from the "bigger is better" hardware arms race toward thoughtful resource utilization. The competitive advantage increasingly belongs to those who can extract maximum value from available compute rather than those who deploy more powerful hardware.
-
-The journey from experimental AI projects to production-grade systems demands both technical sophistication and resource awareness. By adopting this CPU-optimized approach with Bazel and NativeLink, your team can focus less on infrastructure limitations and more on the creative potential of fine-tuned models—developing applications that deliver genuine value while maintaining computational efficiency.
-
 # https://nativelink.com/resources/blog/adding-trust-roots-to-nativelink
 
 **Trust Root Support in Nativelink** (2025-05-15): Open source thrives on community contributions, and today’s story is a perfect example of why. External engineer Sam Eskandar identified a pain point in Nativelink's TLS configuration and delivered…
@@ -1484,6 +1391,99 @@ We’re grateful for contributions like this that strengthen Nativelink’s posi
 ---
 
 *Interested in contributing? Check out our [GitHub repository](https://github.com/TraceMachina/nativelink).*
+
+# https://nativelink.com/resources/blog/finetune-with-bazel-nativelink
+
+**Fine-tune a Language Model on x86 CPUs using Bazel and NativeLink** (2025-05-15): The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU…
+
+## Introduction
+
+The future of AI development belongs not necessarily to those with the most powerful infrastructure but to those who can extract maximum value from available resources. This tutorial emphasizes CPU-based fine-tuning demonstrating that with intelligent resource management through NativeLink, impressive results can be achieved without expensive GPU or TPU infrastructure. As compute becomes increasingly costly, competitive advantage will shift toward teams that optimize resource efficiency rather than those deploying state-of-the-art hardware.
+
+This guide demonstrates how to establish an optimized AI development pipeline by integrating several key technologies:<br></br>
+1\. **Bazel Build System**: For efficient repository management. A repository managed by Bazel allows your team to work in a unified codebase while maintaining clean separation of concerns.<br></br>
+2\. **NativeLink**: A remote execution system hosted in your cloud. With NativeLink's remote execution capabilities, you can leverage your cloud resources optimally without wasteful duplication of work.<br></br>
+3\. **Hugging Face Transformers**: For integrating with the rich ecosystem of open-source models that you can run locally or deploy anywhere. The transformers library also provides a sophisticated caching mechanism for optimizing loading model weights.
+
+
+## Setting Up Your Repository With Bazel
+
+Bazel is a build system designed for repositories that allows you to organize code into logical components while maintaining dependency relationships. For AI workloads, this is particularly valuable as it lets you separate model definitions, data processing pipelines, training code, and inference services.
+
+### Prerequisites
+
+1\. A recent version of Bazel ([installation instructions](https://bazel.build/install)). <br></br>
+2\. [NativeLink 0.6.0](https://github.com/TraceMachina/nativelink/releases/tag/v0.6.0) (Apache-licensed)
+
+### Initial Setup
+
+First, let's download all the files. From the folder where you want to download the files, run the following commands:
+
+<div style="max-height: 250px; max-width: 50vw; overflow: auto;">
+
+```bash
+# Clone the entire repository
+git clone https://github.com/TraceMachina/nativelink-blogs.git
+
+# Navigate to the subdirectory
+cd nativelink-blogs/finetuning_on_cpu
+```
+</div>
+
+
+Here's a description of some of the files:<br></br>
+1\. `README.md` - Instructions on how to connect/use NativeLink and how to run the code locally as well as remotely<br></br>
+2\. `requirements.lock` - Ensures consistent Python dependencies across all environments<br></br>
+3\. `.bazelrc` - Main Bazel configuration file setting global options for hermetic builds and remote execution<br></br>
+4\. `MODULE.bazel` - Configures the project as a Bazel module, tells Bazel we'll need Python, `pip` and CPU-only PyTorch, and manages external dependencies<br></br>
+5\. `pyproject.toml` - Python package configuration specifying dependencies and development tools<br></br>
+6\. `BUILD.bazel` (root) - Root build file defining lock targets for Python dependency management<br></br>
+7\. `platforms/BUILD` - Defines Linux x86_64 execution platform running in Ubuntu 24.04 for remote builds<br></br>
+8\. `training/BUILD` - Defines the model training targets and their dependencies<br></br>
+9\. `training/main.py` - Main script that handles fine-tuning of language models on CPU using efficient training techniques<br></br>
+
+
+## Important Note About Bazel’s Remote Execution Support
+
+Bazel supports remote execution for building (compiling) and testing, but `bazel run` uses the host platform as its target platform, meaning the executable will be invoked locally rather than on remote machines. To execute binaries on remote servers, a workaround is to design tests that execute the binary, effectively leveraging `bazel test` which runs on the target platform.
+
+**DRAWBACK:**
+
+Logging and print statements that track progress (like "Starting to fine tune model" or "Exiting this function") behave differently in remote execution. Unlike local runs where these appear in real-time, remote testing collects all logs on the server and only displays them after test completion when control returns to the local machine. The expected output is still fully preserved - just delayed until the process finishes running.
+
+
+## Aside - Configuring Remote Execution For ARM (Apple Silicon)
+
+
+Most cloud infrastructure (including NativeLink) runs on x86_64 processors, while Apple Silicon Macs use ARM64. Dependencies such as PyTorch are built for specified architectures and setting up Bazel to handle platform-specific dependencies is complex.
+
+If you want to run this code and you only have a Mac, the simplest way would be to run this code via a cloud-based Linux VM (GCP/AWS). If you don't want to use a cloud server, you could create a minimal docker container for x86_64 (`FROM --platform=linux/amd64 ubuntu:24.04` with just `curl` and `Bazelisk` installed) with **Rosetta enabled** and run from your Mac's terminal using this container. However, we highly recommend against this approach; the correct approach here would be to use toolchain transitions from a local mac platform to the remote Linux runner, but that's outside of the scope of this article.
+
+
+## The NativeLink Difference
+
+To demonstrate NativeLink’s efficacy, consistency, and reliability, we ran the same fine-tuning job on the CPU of an M1 Pro MacBook Pro, the free version of Google Colab on CPU, and [NativeLink](https://github.com/TraceMachina/nativelink), which is free and open-source. We executed the fine-tuning task 5 times and this is what we observed:
+
+1\. The Mac: the quickest run took 18 minutes while the slowest/longest took 20 minutes
+
+2\. Free version of Google Colab: the quickest run took 10 minutes while the slowest/longest took 20 minutes. The execution time was widely varied. We suspect varying traffic on Google’s servers and how Colab allocates its compute resources played a part in this variability.
+
+3\. Free NativeLink: the quickest run took 4 minutes of compute time while the slowest/longest took 6 minutes. NativeLink provided the quickest execution times by far.
+
+<img src="https://github.com/user-attachments/assets/c2bf8e0e-1500-4ee7-a0f7-6b4ca2196257" width="1000" alt="Model Fine-Tuning Times"></img>
+
+
+## Conclusion: Optimizing AI Development Through Resource Efficiency
+
+As demonstrated through this tutorial, the integration of Bazel's repository management, NativeLink's CPU-optimized remote execution, and Hugging Face's transformers library creates a development ecosystem that prioritizes computational efficiency over raw processing power. This approach addresses several critical challenges facing modern AI teams:
+
+1\. **Resource Optimization**: By leveraging NativeLink's intelligent scheduling and optimization on CPU infrastructure, teams can achieve impressive fine-tuning results without the capital expenditure of specialized GPU/TPU hardware.<br></br>
+2\. **Strategic Advantage**: This CPU-focused approach provides a competitive edge through efficient resource utilization, enabling teams to allocate budget toward innovation rather than hardware acquisition.<br></br>
+3\. **Sustainable Scaling**: As models grow in size and complexity, the ability to efficiently distribute workloads across existing CPU infrastructure provides a more sustainable path to scale than continuously upgrading to the latest accelerators.<br></br>
+
+For forward-thinking AI teams, this infrastructure stack represents a shift from the "bigger is better" hardware arms race toward thoughtful resource utilization. The competitive advantage increasingly belongs to those who can extract maximum value from available compute rather than those who deploy more powerful hardware.
+
+The journey from experimental AI projects to production-grade systems demands both technical sophistication and resource awareness. By adopting this CPU-optimized approach with Bazel and NativeLink, your team can focus less on infrastructure limitations and more on the creative potential of fine-tuned models—developing applications that deliver genuine value while maintaining computational efficiency.
 
 # https://nativelink.com/resources/blog/case-study-thirdwave-automation
 
@@ -22146,7 +22146,7 @@ Broadly:
 first), the pinned stable Rust toolchain from the LRE overlay,
 `rust-analyzer`, `buck2`, `python3`, `git`, `pre-commit`, `git-cliff`.
 
-**Web**: `bun`, `nodejs_22`, `lychee`, the Playwright driver. This is what
+**Web**: `pnpm`, `nodejs_22`, `lychee`, the Playwright driver. This is what
 lets you work on the docs without installing anything.
 
 **Infrastructure**: `kubectl`, `kubernetes-helm`, `kustomize`, `kubectx`,
@@ -22205,7 +22205,7 @@ For a typo fix, a doc tweak or a single unit test, the
 [Cargo workflow](/contribute/cargo) is faster to get into and nothing will
 go wrong. Reach for Nix when you are touching the build graph, working on
 LRE, chasing a difference between your machine and CI, or working on the
-docs, since `vale` and `bun` both come from here.
+docs, since `vale` and `pnpm` both come from here.
 
 ## Common questions [#common-questions]
 
@@ -22393,7 +22393,7 @@ are introspecting structure or graphing a number. See
 | `local-remote-execution/` | The Nix-based LRE toolchain generation; see [LRE](/explanations/lre) |
 | `toolchain-examples/`, `templates/` | Starting points for downstream projects; both are `.bazelignore`d |
 | `tools/` | Nix modules, pre-commit hooks, toolchain definitions, CI helpers |
-| `web/` | The docs and marketing sites: Bun workspace, **not** part of the Bazel build |
+| `web/` | The docs and marketing sites: pnpm workspace, **not** part of the Bazel build |
 | `assets/` | The logo SVGs |
 
 <Callout type="info" title="`deploy/`, `deployment-examples/` and `kubernetes/` are three different things">
@@ -22831,7 +22831,7 @@ JSON rather than illustrative fragments.
   </li>
   <li>
     **Regenerate the reference** if you want to see the result:
-    `bun --filter @nativelink/docs gen:config-reference` from `web/`.
+    `pnpm run --filter @nativelink/docs gen:config-reference` from `web/`.
   </li>
 </Steps>
 
@@ -22887,7 +22887,7 @@ introspection tree automatically.
     dotted name, a `.with_description`, and a `.with_unit` that is a UCUM
     unit (`"By"`, `"s"`, `"ms"`) or a braced count such as `"{entry}"`.
     Then regenerate the metrics reference with
-    `bun --filter @nativelink/docs gen:metrics-reference` from `web/`, which
+    `pnpm run --filter @nativelink/docs gen:metrics-reference` from `web/`, which
     reads this file.
   </li>
   <li>
@@ -23288,7 +23288,7 @@ The shape of it:
     triggers `config-reference.yaml`, which opens an auto-merging PR against
     `main`. If it did not fire, re-run it from the Actions tab or regenerate
     by hand with
-    `bun --filter @nativelink/docs gen:config-reference v1.x.y`.
+    `pnpm run --filter @nativelink/docs gen:config-reference v1.x.y`.
   </li>
   <li>
     **Write the release notes**, attributing every entry to its author, then
@@ -23364,7 +23364,7 @@ turn it into MDX, and the whole thing is invoked as:
 
 ```bash
 cd web
-bun --filter @nativelink/docs gen:config-reference v1.x.y
+pnpm run --filter @nativelink/docs gen:config-reference v1.x.y
 ```
 
 Passing a tag updates `lib/config-versions.ts` (which is what the docs UI
@@ -23434,23 +23434,23 @@ resolving after the heading is reworded.
 
 ```bash
 cd web
-bun install
-bun dev:docs        # docs only: http://localhost:3001
+pnpm install
+pnpm dev:docs        # docs only: http://localhost:3001
 
 # A production build of both apps, served the way Vercel serves them
-DOCS_URL=http://localhost:3001 bun run build
-bun --filter @nativelink/web start    # http://localhost:3000
-bun --filter @nativelink/docs start   # http://localhost:3001
+DOCS_URL=http://localhost:3001 pnpm run build
+pnpm run --filter @nativelink/web start    # http://localhost:3000
+pnpm run --filter @nativelink/docs start   # http://localhost:3001
 ```
 
 Edit any `.mdx` file under `apps/docs/content/docs/` and the dev server picks
 it up on save. To preview the marketing site and the docs together (the
-marketing app redirects `/docs` to the docs app in dev), run `bun dev` and use
+marketing app redirects `/docs` to the docs app in dev), run `pnpm dev` and use
 `http://localhost:3000/docs`.
 
 <Callout type="info" title="`web/` is not part of the Bazel build">
-  The docs are a Bun workspace. `bazel test //...` does not touch them, and
-  `bun` is the only toolchain you need to work on a page. See
+  The docs are a pnpm workspace. `bazel test //...` does not touch them, and
+  `pnpm` is the only toolchain you need to work on a page. See
   [contribution guidelines](/contribute/guidelines) for the rest of the repo.
 </Callout>
 
@@ -23603,8 +23603,8 @@ the anchor without adding a redirect.
 
 ```bash
 cd web
-bun --filter @nativelink/docs lint:anchors          # check
-bun --filter @nativelink/docs lint:anchors --fix    # freeze what exists
+pnpm run --filter @nativelink/docs lint:anchors          # check
+pnpm run --filter @nativelink/docs lint:anchors --fix    # freeze what exists
 ```
 
 `--fix` writes the anchor Fumadocs would have generated anyway, so running it
@@ -23624,7 +23624,7 @@ added since the last release passes once `gen:config-reference main` has
 been run in the same change.
 
 ```bash
-bun --filter @nativelink/docs lint:snippets
+pnpm run --filter @nativelink/docs lint:snippets
 ```
 
 For a fence that legitimately is not NativeLink config (a `meta.json`, a
@@ -23656,7 +23656,7 @@ reader's index from `meta.json` and frontmatter, so a page missing from a
 `meta.json` is invisible to agents even if it renders fine.
 
 ```bash
-bun --filter @nativelink/docs gen:llms
+pnpm run --filter @nativelink/docs gen:llms
 ```
 
 ## Style [#style]
@@ -23695,16 +23695,16 @@ and links out for the types and defaults.
     leave the tree unchanged:
 
     ```bash
-    bun --filter @nativelink/docs lint:anchors
-    bun --filter @nativelink/docs lint:links
-    bun --filter @nativelink/docs lint:snippets
-    bun --filter @nativelink/docs lint:boundaries
-    bun --filter @nativelink/docs lint:navigation
-    bun --filter @nativelink/docs gen:llms
+    pnpm run --filter @nativelink/docs lint:anchors
+    pnpm run --filter @nativelink/docs lint:links
+    pnpm run --filter @nativelink/docs lint:snippets
+    pnpm run --filter @nativelink/docs lint:boundaries
+    pnpm run --filter @nativelink/docs lint:navigation
+    pnpm run --filter @nativelink/docs gen:llms
     ```
   </li>
   <li>
-    **Check that it compiles and typechecks.** `bun --filter @nativelink/docs build`
+    **Check that it compiles and typechecks.** `pnpm run --filter @nativelink/docs build`
     catches an MDX parse error or a stray import that the dev server tolerated.
   </li>
   <li>
