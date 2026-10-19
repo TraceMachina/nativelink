@@ -1299,6 +1299,15 @@ pub struct LocalWorkerConfig {
     /// `DeadlineExceeded` and may be retried by the scheduler, and a warning
     /// names the action every minute before that. Value in seconds.
     ///
+    /// A fetch that fails with a transient store error is fetched again
+    /// from this worker, with a pause doubling from 1 s to 30 s, for as
+    /// long as this leaves room for another attempt, or the action's own
+    /// timeout when that is shorter. The scheduler is not told of the
+    /// retries: it ends an executing action on its own at the action's
+    /// timeout plus `worker_timeout_s`, and at
+    /// `max_action_executing_timeout_s`, so keep this below those or the
+    /// action is requeued while the worker still retries.
+    ///
     /// Default: 10 minutes
     #[serde(
         default,
@@ -1306,6 +1315,17 @@ pub struct LocalWorkerConfig {
         alias = "max_download_timeout"
     )]
     pub max_download_timeout_s: usize,
+
+    /// How many input blobs this worker fetches into its store at once,
+    /// across every action it is staging. Each fetch is a read from the
+    /// CAS or the object store, so this bounds what one worker asks of
+    /// them at a time: several cold actions share this many fetches
+    /// instead of each opening its own. Blobs already in the store are
+    /// linked without one.
+    ///
+    /// Default: 64
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_input_downloads: usize,
 
     /// Maximum time to wait for action directory cleanup before timing out.
     /// Value in seconds.
@@ -1517,6 +1537,42 @@ pub struct LocalWorkerConfig {
     /// Default: false (eviction behavior is unchanged)
     #[serde(default)]
     pub experimental_active_input_leases: bool,
+
+    /// Reuse immutable input directories through read-only bind mounts on Linux.
+    /// The worker prepares each selected subtree once per REAPI `Directory`
+    /// digest in the directory cache, then mounts it into each action instead of
+    /// recreating its filesystem entries.
+    ///
+    /// Paths are relative to the action input root, for example `["out/x/sdk"]`.
+    /// They must be nonempty, canonical, and non-overlapping. Absolute paths,
+    /// empty path components, and `.`/`..` components are rejected.
+    /// Requires `directory_cache`, `use_namespaces: true`, and
+    /// `use_mount_namespace: true`.
+    ///
+    /// Actions declaring overlapping outputs, working inside a selected subtree,
+    /// or using a persistent worker fall back to ordinary materialization.
+    /// Output paths reached through symlink aliases cannot be checked for
+    /// overlap. Use this only with trusted workloads that do not modify the
+    /// selected trees; read-only input mounts are not a security boundary.
+    ///
+    /// Select trees whose contents (and Directory digest) are reused across
+    /// many actions. Trees that change per action add cache construction work
+    /// without reuse. When mounts apply, other inputs use ordinary downloads,
+    /// bypassing both root and subtree directory caching for that action.
+    /// Failed mount preparation retries once without mounts; a failed mount
+    /// syscall still aborts the action before its command runs.
+    ///
+    /// An action can remount its inputs writable in its own user namespace
+    /// and corrupt the shared cache. Later actions can then produce incorrect
+    /// results from those inputs. Enable only for trusted commands.
+    ///
+    /// Cache entries remain pinned until action cleanup and may temporarily
+    /// exceed the cache's eviction budget. Pinned bytes have no separate limit,
+    /// so concurrent distinct trees can exhaust the disk. Leave headroom.
+    ///
+    /// Default: [] (disabled)
+    #[serde(default)]
+    pub experimental_readonly_input_mounts: Vec<String>,
 
     /// Whether to use namespaces to isolate the execution. This is only available
     /// on Linux. It is highly recommended as it avoids a number of issues with

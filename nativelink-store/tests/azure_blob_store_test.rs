@@ -201,6 +201,20 @@ fn create_test_store(
     retry: Option<Retry>,
     consider_expired_after_s: Option<u32>,
 ) -> Result<TestStore, Error> {
+    create_test_store_with_common(
+        mock,
+        CommonObjectSpec {
+            consider_expired_after_s: consider_expired_after_s.unwrap_or(0),
+            retry: retry.unwrap_or_default(),
+            ..Default::default()
+        },
+    )
+}
+
+fn create_test_store_with_common(
+    mock: Arc<MockTransport>,
+    common: CommonObjectSpec,
+) -> Result<TestStore, Error> {
     let mut options = BlobContainerClientOptions::default();
     // NativeLink's own `Retrier` wraps each operation, so disable the SDK's retry
     // policy to keep request counts deterministic.
@@ -217,11 +231,7 @@ fn create_test_store(
     let spec = ExperimentalAzureSpec {
         account_name: TEST_ACCOUNT.to_string(),
         container: TEST_CONTAINER.to_string(),
-        common: CommonObjectSpec {
-            consider_expired_after_s: consider_expired_after_s.unwrap_or(0),
-            retry: retry.unwrap_or_default(),
-            ..Default::default()
-        },
+        common,
         ..Default::default()
     };
 
@@ -416,7 +426,7 @@ async fn test_get_not_found() -> Result<(), Error> {
     Ok(())
 }
 
-#[nativelink_test]
+#[nativelink_test(start_paused = true)]
 async fn test_get_with_retries() -> Result<(), Error> {
     const VALUE: &str = "test_content";
 
@@ -440,6 +450,191 @@ async fn test_get_with_retries() -> Result<(), Error> {
 
     assert_eq!(result, VALUE.as_bytes());
     assert_eq!(mock.request_count(), 4);
+    Ok(())
+}
+
+// Paused tokio time: the only thing that advances the clock is the store's
+// own sleep, so the elapsed time is exactly what the retrier waited.
+#[nativelink_test(start_paused = true)]
+async fn a_throttled_download_waits_for_the_retry_after_header() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    mock.push_download(CannedResponse {
+        status: StatusCode::ServiceUnavailable,
+        headers: vec![("retry-after", "3".to_string())],
+        body: Vec::new(),
+    });
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let retry = Retry {
+        max_retries: 2,
+        delay: 0.0,
+        jitter: 0.0,
+        ..Default::default()
+    };
+    let store = create_test_store(Arc::clone(&mock), Some(retry), None)?;
+
+    let started = tokio::time::Instant::now();
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 2);
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "waited {:?}, expected at least the 3s the server asked for",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// A header asking for an hour is honoured only up to the cap.
+#[nativelink_test(start_paused = true)]
+async fn a_throttled_download_waits_at_most_the_cap() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    mock.push_download(CannedResponse {
+        status: StatusCode::ServiceUnavailable,
+        headers: vec![("retry-after", "3600".to_string())],
+        body: Vec::new(),
+    });
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let retry = Retry {
+        max_retries: 2,
+        delay: 0.0,
+        jitter: 0.0,
+        ..Default::default()
+    };
+    let store = create_test_store(Arc::clone(&mock), Some(retry), None)?;
+    let cap = Duration::from_secs_f32(CommonObjectSpec::default().throttle_retry_max_delay_s);
+
+    let started = tokio::time::Instant::now();
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 2);
+    assert!(
+        started.elapsed() >= cap && started.elapsed() < Duration::from_secs(3600),
+        "waited {:?}, expected the {cap:?} cap, not the hour asked for",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// Throttles ride on their own budget: with no retries allowed at all, a
+/// run of throttled responses still ends in the download.
+#[nativelink_test(start_paused = true)]
+async fn throttles_do_not_spend_the_retry_budget() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    for _ in 0..3 {
+        mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    }
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let retry = Retry {
+        max_retries: 0,
+        delay: 0.0,
+        jitter: 0.0,
+        ..Default::default()
+    };
+    let store = create_test_store(Arc::clone(&mock), Some(retry), None)?;
+    let floor = Duration::from_secs_f32(CommonObjectSpec::default().throttle_retry_delay_s);
+
+    let started = tokio::time::Instant::now();
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 4);
+    assert!(
+        started.elapsed() >= floor * 3,
+        "waited {:?}, expected three floors of {floor:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// Consecutive throttles with no header double from the floor up to the
+/// cap: 2, 4, 8, 16, 32 s for five of them under the 60 s default cap, 62 s
+/// in all, where five floors would be 10 s.
+#[nativelink_test(start_paused = true)]
+async fn consecutive_throttles_double_from_the_floor_up_to_the_cap() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    for _ in 0..5 {
+        mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    }
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let retry = Retry {
+        max_retries: 0,
+        delay: 0.0,
+        jitter: 0.0,
+        ..Default::default()
+    };
+    let store = create_test_store(Arc::clone(&mock), Some(retry), None)?;
+    let floor = Duration::from_secs_f32(CommonObjectSpec::default().throttle_retry_delay_s);
+    let cap = Duration::from_secs_f32(CommonObjectSpec::default().throttle_retry_max_delay_s);
+    let doubled = floor + floor * 2 + floor * 4 + floor * 8 + floor * 16;
+    assert!(
+        floor * 16 < cap,
+        "the fifth wait must still be under the cap"
+    );
+
+    let started = tokio::time::Instant::now();
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 6);
+    assert!(
+        started.elapsed() >= doubled && started.elapsed() < doubled + floor,
+        "waited {:?}, expected the doubled waits of {doubled:?}, not five floors",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+#[nativelink_test(start_paused = true)]
+async fn a_throttled_download_without_a_header_waits_the_configured_floor() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let retry = Retry {
+        max_retries: 2,
+        delay: 0.0,
+        jitter: 0.0,
+        ..Default::default()
+    };
+    let store = create_test_store(Arc::clone(&mock), Some(retry), None)?;
+    let floor = Duration::from_secs_f32(CommonObjectSpec::default().throttle_retry_delay_s);
+
+    let started = tokio::time::Instant::now();
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 2);
+    assert!(
+        started.elapsed() >= floor,
+        "waited {:?}, expected at least the {floor:?} floor",
+        started.elapsed()
+    );
     Ok(())
 }
 
@@ -671,7 +866,7 @@ async fn an_explicit_length_bounds_an_over_long_body() -> Result<(), Error> {
 /// already holds. The mock cannot fail a response part way through, so this
 /// pins the arithmetic on the first attempt, where the written count is
 /// zero; the resume itself follows the shape the S3 store already uses.
-#[nativelink_test]
+#[nativelink_test(start_paused = true)]
 async fn the_requested_range_starts_at_the_offset_plus_what_was_sent() -> Result<(), Error> {
     const OFFSET: u64 = 10;
     const LENGTH: u64 = 20;
@@ -703,5 +898,128 @@ async fn the_requested_range_starts_at_the_offset_plus_what_was_sent() -> Result
             "attempt {n} asked for {range:?}, expected it to start at {OFFSET}"
         );
     }
+    Ok(())
+}
+
+/// With adaptive read concurrency on, each throttled response halves the
+/// read limit (the two here are a retry wait apart, so they are two
+/// events), and a run of answered reads grows it back one at a time.
+#[nativelink_test(start_paused = true)]
+async fn throttled_reads_halve_the_read_limit_and_successes_regrow_it() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let store = create_test_store_with_common(
+        Arc::clone(&mock),
+        CommonObjectSpec {
+            retry: Retry {
+                max_retries: 0,
+                delay: 0.0,
+                jitter: 0.0,
+                ..Default::default()
+            },
+            max_concurrent_reads: 16,
+            adaptive_read_concurrency: true,
+            min_concurrent_reads: 2,
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(store.read_limit(), Some(16));
+
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+    assert_eq!(result, VALUE.as_bytes());
+    assert_eq!(mock.request_count(), 3);
+    assert_eq!(
+        store.read_limit(),
+        Some(4),
+        "two throttles, two halvings; the download that got through is one toward regrowth"
+    );
+
+    // Sixteen answered downloads in a row (the one above was the first)
+    // add one permit.
+    for _ in 0..15 {
+        mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+        store
+            .get_part_unchunked(create_test_digest()?, 0, None)
+            .await?;
+    }
+    assert_eq!(store.read_limit(), Some(5));
+    Ok(())
+}
+
+/// Existence checks are outside the download pool: a throttled `HEAD`
+/// does not cut the limit and an answered one does not grow it.
+#[nativelink_test(start_paused = true)]
+async fn existence_checks_do_not_move_the_read_limit() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(error_response(StatusCode::ServiceUnavailable));
+    mock.push_properties(properties_ok(512));
+
+    let store = create_test_store_with_common(
+        Arc::clone(&mock),
+        CommonObjectSpec {
+            retry: Retry {
+                max_retries: 0,
+                delay: 0.0,
+                jitter: 0.0,
+                ..Default::default()
+            },
+            max_concurrent_reads: 16,
+            adaptive_read_concurrency: true,
+            min_concurrent_reads: 2,
+            ..Default::default()
+        },
+    )?;
+
+    assert_eq!(store.has(create_test_digest()?).await?, Some(512));
+    assert_eq!(mock.request_count(), 2, "the throttled HEAD was retried");
+    assert_eq!(
+        store.read_limit(),
+        Some(16),
+        "a throttled HEAD cuts nothing"
+    );
+
+    for _ in 0..16 {
+        mock.push_properties(properties_ok(512));
+        store.has(create_test_digest()?).await?;
+    }
+    assert_eq!(store.read_limit(), Some(16), "answered HEADs grow nothing");
+    Ok(())
+}
+
+/// Without `adaptive_read_concurrency` the bound is fixed at
+/// `max_concurrent_reads` whatever the store answers.
+#[nativelink_test(start_paused = true)]
+async fn a_fixed_read_limit_does_not_move_on_a_throttle() -> Result<(), Error> {
+    const VALUE: &str = "test_content";
+
+    let mock = MockTransport::new();
+    mock.push_download(error_response(StatusCode::ServiceUnavailable));
+    mock.push_download(download_ok(StatusCode::Ok, VALUE.as_bytes().to_vec()));
+
+    let store = create_test_store_with_common(
+        Arc::clone(&mock),
+        CommonObjectSpec {
+            retry: Retry {
+                max_retries: 0,
+                delay: 0.0,
+                jitter: 0.0,
+                ..Default::default()
+            },
+            max_concurrent_reads: 8,
+            ..Default::default()
+        },
+    )?;
+
+    store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await?;
+    assert_eq!(store.read_limit(), Some(8));
     Ok(())
 }

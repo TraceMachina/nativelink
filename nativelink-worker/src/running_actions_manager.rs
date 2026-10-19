@@ -68,6 +68,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+use nativelink_util::metrics::{INPUT_MOUNT_METRICS, record_input_relink, record_prepare_retry};
 use nativelink_util::metrics_utils::{AsyncCounterWrapper, CounterWithTime};
 use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
@@ -79,7 +80,7 @@ use scopeguard::{ScopeGuard, guard};
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::process;
-use tokio::sync::{Notify, Semaphore, oneshot, watch};
+use tokio::sync::{Notify, Semaphore, SemaphorePermit, oneshot, watch};
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReadDirStream;
 use tonic::Request;
@@ -87,6 +88,7 @@ use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 use crate::buck2_file_capture::Buck2FileCapture;
+use crate::input_mounts::InputMounts;
 use crate::persistent_worker::{
     Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
     WorkerKey,
@@ -727,6 +729,16 @@ fn persistent_worker_request_arguments(argv: &[String]) -> Vec<String> {
 /// overhead.
 const DOWNLOAD_TO_DIRECTORY_CONCURRENCY: usize = 64;
 
+/// One permit per blob fetched into the worker's store, from the pool the
+/// worker shares across every action it is staging. The pool is never
+/// closed, so a refusal here is a bug, not a condition.
+async fn acquire_download_permit(downloads: &Semaphore) -> Result<SemaphorePermit<'_>, Error> {
+    downloads
+        .acquire()
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Input download pool closed: {e:?}"))
+}
+
 /// Keeps every digest used by an action present in locally eviction-managed
 /// CAS tiers.
 ///
@@ -834,30 +846,73 @@ pub fn download_to_directory<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
-    download_to_directory_with_lease(cas_store, filesystem_store, digest, current_directory, None)
+    async move {
+        // A pool of this call's own; the worker's shared one arrives through
+        // `prepare_action_inputs`.
+        let downloads = Semaphore::new(DOWNLOAD_TO_DIRECTORY_CONCURRENCY);
+        download_to_directory_bounded(
+            cas_store,
+            filesystem_store,
+            digest,
+            current_directory,
+            &downloads,
+        )
+        .await
+    }
+    .boxed()
 }
 
-fn download_to_directory_with_lease<'a>(
+/// `download_to_directory` drawing its fetches from `downloads`, the pool
+/// the worker shares across the actions it stages.
+pub fn download_to_directory_bounded<'a>(
+    cas_store: &'a FastSlowStore,
+    filesystem_store: Pin<&'a FilesystemStore>,
+    digest: &'a DigestInfo,
+    current_directory: &'a str,
+    downloads: &'a Semaphore,
+) -> BoxFuture<'a, Result<(), Error>> {
+    download_to_directory_with_mounts(
+        cas_store,
+        filesystem_store,
+        digest,
+        current_directory,
+        None,
+        None,
+        downloads,
+    )
+}
+
+fn download_to_directory_with_mounts<'a>(
     cas_store: &'a FastSlowStore,
     filesystem_store: Pin<&'a FilesystemStore>,
     digest: &'a DigestInfo,
     current_directory: &'a str,
     input_lease: Option<Arc<ActionInputLease>>,
+    input_mounts: Option<Arc<InputMounts>>,
+    downloads: &'a Semaphore,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
-        let (dirs, files, inline_nodes) =
-            collect_download_links(cas_store, digest, current_directory, input_lease).await?;
+        let (dirs, files, inline_nodes) = collect_download_links(
+            cas_store,
+            digest,
+            current_directory,
+            input_lease,
+            input_mounts,
+            downloads,
+        )
+        .await?;
 
         let (exec_files, plain_files): (Vec<_>, Vec<_>) =
             files.into_iter().partition(|file| file.executable);
-        let mut links = resolve_plain_files(cas_store, filesystem_store, plain_files).await?;
-        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files).await?);
+        let mut links =
+            resolve_plain_files(cas_store, filesystem_store, plain_files, downloads).await?;
+        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files, downloads).await?);
 
         // Every directory exists before anything is written into one, so no
         // later pass has to create a parent it happens to need.
         fs::create_dir_many(dirs).await?;
-        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes).await?;
-        materialize_links(filesystem_store, links).await
+        materialize_inline_nodes(cas_store, filesystem_store, inline_nodes, downloads).await?;
+        materialize_links(cas_store, filesystem_store, links, downloads).await
     }
     .boxed()
 }
@@ -868,19 +923,22 @@ fn download_to_directory_with_lease<'a>(
 struct PendingLink {
     src: PathBuf,
     dst: PathBuf,
+    /// What `src` was resolved from, so a link whose source is gone by the
+    /// time the batch runs can be resolved and made again.
+    digest: DigestInfo,
+    executable: bool,
     /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
     /// inode cannot be dropped out from under the batch. `None` for an
     /// executable variant, which is a private file outside the entry map and so
     /// has no entry to hold.
     ///
-    /// Neither case is fully closed: a held entry pins the inode but does not
-    /// stop an eviction from *renaming* the blob, and a variant is deleted
-    /// outright by the eviction callback. Both races predate batching, which
-    /// widens the window from a single file to a whole input tree. An operator
-    /// seeing `NotFound` during staging should enable
-    /// `experimental_active_input_leases`, since a leased digest is not
-    /// evicted, or raise the store's `max_bytes`. The durable fix is a
-    /// `hard_link_locked_many` holding every read guard across the batch.
+    /// A held entry pins the inode but does not stop an eviction from renaming
+    /// the blob, and a variant is deleted outright by the eviction callback, so
+    /// a link in the batch can still find its source gone; [`relink_evicted_input`]
+    /// then fetches the blob back and links it at once. An operator who sees
+    /// those repairs often is running the store at its ceiling and should enable
+    /// `experimental_active_input_leases`, since a leased digest is not evicted,
+    /// or raise the store's `max_bytes`.
     _keepalive: Option<Arc<FileEntryImpl>>,
 }
 
@@ -895,44 +953,298 @@ struct PendingFile {
 /// materialize one at a time, for one input subtree.
 type CollectedTree = (Vec<PathBuf>, Vec<PendingFile>, Vec<InlineNode>);
 
+/// How many evicted inputs of one tree are fetched back at once.
+const INPUT_RELINK_CONCURRENCY: usize = 32;
+
+/// How many times an input is fetched into the fast store and resolved
+/// before the action fails. A store at its ceiling can take a blob away
+/// again between the fetch and the lookup, or between the lookup and the
+/// link.
+const INPUT_FETCH_ATTEMPTS: u32 = 3;
+
+/// The pause before a retry grows by this much per attempt, plus a jitter
+/// of up to the same amount taken from the digest, so the retry does not
+/// land in the eviction pass that took the blob and a tree's inputs do not
+/// all come back in one burst.
+const INPUT_FETCH_PAUSE_STEP_MS: u64 = 20;
+
+fn input_fetch_pause(attempt: u32, digest: &DigestInfo) -> Duration {
+    let attempt = u64::from(attempt);
+    let jitter = (u64::from(digest.packed_hash()[0]) * attempt) % INPUT_FETCH_PAUSE_STEP_MS;
+    Duration::from_millis(INPUT_FETCH_PAUSE_STEP_MS * attempt + jitter)
+}
+
+/// The pause before a whole input tree is fetched again doubles from here.
+const PREPARE_RETRY_PAUSE_MS: u64 = 1000;
+
+/// The pause before a whole input tree is fetched again never exceeds this.
+const PREPARE_RETRY_PAUSE_CAP_MS: u64 = 30_000;
+
+/// Whether a failed input fetch is worth trying again from this worker.
+/// These are the codes the store retrier itself treats as transient; a
+/// throttled object store surfaces as `Internal` once the retrier gives up,
+/// and an unclassified store failure as `Unknown`. The worker's own
+/// filesystem lands on those two codes as well: a full disk, a blob at
+/// its link limit or a read-only mount map to `Unknown`, a broken pipe to
+/// `Internal`. A worker whose disk is the problem has to hand the action
+/// back so it lands on a healthy one, not fetch into the same disk until
+/// the deadline, so an operating system error is never retried here. Such
+/// an error carries the OS error number in its message; a store's does not.
+fn is_transient_fetch_error(err: &Error) -> bool {
+    match err.code {
+        Code::Unavailable
+        | Code::ResourceExhausted
+        | Code::Aborted
+        | Code::DeadlineExceeded
+        | Code::DataLoss => true,
+        Code::Internal | Code::Unknown => !is_os_error(err),
+        _ => false,
+    }
+}
+
+/// Whether the error was raised by the operating system on this worker:
+/// `std::io::Error` prints those as `... (os error N)`.
+fn is_os_error(err: &Error) -> bool {
+    err.messages
+        .iter()
+        .any(|message| message.contains("(os error "))
+}
+
+/// Pause before fetching the input tree again: 1 s, 2 s, 4 s ... capped at
+/// 30 s, shortened by up to a quarter with a jitter taken from the digest so
+/// the workers that failed together do not all come back together.
+fn prepare_retry_pause(attempt: u32, digest: &DigestInfo) -> Duration {
+    let doublings = attempt.saturating_sub(1).min(5);
+    let base_ms = (PREPARE_RETRY_PAUSE_MS << doublings).min(PREPARE_RETRY_PAUSE_CAP_MS);
+    let jitter_byte = (u64::from(digest.packed_hash()[0]) * u64::from(attempt)) % 256;
+    Duration::from_millis(base_ms - base_ms * jitter_byte / 1024)
+}
+
+/// Counts the retries of one input fetch on `worker.prepare.retries` and
+/// settles it on exactly one terminal outcome once a retry was made:
+/// `recovered`, `exhausted`, `failed` when a later attempt failed for good,
+/// or `abandoned` when the fetch was dropped mid-retry by a kill or the
+/// download timeout. A fetch that succeeded or failed first time records
+/// nothing, so the terminal outcomes add up to the fetches retried.
+struct PrepareRetries<R: Fn(&'static str)> {
+    record: R,
+    retries: u32,
+    settled: bool,
+}
+
+impl<R: Fn(&'static str)> PrepareRetries<R> {
+    const fn new(record: R) -> Self {
+        Self {
+            record,
+            retries: 0,
+            settled: false,
+        }
+    }
+
+    fn retried(&mut self) {
+        self.retries += 1;
+        (self.record)("retried");
+    }
+
+    fn settle(mut self, outcome: &'static str) {
+        self.settled = true;
+        if self.retries > 0 {
+            (self.record)(outcome);
+        }
+    }
+}
+
+impl<R: Fn(&'static str)> Drop for PrepareRetries<R> {
+    fn drop(&mut self) {
+        if !self.settled && self.retries > 0 {
+            (self.record)("abandoned");
+        }
+    }
+}
+
+/// Records on `worker.prepare.retries`. A named function rather than the
+/// helper itself, so the metrics reference generator sees the call.
+fn record_prepare_outcome(outcome: &'static str) {
+    record_prepare_retry(outcome);
+}
+
+/// Fetches a blob into the fast store with `populate` and resolves it there
+/// with `resolve`, again when the store has taken it away in between.
+async fn fetch_and_resolve<T, P, PFut, R, RFut>(
+    digest: DigestInfo,
+    populate: P,
+    resolve: R,
+) -> Result<T, Error>
+where
+    P: Fn() -> PFut,
+    PFut: Future<Output = Result<(), Error>>,
+    R: Fn() -> RFut,
+    RFut: Future<Output = Result<T, Error>>,
+{
+    let mut attempt = 1;
+    loop {
+        populate()
+            .await
+            .err_tip(|| format!("Fetching {digest} for an input"))?;
+        match resolve().await {
+            Err(err) if err.code == Code::NotFound => {
+                if attempt >= INPUT_FETCH_ATTEMPTS {
+                    record_input_relink("exhausted");
+                    return Err(err);
+                }
+                tokio::time::sleep(input_fetch_pause(attempt, &digest)).await;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
 /// Executes every deferred hardlink of an input tree in one batched pass.
+///
+/// A link whose source has gone missing since it was resolved is made again
+/// from a fresh copy of the blob; any other failure fails the tree.
 async fn materialize_links(
+    cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     links: Vec<PendingLink>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     let pairs = links
         .iter()
         .map(|link| (link.src.clone(), link.dst.clone()))
         .collect();
+    let mut evicted = Vec::new();
     for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
-        let (src_path, dest) = (&link.src, &link.dst);
-        result.map_err(|e| {
-            let src_metadata = std::fs::metadata(src_path);
-            let dest_metadata = std::fs::metadata(dest);
-            let dest_parent_metadata = dest.parent().map(Path::metadata);
-            let snapshot = filesystem_store.get_eviction_snapshot();
-            warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
-            if e.code == Code::NotFound {
-                e.append(
-                    format!(
-                    "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
-                    This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
-                    To fix this issue:\n\
-                    1. Increase the 'max_bytes' value in your filesystem store configuration\n\
-                    2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
-                    3. The setting is typically found in your nativelink.json config under:\n\
-                    stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
-                    4. Restart NativeLink after making the change\n\n\
-                    If this error persists after increasing max_bytes several times, please report at:\n\
-                    https://github.com/TraceMachina/nativelink/issues\n\
-                    Include your config file and both server and client logs to help us assist you.",
-                    src_path.display(), dest.display()
-                ))
-            } else {
-                e.append(format!("Could not make hardlink from {} to {}", src_path.display(), dest.display()))
-            }
-        })?;
+        let Err(err) = result else {
+            continue;
+        };
+        // `NotFound` is the source: this walk made the destination's parent.
+        // The store evicted the blob, or deleted the variant, after it was
+        // resolved. Looking for the source now would prove nothing, since a
+        // neighbouring action that stages the same file builds the variant
+        // again within milliseconds; the link is made again from a fetch.
+        if err.code != Code::NotFound {
+            return Err(hardlink_error(filesystem_store, link, err));
+        }
+        evicted.push(link);
     }
+    if evicted.is_empty() {
+        return Ok(());
+    }
+    // The store at its ceiling is where several inputs of one tree go at
+    // once, so they are fetched back together, not one round trip each.
+    let repairs: Vec<BoxFuture<'_, Result<(), Error>>> = evicted
+        .into_iter()
+        .map(|link| relink_and_report(cas_store, filesystem_store, link, downloads).boxed())
+        .collect();
+    futures::stream::iter(repairs)
+        .buffer_unordered(INPUT_RELINK_CONCURRENCY)
+        .try_collect::<()>()
+        .await
+}
+
+async fn relink_and_report(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    link: &PendingLink,
+    downloads: &Semaphore,
+) -> Result<(), Error> {
+    let _permit = acquire_download_permit(downloads).await?;
+    info!(
+        digest = %link.digest,
+        src_path = ?link.src,
+        "Hardlink source was evicted while the input tree was staged, fetching it again"
+    );
+    relink_evicted_input(cas_store, filesystem_store, link)
+        .await
+        .map_err(|err| hardlink_error(filesystem_store, link, err))
+}
+
+/// The error a failed input hardlink surfaces as, with what an operator needs
+/// to tell an evicted source from everything else.
+fn hardlink_error(filesystem_store: Pin<&FilesystemStore>, link: &PendingLink, e: Error) -> Error {
+    let (src_path, dest) = (&link.src, &link.dst);
+    let src_metadata = std::fs::metadata(src_path);
+    let dest_metadata = std::fs::metadata(dest);
+    let dest_parent_metadata = dest.parent().map(Path::metadata);
+    let snapshot = filesystem_store.get_eviction_snapshot();
+    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
+    if e.code == Code::NotFound {
+        e.append(
+            format!(
+            "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
+            This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
+            To fix this issue:\n\
+            1. Increase the 'max_bytes' value in your filesystem store configuration\n\
+            2. Example: Change 'max_bytes: 10000000000' to 'max_bytes: 50000000000' (or higher)\n\
+            3. The setting is typically found in your nativelink.json config under:\n\
+            stores -> [your_filesystem_store] -> filesystem -> eviction_policy -> max_bytes\n\
+            4. Restart NativeLink after making the change\n\n\
+            If this error persists after increasing max_bytes several times, please report at:\n\
+            https://github.com/TraceMachina/nativelink/issues\n\
+            Include your config file and both server and client logs to help us assist you.",
+            src_path.display(), dest.display()
+        ))
+    } else {
+        e.append(format!(
+            "Could not make hardlink from {} to {}",
+            src_path.display(),
+            dest.display()
+        ))
+    }
+}
+
+/// Makes one hardlink again after the batch found its source gone.
+///
+/// Every source of an input tree is resolved before the first link is made,
+/// and a store at its ceiling can evict a blob in between: eviction renames a
+/// plain blob out from under the path that was resolved, and deletes an
+/// executable variant outright. The blob is still in the slow tier, so it is
+/// fetched back and linked at once. A plain blob is linked inside its entry's
+/// path lock, which an eviction has to take to rename it, so this link cannot
+/// lose the same race again; a variant is linked straight after it is
+/// resolved, which leaves a window of one call where the batch left a whole
+/// tree's worth.
+async fn relink_evicted_input(
+    cas_store: &FastSlowStore,
+    filesystem_store: Pin<&FilesystemStore>,
+    link: &PendingLink,
+) -> Result<(), Error> {
+    if link.executable {
+        fetch_and_resolve(
+            link.digest,
+            || cas_store.populate_fast_store(link.digest.into()),
+            || async {
+                let src = filesystem_store
+                    .get_executable_hardlink_source(&link.digest)
+                    .await
+                    .err_tip(|| {
+                        format!("Resolving the executable variant for {} again", link.digest)
+                    })?;
+                fs::hard_link(src, &link.dst).await
+            },
+        )
+        .await?;
+        record_input_relink("executable");
+        return Ok(());
+    }
+    fetch_and_resolve(
+        link.digest,
+        || cas_store.populate_fast_store(link.digest.into()),
+        || async {
+            let file_entry = filesystem_store
+                .get_file_entry_for_digest(&link.digest)
+                .await
+                .err_tip(|| "Resolving an evicted hardlink source again")?;
+            let dst = link.dst.clone();
+            file_entry
+                .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
+                .await
+        },
+    )
+    .await?;
+    record_input_relink("plain");
     Ok(())
 }
 
@@ -946,6 +1258,7 @@ async fn resolve_plain_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let mut tasks = Vec::with_capacity(files.len());
     for file in files {
@@ -956,14 +1269,14 @@ async fn resolve_plain_files(
             {
                 entry
             } else {
-                cas_store
-                    .populate_fast_store(file.digest.into())
-                    .await
-                    .err_tip(|| "Populating fast store for hard link")?;
-                filesystem_store
-                    .get_file_entry_for_digest(&file.digest)
-                    .await
-                    .err_tip(|| "During hard link")?
+                let _permit = acquire_download_permit(downloads).await?;
+                fetch_and_resolve(
+                    file.digest,
+                    || cas_store.populate_fast_store(file.digest.into()),
+                    || filesystem_store.get_file_entry_for_digest(&file.digest),
+                )
+                .await
+                .err_tip(|| "During hard link")?
             };
             // TODO: add a test for #2051: deadlock with large number of files
             let src_path = file_entry
@@ -973,6 +1286,8 @@ async fn resolve_plain_files(
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
                 dst: PathBuf::from(file.dst),
+                digest: file.digest,
+                executable: false,
                 _keepalive: Some(file_entry),
             })
         });
@@ -997,11 +1312,13 @@ async fn collect_links(
 /// tree's variants for existence in one dispatch.
 ///
 /// A variant cannot be built from a blob that is not resident, and only this
-/// caller can fetch one, so those digests are populated and retried here.
+/// caller can fetch one, so those digests are fetched and resolved here, again
+/// if the store evicts the blob before the variant is built.
 async fn resolve_exec_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
     let sources = filesystem_store
@@ -1014,18 +1331,20 @@ async fn resolve_exec_files(
             let src_path = if let Ok(src_path) = source {
                 src_path
             } else {
-                cas_store
-                    .populate_fast_store(file.digest.into())
-                    .await
-                    .err_tip(|| "Populating fast store for executable")?;
-                filesystem_store
-                    .get_executable_hardlink_source(&file.digest)
-                    .await
-                    .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
+                let _permit = acquire_download_permit(downloads).await?;
+                fetch_and_resolve(
+                    file.digest,
+                    || cas_store.populate_fast_store(file.digest.into()),
+                    || filesystem_store.get_executable_hardlink_source(&file.digest),
+                )
+                .await
+                .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
             };
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
                 dst: PathBuf::from(file.dst),
+                digest: file.digest,
+                executable: true,
                 _keepalive: None,
             })
         });
@@ -1044,14 +1363,33 @@ fn collect_download_links<'a>(
     digest: &'a DigestInfo,
     current_directory: &'a str,
     input_lease: Option<Arc<ActionInputLease>>,
+    input_mounts: Option<Arc<InputMounts>>,
+    downloads: &'a Semaphore,
 ) -> BoxFuture<'a, Result<CollectedTree, Error>> {
     async move {
         if let Some(input_lease) = &input_lease {
             input_lease.lease_digest(digest);
         }
-        let directory = get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
-            .await
-            .err_tip(|| "Converting digest to Directory")?;
+        if let Some(mounts) = &input_mounts {
+            let lease = input_lease
+                .as_deref()
+                .map(|lease| -> &dyn crate::directory_cache::DigestLease { lease });
+            if mounts
+                .prepare(Path::new(current_directory), *digest, lease)
+                .await?
+            {
+                return Ok((Vec::new(), Vec::new(), Vec::new()));
+            }
+        }
+        // The permit covers the fetch alone, never the walk below it: a
+        // parent holding one while its children wait for theirs would
+        // deadlock a tree deeper than the pool.
+        let directory = {
+            let _permit = acquire_download_permit(downloads).await?;
+            get_and_decode_digest::<ProtoDirectory>(cas_store, digest.into())
+                .await
+                .err_tip(|| "Converting digest to Directory")?
+        };
         let mut futures = Vec::new();
         let mut pending_files = Vec::new();
         let mut inline_nodes = Vec::new();
@@ -1107,6 +1445,7 @@ fn collect_download_links<'a>(
                 input_lease.lease_digest(&digest);
             }
             let input_lease = input_lease.clone();
+            let input_mounts = input_mounts.clone();
             futures.push(
                 async move {
                     let (mut sub_dirs, files, inline) = collect_download_links(
@@ -1114,6 +1453,8 @@ fn collect_download_links<'a>(
                         &digest,
                         &new_directory_path,
                         input_lease,
+                        input_mounts,
+                        downloads,
                     )
                     .await
                     .err_tip(|| format!("in download_to_directory : {new_directory_path}"))?;
@@ -1208,6 +1549,7 @@ async fn materialize_inline_nodes(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     nodes: Vec<InlineNode>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     let mut futures = Vec::with_capacity(nodes.len());
     for node in nodes {
@@ -1224,7 +1566,10 @@ async fn materialize_inline_nodes(
                     mtime,
                     custom_unix_mode,
                 } => {
-                    cas_store.populate_fast_store(digest.into()).await?;
+                    {
+                        let _permit = acquire_download_permit(downloads).await?;
+                        cas_store.populate_fast_store(digest.into()).await?;
+                    }
                     async move {
                         if is_zero_digest(digest) {
                             // Zero-digest files are never persisted by the
@@ -1314,6 +1659,7 @@ pub async fn prepare_action_inputs(
     filesystem_store: Pin<&FilesystemStore>,
     digest: &DigestInfo,
     work_directory: &str,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     prepare_action_inputs_with_lease(
         directory_cache,
@@ -1322,6 +1668,7 @@ pub async fn prepare_action_inputs(
         digest,
         work_directory,
         None,
+        downloads,
     )
     .await
 }
@@ -1333,6 +1680,7 @@ async fn prepare_action_inputs_with_lease(
     digest: &DigestInfo,
     work_directory: &str,
     input_lease: Option<Arc<ActionInputLease>>,
+    downloads: &Semaphore,
 ) -> Result<(), Error> {
     // Try cache first if available. Cache hits are safe while an action lease
     // is active because the directory cache pins its own materialized tree
@@ -1398,12 +1746,14 @@ async fn prepare_action_inputs_with_lease(
     }
 
     // Traditional path (cache disabled or failed)
-    download_to_directory_with_lease(
+    download_to_directory_with_mounts(
         cas_store,
         filesystem_store,
         digest,
         work_directory,
         input_lease,
+        None,
+        downloads,
     )
     .await
 }
@@ -2079,6 +2429,7 @@ struct RunningActionImplState {
     // that prevented the action from running, upload failures, timeouts, exc...
     // but we have (or could have) the action results (like stderr/stdout).
     error: Option<Error>,
+    input_mounts: Option<Arc<InputMounts>>,
 }
 
 #[derive(Debug)]
@@ -2137,6 +2488,7 @@ impl RunningActionImpl {
                 resource_usage: None,
                 execution_metadata,
                 error: None,
+                input_mounts: None,
             }),
             // Set to true only after the action is inserted into the manager.
             // The constructor can fail the operation-id uniqueness check
@@ -2162,7 +2514,244 @@ impl RunningActionImpl {
     ///
     /// This function will aggressively download and spawn potentially thousands of futures. It is
     /// up to the stores to rate limit if needed.
-    async fn inner_prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
+    /// Fetches the Command and the input tree into the work directory,
+    /// again after a transient store failure while `deadline` (none:
+    /// unbounded) leaves room for another attempt. A worker that already
+    /// holds part of the tree in its fast store finishes the job here rather
+    /// than handing the action back for another worker to fetch everything
+    /// against the same struggling store. The two fetches are retried
+    /// together: a Command read that fails during the same storm would
+    /// otherwise fail the action while the inputs were still being retried.
+    /// A `prefetched_command`, read earlier to choose the read-only input
+    /// mounts, is used instead of reading the Command again.
+    async fn fetch_with_retry(
+        &self,
+        filesystem_store: Pin<&FilesystemStore>,
+        deadline: Option<Instant>,
+        prefetched_command: Option<ProtoCommand>,
+    ) -> Result<ProtoCommand, Error> {
+        let started = Instant::now();
+        let mut attempt: u32 = 1;
+        let mut retries = PrepareRetries::new(record_prepare_outcome);
+        loop {
+            let command_fut = async {
+                match &prefetched_command {
+                    Some(command) => Ok(command.clone()),
+                    None => self.fetch_command().await,
+                }
+            };
+            let inputs_fut = self
+                .metrics()
+                .download_to_directory
+                .wrap(self.download_inputs(filesystem_store));
+            let err = match try_join(command_fut, inputs_fut).await {
+                Ok((command, ())) => {
+                    if attempt > 1 {
+                        info!(
+                            operation_id = %self.operation_id,
+                            attempt,
+                            elapsed_s = started.elapsed().as_secs(),
+                            "prepare_action: input fetch recovered"
+                        );
+                    }
+                    retries.settle("recovered");
+                    return Ok(command);
+                }
+                Err(err) if is_transient_fetch_error(&err) => err,
+                Err(err) => {
+                    retries.settle("failed");
+                    return Err(err);
+                }
+            };
+            let pause = prepare_retry_pause(attempt, &self.action_info.input_root_digest);
+            if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
+                retries.settle("exhausted");
+                return Err(err.append(format!(
+                    "Input fetch of operation {} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
+                    self.operation_id,
+                    started.elapsed().as_secs()
+                )));
+            }
+            warn!(
+                operation_id = %self.operation_id,
+                attempt,
+                wait_ms = pause.as_millis(),
+                error = %err,
+                "prepare_action: input fetch failed, retrying"
+            );
+            retries.retried();
+            // Start the next attempt from an empty directory: the
+            // directories and links of the partial tree would otherwise
+            // fail it with AlreadyExists.
+            if let Err(err) = self.clear_work_directory().await {
+                retries.settle("failed");
+                return Err(err);
+            }
+            tokio::time::sleep(pause).await;
+            attempt += 1;
+        }
+    }
+
+    /// Empties the work directory between two fetch attempts.
+    async fn clear_work_directory(&self) -> Result<(), Error> {
+        if let Err(remove_err) = fs::remove_dir_all(&self.work_directory).await
+            && remove_err.code != Code::NotFound
+        {
+            return Err(remove_err.append(format!(
+                "Failed to clear work directory {} before fetching the inputs again",
+                self.work_directory
+            )));
+        }
+        fs::create_dir(&self.work_directory)
+            .await
+            .err_tip(|| format!("Error recreating work directory {}", self.work_directory))
+    }
+
+    /// Fetches and decodes the action's Command.
+    async fn fetch_command(&self) -> Result<ProtoCommand, Error> {
+        self.metrics()
+            .get_proto_command_from_store
+            .wrap(async {
+                get_and_decode_digest::<ProtoCommand>(
+                    self.running_actions_manager.cas_store.as_ref(),
+                    self.action_info.command_digest.into(),
+                )
+                .await
+                .err_tip(|| "Converting command_digest to Command")
+            })
+            .await
+    }
+
+    /// Chooses the read-only input mounts for this action and keeps them in
+    /// its state, where their cache pins are held through cleanup. Whether
+    /// mounts apply depends on the Command's output paths, so with mounts
+    /// configured the Command is read here and returned for the fetch to
+    /// reuse; without them nothing is read, and the Command and inputs are
+    /// fetched concurrently. A failure here only means ordinary input setup:
+    /// the fetch that follows reads the Command and inputs with its retries.
+    async fn select_input_mounts(&self) -> Option<ProtoCommand> {
+        let manager = &self.running_actions_manager;
+        #[cfg(target_os = "linux")]
+        let mount_paths = &manager.readonly_input_mounts;
+        #[cfg(not(target_os = "linux"))]
+        let mount_paths: &[String] = &[];
+        if mount_paths.is_empty() {
+            return None;
+        }
+        let command = if action_supports_persistent_workers(&self.action_info).is_none() {
+            match self.fetch_command().await {
+                Ok(command) => Some(command),
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "Reading the Command to choose input mounts failed; using ordinary input setup"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut input_mounts = match (&command, &manager.directory_cache) {
+            (Some(command), Some(cache)) => InputMounts::for_command(
+                cache.clone(),
+                mount_paths,
+                Path::new(&self.work_directory),
+                command,
+            ),
+            _ => None,
+        };
+        if input_mounts.is_some() {
+            match crate::input_mounts::has_mountable_inputs(
+                &manager.cas_store,
+                self.action_info.input_root_digest,
+                mount_paths,
+                self.input_lease
+                    .as_deref()
+                    .map(|lease| -> &dyn crate::directory_cache::DigestLease { lease }),
+            )
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => input_mounts = None,
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        "Checking for mountable inputs failed; using ordinary input setup"
+                    );
+                    input_mounts = None;
+                }
+            }
+        }
+        if input_mounts.is_none() {
+            INPUT_MOUNT_METRICS.fallbacks.add(1, &[]);
+        }
+        self.state.lock().input_mounts.clone_from(&input_mounts);
+        command
+    }
+
+    /// Materializes the input tree into the work directory: through the
+    /// read-only input mounts chosen for this action, which leave a mount
+    /// point for each selected subtree, or else through the directory cache
+    /// when one is configured. If preparing the mounts fails, they are
+    /// dropped and the tree is downloaded without them; later attempts of
+    /// the fetch then take the ordinary path.
+    async fn download_inputs(&self, filesystem_store: Pin<&FilesystemStore>) -> Result<(), Error> {
+        let manager = &self.running_actions_manager;
+        let downloads = &manager.input_downloads;
+        let input_mounts = self.state.lock().input_mounts.clone();
+        if input_mounts.is_none() {
+            return prepare_action_inputs_with_lease(
+                &manager.directory_cache,
+                &manager.cas_store,
+                filesystem_store,
+                &self.action_info.input_root_digest,
+                &self.work_directory,
+                self.input_lease.clone(),
+                downloads,
+            )
+            .await;
+        }
+        let result = download_to_directory_with_mounts(
+            &manager.cas_store,
+            filesystem_store,
+            &self.action_info.input_root_digest,
+            &self.work_directory,
+            self.input_lease.clone(),
+            input_mounts,
+            downloads,
+        )
+        .await;
+        if let Err(error) = result {
+            INPUT_MOUNT_METRICS.prepare_failures.add(1, &[]);
+            INPUT_MOUNT_METRICS.fallbacks.add(1, &[]);
+            warn!(
+                ?error,
+                "Input mount preparation failed; retrying without mounts"
+            );
+            // No child has started. Discard partial inputs before
+            // releasing pins and retrying the ordinary download once.
+            fs::remove_dir_all(&self.work_directory).await?;
+            self.state.lock().input_mounts.take();
+            fs::create_dir(&self.work_directory).await?;
+            download_to_directory_with_mounts(
+                &manager.cas_store,
+                filesystem_store,
+                &self.action_info.input_root_digest,
+                &self.work_directory,
+                self.input_lease.clone(),
+                None,
+                downloads,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn inner_prepare_action(
+        self: Arc<Self>,
+        download_deadline: Option<Instant>,
+    ) -> Result<Arc<Self>, Error> {
         // Before anything lands on disk: an action that reserved more than
         // is free is refused as backpressure, not run into ENOSPC halfway
         // through its inputs. Free means free after what the actions
@@ -2207,41 +2796,19 @@ impl RunningActionImpl {
                 (self.running_actions_manager.callbacks.now_fn)();
         }
         let command = {
-            // Download and build out our input files/folders. Also fetch and decode our Command.
-            let command_fut = self.metrics().get_proto_command_from_store.wrap(async {
-                get_and_decode_digest::<ProtoCommand>(
-                    self.running_actions_manager.cas_store.as_ref(),
-                    self.action_info.command_digest.into(),
-                )
-                .await
-                .err_tip(|| "Converting command_digest to Command")
-                .map_err(tag_missing_input)
-            });
             let filesystem_store_pin =
                 Pin::new(self.running_actions_manager.filesystem_store.as_ref());
-            let (command, ()) = try_join(command_fut, async {
-                fs::create_dir(&self.work_directory)
-                    .await
-                    .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
-                // Now the work directory has been created, we have to clean up.
-                self.did_cleanup.store(false, Ordering::Release);
-                // Download the input files/folder and place them into the temp directory.
-                // Use directory cache if available for better performance.
-                self.metrics()
-                    .download_to_directory
-                    .wrap(prepare_action_inputs_with_lease(
-                        &self.running_actions_manager.directory_cache,
-                        &self.running_actions_manager.cas_store,
-                        filesystem_store_pin,
-                        &self.action_info.input_root_digest,
-                        &self.work_directory,
-                        self.input_lease.clone(),
-                    ))
-                    .await
-                    .map_err(tag_missing_input)
-            })
-            .await?;
-            command
+            let prefetched_command = self.select_input_mounts().await;
+            fs::create_dir(&self.work_directory)
+                .await
+                .err_tip(|| format!("Error creating work directory {}", self.work_directory))?;
+            // Now the work directory has been created, we have to clean up.
+            self.did_cleanup.store(false, Ordering::Release);
+            // Fetch and decode the Command and download the input tree into
+            // the work directory, retried together after a store failure.
+            self.fetch_with_retry(filesystem_store_pin, download_deadline, prefetched_command)
+                .await
+                .map_err(tag_missing_input)?
         };
         {
             // Create all directories needed for our output paths. This is required by the bazel spec.
@@ -2295,6 +2862,12 @@ impl RunningActionImpl {
         arg: &OsStr,
         working_directory: &String,
     ) -> Result<PathBuf, Error> {
+        #[cfg(target_os = "linux")]
+        if let Some(mounts) = self.state.lock().input_mounts.as_ref()
+            && let Some(path) = mounts.executable_path(working_directory, arg)?
+        {
+            return Ok(path);
+        }
         // If the program contains a slash, we treat it as a path and resolve it relative to the work directory.
         Ok(if Path::new(arg).components().count() > 1 {
             let canonical_path = PathBuf::from(&self.work_directory)
@@ -2730,15 +3303,22 @@ impl RunningActionImpl {
                     None
                 };
 
+                let input_mounts = self.state.lock().input_mounts.clone();
+                let bind_mounts = input_mounts
+                    .as_ref()
+                    .map(|mounts| mounts.bind_mounts())
+                    .transpose()?
+                    .unwrap_or_default();
                 // SAFETY: This function is specifically designed to operate in a async-signal-safe
                 // environment.
                 unsafe {
                     command_builder.pre_exec(move || {
-                        crate::namespace_utils::configure_namespace(
+                        crate::namespace_utils::configure_namespace_with_input_mounts(
                             mount,
                             tmp_directory.as_deref(),
                             &root_action_directory,
                             &action_directory,
+                            &bind_mounts,
                         )
                     });
                 }
@@ -3632,9 +4212,11 @@ impl Drop for RunningActionImpl {
         let running_actions_manager = self.running_actions_manager.clone();
         let action_directory = self.action_directory.clone();
         let input_lease = self.input_lease.clone();
+        let input_mounts = self.state.get_mut().input_mounts.take();
         background_spawn!("running_action_impl_drop", async move {
             let cleanup_result =
                 do_cleanup(&running_actions_manager, &operation_id, &action_directory).await;
+            drop(input_mounts);
             if let Some(input_lease) = input_lease {
                 input_lease.release().await;
             }
@@ -3660,12 +4242,25 @@ impl RunningAction for RunningActionImpl {
         let operation_id = self.operation_id.clone();
         let metrics = self.metrics().clone();
         let mut kill_rx = self.kill_token.subscribe();
+        // The retry loop inside stops short of this; the timeout below is
+        // the backstop for an attempt that never answers. The retries are
+        // also bounded by the action's own timeout: the scheduler ends the
+        // action soon after that passes, whatever the worker is still
+        // fetching. A window too far out to represent leaves the retries
+        // unbounded, as the timeout is.
+        let action_timeout = self.action_info.timeout;
+        let retry_window = if action_timeout.is_zero() {
+            download_timeout
+        } else {
+            download_timeout.min(action_timeout)
+        };
+        let download_deadline = Instant::now().checked_add(retry_window);
         // Boxed: the prepare state machine is large, and pinning it on the
         // stack next to the select below overflowed a test thread.
         let mut prepare_fut = Box::pin(
             metrics
                 .prepare_action
-                .wrap(Self::inner_prepare_action(self)),
+                .wrap(Self::inner_prepare_action(self, download_deadline)),
         );
         // A fetch that never answers would otherwise hold the slot for good
         // while the worker's keepalives say it is fine: name it every minute
@@ -3808,6 +4403,7 @@ impl RunningAction for RunningActionImpl {
                 .await;
                 self.has_manager_entry.store(false, Ordering::Release);
                 self.did_cleanup.store(true, Ordering::Release);
+                self.state.lock().input_mounts.take();
                 // The work directory and manager entry are gone before the
                 // lease is released. If this future is cancelled while the
                 // release task is finishing, Drop still observes a completed
@@ -3985,6 +4581,9 @@ pub struct ExecutionConfiguration {
     pub kill_grace: Duration,
     /// Point `TMPDIR` at a directory of the action's own, removed with it.
     pub set_tmpdir: bool,
+    /// How many input blobs the worker fetches into its store at once,
+    /// across every action it is staging; 0 takes the default of 64.
+    pub max_concurrent_input_downloads: usize,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -4293,6 +4892,8 @@ pub struct RunningActionsManagerArgs<'a> {
     /// exceed their configured `max_bytes` / `max_count` eviction limits.
     pub active_input_leases: bool,
     #[cfg(target_os = "linux")]
+    pub readonly_input_mounts: Vec<String>,
+    #[cfg(target_os = "linux")]
     pub use_namespaces: UseNamespaces,
 }
 
@@ -4359,6 +4960,12 @@ pub struct RunningActionsManagerImpl {
     /// Whether active action inputs are leased against eviction in the local
     /// CAS tiers (opt-in via `experimental_active_input_leases`).
     active_input_leases: bool,
+    /// The pool every input fetch draws a permit from, shared by all the
+    /// actions this worker stages; see
+    /// `ExecutionConfiguration::max_concurrent_input_downloads`.
+    input_downloads: Semaphore,
+    #[cfg(target_os = "linux")]
+    readonly_input_mounts: Vec<String>,
     persistent_worker_pool: PersistentWorkerPool,
     /// Retires idle persistent workers; ends with the manager.
     _persistent_worker_sweeper: JoinHandleDropGuard<()>,
@@ -4366,10 +4973,29 @@ pub struct RunningActionsManagerImpl {
 }
 
 impl RunningActionsManagerImpl {
+    /// Permits free in the input fetch pool right now; with nothing staging,
+    /// the pool's size.
+    pub fn free_input_downloads(&self) -> usize {
+        self.input_downloads.available_permits()
+    }
+
     pub fn new_with_callbacks(
         args: RunningActionsManagerArgs<'_>,
         callbacks: Callbacks,
     ) -> Result<Self, Error> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::input_mounts::validate_paths(&args.readonly_input_mounts)?;
+            if !args.readonly_input_mounts.is_empty()
+                && (!matches!(args.use_namespaces, UseNamespaces::YesAndMount { .. })
+                    || args.directory_cache.is_none())
+            {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Read-only input mounts require Linux mount namespaces and a directory cache"
+                ));
+            }
+        }
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
         let filesystem_store = args
             .cas_store
@@ -4384,9 +5010,16 @@ impl RunningActionsManagerImpl {
         let persistent_worker_pool =
             PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
         let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
+        let input_downloads = Semaphore::new(
+            match args.execution_configuration.max_concurrent_input_downloads {
+                0 => DOWNLOAD_TO_DIRECTORY_CONCURRENCY,
+                n => n,
+            },
+        );
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
+            input_downloads,
             cas_store: args.cas_store,
             filesystem_store,
             upload_action_results: UploadActionResults::new(
@@ -4414,6 +5047,8 @@ impl RunningActionsManagerImpl {
             cleanup_complete_notify: Arc::new(Notify::new()),
             directory_cache: args.directory_cache,
             active_input_leases: args.active_input_leases,
+            #[cfg(target_os = "linux")]
+            readonly_input_mounts: args.readonly_input_mounts,
             persistent_worker_pool,
             _persistent_worker_sweeper: persistent_worker_sweeper,
             buck2_captures: Mutex::new(HashMap::new()),
@@ -5022,4 +5657,226 @@ pub struct Metrics {
         help = "Stats about the input-directory cache (hits, misses, subtree reuse, evictions, size)."
     )]
     directory_cache: Option<Weak<crate::directory_cache::DirectoryCache>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use core::sync::atomic::AtomicU32;
+
+    use nativelink_macro::nativelink_test;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn test_digest(first_byte: u8) -> DigestInfo {
+        let mut hash = [0u8; 32];
+        hash[0] = first_byte;
+        DigestInfo::new(hash, 1)
+    }
+
+    /// Runs `fetch_and_resolve` against a resolve step that fails with
+    /// `fail_with` for the first `failures` calls and succeeds after, and
+    /// returns the result with how often each step ran.
+    async fn drive(failures: u32, fail_with: Code) -> (Result<u32, Error>, u32, u32) {
+        let populates = AtomicU32::new(0);
+        let resolves = AtomicU32::new(0);
+        let result = fetch_and_resolve(
+            test_digest(0),
+            || async {
+                populates.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+            || async {
+                let call = resolves.fetch_add(1, Ordering::Relaxed) + 1;
+                if call <= failures {
+                    return Err(make_err!(fail_with, "resolve attempt {call} failed"));
+                }
+                Ok(call)
+            },
+        )
+        .await;
+        (
+            result,
+            populates.load(Ordering::Relaxed),
+            resolves.load(Ordering::Relaxed),
+        )
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_retries_a_missing_blob() {
+        let (result, populates, resolves) = drive(2, Code::NotFound).await;
+        assert_eq!(result.unwrap(), 3);
+        assert_eq!(populates, 3);
+        assert_eq!(resolves, 3);
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_gives_up_after_the_last_attempt() {
+        let (result, populates, resolves) = drive(3, Code::NotFound).await;
+        assert_eq!(result.unwrap_err().code, Code::NotFound);
+        assert_eq!(populates, INPUT_FETCH_ATTEMPTS);
+        assert_eq!(resolves, INPUT_FETCH_ATTEMPTS);
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_returns_other_errors_at_once() {
+        let (result, populates, resolves) = drive(1, Code::Internal).await;
+        assert_eq!(result.unwrap_err().code, Code::Internal);
+        assert_eq!(populates, 1);
+        assert_eq!(resolves, 1);
+    }
+
+    #[nativelink_test]
+    async fn fetch_and_resolve_stops_when_the_fetch_fails() {
+        let resolves = AtomicU32::new(0);
+        let result: Result<(), Error> = fetch_and_resolve(
+            test_digest(0),
+            || async { Err(make_err!(Code::Unavailable, "slow store is down")) },
+            || async {
+                resolves.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err().code, Code::Unavailable);
+        assert_eq!(resolves.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn input_fetch_pause_grows_with_the_attempt_and_stays_bounded() {
+        let step = Duration::from_millis(INPUT_FETCH_PAUSE_STEP_MS);
+        for first_byte in [0u8, 1, 19, 20, 127, 255] {
+            let digest = test_digest(first_byte);
+            for attempt in 1..INPUT_FETCH_ATTEMPTS {
+                let pause = input_fetch_pause(attempt, &digest);
+                assert!(pause >= step * attempt, "{pause:?} for attempt {attempt}");
+                assert!(
+                    pause < step * (attempt + 1),
+                    "{pause:?} for attempt {attempt}"
+                );
+            }
+        }
+        assert_ne!(
+            input_fetch_pause(1, &test_digest(3)),
+            input_fetch_pause(1, &test_digest(7))
+        );
+    }
+
+    #[test]
+    fn prepare_retry_pause_doubles_and_stays_under_the_cap() {
+        let cap = Duration::from_millis(PREPARE_RETRY_PAUSE_CAP_MS);
+        for first_byte in [0u8, 1, 19, 127, 255] {
+            let digest = test_digest(first_byte);
+            for attempt in 1..=10u32 {
+                let base = Duration::from_millis(
+                    (PREPARE_RETRY_PAUSE_MS << attempt.saturating_sub(1).min(5))
+                        .min(PREPARE_RETRY_PAUSE_CAP_MS),
+                );
+                let pause = prepare_retry_pause(attempt, &digest);
+                assert!(pause <= base, "{pause:?} for attempt {attempt}");
+                assert!(pause > base * 3 / 4, "{pause:?} for attempt {attempt}");
+                assert!(pause <= cap, "{pause:?} for attempt {attempt}");
+            }
+        }
+        assert_eq!(
+            prepare_retry_pause(1, &test_digest(0)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            prepare_retry_pause(2, &test_digest(0)),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            prepare_retry_pause(3, &test_digest(0)),
+            Duration::from_secs(4)
+        );
+        assert_eq!(prepare_retry_pause(9, &test_digest(0)), cap);
+        assert_ne!(
+            prepare_retry_pause(1, &test_digest(3)),
+            prepare_retry_pause(1, &test_digest(7))
+        );
+    }
+
+    #[test]
+    fn transient_fetch_errors_are_the_retrier_codes() {
+        for code in [
+            Code::Unavailable,
+            Code::ResourceExhausted,
+            Code::Aborted,
+            Code::Internal,
+            Code::Unknown,
+            Code::DeadlineExceeded,
+            Code::DataLoss,
+        ] {
+            let err = make_err!(code, "store answered 503 ServerBusy");
+            assert!(is_transient_fetch_error(&err), "{code:?}");
+        }
+        for code in [
+            Code::NotFound,
+            Code::InvalidArgument,
+            Code::FailedPrecondition,
+            Code::PermissionDenied,
+            Code::Unauthenticated,
+            Code::Unimplemented,
+            Code::OutOfRange,
+            Code::AlreadyExists,
+            Code::Cancelled,
+        ] {
+            let err = make_err!(code, "store answered");
+            assert!(!is_transient_fetch_error(&err), "{code:?}");
+        }
+    }
+
+    /// The worker's own disk failing maps to the same codes a store
+    /// failure does, but is never retried on this worker. The error
+    /// numbers are Linux's (ENOSPC, EPIPE), so that part runs on unix.
+    #[test]
+    fn an_operating_system_error_is_not_a_transient_fetch_error() {
+        #[cfg(target_family = "unix")]
+        {
+            let disk_full = Error::from(std::io::Error::from_raw_os_error(28));
+            assert_eq!(disk_full.code, Code::Unknown);
+            assert!(!is_transient_fetch_error(&disk_full), "{disk_full:?}");
+            let broken_pipe =
+                Error::from(std::io::Error::from_raw_os_error(32)).append("Writing an input");
+            assert_eq!(broken_pipe.code, Code::Internal);
+            assert!(!is_transient_fetch_error(&broken_pipe), "{broken_pipe:?}");
+        }
+        // What the standard library prints for any OS error, whatever the
+        // platform's number for it.
+        let os_error = Error::from(std::io::Error::other(
+            "No space left on device (os error 28)",
+        ));
+        assert_eq!(os_error.code, Code::Internal);
+        assert!(!is_transient_fetch_error(&os_error), "{os_error:?}");
+        // A store that reset the connection is not this worker's disk.
+        let reset = Error::from(std::io::Error::from(std::io::ErrorKind::ConnectionReset));
+        assert_eq!(reset.code, Code::Unavailable);
+        assert!(is_transient_fetch_error(&reset), "{reset:?}");
+    }
+
+    /// Every retried fetch settles on one terminal outcome, dropped ones
+    /// included; a fetch never retried records nothing.
+    #[test]
+    fn prepare_retries_settle_once() {
+        let recorded = std::cell::RefCell::new(Vec::new());
+        let record = |outcome: &'static str| recorded.borrow_mut().push(outcome);
+
+        let mut retries = PrepareRetries::new(record);
+        retries.retried();
+        retries.retried();
+        retries.settle("recovered");
+        assert_eq!(*recorded.borrow(), vec!["retried", "retried", "recovered"]);
+
+        recorded.borrow_mut().clear();
+        PrepareRetries::new(record).settle("failed");
+        assert!(recorded.borrow().is_empty(), "no retry, nothing to settle");
+
+        recorded.borrow_mut().clear();
+        {
+            let mut retries = PrepareRetries::new(record);
+            retries.retried();
+        }
+        assert_eq!(*recorded.borrow(), vec!["retried", "abandoned"]);
+    }
 }

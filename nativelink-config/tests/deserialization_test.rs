@@ -1,4 +1,3 @@
-#![allow(clippy::decimal_literal_representation)]
 // Copyright 2024 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");

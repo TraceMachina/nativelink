@@ -184,6 +184,14 @@ pub async fn get_permit() -> Result<SemaphorePermit<'static>, Error> {
         .map_err(|e| make_err!(Code::Internal, "Open file semaphore closed {:?}", e))
 }
 /// Acquire a permit from the open file semaphore and call a raw function.
+///
+/// `f` runs on the blocking pool, so it must be *purely* blocking `std::fs`
+/// work. It must never `block_on` an async operation: `tokio::fs` is itself
+/// implemented with `spawn_blocking`, so a nested `block_on` needs a second
+/// pool thread while already holding one. Enough concurrent callers then park
+/// every pool thread on inner tasks that can never be scheduled, freezing all
+/// `fs::` operations in the process. Use [`get_permit`] plus a direct `.await`
+/// for anything already async (see [`read_dir`], [`symlink`]).
 #[inline]
 pub async fn call_with_permit<F, T>(f: F) -> Result<T, Error>
 where
@@ -435,15 +443,13 @@ impl AsMut<tokio::fs::ReadDir> for ReadDir {
 
 pub async fn read_dir(path: impl AsRef<Path>) -> Result<ReadDir, Error> {
     let path = path.as_ref().to_owned();
-    let (permit, inner) = call_with_permit(move |permit| {
-        Ok((
-            permit,
-            tokio::runtime::Handle::current()
-                .block_on(tokio::fs::read_dir(path))
-                .map_err(Into::<Error>::into)?,
-        ))
-    })
-    .await?;
+    // Deliberately NOT `call_with_permit`: `tokio::fs::read_dir` is already
+    // async, so it must be awaited directly rather than `block_on`ed from a
+    // blocking-pool thread. See `call_with_permit` for why.
+    let permit = get_permit().await?;
+    let inner = tokio::fs::read_dir(path)
+        .await
+        .map_err(Into::<Error>::into)?;
     Ok(ReadDir { permit, inner })
 }
 
@@ -507,6 +513,13 @@ pub async fn symlink_metadata(path: impl AsRef<Path>) -> Result<Metadata, Error>
 // We can't just use the stock remove_dir_all as it falls over if someone's set readonly
 // permissions. This version walks the directories and fixes the permissions where needed
 // before deleting everything.
+//
+// Only directories are touched. Unlinking a file needs write and search
+// permission on its directory, never on the file itself, and the files of
+// a worker's tree are hardlinks to CAS blobs and executable variants that
+// other actions share: a chmod on one of those changes the inode for every
+// tree it is linked into, and an executable variant would lose its execute
+// bit under the actions still running it.
 #[cfg(not(target_family = "windows"))]
 fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
     // Because otherwise Windows builds complain about these things not being used
@@ -532,9 +545,6 @@ fn internal_remove_dir_all(path: impl AsRef<Path>) -> Result<(), Error> {
                 }
                 e @ Err(_) => e.err_tip(|| format!("Removing {}", entry.path().display()))?,
             }
-        } else if metadata.is_file() {
-            std::fs::set_permissions(entry.path(), Permissions::from_mode(0o600))
-                .err_tip(|| format!("Setting permissions for {}", entry.path().display()))?;
         }
     }
 

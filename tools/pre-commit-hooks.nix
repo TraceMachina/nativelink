@@ -3,6 +3,7 @@
   nightly-rust,
   generate-bazel-rc,
   generate-stores-config,
+  flake-root,
   ...
 }: let
   excludes = ["nativelink-proto/genproto"];
@@ -127,7 +128,8 @@ in {
   shfmt = {
     args = ["--indent" "4" "--space-redirects"];
     enable = true;
-    inherit excludes;
+    # Messes with COMMANDS formatting
+    excludes = ["toolchain-examples/rbe/cmds.sh"] ++ excludes;
   };
 
   # Starlark
@@ -199,6 +201,21 @@ in {
     entry = "${generate-stores-config}/bin/generate-stores-config nativelink-config/src/stores.rs nativelink-config/examples/stores-config.json5";
     name = "generate-stores-config";
     files = "nativelink-config/src/stores.rs|nativelink-config/examples/stores-config.json5";
+    pass_filenames = false;
+  };
+
+  # Check licenses
+  check-license = {
+    description = "Check licenses";
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScriptBin "check-license" ''
+        set -eu
+
+        ${pkgs.python3}/bin/python $(${flake-root}/bin/flake-root)/tools/check_license.py $(${flake-root}/bin/flake-root)
+      '';
+    in "${script}/bin/check-license";
+    types = ["rust"];
     pass_filenames = false;
   };
 }

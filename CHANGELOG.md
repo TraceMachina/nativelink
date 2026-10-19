@@ -3,6 +3,99 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.7](https://github.com/TraceMachina/nativelink/compare/v1.7.6..v1.7.7) - 2026-10-14
+
+
+
+### ⛰️  Features
+
+- Count retries, recoveries and exhausted retries per client ([#2930](https://github.com/TraceMachina/nativelink/issues/2930)) - ([9ff16ea](https://github.com/TraceMachina/nativelink/commit/9ff16ea8c354b4406aefec31f4e490733e70d365))
+- Hold a worker for a queued action whose reservation only fits an idle one ([#2933](https://github.com/TraceMachina/nativelink/issues/2933)) - ([0fd9cd2](https://github.com/TraceMachina/nativelink/commit/0fd9cd26545794e4f71f867147d739bd17d91df9))
+- Retry an action's input fetch on the worker after a transient store failure ([#2932](https://github.com/TraceMachina/nativelink/issues/2932)) - ([1911c9c](https://github.com/TraceMachina/nativelink/commit/1911c9c308a21a6fe1feac77ec6dbf4162937efe))
+- Honor Retry-After on throttled Azure blob responses ([#2931](https://github.com/TraceMachina/nativelink/issues/2931)) - ([00d3b7f](https://github.com/TraceMachina/nativelink/commit/00d3b7f0a66ae0f821fb5fa2bc1967e83d2ca612))
+- Report queued and executing actions by age ([#2929](https://github.com/TraceMachina/nativelink/issues/2929)) - ([d06d9c9](https://github.com/TraceMachina/nativelink/commit/d06d9c9b4fb2ba64cbeb51784712a2bbbb10cc03))
+
+### 🐛 Bug Fixes
+
+- Clear a read-only tree without changing the mode of the files it links to ([#2934](https://github.com/TraceMachina/nativelink/issues/2934)) - ([c6ae7d1](https://github.com/TraceMachina/nativelink/commit/c6ae7d14cd965d664858daa1e61bc145768c9063))
+- Fetch an input again when the store evicts it between fetch, lookup and link ([#2928](https://github.com/TraceMachina/nativelink/issues/2928)) - ([4ad28b3](https://github.com/TraceMachina/nativelink/commit/4ad28b363048fe767ddf288d72c64a5091830460))
+- Resolve a forwarded operation name by its configured instance and carry the request context to the upstream scheduler ([#2927](https://github.com/TraceMachina/nativelink/issues/2927)) - ([23d54fd](https://github.com/TraceMachina/nativelink/commit/23d54fd665323b30dd06e5da709281b7b6950381))
+- Relink an input whose blob was evicted during staging and count variant hits as blob use ([#2926](https://github.com/TraceMachina/nativelink/issues/2926)) - ([a435beb](https://github.com/TraceMachina/nativelink/commit/a435bebaf437760ee3018109b5fdbc2997c16f8d))
+- Report running operations on the worker keepalive and requeue what the worker no longer runs ([#2925](https://github.com/TraceMachina/nativelink/issues/2925)) - ([beba0fe](https://github.com/TraceMachina/nativelink/commit/beba0fe08d0b07d91366f3f1cc9cd3be7a150888))
+- Sweep executing actions on the scheduler's clock and keep a result the store refuses until it is resent ([#2923](https://github.com/TraceMachina/nativelink/issues/2923)) - ([963000e](https://github.com/TraceMachina/nativelink/commit/963000ed84ac6d565743114a3618bc01d02ed1d2))
+- Worker match logging off by default, and listing only queued and executing operations when on ([#2924](https://github.com/TraceMachina/nativelink/issues/2924)) - ([b5bdf36](https://github.com/TraceMachina/nativelink/commit/b5bdf36a74c501c1d9de9a49ea782e070eea36e7))
+
+### 🧪 Testing & CI
+
+- cut CI log noise so real failures stand out ([#2911](https://github.com/TraceMachina/nativelink/issues/2911)) - ([8aac783](https://github.com/TraceMachina/nativelink/commit/8aac783f08c9844cb5d8382d6188aadc1391cba1))
+
+### ⚙️ Miscellaneous
+
+- Record the input fetch retry outcome under a prefixed attribute ([#2935](https://github.com/TraceMachina/nativelink/issues/2935)) - ([0c669b6](https://github.com/TraceMachina/nativelink/commit/0c669b6f927f4e9232f2a1ddb0e8208d40ff5a48))
+
+## [1.7.6](https://github.com/TraceMachina/nativelink/compare/v1.7.5..v1.7.6) - 2026-10-08
+
+
+
+### 🐛 Bug Fixes
+
+- *(scheduler)* tolerate backwards clock steps in worker liveness refresh ([#2900](https://github.com/TraceMachina/nativelink/issues/2900)) - ([76b1f93](https://github.com/TraceMachina/nativelink/commit/76b1f930755d7a199f1c8a8efeb8797c649d9c8c))
+- Pipeline BEP stream store writes so acks no longer wait one event at a time ([#2912](https://github.com/TraceMachina/nativelink/issues/2912)) - ([bc7ce7c](https://github.com/TraceMachina/nativelink/commit/bc7ce7c5c96a926e5172db3df1b62c1670691f38))
+- Fix a blocking-pool deadlock in `nativelink_util::fs::read_dir` ([#2647](https://github.com/TraceMachina/nativelink/issues/2647)) - ([f5ae69b](https://github.com/TraceMachina/nativelink/commit/f5ae69b7760d208ebfad4deffb0544e759d747b8))
+
+### 🧪 Testing & CI
+
+- retry transient remote-endpoint failures in the Bazel Native lanes ([#2897](https://github.com/TraceMachina/nativelink/issues/2897)) - ([bf4b3aa](https://github.com/TraceMachina/nativelink/commit/bf4b3aa8555fcce0a4436797735f6ca6d379267e))
+
+### ⬆️ Bumps & Version Updates
+
+- Bump hickory-resolver from 0.26.1 to 0.26.3 ([#2908](https://github.com/TraceMachina/nativelink/issues/2908)) - ([c924717](https://github.com/TraceMachina/nativelink/commit/c924717d3293e4623129fc72184f5dba8edca5c1))
+- Update next and dompurify for security issues ([#2898](https://github.com/TraceMachina/nativelink/issues/2898)) - ([698f084](https://github.com/TraceMachina/nativelink/commit/698f0843812b046ed05237d139db9c203b791509))
+
+## [1.7.5](https://github.com/TraceMachina/nativelink/compare/v1.7.4..v1.7.5) - 2026-10-06
+
+
+
+### 🐛 Bug Fixes
+
+- Resend a retried event-sink write from offset zero ([#2906](https://github.com/TraceMachina/nativelink/issues/2906)) - ([417771e](https://github.com/TraceMachina/nativelink/commit/417771e8b590db5b3b3b75c226896e73aecd0f14))
+- Drop hint dimensions the ladder does not reserve ([#2903](https://github.com/TraceMachina/nativelink/issues/2903)) - ([b6f1b9b](https://github.com/TraceMachina/nativelink/commit/b6f1b9b520bdbb20ffb9118acbb2fff26e8fded4))
+
+### 🧪 Testing & CI
+
+- Check and fix license headers ([#2902](https://github.com/TraceMachina/nativelink/issues/2902)) - ([2921f75](https://github.com/TraceMachina/nativelink/commit/2921f751751f3278d0cd43a670eba185e796fb32))
+- Add Azurite test support for AzureBlobStore ([#2684](https://github.com/TraceMachina/nativelink/issues/2684)) - ([a347402](https://github.com/TraceMachina/nativelink/commit/a347402f906b41fe0919064650ccf5cf7e49ff0b))
+
+### ⬆️ Bumps & Version Updates
+
+- Update xxhash-rust to 0.8.19 ([#2895](https://github.com/TraceMachina/nativelink/issues/2895)) - ([4ef4c34](https://github.com/TraceMachina/nativelink/commit/4ef4c34e34d5e0f72f806533df58ec4879d4f2cd))
+
+## [1.7.4](https://github.com/TraceMachina/nativelink/compare/v1.7.3..v1.7.4) - 2026-10-05
+
+
+
+### 🐛 Bug Fixes
+
+- Let paused idle workers accept new work ([#2876](https://github.com/TraceMachina/nativelink/issues/2876)) - ([7d3d20c](https://github.com/TraceMachina/nativelink/commit/7d3d20ca83a9ed908bc20834747e6bf25b319369))
+- Change worker to consider reclaimable page cache as usable memory ([#2873](https://github.com/TraceMachina/nativelink/issues/2873)) - ([db375f0](https://github.com/TraceMachina/nativelink/commit/db375f00538d8af8ad7ef6fa3ae99078489634f8))
+- Azure store: bound a read to the bytes the digest declares and resume a retry ([#2872](https://github.com/TraceMachina/nativelink/issues/2872)) - ([83c1f81](https://github.com/TraceMachina/nativelink/commit/83c1f8126564b4cc40643b55f88578beef9d36a3))
+
+### 📚 Documentation
+
+- *(llms)* regenerate llms.txt, llms-small.txt and llms-full.txt ([#2848](https://github.com/TraceMachina/nativelink/issues/2848)) - ([5aaf0f8](https://github.com/TraceMachina/nativelink/commit/5aaf0f88590517ff2e1750e090e164edad8258c1))
+
+### 🧪 Testing & CI
+
+- *(nix)* warm the Bazel Dev lane from the remote cache via hermetic toolchain identity ([#2874](https://github.com/TraceMachina/nativelink/issues/2874)) - ([5b75558](https://github.com/TraceMachina/nativelink/commit/5b7555861c60eb35e40d274a2d5a1e55020f725b))
+- skip the sanitizer lane on docs-only changes ([#2878](https://github.com/TraceMachina/nativelink/issues/2878)) - ([59d8ede](https://github.com/TraceMachina/nativelink/commit/59d8ede676731aae34b30460ace9b6686ad615c0))
+- build the OCI image on merge-to-main, not on every PR ([#2879](https://github.com/TraceMachina/nativelink/issues/2879)) - ([bb3ead5](https://github.com/TraceMachina/nativelink/commit/bb3ead580bcff39ca770366388b2051fa3250f18))
+- Disable Bazel disk cache when nativelink cloud cache is enabled ([#2864](https://github.com/TraceMachina/nativelink/issues/2864)) - ([b9a0b1e](https://github.com/TraceMachina/nativelink/commit/b9a0b1ed5f831913ad80720791b195e837223d87))
+
+### ⬆️ Bumps & Version Updates
+
+- *(deps)* update rust crate serial_test to v4 ([#2865](https://github.com/TraceMachina/nativelink/issues/2865)) - ([d54ab05](https://github.com/TraceMachina/nativelink/commit/d54ab0533ed0efd7cf71da7cf3a37c742114f97e))
+- *(deps)* update dependency typescript to v7 ([#2863](https://github.com/TraceMachina/nativelink/issues/2863)) - ([46539bd](https://github.com/TraceMachina/nativelink/commit/46539bd661846b740467768a8e32eb1766c9fcb7))
+
 ## [1.7.3](https://github.com/TraceMachina/nativelink/compare/v1.7.2..v1.7.3) - 2026-10-01
 
 

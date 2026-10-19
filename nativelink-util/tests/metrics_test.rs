@@ -1,10 +1,10 @@
 // Copyright 2025 The NativeLink Authors. All rights reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//    http://www.apache.org/licenses/LICENSE-2.0
+//    See LICENSE file for details
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,14 +17,15 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::metrics::{
-    CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS, ExecutionMetricAttrs, ExecutionStage,
-    WORKER_METRICS, WorkerDisconnectReason, execution_output_bytes, make_execution_attributes,
-    peak_memory_sample, pool_available_sample, record_cache_entries_delta,
-    record_completed_execution_metrics, record_connection_acquired, record_connection_reconnect,
-    record_execution_cpu_time, record_execution_peak_memory, record_health_check,
-    record_matching_pass, record_rpc_served, record_store_tier_io, record_store_tier_read,
-    record_worker_connected, record_worker_disconnected, record_worker_keepalive,
-    record_worker_state, saturating_i64, split_grpc_path,
+    AGE_BUCKET_LABELS, AgeBuckets, CACHE_METRICS, CacheMetricAttrs, EXECUTION_METRICS,
+    ExecutionMetricAttrs, ExecutionStage, WORKER_METRICS, WorkerDisconnectReason,
+    execution_output_bytes, make_execution_attributes, peak_memory_sample, pool_available_sample,
+    record_cache_entries_delta, record_completed_execution_metrics, record_connection_acquired,
+    record_connection_reconnect, record_executing_ages, record_execution_cpu_time,
+    record_execution_peak_memory, record_health_check, record_matching_pass, record_queue_ages,
+    record_rpc_served, record_store_tier_io, record_store_tier_read, record_worker_connected,
+    record_worker_disconnected, record_worker_keepalive, record_worker_state, saturating_i64,
+    split_grpc_path,
 };
 use opentelemetry::KeyValue;
 
@@ -401,4 +402,45 @@ fn peak_memory_sample_bounds_an_absurd_reading() {
     // Absurd readings are bounded rather than wrapped.
     assert_eq!(peak_memory_sample(u64::MAX), 1 << 50);
     assert_eq!(peak_memory_sample(u64::MAX / 512), 1 << 50);
+}
+
+/// Each bound belongs to the bucket above it, the last bucket is open, and
+/// the oldest age is kept.
+#[test]
+fn test_age_buckets_boundaries() {
+    use core::time::Duration;
+
+    let mut ages = AgeBuckets::default();
+    for secs in [
+        0, 59, 60, 299, 300, 899, 900, 1799, 1800, 3599, 3600, 86_400,
+    ] {
+        ages.observe(Duration::from_secs(secs));
+    }
+    assert_eq!(ages.counts(), [2, 2, 2, 2, 2, 2]);
+    assert_eq!(ages.oldest(), Duration::from_hours(24));
+    assert_eq!(AGE_BUCKET_LABELS.len(), ages.counts().len());
+}
+
+/// A start time after now, as clock skew between replicas can give, counts
+/// as no age rather than failing or wrapping.
+#[test]
+fn test_age_buckets_future_start_counts_as_zero() {
+    use core::time::Duration;
+    use std::time::SystemTime;
+
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    let mut ages = AgeBuckets::default();
+    ages.observe_since(now + Duration::from_secs(5), now);
+    ages.observe_since(now.checked_sub(Duration::from_mins(2)).unwrap(), now);
+    assert_eq!(ages.counts(), [1, 1, 0, 0, 0, 0]);
+    assert_eq!(ages.oldest(), Duration::from_mins(2));
+}
+
+/// Recording with no meter provider installed is a no-op, not a panic.
+#[test]
+fn test_record_ages_without_provider() {
+    let mut ages = AgeBuckets::default();
+    ages.observe(core::time::Duration::from_secs(10));
+    record_queue_ages(&ages);
+    record_executing_ages(&AgeBuckets::default());
 }

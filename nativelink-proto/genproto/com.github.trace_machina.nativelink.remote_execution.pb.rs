@@ -19,16 +19,29 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WorkerLoad {
     /// / Memory the worker could still give an action, in KiB: the cgroup
-    /// / limit less current usage, or MemAvailable without a limit.
+    /// / limit less its working set (current usage less the page cache the
+    /// / kernel can drop at once), or MemAvailable without a limit.
     #[prost(uint64, tag = "1")]
     pub free_memory_kb: u64,
 }
 /// / Request object for keep alive requests.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KeepAliveRequest {
     /// / The worker's spare capacity as of this keepalive.
     #[prost(message, optional, tag = "1")]
     pub load: ::core::option::Option<WorkerLoad>,
+    /// / The operations the worker is running as of this keepalive. A worker
+    /// / that reports them lets the scheduler tell an operation the worker
+    /// / still runs from one whose result never arrived. Absent from workers
+    /// / that do not report.
+    #[prost(message, optional, tag = "2")]
+    pub running_operations: ::core::option::Option<RunningOperations>,
+}
+/// / The operations a worker is running, by operation id.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RunningOperations {
+    #[prost(string, repeated, tag = "1")]
+    pub operation_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// / Request object for going away requests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
@@ -69,6 +82,12 @@ pub struct ConnectWorkerRequest {
     /// / The default (0) means unlimited.
     #[prost(uint64, tag = "3")]
     pub max_inflight_tasks: u64,
+    /// / The worker admits any action while it holds nothing else, whatever
+    /// / it reads free, rather than declining it for load. A scheduler can
+    /// / then read a decline for load as coming from a busy worker. Absent
+    /// / (false) from older workers.
+    #[prost(bool, tag = "4")]
+    pub admits_when_idle: bool,
 }
 /// / The result of an ExecutionRequest.
 #[derive(Clone, PartialEq, ::prost::Message)]

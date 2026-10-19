@@ -1,0 +1,14 @@
+{
+  "name": "nativelink-azurite-test-runner",
+  "dependencies": {
+    "azurite": "3.37.0"
+  },
+  "overrides": {
+    "moment": "^2.31.0",
+    "uuid": "^11.1.1"
+  },
+  "private": true,
+  "scripts": {
+    "test": "node --test dependency-security.test.cjs"
+  }
+}

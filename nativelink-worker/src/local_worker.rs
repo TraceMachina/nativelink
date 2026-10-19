@@ -18,7 +18,7 @@ use core::str;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::process::Stdio;
 use std::sync::{Arc, Weak};
@@ -34,8 +34,8 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::worker_api_client::WorkerApiClient;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ActionResourceUsage, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult,
-    GoingAwayRequest, KeepAliveRequest, StartExecute, UpdateForWorker, WorkerLoad,
-    execute_declined, execute_result,
+    GoingAwayRequest, KeepAliveRequest, RunningOperations, StartExecute, UpdateForWorker,
+    WorkerLoad, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId};
@@ -47,6 +47,7 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use nativelink_util::store_trait::Store;
 use nativelink_util::{background_spawn, spawn, spawn_blocking, tls_utils};
 use opentelemetry::context::Context;
+use parking_lot::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use tokio::{process, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -187,12 +188,21 @@ struct LocalWorkerImpl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsM
     /// `ExecuteDeclined`. Without it the worker runs whatever it is sent,
     /// as every earlier release did.
     dispatch_ack: bool,
+    memory: MemoryAdmission,
+    metrics: Arc<Metrics>,
+}
+
+/// What local admission needs to refuse an action for load.
+struct MemoryAdmission {
     /// The platform property the scheduler reads an action's memory
     /// reservation from, as it told us on connection; empty when it does
     /// not veto on memory. Read from the same property, a refusal for load
     /// here agrees with what the scheduler would have vetoed.
-    memory_property: String,
-    metrics: Arc<Metrics>,
+    property: String,
+    /// Whether this worker admits any action while it holds nothing else,
+    /// decided once at registration and sent to the scheduler then, so the
+    /// two never disagree.
+    admits_when_idle: bool,
 }
 
 /// Why this worker will not run an action it was just sent.
@@ -321,7 +331,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         grpc_client: T,
         worker_id: String,
         dispatch_ack: bool,
-        memory_property: String,
+        memory: MemoryAdmission,
         running_actions_manager: Arc<U>,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -330,7 +340,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
             grpc_client,
             worker_id,
             dispatch_ack,
-            memory_property,
+            memory,
             running_actions_manager,
             // Number of actions that have been received in `Update::StartAction`, but
             // not yet processed by running_actions_manager's spawn. This number should
@@ -350,10 +360,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         if max > 0 && in_flight >= max {
             return Some(Refusal::AtCapacity { in_flight, max });
         }
-        if let (Some(needed_kb), Some(free_kb)) = (
-            memory_reservation_kb(start_execute, &self.memory_property),
-            crate::capacity::free_memory_kb(),
-        ) && free_kb < needed_kb
+        // The cgroup is read only for an action that reserves memory.
+        let needed_kb = memory_reservation_kb(start_execute, &self.memory.property)?;
+        // With nothing else in flight under a cgroup limit, waiting frees
+        // nothing: what the worker reads free now is the most it will ever
+        // read, since its own process, its hot page cache and the kernel
+        // always count as used. Declining here would have the scheduler
+        // wait for a figure that never comes (the whole-worker escalation
+        // step asks for more than any worker reports free), so the action
+        // runs, and if it truly does not fit, the memory kill escalates or
+        // fails it. Without a limit, free memory is the host's, which other
+        // processes can give back, so waiting can help and the check stands.
+        if in_flight == 0 && self.memory.admits_when_idle {
+            return None;
+        }
+        if let Some(free_kb) = crate::capacity::free_memory_kb()
+            && free_kb < needed_kb
         {
             return Some(Refusal::Load { needed_kb, free_kb });
         }
@@ -406,7 +428,13 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
     }
 
     /// Starts a background spawn/thread that will send a message to the server every `timeout / 2`.
-    async fn start_keep_alive(&self) -> Result<(), Error> {
+    /// Each keepalive carries `running_operations`, what this worker holds
+    /// from dispatch to published result, so the scheduler can tell an
+    /// operation still running here from one whose result it never saw.
+    async fn start_keep_alive(
+        &self,
+        running_operations: Arc<Mutex<HashSet<String>>>,
+    ) -> Result<(), Error> {
         // According to tonic's documentation this call should be cheap and is the same stream.
         let mut grpc_client = self.grpc_client.clone();
         let timeout = self
@@ -439,7 +467,12 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                 // actions declared less than they use.
                 let load = crate::capacity::free_memory_kb()
                     .map(|free_memory_kb| WorkerLoad { free_memory_kb });
-                if let Err(e) = grpc_client.keep_alive(KeepAliveRequest { load }).await {
+                let operation_ids = running_operations.lock().iter().cloned().collect();
+                let request = KeepAliveRequest {
+                    load,
+                    running_operations: Some(RunningOperations { operation_ids }),
+                };
+                if let Err(e) = grpc_client.keep_alive(request).await {
                     error!(?e, "Failed to send KeepAlive in LocalWorker");
                     return Err(e.append("KeepAlive failed; reconnecting to the scheduler"));
                 }
@@ -468,7 +501,10 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
         // giving mutable access to stuff in this struct.
         // NOTE: If you ever return from this function it will disconnect from the scheduler.
         let mut futures = FuturesUnordered::new();
-        futures.push(self.start_keep_alive().boxed());
+        // What this worker is running, from the dispatch until the result is
+        // published, reported on every keepalive.
+        let running_operations = Arc::new(Mutex::new(HashSet::new()));
+        futures.push(self.start_keep_alive(running_operations.clone()).boxed());
 
         let (add_future_channel, add_future_rx) = mpsc::unbounded_channel();
         let mut add_future_rx = UnboundedReceiverStream::new(add_future_rx).fuse();
@@ -596,6 +632,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             let execute_request = start_execute.execute_request.as_ref();
                             let operation_id = start_execute.operation_id.clone();
                             let operation_id_to_log = operation_id.clone();
+                            let tracked_operation_id = operation_id.clone();
                             let maybe_instance_name = execute_request.map(|v| v.instance_name.clone());
                             let action_digest = execute_request.and_then(|v| v.action_digest.clone());
                             let digest_hasher = execute_request
@@ -790,10 +827,15 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                             let actions_notify = actions_notify.clone();
                             let actions_in_flight_fail = actions_in_flight.clone();
                             let actions_notify_fail = actions_notify.clone();
+                            let running_operations_done = running_operations.clone();
+                            let running_operations_fail = running_operations.clone();
+                            let tracked_done = tracked_operation_id.clone();
+                            let tracked_fail = tracked_operation_id.clone();
                             // Counted from the dispatch, so the next one is
                             // admitted against this slot while the
                             // acknowledgement is still on its way.
                             actions_in_flight.fetch_add(1, Ordering::Release);
+                            running_operations.lock().insert(tracked_operation_id);
 
                             futures.push(
                                 async move {
@@ -812,6 +854,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                     }
                                     add_future_channel
                                         .send(make_publish_future(res).then(move |res| {
+                                            running_operations_done.lock().remove(&tracked_done);
                                             actions_in_flight.fetch_sub(1, Ordering::Release);
                                             actions_notify.notify_one();
                                             core::future::ready(res)
@@ -823,6 +866,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                 })
                                 .or_else(move |err| {
                                     // If the make_publish_future is not run we still need to notify.
+                                    running_operations_fail.lock().remove(&tracked_fail);
                                     actions_in_flight_fail.fetch_sub(1, Ordering::Release);
                                     actions_notify_fail.notify_one();
                                     core::future::ready(Err(err))
@@ -1190,6 +1234,14 @@ pub async fn new_local_worker(
     #[cfg(not(target_os = "linux"))]
     let persistent_workers_namespaced = false;
 
+    #[cfg(not(target_os = "linux"))]
+    if !config.experimental_readonly_input_mounts.is_empty() {
+        return Err(make_err!(
+            Code::Unavailable,
+            "Read-only input mounts not supported on non-Linux OSes"
+        ));
+    }
+
     let running_actions_manager =
         Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
             root_action_directory: config.work_directory.clone(),
@@ -1201,6 +1253,7 @@ pub async fn new_local_worker(
                     Duration::from_millis(config.kill_grace_ms)
                 },
                 set_tmpdir: config.set_tmpdir,
+                max_concurrent_input_downloads: config.max_concurrent_input_downloads,
                 persistent_workers: persistent_worker_settings(
                     config.persistent_workers.as_ref(),
                     persistent_workers_namespaced,
@@ -1225,6 +1278,8 @@ pub async fn new_local_worker(
             timeout_handled_externally: config.timeout_handled_externally,
             directory_cache,
             active_input_leases: config.experimental_active_input_leases,
+            #[cfg(target_os = "linux")]
+            readonly_input_mounts: config.experimental_readonly_input_mounts.clone(),
             #[cfg(target_os = "linux")]
             use_namespaces,
         })?);
@@ -1366,7 +1421,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
     async fn register_worker(
         &self,
         client: &mut T,
-    ) -> Result<(String, bool, String, Streaming<UpdateForWorker>), Error> {
+    ) -> Result<(String, bool, MemoryAdmission, Streaming<UpdateForWorker>), Error> {
         let mut extra_envs: HashMap<String, String> = HashMap::new();
         if let Some(ref additional_environment) = self.config.additional_environment {
             for (name, source) in additional_environment {
@@ -1396,6 +1451,9 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             crate::capacity::apply(capacity, memory_headroom_percent, &mut platform_properties)
                 .err_tip(|| "Advertising capacity from the cgroup")?;
         }
+        // Decided once, so what admission does and what the scheduler is
+        // told always agree.
+        let admits_when_idle = crate::capacity::memory_is_limited();
         let connect_worker_request = make_connect_worker_request(
             self.config.name.clone(),
             &platform_properties,
@@ -1405,6 +1463,7 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             } else {
                 self.config.max_inflight_tasks
             },
+            admits_when_idle,
         )
         .await?;
         let mut update_for_worker_stream = client
@@ -1436,7 +1495,10 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         Ok((
             worker_id,
             dispatch_ack,
-            memory_property,
+            MemoryAdmission {
+                property: memory_property,
+                admits_when_idle,
+            },
             update_for_worker_stream,
         ))
     }
@@ -1486,13 +1548,13 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
                     (error_handler)(e).await;
                     continue; // Try to connect again.
                 }
-                Ok((worker_id, dispatch_ack, memory_property, update_for_worker_stream)) => (
+                Ok((worker_id, dispatch_ack, memory, update_for_worker_stream)) => (
                     LocalWorkerImpl::new(
                         &self.config,
                         client,
                         worker_id,
                         dispatch_ack,
-                        memory_property,
+                        memory,
                         self.running_actions_manager.clone(),
                         self.metrics.clone(),
                     ),

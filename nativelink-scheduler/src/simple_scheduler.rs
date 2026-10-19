@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use futures::{Future, StreamExt, future};
+use futures::{Future, FutureExt, StreamExt, future};
 use nativelink_config::schedulers::SimpleSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::{MetricsComponent, RootMetricsComponent};
@@ -31,9 +31,9 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_util::action_messages::{ActionInfo, ActionState, OperationId, WorkerId};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
-    record_awaited_action_orphan, record_matching_pass, record_parked_dispatched,
-    record_queue_depth, record_sweep_failure, record_unsatisfiable_failed,
-    record_unsatisfiable_queued,
+    AgeBuckets, record_awaited_action_orphan, record_executing_ages, record_matching_pass,
+    record_parked_dispatched, record_queue_ages, record_queue_depth, record_sweep_failure,
+    record_unsatisfiable_failed, record_unsatisfiable_queued,
 };
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
@@ -54,8 +54,8 @@ use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::api_worker_scheduler::ApiWorkerScheduler;
-use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION};
+use crate::api_worker_scheduler::{ApiWorkerScheduler, QueuedAction};
+use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION, PeerScheduler};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
@@ -201,6 +201,11 @@ pub struct SimpleScheduler {
     /// Dropped with the struct, like the matching task.
     task_abandoned_sweep_spawn: JoinHandleDropGuard<()>,
 
+    /// Background task that retires executing actions whose worker has gone
+    /// quiet or no longer runs them. Dropped with the struct; `None` when
+    /// `executing_sweep_interval_s` disables it.
+    task_executing_sweep_spawn: Option<JoinHandleDropGuard<()>>,
+
     /// Background task that swaps worker capabilities with peer schedulers
     /// on the same state. Dropped with the struct, like the matching task.
     task_fleet_exchange_spawn: JoinHandleDropGuard<()>,
@@ -247,6 +252,10 @@ impl core::fmt::Debug for SimpleScheduler {
             .field(
                 "task_abandoned_sweep_spawn",
                 &self.task_abandoned_sweep_spawn,
+            )
+            .field(
+                "task_executing_sweep_spawn",
+                &self.task_executing_sweep_spawn,
             )
             .field("task_fleet_exchange_spawn", &self.task_fleet_exchange_spawn)
             .finish_non_exhaustive()
@@ -396,11 +405,31 @@ impl SimpleScheduler {
         self.do_try_match(false).await
     }
 
-    /// Stands in for the fleet exchange with peer schedulers.
+    /// Stands in for the fleet exchange with peer schedulers: one peer with
+    /// these workers.
     pub async fn set_peer_fleet_for_test(&self, peer_fleet: Vec<PlatformProperties>) {
+        self.set_peer_schedulers_for_test(vec![PeerScheduler {
+            scheduler_id: "peer".to_string(),
+            workers: peer_fleet,
+        }])
+        .await;
+    }
+
+    /// Stands in for the fleet exchange with peer schedulers.
+    pub async fn set_peer_schedulers_for_test(&self, peers: Vec<PeerScheduler>) {
         self.worker_scheduler
-            .set_peer_fleet(Some(peer_fleet), (self.now_fn)())
+            .set_peer_fleet(Some(peers), (self.now_fn)())
             .await;
+    }
+
+    /// The id this scheduler publishes to its peers under.
+    pub fn scheduler_id_for_test(&self) -> &str {
+        self.worker_scheduler.scheduler_id()
+    }
+
+    /// The workers held for a queued action right now.
+    pub async fn held_workers_for_test(&self) -> Vec<WorkerId> {
+        self.worker_scheduler.held_workers_for_test().await
     }
 
     /// Stands in for a failed fleet exchange with peer schedulers.
@@ -772,6 +801,7 @@ impl SimpleScheduler {
         async fn place_parked(
             parked: &mut Parked,
             placement: &mut Placement,
+            contended: &mut HashSet<PropertyShape>,
             workers: &ApiWorkerScheduler,
             matching_engine_state_manager: &dyn MatchingEngineStateManager,
             maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
@@ -783,7 +813,7 @@ impl SimpleScheduler {
             let mut blocked: HashSet<PropertyShape> = HashSet::new();
             let mut still_parked = VecDeque::with_capacity(parked.queue.len());
             while let Some((shape, loaded)) = parked.queue.pop_front() {
-                if blocked.contains(&shape) {
+                if blocked.contains(&shape) || contended.contains(&shape) {
                     still_parked.push_back((shape, loaded));
                     continue;
                 }
@@ -792,6 +822,10 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         now,
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                        }),
                     )
                     .await
                 else {
@@ -812,7 +846,10 @@ impl SimpleScheduler {
                 .await
                 {
                     Ok(Dispatch::Sent) => placement.dispatched += 1,
-                    Ok(Dispatch::LostRace) => placement.lost_race += 1,
+                    Ok(Dispatch::LostRace) => {
+                        placement.lost_race += 1;
+                        contended.insert(shape);
+                    }
                     Err(err) => {
                         placement.failed += 1;
                         result = result.merge(Err(err));
@@ -874,9 +911,19 @@ impl SimpleScheduler {
         let maybe_origin_event_tx = self.maybe_origin_event_tx.as_ref();
         let mut parked = Parked::default();
         let mut placement = Placement::default();
+        // Once a peer wins an assignment, let it advance through that
+        // property shape for this pass. Other shapes can still use this
+        // scheduler's workers, and the next pass tries every shape again.
+        let mut contended = HashSet::new();
+        let mut oldest_queued = Vec::new();
+        let hold_pass = workers.begin_pass_holds().await;
         let mut capacity_seen = workers.capacity_generation();
         let mut queued_seen: u64 = 0;
-        while let Some(action_state_result) = stream.next().await {
+        // How long each action read has waited since its client submitted
+        // it, requeues included: the pass already reads every queued action,
+        // so the ages cost nothing more from the store.
+        let mut queued_ages = AgeBuckets::default();
+        'actions: while let Some(action_state_result) = stream.next().await {
             queued_seen += 1;
             let loaded = match load_action(
                 action_state_result,
@@ -892,6 +939,19 @@ impl SimpleScheduler {
                     continue;
                 }
             };
+            queued_ages.observe_since(
+                loaded.action_info.inner.insert_timestamp,
+                unsatisfiable_pass.now,
+            );
+            if full_worker_logging {
+                oldest_queued.push(loaded.action_info.inner.clone());
+                oldest_queued.sort_unstable_by_key(|action| action.insert_timestamp);
+                oldest_queued.truncate(5);
+            }
+            let shape = PropertyShape::from(&loaded.action_info.platform_properties);
+            if contended.contains(&shape) {
+                continue;
+            }
 
             // Room that opened since the pass last placed anything belongs
             // to the oldest action still waiting, not to this one, which is
@@ -903,6 +963,10 @@ impl SimpleScheduler {
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
                         unsatisfiable_pass.now,
+                        Some(QueuedAction {
+                            unique_qualifier: &loaded.action_info.inner.unique_qualifier,
+                            insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                        }),
                     )
                     .await;
                 if generation == capacity_seen || parked.is_empty() {
@@ -914,6 +978,7 @@ impl SimpleScheduler {
                     place_parked(
                         &mut parked,
                         &mut placement,
+                        &mut contended,
                         workers,
                         matching_engine_state_manager,
                         maybe_origin_event_tx,
@@ -923,6 +988,9 @@ impl SimpleScheduler {
                     )
                     .await,
                 );
+                if contended.contains(&shape) {
+                    continue 'actions;
+                }
             };
 
             match outcome {
@@ -938,11 +1006,18 @@ impl SimpleScheduler {
                             self.now_fn.as_ref(),
                         )
                         .await
-                        .map(|_| ()),
+                        .map(|dispatch| {
+                            if dispatch == Dispatch::LostRace {
+                                contended.insert(shape);
+                            }
+                        }),
                     );
                 }
-                // A worker could run it once one has room.
-                MatchOutcome::WaitingForCapacity => parked.park(loaded),
+                // A worker could run it once one has room. The match
+                // considered holding a worker for it (`reservation_hold`).
+                MatchOutcome::WaitingForCapacity => {
+                    parked.park(loaded);
+                }
                 // Nothing to wait for; a worker connecting starts a new pass,
                 // unless the no-worker clock is running.
                 MatchOutcome::NoWorkersConnected => {
@@ -983,6 +1058,7 @@ impl SimpleScheduler {
                 place_parked(
                     &mut parked,
                     &mut placement,
+                    &mut contended,
                     workers,
                     matching_engine_state_manager,
                     maybe_origin_event_tx,
@@ -993,6 +1069,11 @@ impl SimpleScheduler {
                 .await,
             );
         }
+        // The whole queue was read: a held action the pass did not meet
+        // is gone, and a hold past its time is given up.
+        workers
+            .end_pass_holds(hold_pass, unsatisfiable_pass.now)
+            .await;
         record_parked_dispatched(placement.dispatched);
         if placement.attempted > 0 || parked.cap_dropped > 0 {
             debug!(
@@ -1018,6 +1099,14 @@ impl SimpleScheduler {
         }
         record_unsatisfiable_queued(unsatisfiable_queued);
         record_queue_depth(queued_seen);
+        record_queue_ages(&queued_ages);
+        if full_worker_logging {
+            let actions: Vec<_> = oldest_queued
+                .iter()
+                .map(|action| (&action.unique_qualifier, action.insert_timestamp))
+                .collect();
+            info!(?actions, queued_seen, "Oldest actions in the matching pass");
+        }
         // Remember this pass's backlog so the next pass can size its fail cap:
         // a large backlog lets more of it drain per pass (unsatisfiable_fail_cap).
         self.last_unsatisfiable_backlog.store(
@@ -1197,12 +1286,16 @@ impl SimpleScheduler {
             Some(worker_registry.clone()),
         );
 
+        // The id this scheduler publishes its fleet to its peers under, and
+        // takes its turn holding workers by.
+        let scheduler_id = Uuid::new_v4().hyphenated().to_string();
         let worker_scheduler = ApiWorkerScheduler::new(
             state_manager.clone(),
             platform_property_manager.clone(),
             spec.allocation_strategy,
             spec.live_memory_veto.clone(),
             spec.memory_escalation.clone(),
+            spec.reservation_hold,
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
@@ -1211,6 +1304,7 @@ impl SimpleScheduler {
             maybe_origin_event_tx.clone(),
             has_peers,
             record_ttl,
+            scheduler_id.clone(),
         );
 
         let worker_scheduler_clone = worker_scheduler.clone();
@@ -1244,11 +1338,72 @@ impl SimpleScheduler {
                 }
             });
 
+        // Executing actions get their own sweep for the same reason, on the
+        // scheduler's clock rather than a waiting client's.
+        let executing_sweep_interval = match spec.executing_sweep_interval_s {
+            ..=0 => None,
+            secs => Some(Duration::from_secs(secs.unsigned_abs())),
+        };
+        // Disabled means no task at all, not a task that returns at once.
+        let task_executing_sweep_spawn = executing_sweep_interval.map(|interval| {
+            let state_manager = Arc::downgrade(&state_manager);
+            let worker_scheduler = Arc::downgrade(&worker_scheduler);
+            spawn!("simple_scheduler_task_executing_sweep", async move {
+                // Long enough that an assignment's store write and the
+                // dispatch behind it are never mistaken for a lost result.
+                let lost_grace = (interval * 2).max(Duration::from_mins(1));
+                let mut lost_since = HashMap::new();
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let (Some(state_manager), Some(worker_scheduler)) =
+                        (state_manager.upgrade(), worker_scheduler.upgrade())
+                    else {
+                        // Only on process shutdown, when the scheduler that
+                        // owned this task is gone; worth a line if it ever
+                        // happens any other way.
+                        info!("Scheduler dropped, stopping the executing sweep");
+                        return;
+                    };
+                    let check_scheduler = worker_scheduler.clone();
+                    let running_on_worker =
+                        move |worker_id: WorkerId, operation_id: OperationId| {
+                            let worker_scheduler = check_scheduler.clone();
+                            async move {
+                                worker_scheduler
+                                    .running_on_worker(&worker_id, &operation_id)
+                                    .await
+                            }
+                            .boxed()
+                        };
+                    match state_manager
+                        .sweep_executing_actions(&running_on_worker, &mut lost_since, lost_grace)
+                        .await
+                    {
+                        Ok(report) => {
+                            record_executing_ages(&report.ages);
+                            if report.retired + report.requeued + report.failed > 0 {
+                                info!(
+                                    retired = report.retired,
+                                    requeued = report.requeued,
+                                    failed = report.failed,
+                                    "Executing sweep"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            record_sweep_failure();
+                            error!(?err, "Error while sweeping executing actions");
+                        }
+                    }
+                    drop((state_manager, worker_scheduler));
+                }
+            })
+        });
+
         // Only runs when the state is shared. It runs whatever the timeout,
         // so that a peer which does fail actions sees these workers even
         // while this scheduler is still rolling out or has the timeout off.
         let task_fleet_exchange_spawn = {
-            let scheduler_id = Uuid::new_v4().hyphenated().to_string();
             let state_manager = Arc::downgrade(&state_manager);
             let local_fleet_change_notify = worker_scheduler.local_fleet_change_notify().clone();
             let worker_scheduler = Arc::downgrade(&worker_scheduler);
@@ -1367,66 +1522,6 @@ impl SimpleScheduler {
 
                                 let res = scheduler.do_try_match(full_worker_logging).await;
                                 if full_worker_logging {
-                                    let operations_stream = scheduler
-                                        .matching_engine_state_manager
-                                        .filter_operations(OperationFilter::default())
-                                        .await
-                                        .err_tip(|| "In action_scheduler getting filter result");
-
-                                    let mut oldest_actions_in_state: HashMap<
-                                        String,
-                                        BTreeSet<Arc<ActionState>>,
-                                    > = HashMap::new();
-                                    let max_items = 5;
-
-                                    match operations_stream {
-                                        Ok(stream) => {
-                                            let actions = stream
-                                                .filter_map(|item| async move {
-                                                    match item.as_ref().as_state().await {
-                                                        Ok((action_state, _origin_metadata)) => {
-                                                            Some(action_state)
-                                                        }
-                                                        Err(e) => {
-                                                            error!(
-                                                                ?e,
-                                                                "Failed to get action state!"
-                                                            );
-                                                            None
-                                                        }
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                                .await;
-                                            for action_state in &actions {
-                                                let name = action_state.stage.name();
-                                                if let Some(values) =
-                                                    oldest_actions_in_state.get_mut(&name)
-                                                {
-                                                    values.insert(action_state.clone());
-                                                    if values.len() > max_items {
-                                                        values.pop_first();
-                                                    }
-                                                } else {
-                                                    let mut values = BTreeSet::new();
-                                                    values.insert(action_state.clone());
-                                                    oldest_actions_in_state.insert(name, values);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(?e, "Failed to get operations list!");
-                                        }
-                                    }
-
-                                    for value in oldest_actions_in_state.values() {
-                                        let mut items = vec![];
-                                        for item in value {
-                                            items.push(item.to_string());
-                                        }
-                                        info!(?items, "Oldest actions in state");
-                                    }
-
                                     worker_match_logging_last.replace(now);
                                 }
                                 res
@@ -1468,6 +1563,7 @@ impl SimpleScheduler {
                 maybe_origin_event_tx,
                 task_worker_matching_spawn,
                 task_abandoned_sweep_spawn,
+                task_executing_sweep_spawn,
                 task_fleet_exchange_spawn,
                 worker_match_logging_interval,
                 typed_properties: Mutex::new(HashMap::new()),
@@ -1567,6 +1663,16 @@ impl WorkerScheduler for SimpleScheduler {
     ) -> Result<(), Error> {
         self.worker_scheduler
             .worker_keep_alive_received(worker_id, timestamp, load)
+            .await
+    }
+
+    async fn worker_running_operations_reported(
+        &self,
+        worker_id: &WorkerId,
+        operation_ids: Vec<OperationId>,
+    ) -> Result<(), Error> {
+        self.worker_scheduler
+            .worker_running_operations_reported(worker_id, operation_ids)
             .await
     }
 

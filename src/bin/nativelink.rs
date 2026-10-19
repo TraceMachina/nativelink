@@ -258,7 +258,7 @@ async fn inner_main(
     }
 
     let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
-    let (single_use_complete_tx, single_use_complete_rx) = tokio::sync::oneshot::channel();
+    let (single_use_complete_tx, single_use_complete_rx) = oneshot::channel();
     let mut single_use_complete_tx = Some(single_use_complete_tx);
     let single_use_enabled = cfg.workers.as_ref().is_some_and(|workers| {
         workers.iter().any(|worker| match worker {

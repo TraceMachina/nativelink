@@ -20,7 +20,9 @@ use futures::future::Future;
 use futures::stream::StreamExt;
 use nativelink_config::stores::{ErrorCode, Retry};
 use nativelink_error::{Code, Error, make_err};
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+use crate::metrics::record_retry_outcome;
 
 struct ExponentialBackoff {
     current: Duration,
@@ -48,8 +50,43 @@ pub(crate) type JitterFn = Arc<dyn Fn(Duration) -> Duration + Send + Sync>;
 pub enum RetryResult<T> {
     Ok(T),
     Retry(Error),
+    /// Retryable, and the server asked for at least this long before the
+    /// next attempt. Within the retrier's throttle budget the wait is taken
+    /// as is and spends no attempt; past it the backoff still applies when
+    /// it is longer and the attempt counts.
+    RetryAfter(Error, Duration),
     Err(Error),
 }
+
+/// What became of an operation, or one attempt of it, under a [`Retrier`].
+/// Recorded as `retry.outcomes`, labeled with the retrier's client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryOutcome {
+    /// An attempt failed with a retryable error and another follows. A
+    /// throttle waited out within the throttle budget counts, though it
+    /// spends no attempt.
+    Retried,
+    /// The operation succeeded after at least one retry.
+    Recovered,
+    /// The operation failed with a retryable error and the retries ran out.
+    Exhausted,
+    /// The operation failed with an error that is never retried. `NotFound`
+    /// is left out: on a store it is the ordinary miss.
+    Permanent,
+}
+
+impl RetryOutcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Retried => "retried",
+            Self::Recovered => "recovered",
+            Self::Exhausted => "exhausted",
+            Self::Permanent => "permanent",
+        }
+    }
+}
+
+type OutcomeFn = Arc<dyn Fn(RetryOutcome) + Send + Sync>;
 
 /// Class used to retry a job with a sleep function in between each retry.
 #[derive(Clone)]
@@ -57,12 +94,22 @@ pub struct Retrier {
     sleep_fn: SleepFn,
     jitter_fn: JitterFn,
     config: Retry,
+    client: &'static str,
+    outcome_fn: Option<OutcomeFn>,
+    /// How long one `retry` call may spend on `RetryAfter` waits before
+    /// they start spending attempts. Zero means they always do.
+    throttle_budget: Duration,
+    /// Longest a throttle wait may grow to. Set, each consecutive throttle
+    /// doubles the wait the store asked for, capped here, and jitters it.
+    /// Unset, the wait is what was asked.
+    throttle_max_wait: Option<Duration>,
 }
 
 impl core::fmt::Debug for Retrier {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Retrier")
             .field("config", &self.config)
+            .field("client", &self.client)
             .finish_non_exhaustive()
     }
 }
@@ -94,6 +141,81 @@ impl Retrier {
             sleep_fn,
             jitter_fn,
             config,
+            client: "unknown",
+            outcome_fn: None,
+            throttle_budget: Duration::ZERO,
+            throttle_max_wait: None,
+        }
+    }
+
+    /// Names what this retrier retries for (`azure`, `s3`, `grpc_store`,
+    /// ...), the `retry.client` label on its `retry.outcomes`.
+    #[must_use]
+    pub const fn with_client(mut self, client: &'static str) -> Self {
+        self.client = client;
+        self
+    }
+
+    /// Also hands every outcome to `outcome_fn`, after it is recorded as a
+    /// metric. For tests, which cannot read the meter.
+    #[must_use]
+    pub fn with_outcome_fn(mut self, outcome_fn: OutcomeFn) -> Self {
+        self.outcome_fn = Some(outcome_fn);
+        self
+    }
+
+    /// Lets one `retry` call spend up to `budget` waiting on `RetryAfter`
+    /// results without counting those tries as attempts.
+    #[must_use]
+    pub const fn with_throttle_budget(mut self, budget: Duration) -> Self {
+        self.throttle_budget = budget;
+        self
+    }
+
+    /// Lets consecutive throttles wait longer each time. The first throttle
+    /// in a row waits what the server asked, the second twice that, the
+    /// third four times, and so on; `max_wait` is the ceiling that growth
+    /// stops at, not a wait of its own. The grown wait is spread upward by
+    /// the jitter and never less than what was asked. Growth applies to the
+    /// waits the throttle budget pays for; once the budget is spent the
+    /// backoff ladder takes over and waits at least the plain ask, so the
+    /// ladder's total stays what the retry config says. A store that is
+    /// told to slow down with no `Retry-After` otherwise has every client
+    /// retry in lockstep at the configured floor.
+    #[must_use]
+    pub const fn with_throttle_max_wait(mut self, max_wait: Duration) -> Self {
+        self.throttle_max_wait = Some(max_wait);
+        self
+    }
+
+    /// The wait for the `n`-th consecutive throttle whose server asked for
+    /// `asked`: `asked` itself for the first, doubled once per throttle
+    /// before it, capped at the configured ceiling, then jittered.
+    fn throttle_wait(&self, asked: Duration, throttles_in_a_row: u32) -> Duration {
+        let Some(max_wait) = self.throttle_max_wait else {
+            return asked;
+        };
+        // One doubling per earlier throttle in the row; past 31 the
+        // multiplier would overflow and the ceiling applies anyway.
+        let doublings = throttles_in_a_row.saturating_sub(1).min(31);
+        let grown = asked.saturating_mul(1 << doublings).min(max_wait);
+        // `Retry::make_jitter_fn` spreads a delay either way, and on the
+        // first throttle half of every fleet would land at or below the
+        // ask and retry in lockstep. A low result is mirrored above the
+        // grown wait instead, so every step spreads upward only; a jitter
+        // that zeroes delays (as tests install) leaves the grown wait.
+        let jittered = (self.jitter_fn)(grown);
+        if jittered.is_zero() {
+            grown
+        } else {
+            grown + jittered.abs_diff(grown)
+        }
+    }
+
+    fn report(&self, outcome: RetryOutcome) {
+        record_retry_outcome(self.client, outcome.as_str());
+        if let Some(outcome_fn) = &self.outcome_fn {
+            outcome_fn(outcome);
         }
     }
 
@@ -147,35 +269,72 @@ impl Retrier {
             let mut iter = self.get_retry_config();
             tokio::pin!(operation);
             let mut attempt = 0;
+            let mut throttled = Duration::ZERO;
+            let mut throttles_in_a_row: u32 = 0;
             loop {
                 attempt += 1;
-                match operation.next().await {
+                let (err, min_wait, is_throttle) = match operation.next().await {
                     None => {
                         return Err(make_err!(
                             Code::Internal,
                             "Retry stream ended abruptly on attempt {attempt}",
                         ));
                     }
-                    Some(RetryResult::Ok(value)) => return Ok(value),
+                    Some(RetryResult::Ok(value)) => {
+                        // A throttle within the budget is a retry too,
+                        // though it leaves `attempt` where it was.
+                        if attempt > 1 || !throttled.is_zero() {
+                            self.report(RetryOutcome::Recovered);
+                        }
+                        return Ok(value);
+                    }
                     Some(RetryResult::Err(e)) => {
                         return Err(e.append(format!("On attempt {attempt}")));
                     }
                     Some(RetryResult::Retry(err)) => {
-                        if !self.should_retry(err.code) {
-                            if err.code == Code::NotFound {
-                                info!(?err, "Not found, not retrying");
-                            } else {
-                                error!(?attempt, ?err, "Not retrying permanent error");
-                            }
-                            return Err(err);
-                        }
-                        (self.sleep_fn)(
-                            iter.next()
-                                .ok_or_else(|| err.append(format!("On attempt {attempt}")))?,
-                        )
-                        .await;
+                        throttles_in_a_row = 0;
+                        (err, Duration::ZERO, false)
+                    }
+                    Some(RetryResult::RetryAfter(err, min_wait)) => {
+                        throttles_in_a_row = throttles_in_a_row.saturating_add(1);
+                        (err, min_wait, true)
+                    }
+                };
+                if !self.should_retry(err.code) {
+                    if err.code == Code::NotFound {
+                        info!(?err, "Not found, not retrying");
+                    } else {
+                        self.report(RetryOutcome::Permanent);
+                        error!(?attempt, ?err, "Not retrying permanent error");
+                    }
+                    return Err(err);
+                }
+                // A throttle within the budget waits what was asked and is
+                // not an attempt: the server said when to come back, and
+                // the budget bounds how long that is listened to. A zero
+                // wait would spin, so it goes through the backoff instead.
+                // The grown wait is what the budget pays for. Past the
+                // budget the backoff ladder below waits at least the plain
+                // ask, never the grown one, so the ladder's total stays what
+                // the retry config says and the caller's own deadline (a
+                // worker's download window, Bazel's remote timeout) holds.
+                if is_throttle && !min_wait.is_zero() {
+                    let wait = self.throttle_wait(min_wait, throttles_in_a_row);
+                    if throttled.saturating_add(wait) <= self.throttle_budget {
+                        throttled = throttled.saturating_add(wait);
+                        attempt -= 1;
+                        self.report(RetryOutcome::Retried);
+                        (self.sleep_fn)(wait).await;
+                        continue;
                     }
                 }
+                let Some(backoff) = iter.next() else {
+                    self.report(RetryOutcome::Exhausted);
+                    warn!(client = self.client, ?attempt, ?err, "Retries exhausted");
+                    return Err(err.append(format!("On attempt {attempt}")));
+                };
+                self.report(RetryOutcome::Retried);
+                (self.sleep_fn)(backoff.max(min_wait)).await;
             }
         }
     }

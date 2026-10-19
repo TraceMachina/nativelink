@@ -20,6 +20,9 @@
       url = "github:nlewo/nix2container/76be9608a7f4d6c985d28b0e7be903ae2547df3e";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    flake-root = {
+      url = "github:srid/flake-root";
+    };
   };
 
   outputs = inputs @ {
@@ -39,6 +42,7 @@
       ];
       imports = [
         inputs.git-hooks.flakeModule
+        inputs.flake-root.flakeModule
         ./local-remote-execution/flake-module.nix
         ./tools/darwin/flake-module.nix
         ./tools/nixos/flake-module.nix
@@ -497,7 +501,11 @@
             mongo-with-nativelink-test = pkgs.callPackage integration_tests/mongo/mongo-with-nativelink-test.nix {
               inherit nativelink mongodb wait4x bazelisk;
             };
-            rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe-toolchain-test.nix {
+            rbe-toolchain-list = pkgs.callPackage toolchain-examples/rbe/list.nix {
+              rbe-toolchain-cmd = builtins.readFile toolchain-examples/rbe/cmds.sh;
+            };
+            rbe-toolchain-with-nativelink-test = pkgs.callPackage toolchain-examples/rbe/test.nix {
+              rbe-toolchain-cmd = builtins.readFile toolchain-examples/rbe/cmds.sh;
               inherit nativelink bazel-retry bazel;
             };
             buck2-with-nativelink-test = pkgs.callPackage integration_tests/buck2/buck2-with-nativelink-test.nix {
@@ -531,6 +539,7 @@
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
+            flake-root = config.flake-root.package;
           };
         };
         lre = {
@@ -663,6 +672,10 @@
               export PULUMI_K8S_AWAIT_ALL=true
               export PLAYWRIGHT_BROWSERS_PATH=${pkgs.playwright-driver.browsers}
               export PLAYWRIGHT_NODEJS_PATH=${pkgs.nodejs}
+            ''
+            + pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              # Sharp's prebuilt Linux addon needs the C++ runtime at load time.
+              export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [pkgs.stdenv.cc.cc.lib]}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
             ''
             # TODO(palfrey): Generalize this.
             + pkgs.lib.optionalString (system == "x86_64-linux") ''
