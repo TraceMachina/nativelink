@@ -1,12 +1,9 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: [
-    "config:best-practices",
-
-    // See https://docs.renovatebot.com/presets-replacements/
-    // "replacements:all",
-    // See https://docs.renovatebot.com/presets-workarounds/
-    // "workarounds:all",
+    "config:recommended",
+    "replacements:all",
+    "workarounds:all",
     "security:only-security-updates",
   ],
   packageRules: [
@@ -26,5 +23,4 @@
     },
   ],
   prConcurrentLimit: 2,
-  osvVulnerabilityAlerts: true,
 }
