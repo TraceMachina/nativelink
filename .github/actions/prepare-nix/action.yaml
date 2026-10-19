@@ -4,11 +4,15 @@ description: "Common setup for all runs using Nix."
 inputs:
   nativelink_attic_token:
     required: true
+  skip_free_disk:
+    required: false
+    default: "false"
 runs:
   using: "composite"
   steps:
     - name: Free disk space
       uses: ./.github/actions/free-disk
+      if: ${{ inputs.skip_free_disk != 'true' }}
 
     - name: Install Nix
       # Stay on the Determinate installer: the nix-quick-install switch (Nix
