@@ -187,7 +187,7 @@ jobs:
 
       - name: Get commands list
         run: |
-          COMMANDS=$(nix run .#rbe-toolchain-with-nativelink-test list)
+          COMMANDS=$(nix run .#rbe-toolchain-list)
           echo "matrix={\"command\":${COMMANDS}}" >> $GITHUB_OUTPUT
         id: set-matrix
 
