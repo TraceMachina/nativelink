@@ -66,7 +66,7 @@ async fn test_remote_exec_scheduling_exit_code_and_output_buffer_flush() -> Resu
 
     // Verify ExecuteResponse status is OK and action result contains flushed stdout/stderr
     assert_eq!(execute_response.status, Some(Status::default()));
-    assert_eq!(execute_response.cached_result, false);
+    assert!(!execute_response.cached_result);
 
     let proto_res: ProtoActionResult = execute_response
         .result
@@ -83,15 +83,20 @@ async fn test_remote_exec_scheduling_exit_code_and_output_buffer_flush() -> Resu
         ..action_result_success
     };
 
-    let fail_response: ExecuteResponse =
-        ActionStage::Completed(action_result_failure).into();
+    let fail_response: ExecuteResponse = ActionStage::Completed(action_result_failure).into();
 
     let fail_proto_res = fail_response
         .result
         .expect("Expected result in ExecuteResponse on failure completion");
     assert_eq!(fail_proto_res.exit_code, 1);
-    assert_eq!(fail_proto_res.stdout_digest, Some(DigestInfo::new([4u8; 32], 10).into()));
-    assert_eq!(fail_proto_res.stderr_digest, Some(DigestInfo::new([5u8; 32], 88).into()));
+    assert_eq!(
+        fail_proto_res.stdout_digest,
+        Some(DigestInfo::new([4u8; 32], 10).into())
+    );
+    assert_eq!(
+        fail_proto_res.stderr_digest,
+        Some(DigestInfo::new([5u8; 32], 88).into())
+    );
 
     // 3. Verify intermediate stages do not prematurely flush results
     let executing_response: ExecuteResponse = ActionStage::Executing.into();
@@ -106,7 +111,10 @@ async fn test_remote_exec_scheduling_exit_code_and_output_buffer_flush() -> Resu
 #[nativelink_test]
 async fn test_remote_exec_scheduling_timeout_and_error_propagation() -> Result<(), Error> {
     // Verify worker execution timeout / cancellation propagation without socket leak
-    let timeout_error = make_err!(Code::DeadlineExceeded, "Worker execution timed out after 50ms");
+    let timeout_error = make_err!(
+        Code::DeadlineExceeded,
+        "Worker execution timed out after 50ms"
+    );
 
     let action_result_timeout = ActionResult {
         output_files: vec![],
@@ -122,8 +130,7 @@ async fn test_remote_exec_scheduling_timeout_and_error_propagation() -> Result<(
         message: "Timeout enforced by scheduler".to_string(),
     };
 
-    let response: ExecuteResponse =
-        ActionStage::Completed(action_result_timeout).into();
+    let response: ExecuteResponse = ActionStage::Completed(action_result_timeout).into();
 
     let status = response
         .status
