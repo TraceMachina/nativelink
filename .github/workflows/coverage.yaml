@@ -2,16 +2,17 @@
 name: Coverage
 
 on:
+  # Coverage is expensive (xlarge runner, 180-min cap) and non-gating (no
+  # floor), so it runs nightly / on-demand instead of on every PR. push:main is
+  # kept so the GitHub-Pages coverage trend still updates on merge.
   push:
     branches: [main]
     paths-ignore:
       - '.github/styles/**'
       - 'web/**'
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  workflow_dispatch:
 
 permissions: read-all
 
