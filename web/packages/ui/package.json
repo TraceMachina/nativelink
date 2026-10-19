@@ -9,9 +9,11 @@
     "tailwind-merge": "^3.0.0"
   },
   "devDependencies": {
+    "@jest/globals": "^30.5.2",
     "@nativelink/config": "workspace:*",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "jest": "^30.5.2",
     "typescript": "^7.0.0"
   },
   "exports": {

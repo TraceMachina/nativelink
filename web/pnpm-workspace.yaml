@@ -1,0 +1,12 @@
+allowBuilds:
+  '@biomejs/biome': true
+  '@parcel/watcher': false
+  esbuild: true
+  unrs-resolver: false
+
+overrides:
+  katex@>=0.11.0 <0.18.2: ^0.18.2
+
+packages:
+  - apps/*
+  - packages/*

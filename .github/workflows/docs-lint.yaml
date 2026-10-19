@@ -58,7 +58,7 @@ jobs:
       - name: Install dependencies
         working-directory: web
         run: |
-          nix develop --impure --command bash -c "bun install"
+          nix develop --impure --command bash -c "pnpm install"
 
       # The changelog page is generated from CHANGELOG.md at build time and is
       # gitignored, so a fresh checkout does not have it. The link lint and
@@ -67,7 +67,7 @@ jobs:
       - name: Generate the changelog page
         working-directory: web
         run: |
-          nix develop --impure --command bash -c "bun --filter @nativelink/docs gen:changelog"
+          nix develop --impure --command bash -c "pnpm run --filter @nativelink/docs gen:changelog"
 
       # Each lint runs even if an earlier one failed, so a PR gets the whole
       # list of problems in one pass rather than one problem per push.
@@ -75,7 +75,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun --filter @nativelink/docs lint:anchors
+            pnpm run --filter @nativelink/docs lint:anchors
           "
 
       - name: Internal links resolve
@@ -83,7 +83,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun --filter @nativelink/docs lint:links
+            pnpm run --filter @nativelink/docs lint:links
           "
 
       - name: Config snippets match the schema
@@ -91,7 +91,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun --filter @nativelink/docs lint:snippets
+            pnpm run --filter @nativelink/docs lint:snippets
           "
 
       - name: No calls to action outside the boundary page
@@ -99,7 +99,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun --filter @nativelink/docs lint:boundaries
+            pnpm run --filter @nativelink/docs lint:boundaries
           "
 
       - name: The reading path has no dead ends
@@ -107,7 +107,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun --filter @nativelink/docs lint:navigation
+            pnpm run --filter @nativelink/docs lint:navigation
           "
 
       # Generated surfaces must come from their generator. If regenerating
@@ -118,7 +118,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun --filter @nativelink/docs gen:llms
+            pnpm run --filter @nativelink/docs gen:llms
           "
           if ! git diff --quiet -- apps/docs; then
             echo "::error::Regenerating changed committed files. Run the generator and commit the result, and do not hand-edit generated pages."

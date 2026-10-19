@@ -15,7 +15,7 @@
     "postcss": "^8.5.23",
     "sharp": "^0.35.4"
   },
-  "packageManager": "bun@1.2.21",
+  "packageManager": "pnpm@11.22.0",
   "private": true,
   "scripts": {
     "build": "turbo run build",
@@ -27,9 +27,5 @@
     "format": "biome format --write .",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck"
-  },
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ]
+  }
 }

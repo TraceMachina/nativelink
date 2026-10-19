@@ -26,23 +26,23 @@ resolving after the heading is reworded.
 
 ```bash
 cd web
-bun install
-bun dev:docs        # docs only: http://localhost:3001
+pnpm install
+pnpm dev:docs        # docs only: http://localhost:3001
 
 # A production build of both apps, served the way Vercel serves them
-DOCS_URL=http://localhost:3001 bun run build
-bun --filter @nativelink/web start    # http://localhost:3000
-bun --filter @nativelink/docs start   # http://localhost:3001
+DOCS_URL=http://localhost:3001 pnpm run build
+pnpm run --filter @nativelink/web start    # http://localhost:3000
+pnpm run --filter @nativelink/docs start   # http://localhost:3001
 ```
 
 Edit any `.mdx` file under `apps/docs/content/docs/` and the dev server picks
 it up on save. To preview the marketing site and the docs together (the
-marketing app redirects `/docs` to the docs app in dev), run `bun dev` and use
+marketing app redirects `/docs` to the docs app in dev), run `pnpm dev` and use
 `http://localhost:3000/docs`.
 
 <Callout type="info" title="`web/` is not part of the Bazel build">
-  The docs are a Bun workspace. `bazel test //...` does not touch them, and
-  `bun` is the only toolchain you need to work on a page. See
+  The docs are a pnpm workspace. `bazel test //...` does not touch them, and
+  `pnpm` is the only toolchain you need to work on a page. See
   [contribution guidelines](/contribute/guidelines) for the rest of the repo.
 </Callout>
 
@@ -196,8 +196,8 @@ the anchor without adding a redirect.
 
 ```bash
 cd web
-bun --filter @nativelink/docs lint:anchors          # check
-bun --filter @nativelink/docs lint:anchors --fix    # freeze what exists
+pnpm run --filter @nativelink/docs lint:anchors          # check
+pnpm run --filter @nativelink/docs lint:anchors --fix    # freeze what exists
 ```
 
 `--fix` writes the anchor Fumadocs would have generated anyway, so running it
@@ -217,7 +217,7 @@ added since the last release passes once `gen:config-reference main` has
 been run in the same change.
 
 ```bash
-bun --filter @nativelink/docs lint:snippets
+pnpm run --filter @nativelink/docs lint:snippets
 ```
 
 For a fence that legitimately is not NativeLink config (a `meta.json`, a
@@ -249,7 +249,7 @@ reader's index from `meta.json` and frontmatter, so a page missing from a
 `meta.json` is invisible to agents even if it renders fine.
 
 ```bash
-bun --filter @nativelink/docs gen:llms
+pnpm run --filter @nativelink/docs gen:llms
 ```
 
 ## Style [#style]
@@ -288,16 +288,16 @@ and links out for the types and defaults.
     leave the tree unchanged:
 
     ```bash
-    bun --filter @nativelink/docs lint:anchors
-    bun --filter @nativelink/docs lint:links
-    bun --filter @nativelink/docs lint:snippets
-    bun --filter @nativelink/docs lint:boundaries
-    bun --filter @nativelink/docs lint:navigation
-    bun --filter @nativelink/docs gen:llms
+    pnpm run --filter @nativelink/docs lint:anchors
+    pnpm run --filter @nativelink/docs lint:links
+    pnpm run --filter @nativelink/docs lint:snippets
+    pnpm run --filter @nativelink/docs lint:boundaries
+    pnpm run --filter @nativelink/docs lint:navigation
+    pnpm run --filter @nativelink/docs gen:llms
     ```
   </li>
   <li>
-    **Check that it compiles and typechecks.** `bun --filter @nativelink/docs build`
+    **Check that it compiles and typechecks.** `pnpm run --filter @nativelink/docs build`
     catches an MDX parse error or a stray import that the dev server tolerated.
   </li>
   <li>

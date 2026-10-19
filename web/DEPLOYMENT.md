@@ -18,7 +18,7 @@ rewrite. This page walks through the setup end-to-end.
 ```
 
 Both projects build from the same monorepo. Vercel auto-detects the
-Turborepo + Bun setup; the only project-level setting that matters is
+Turborepo + pnpm setup; the only project-level setting that matters is
 **Root Directory**.
 
 ## One-time setup
@@ -32,9 +32,9 @@ first.
 2. **Root Directory**: `web/apps/docs`.
 3. **Framework Preset**: Next.js (auto-detected).
 4. **Build Command**: leave as default. Vercel runs the project's `build`
-   script in the workspace root with `bun install` and `bun --filter
+   script in the workspace root with `pnpm install` and `pnpm run --filter
    @nativelink/docs build` automatically.
-5. **Install Command**: `bun install` (auto-detected from `bun.lock`).
+5. **Install Command**: `pnpm install` (auto-detected from `pnpm-lock.yaml`).
 6. **Environment Variables**: none required.
 7. Deploy. Note the assigned URL — e.g. `nativelink-docs.vercel.app`.
 
@@ -73,7 +73,7 @@ docs server in dev:
 
 ```bash
 # from web/
-bun dev                          # both apps via Turbo
+pnpm dev                          # both apps via Turbo
 # → http://localhost:3000/docs  (proxied to localhost:3001/docs)
 ```
 
