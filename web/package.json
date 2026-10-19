@@ -3,6 +3,7 @@
   "type": "module",
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
+    "next": "~16.3.3",
     "turbo": "^2.3.0",
     "typescript": "^7.0.0"
   },
