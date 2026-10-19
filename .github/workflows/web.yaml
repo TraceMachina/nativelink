@@ -46,12 +46,25 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - name: Install web dependencies
+        if: github.event_name == 'pull_request'
+        uses: >- # v4
+          nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 10
+          command: |
+            cd web
+            nix develop --impure --command bun install --frozen-lockfile
+          shell: bash
+
       - name: Test Build
         if: github.event_name == 'pull_request'
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun install && bun run build
+            bun run test && bun run build
           "
 
       - name: Teardown Worker

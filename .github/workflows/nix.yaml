@@ -12,6 +12,14 @@ on:
     paths-ignore:
       - '.github/styles/**'
       - 'web/**'
+  # Two jobs here run only on the nightly schedule and on demand: Cargo Dev
+  # (nix-cargo) and the end-to-end integration tests (buildstream, buck2,
+  # mongo). See their per-job `if`. The rest (Bazel Dev, installation and the
+  # RBE toolchain matrix) stay on the per-PR path and skip the nightly run via
+  # `if: != 'schedule'`.
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  workflow_dispatch:
 
 permissions: read-all
 
@@ -21,6 +29,7 @@ concurrency:
 
 jobs:
   nix-bazel:
+    if: ${{ github.event_name != 'schedule' }}
     strategy:
       fail-fast: false
       matrix:
@@ -76,7 +85,9 @@ jobs:
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+  # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
@@ -113,6 +124,7 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   installation:
+    if: ${{ github.event_name != 'schedule' }}
     strategy:
       fail-fast: false
       matrix:
@@ -143,6 +155,7 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   integration:
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
@@ -172,6 +185,7 @@ jobs:
 
   # rbe-toolchain is slow because it has many subcommands, so split it out
   generate-rbe-commands:
+    if: ${{ github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -184,14 +198,16 @@ jobs:
         uses: ./.github/actions/prepare-nix
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          skip_free_disk: true # because we don't need much for this action
 
       - name: Get commands list
         run: |
-          COMMANDS=$(nix run .#rbe-toolchain-with-nativelink-test list)
+          COMMANDS=$(nix run .#rbe-toolchain-list)
           echo "matrix={\"command\":${COMMANDS}}" >> $GITHUB_OUTPUT
         id: set-matrix
 
   rbe-toolchain:
+    if: ${{ github.event_name != 'schedule' }}
     name: rbe ${{ matrix.command}}
     needs: [generate-rbe-commands]
     strategy:
