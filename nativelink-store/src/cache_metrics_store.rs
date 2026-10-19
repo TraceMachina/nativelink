@@ -112,6 +112,10 @@ impl StoreDriver for CacheMetricsStore {
         Ok(())
     }
 
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.backend.as_store_driver_pin().remove(key).await
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

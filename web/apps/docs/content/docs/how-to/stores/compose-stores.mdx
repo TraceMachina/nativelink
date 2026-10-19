@@ -309,6 +309,13 @@ The wrapper is opt-in: stores not wrapped by it are built without it and pay
 none of its hot-path timing cost. Wrap the layer whose behaviour you actually
 want to see, not every layer.
 
+In development builds, the wrapper also forwards cache removal. A size check
+that detects a bad cached copy can remove it through `cache_metrics`, allowing
+the next read to refill the cache from the backend. The backend still decides
+whether its copy can be removed.
+
+<SourceLink file="nativelink-store/src/cache_metrics_store.rs" symbol="CacheMetricsStore" />
+
 ### The three with nothing to configure [#the-three-with-nothing-to-configure]
 
 `memory` takes an `eviction_policy` and nothing else. It is the right fast half
