@@ -4051,3 +4051,219 @@ async fn a_higher_memory_report_mid_pass_goes_to_the_oldest_waiting_action() -> 
     );
     Ok(())
 }
+
+/// A peer wins exactly one assignment against a real awaited-action DB.
+#[derive(MetricsComponent)]
+struct AssignmentRaceDb<A: AwaitedActionDb> {
+    inner: A,
+    contended_digest: DigestInfo,
+    lose_assignment: AtomicBool,
+}
+
+impl<A: AwaitedActionDb> AwaitedActionDb for AssignmentRaceDb<A> {
+    type Subscriber = A::Subscriber;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner.get_all_awaited_actions().await
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        self.inner.get_by_operation_id(operation_id).await
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        self.inner
+            .get_range_of_actions(state, start, end, desc)
+            .await
+    }
+
+    async fn update_awaited_action(&self, mut action: AwaitedAction) -> Result<(), Error> {
+        if action.state().stage == ActionStage::Executing
+            && action.action_info().digest() == self.contended_digest
+            && self.lose_assignment.swap(false, Ordering::AcqRel)
+        {
+            // A peer commits the assignment before this scheduler's CAS.
+            action.set_worker_id(
+                Some(WorkerId("peer-worker".to_string())),
+                make_system_time(0),
+            );
+            self.inner.update_awaited_action(action).await?;
+            return Err(make_err!(
+                Code::Aborted,
+                "Another scheduler won the assignment"
+            ));
+        }
+        self.inner.update_awaited_action(action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        self.inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await
+    }
+}
+
+async fn check_lost_assignment_skips_shape(park_first: bool) -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let notify = Arc::new(Notify::new());
+    let listing_gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let digests = [
+        DigestInfo::new([201; 32], 512),
+        DigestInfo::new([202; 32], 512),
+        DigestInfo::new([203; 32], 512),
+    ];
+    let (pass_tx, mut pass_rx) = mpsc::unbounded_channel();
+    let (scheduler, _workers) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            supported_platform_properties: Some(HashMap::from([(
+                "cpu_count".to_string(),
+                PropertyType::Minimum,
+            )])),
+            executing_sweep_interval_s: -1,
+            fallback_match_interval_s: -1,
+            worker_match_logging_interval_s: if park_first { -1 } else { 1 },
+            ..Default::default()
+        },
+        GatedQueueDb {
+            inner: AssignmentRaceDb {
+                inner: memory_awaited_action_db_factory(0, &notify, MockInstantWrapped::default),
+                contended_digest: digests[0],
+                lose_assignment: AtomicBool::new(true),
+            },
+            gate: gate.clone(),
+            listing_gate: Some(listing_gate.clone()),
+        },
+        move || {
+            let pass_tx = pass_tx.clone();
+            async move {
+                pass_tx.send(()).unwrap();
+            }
+        },
+        notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let mut worker_rx = setup_new_worker(
+        &scheduler,
+        WorkerId("local-worker".to_string()),
+        PlatformProperties::new(HashMap::from([(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(10),
+        )])),
+    )
+    .await?;
+    let _blocker = if park_first {
+        Some(
+            setup_action(
+                &scheduler,
+                DigestInfo::new([200; 32], 512),
+                HashMap::from([("cpu_count".to_string(), "10".to_string())]),
+                make_system_time(0) - Duration::from_secs(1),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut listeners = Vec::new();
+    for (i, digest) in digests.into_iter().enumerate() {
+        listeners.push(
+            setup_action(
+                &scheduler,
+                digest,
+                HashMap::from([(
+                    "cpu_count".to_string(),
+                    if i == 2 { "2" } else { "1" }.to_string(),
+                )]),
+                make_system_time(i as u64),
+            )
+            .await?,
+        );
+    }
+    listing_gate.add_permits(1);
+    if park_first {
+        gate.add_permits(1);
+        let (operation_id, _) = start_execute_digest(worker_rx.recv().await.unwrap());
+        // The two actions sharing a shape park behind the full worker.
+        gate.add_permits(2);
+        tokio::task::yield_now().await;
+        assert_eq!(worker_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        let worker_id = WorkerId("local-worker".to_string());
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    completed_result(&worker_id),
+                )),
+            )
+            .await?;
+        // Reading the last action triggers a replay of the parked pair.
+        gate.add_permits(1);
+    } else {
+        gate.add_permits(3);
+    }
+    tokio::time::timeout(Duration::from_secs(5), pass_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    // The first action belongs to the peer. The second has the same shape
+    // and waits; the third uses a different amount of CPU and still runs.
+    assert_eq!(
+        start_execute_digest(worker_rx.try_recv().unwrap()).1,
+        digests[2]
+    );
+    assert_eq!(worker_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    assert_eq!(listeners[1].as_state().await?.0.stage, ActionStage::Queued);
+    listing_gate.add_permits(1);
+    gate.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(5), pass_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        start_execute_digest(worker_rx.try_recv().unwrap()).1,
+        digests[1]
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn lost_assignment_skips_only_its_shape_until_the_next_pass() -> Result<(), Error> {
+    check_lost_assignment_skips_shape(false).await?;
+    // The listing gate allows only one query per pass; enabling diagnostics
+    // must not issue another queue or executing listing before it finishes.
+    assert!(logs_contain("Oldest actions in the matching pass"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn lost_parked_assignment_skips_its_shape_until_the_next_pass() -> Result<(), Error> {
+    check_lost_assignment_skips_shape(true).await
+}

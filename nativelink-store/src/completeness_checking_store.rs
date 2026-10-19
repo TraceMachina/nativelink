@@ -33,7 +33,6 @@ use nativelink_util::store_trait::{
 };
 use parking_lot::Mutex;
 use tokio::sync::Notify;
-use tracing::warn;
 
 use crate::ac_utils::{get_and_decode_digest, get_size_and_decode_digest};
 
@@ -308,15 +307,19 @@ impl CompletenessCheckingStore {
                         Some(Ok(())) => self.complete_entries_counter.inc(),
                         Some(Err((err, i))) => {
                             self.incomplete_entries_counter.inc();
-                            state_mux.lock().results[i] = None;
-                            // Note: Don't return the errors. We just flag the result as
-                            // missing but show a warning if it's not a NotFound.
+                            // Only a genuine `NotFound` may be laundered into a "missing"
+                            // slot (which callers surface as `Code::NotFound`). That covers
+                            // a truly absent action-result record and a clean completeness
+                            // miss — the intended eviction-coherence behavior (an evicted
+                            // referent must still 404). ANY other code is a real backend
+                            // read/decode failure; collapsing it into `None` would make an
+                            // I/O fault indistinguishable from absence and get served as a
+                            // 404. Propagate it so the caller can tell "genuinely absent"
+                            // from "could not determine".
                             if err.code != Code::NotFound {
-                                warn!(
-                                    ?err,
-                                    "Error checking existence of digest"
-                                );
+                                return Err(err);
                             }
+                            state_mux.lock().results[i] = None;
                         }
                         None => {
                             // We are done, so flag it done and ensure we notify the
