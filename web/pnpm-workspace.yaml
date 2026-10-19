@@ -6,6 +6,8 @@ allowBuilds:
 
 overrides:
   katex@>=0.11.0 <0.18.2: ^0.18.2
+  # Because of https://github.com/fuma-nama/fumadocs/issues/3604
+  mdast-util-to-markdown: 2.1.2
 
 packages:
   - apps/*
