@@ -1703,6 +1703,8 @@ impl StoreDriver for GrpcStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
+        const NON_RESUMABLE: bool = false;
+
         struct LocalState {
             resource_name: String,
             reader: DropCloserReadHalf,
@@ -1846,7 +1848,6 @@ impl StoreDriver for GrpcStore {
         // A store upload cannot replay bytes already consumed from its reader.
         // The upstream may have lost the upload entirely, so replaying just the
         // last two messages at nonzero offsets is not a safe resume strategy.
-        const NON_RESUMABLE: bool = false;
         self.write_internal(
             WriteRequestStreamWrapper::from(stream)
                 .await
