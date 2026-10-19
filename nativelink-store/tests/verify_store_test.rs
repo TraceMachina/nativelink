@@ -33,6 +33,112 @@ use tracing::{Instrument, info_span};
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 
 #[nativelink_test]
+async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(), Error> {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::make_err;
+    use nativelink_metric::MetricsComponent;
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey};
+
+    #[derive(Debug, MetricsComponent)]
+    struct FailingUploadStore {
+        code: Code,
+    }
+
+    #[async_trait]
+    impl StoreDriver for FailingUploadStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            unimplemented!()
+        }
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            // Fail after accepting data, while the checker is still forwarding.
+            reader.recv().await?;
+            Err(make_err!(self.code, "inner upload failed"))
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            unimplemented!()
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(FailingUploadStore);
+
+    for code in [
+        Code::Unavailable,
+        Code::ResourceExhausted,
+        Code::PermissionDenied,
+    ] {
+        let store = VerifyStore::new(
+            &VerifySpec {
+                backend: StoreSpec::Memory(MemorySpec::default()),
+                verify_size: true,
+                verify_hash: false,
+            },
+            Store::new(Arc::new(FailingUploadStore { code })),
+        );
+        let digest = DigestInfo::try_new(VALID_HASH1, 100)?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send_fut = async move {
+            for _ in 0..100 {
+                tx.send("x".into()).await?;
+            }
+            tx.send_eof()
+        };
+        let (_, result) = tokio::time::timeout(core::time::Duration::from_secs(5), async {
+            futures::join!(
+                send_fut,
+                store.update(digest, rx, UploadSizeInfo::ExactSize(100))
+            )
+        })
+        .await
+        .expect("an inner write failure must not hang the verify store");
+        let err = result.unwrap_err();
+        assert_eq!(err.code, code, "{err:?}");
+        assert!(err.to_string().contains("inner upload failed"), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("Failed to write chunk to inner store"),
+            "{err:?}"
+        );
+    }
+    Ok(())
+}
+
+#[nativelink_test]
 async fn verify_size_false_passes_on_update() -> Result<(), Error> {
     const VALUE1: &str = "123";
 
@@ -88,7 +194,9 @@ async fn verify_size_true_fails_on_update() -> Result<(), Error> {
         store.update(digest, rx, UploadSizeInfo::ExactSize(100))
     );
     assert!(result.is_err(), "Expected error, got: {result:?}");
-    let err = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::InvalidArgument);
+    let err = err.to_string();
     assert!(
         err.contains(EXPECTED_ERR),
         "Error should contain '{EXPECTED_ERR}', got: {err:?}"
@@ -216,7 +324,9 @@ async fn verify_sha256_hash_true_fails_on_update() -> Result<(), Error> {
         .instrument(info_span!("update_oneshot"))
         .with_context(make_ctx_for_hash_func(DigestHasherFunc::Sha256)?)
         .await;
-    let err = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::InvalidArgument);
+    let err = err.to_string();
     let expected_err = format!(
         "Hash verification using SHA256 failed: client declared SHA256:{HASH}, but the server computed SHA256:{ACTUAL_HASH}"
     );
