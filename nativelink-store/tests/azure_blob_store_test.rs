@@ -107,6 +107,9 @@ struct MockTransport {
     upload: Mutex<VecDeque<CannedResponse>>,
     stage_block: Mutex<VecDeque<CannedResponse>>,
     commit: Mutex<VecDeque<CannedResponse>>,
+    block_list: Mutex<VecDeque<CannedResponse>>,
+    /// Every blob path a `Delete Blob` request named, in order.
+    deleted: Mutex<Vec<String>>,
     /// Raw XML body of the last `commit_block_list` request (the committed block
     /// list), captured so tests can assert the exact set/order of block ids.
     committed_block_list: Mutex<Option<Bytes>>,
@@ -145,8 +148,44 @@ impl MockTransport {
         self.committed_block_list.lock().unwrap().clone()
     }
 
+    fn push_stage_block(&self, response: CannedResponse) {
+        self.stage_block.lock().unwrap().push_back(response);
+    }
+
+    fn push_block_list(&self, response: CannedResponse) {
+        self.block_list.lock().unwrap().push_back(response);
+    }
+
+    fn deleted(&self) -> Vec<String> {
+        self.deleted.lock().unwrap().clone()
+    }
+
     fn pop(queue: &Mutex<VecDeque<CannedResponse>>) -> Option<CannedResponse> {
         queue.lock().unwrap().pop_front()
+    }
+}
+
+/// The XML Azure returns for Get Block List: block ids are base64 in the
+/// body, as the SDK's own serializer writes them.
+fn block_list_ok(committed: &[&str], uncommitted: &[&str]) -> CannedResponse {
+    let blocks = |ids: &[&str]| -> String {
+        let mut out = String::new();
+        for id in ids {
+            out.push_str("<Block><Name>");
+            out.push_str(&azure_core::base64::encode(id.as_bytes()));
+            out.push_str("</Name><Size>5242880</Size></Block>");
+        }
+        out
+    };
+    CannedResponse {
+        status: StatusCode::Ok,
+        headers: vec![("content-type", "application/xml".to_string())],
+        body: format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?><BlockList><CommittedBlocks>{}</CommittedBlocks><UncommittedBlocks>{}</UncommittedBlocks></BlockList>",
+            blocks(committed),
+            blocks(uncommitted)
+        )
+        .into_bytes(),
     }
 }
 
@@ -166,6 +205,20 @@ impl HttpClient for MockTransport {
         let query = request.url().query().unwrap_or_default().to_owned();
         let canned = match request.method() {
             Method::Head => Self::pop(&self.properties).unwrap_or_else(|| properties_ok(0)),
+            Method::Get if query.contains("comp=blocklist") => {
+                Self::pop(&self.block_list).unwrap_or_else(|| block_list_ok(&[], &[]))
+            }
+            Method::Delete => {
+                self.deleted
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_owned());
+                CannedResponse {
+                    status: StatusCode::Accepted,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                }
+            }
             Method::Get => {
                 self.download_ranges.lock().unwrap().push(
                     request
@@ -1021,5 +1074,144 @@ async fn a_fixed_read_limit_does_not_move_on_a_throttle() -> Result<(), Error> {
         .get_part_unchunked(create_test_digest()?, 0, None)
         .await?;
     assert_eq!(store.read_limit(), Some(8));
+    Ok(())
+}
+
+/// Ten MiB of payload: two staged blocks.
+fn two_block_payload() -> Vec<u8> {
+    const TOTAL_SIZE: usize = 2 * 5 * 1024 * 1024;
+    (0..TOTAL_SIZE)
+        .map(|i| u8::try_from((i * 7) % 256).unwrap())
+        .collect()
+}
+
+/// A block that fails to stage fails the upload, and the blocks that did
+/// stage are discarded: with nothing committed under the name, the blob is
+/// deleted, and no block list is ever committed.
+#[nativelink_test]
+async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error> {
+    let send_data = two_block_payload();
+    let mock = MockTransport::new();
+    // The first block stages, the second is refused for good.
+    mock.push_stage_block(created());
+    mock.push_stage_block(CannedResponse {
+        status: StatusCode::BadRequest,
+        headers: Vec::new(),
+        body: Vec::new(),
+    });
+    mock.push_block_list(block_list_ok(&[], &["00000000000000000000000000000000"]));
+    let store = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
+
+    let digest = DigestInfo::try_new(TEST_HASH, send_data.len())?;
+    let err = store
+        .update_oneshot(StoreKey::from(&digest), send_data.into())
+        .await
+        .expect_err("the refused block fails the upload");
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+
+    assert_eq!(
+        mock.deleted(),
+        vec![format!(
+            "/{TEST_CONTAINER}/{TEST_HASH}-{}",
+            2 * 5 * 1024 * 1024
+        )],
+        "the name holding only staged blocks is deleted"
+    );
+    assert!(
+        mock.committed_block_list().is_none(),
+        "no block list is committed for a failed upload"
+    );
+    Ok(())
+}
+
+/// When the name already holds a committed blob (a re-upload of a key that
+/// exists), the committed blocks are kept: re-committing that list is what
+/// discards the staged ones, and nothing is deleted.
+#[nativelink_test]
+async fn failed_staged_upload_keeps_the_committed_blocks() -> Result<(), Error> {
+    let send_data = two_block_payload();
+    let mock = MockTransport::new();
+    mock.push_stage_block(created());
+    mock.push_stage_block(CannedResponse {
+        status: StatusCode::BadRequest,
+        headers: Vec::new(),
+        body: Vec::new(),
+    });
+    mock.push_block_list(block_list_ok(
+        &["old-a", "old-b"],
+        &["00000000000000000000000000000000"],
+    ));
+    let store = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
+
+    let digest = DigestInfo::try_new(TEST_HASH, send_data.len())?;
+    store
+        .update_oneshot(StoreKey::from(&digest), send_data.into())
+        .await
+        .expect_err("the refused block fails the upload");
+
+    assert!(
+        mock.deleted().is_empty(),
+        "a committed blob is never deleted"
+    );
+    let committed = mock
+        .committed_block_list()
+        .expect("the committed list is re-committed to drop the staged blocks");
+    let committed = core::str::from_utf8(&committed).expect("utf-8");
+    for id in ["old-a", "old-b"] {
+        let encoded = azure_core::base64::encode(id.as_bytes());
+        assert!(
+            committed.contains(&format!("<Committed>{encoded}</Committed>")),
+            "{id} must be kept as a committed block: {committed}"
+        );
+    }
+    assert!(
+        !committed.contains("<Latest>") && !committed.contains("<Uncommitted>"),
+        "only the committed blocks are kept: {committed}"
+    );
+    Ok(())
+}
+
+/// An upload whose future is dropped before it finishes (the `ByteStream` that
+/// fed it died and the server swept the stream) still discards the blocks it
+/// staged, from a background task, since the dropped future runs nothing.
+#[nativelink_test(start_paused = true)]
+async fn dropped_staged_upload_discards_its_blocks() -> Result<(), Error> {
+    const BLOCK: usize = 5 * 1024 * 1024;
+    let mock = MockTransport::new();
+    mock.push_block_list(block_list_ok(&[], &["00000000000000000000000000000000"]));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+    let digest = DigestInfo::try_new(TEST_HASH, 2 * BLOCK)?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    let mut update_fut = Box::pin(store.update(
+        StoreKey::from(&digest),
+        rx,
+        UploadSizeInfo::ExactSize(2 * BLOCK as u64),
+    ));
+
+    // One block and the start of the next arrive (the reader only hands a
+    // block on once it sees data behind it); the rest never comes, so the
+    // upload sits waiting on the reader until it is dropped.
+    tx.send(Bytes::from(vec![7u8; BLOCK])).await?;
+    tx.send(Bytes::from(vec![7u8; 1024])).await?;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut update_fut)
+            .await
+            .is_err(),
+        "the upload must still be waiting for data"
+    );
+    assert_eq!(mock.request_count(), 1, "one staged block");
+    drop(update_fut);
+
+    // The guard's background task waits out its grace period, then reads
+    // the block list and deletes the uncommitted blob.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        mock.deleted(),
+        vec![format!("/{TEST_CONTAINER}/{TEST_HASH}-{}", 2 * BLOCK)],
+        "the dropped upload's staged blocks are discarded"
+    );
+    assert!(mock.committed_block_list().is_none());
     Ok(())
 }
