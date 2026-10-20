@@ -30,6 +30,8 @@ jobs:
         sanitizer: [asan]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      ASAN_OPTIONS: detect_leaks=1
     timeout-minutes: 30
     steps:
       - name: Checkout
