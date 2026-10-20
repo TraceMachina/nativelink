@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, macos-latest-large]
         sanitizer: [asan]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
