@@ -970,22 +970,19 @@ where
 
         let blob_path = self.make_blob_path(&key);
 
-        // How many bytes this read may yield. An explicit length wins; with
-        // none, a digest key still states its own size, and a CAS object is
-        // exactly that long. Bounding on it matters because the store must
-        // not hand the caller more than the digest promises: a blob that is
-        // longer than its digest, however it got that way, has the content
-        // as its prefix, and the rest is not ours to pass on. Without this
-        // the surplus travels to `verify_store`, which rejects the whole
-        // stream, and the read fails for a blob that was readable.
+        // How many bytes this read may yield: the explicit length when the
+        // caller gives one, else the whole object. The digest's own size is
+        // not a bound here. A compression store above reads the object it
+        // wrote under this key, and an lz4 frame of data that does not
+        // compress is longer than the digest it is stored under; cut at the
+        // digest's size it is a torn frame and every read of that blob fails.
+        // A raw object longer than its digest, which the upload-size
+        // validation no longer publishes, is the verify store's to judge.
         let size_from_key = match &key {
             StoreKey::Digest(digest) => Some(digest.size_bytes()),
             StoreKey::Str(_) => None,
         };
-        let max_bytes = match length {
-            Some(len) => Some(len),
-            None => size_from_key.map(|size| size.saturating_sub(offset)),
-        };
+        let max_bytes = length;
 
         self.retrier
             .retry(unfold(writer, move |writer| {

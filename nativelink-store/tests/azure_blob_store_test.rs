@@ -1067,31 +1067,31 @@ async fn test_multipart_upload_large_file() -> Result<(), Error> {
 
 /// Azure answers a download with the block it read, so for a blob whose
 /// length is not a multiple of the block size the last block runs past the
-/// end. The store must hand the caller the digest's bytes and no more: the
-/// surplus used to travel on to `verify_store`, which rejected the whole
-/// stream, so a readable blob failed every read and with it every action
-/// that wanted it.
+/// end. The store hands the caller everything it was given; a raw surplus
+/// is the verify store's to judge. A compression store above reads the
+/// object it wrote under this key, and an lz4 frame of data that does not
+/// compress is longer than the digest it is stored under, so a read cut at
+/// the digest's size is a torn frame and the blob is unreadable.
 #[nativelink_test]
-async fn a_body_longer_than_the_digest_is_trimmed_to_it() -> Result<(), Error> {
+async fn a_body_longer_than_the_digest_is_handed_on_whole() -> Result<(), Error> {
     const CONTENT: u64 = 100;
     const BLOCK: u64 = 64;
     let content: Vec<u8> = (0..CONTENT)
         .map(|i| u8::try_from(i % 251).unwrap())
         .collect();
-    // What Azure returns: the content padded out to the next whole block.
-    let mut padded = content.clone();
-    padded.resize(usize::try_from(BLOCK * 2).unwrap(), 0xAA);
+    // What Azure holds: more than the digest names, as a compressed frame is.
+    let mut stored = content.clone();
+    stored.resize(usize::try_from(BLOCK * 2).unwrap(), 0xAA);
 
     let mock = MockTransport::new();
-    mock.push_download(download_ok(StatusCode::Ok, padded));
+    mock.push_download(download_ok(StatusCode::Ok, stored.clone()));
 
     let store = create_test_store(Arc::clone(&mock), None, None)?;
     let result = store
         .get_part_unchunked(DigestInfo::try_new(TEST_HASH, CONTENT)?, 0, None)
         .await?;
 
-    assert_eq!(result.len(), usize::try_from(CONTENT).unwrap());
-    assert_eq!(result, content);
+    assert_eq!(result, stored);
     Ok(())
 }
 
