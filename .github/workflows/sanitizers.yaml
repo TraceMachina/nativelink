@@ -84,8 +84,8 @@ jobs:
       - name: Run CFI tests
         if: matrix.sanitizer == 'cfi'
         env:
-          RUSTFLAGS: -Zsanitizer=cfi -Clto=fat -Cembed-bitcode=yes
-          RUSTDOCFLAGS: -Zsanitizer=cfi -Clto=fat -Cembed-bitcode=yes
+          RUSTFLAGS: -Zsanitizer=cfi -Clto=fat -Cembed-bitcode=yes -Ccodegen-units=1
+          RUSTDOCFLAGS: -Zsanitizer=cfi -Clto=fat -Cembed-bitcode=yes -Ccodegen-units=1
           RUST_TEST_THREADS: 1
         # Rebuild std with the same instrumentation; keep host tools unsanitized.
         run: >-
