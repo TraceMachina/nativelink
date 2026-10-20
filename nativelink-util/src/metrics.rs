@@ -1527,6 +1527,12 @@ pub static STORE_METRICS: LazyLock<StoreMetrics> = LazyLock::new(|| {
             .with_description("Object store reads that found every read permit taken and waited for one, by provider")
             .with_unit("{request}")
             .build(),
+
+        object_request_waits: meter
+            .u64_counter("store.object.request_waits")
+            .with_description("Object store requests of any kind that found every request permit taken (max_concurrent_requests) and waited for one, by provider")
+            .with_unit("{request}")
+            .build(),
     }
 });
 
@@ -1539,6 +1545,8 @@ pub struct StoreMetrics {
     pub object_read_limit: metrics::Gauge<u64>,
     /// Reads that waited for a read permit, by provider.
     pub object_read_waits: metrics::Counter<u64>,
+    /// Requests that waited for a request permit, by provider.
+    pub object_request_waits: metrics::Counter<u64>,
 }
 
 /// Records the read limit an object store's permit pool settled on.
@@ -1553,6 +1561,13 @@ pub fn record_object_store_read_limit(provider: &'static str, limit: usize) {
 pub fn record_object_store_read_wait(provider: &'static str) {
     STORE_METRICS
         .object_read_waits
+        .add(1, &[KeyValue::new(STORE_OBJECT_PROVIDER, provider)]);
+}
+
+/// Records a request that found no request permit free and waited for one.
+pub fn record_object_store_request_wait(provider: &'static str) {
+    STORE_METRICS
+        .object_request_waits
         .add(1, &[KeyValue::new(STORE_OBJECT_PROVIDER, provider)]);
 }
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -27,7 +27,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use nativelink_config::stores::{CommonObjectSpec, ExperimentalAzureSpec, Retry};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
-use nativelink_store::azure_blob_store::AzureBlobStore;
+use nativelink_store::azure_blob_store::{AzureBlobStore, is_out_of_local_ports};
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -118,6 +118,15 @@ struct MockTransport {
     download_ranges: Mutex<Vec<Option<String>>>,
     count: AtomicUsize,
     uploaded_bodies: Mutex<Vec<Bytes>>,
+    /// How long every request takes to be answered, so the ones sent
+    /// together overlap.
+    hold: Mutex<Duration>,
+    in_flight: AtomicUsize,
+    /// The most requests that were being answered at once.
+    max_in_flight: AtomicUsize,
+    /// When set, every request fails the way `connect()` does on a host with
+    /// no local port left.
+    out_of_ports: AtomicBool,
 }
 
 impl MockTransport {
@@ -139,6 +148,14 @@ impl MockTransport {
 
     fn request_count(&self) -> usize {
         self.count.load(Ordering::SeqCst)
+    }
+
+    fn hold_each_request(&self, hold: Duration) {
+        *self.hold.lock().unwrap() = hold;
+    }
+
+    fn max_in_flight(&self) -> usize {
+        self.max_in_flight.load(Ordering::SeqCst)
     }
 
     fn download_ranges(&self) -> Vec<Option<String>> {
@@ -201,6 +218,27 @@ fn build_response(canned: CannedResponse) -> AsyncRawResponse {
 #[async_trait::async_trait]
 impl HttpClient for MockTransport {
     async fn execute_request(&self, request: &Request) -> azure_core::Result<AsyncRawResponse> {
+        if self.out_of_ports.load(Ordering::SeqCst) {
+            return Err(azure_core::Error::with_error(
+                ErrorKind::Connection,
+                std::io::Error::from(std::io::ErrorKind::AddrNotAvailable),
+                "failed to execute `reqwest` request",
+            ));
+        }
+        let in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight.fetch_max(in_flight, Ordering::SeqCst);
+        let hold = *self.hold.lock().unwrap();
+        if !hold.is_zero() {
+            tokio::time::sleep(hold).await;
+        }
+        let response = self.respond(request);
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        response
+    }
+}
+
+impl MockTransport {
+    fn respond(&self, request: &Request) -> azure_core::Result<AsyncRawResponse> {
         self.count.fetch_add(1, Ordering::SeqCst);
 
         let query = request.url().query().unwrap_or_default().to_owned();
@@ -1464,5 +1502,163 @@ async fn dropped_staged_upload_discards_its_blocks() -> Result<(), Error> {
         "the dropped upload's staged blocks are discarded"
     );
     assert!(mock.committed_block_list().is_none());
+    Ok(())
+}
+
+/// How long the mock holds each request in the concurrency tests below, so
+/// the requests sent together are in flight together.
+const HOLD: Duration = Duration::from_millis(10);
+
+fn create_test_store_with_request_limit(
+    mock: Arc<MockTransport>,
+    max_concurrent_requests: usize,
+) -> Result<TestStore, Error> {
+    create_test_store_with_common(
+        mock,
+        CommonObjectSpec {
+            max_concurrent_requests,
+            ..Default::default()
+        },
+    )
+}
+
+fn numbered_digest(i: usize, size: usize) -> Result<DigestInfo, Error> {
+    DigestInfo::try_new(&format!("{i:064x}"), size)
+}
+
+/// An existence check for every key goes out at once, one connection each;
+/// `max_concurrent_requests` is the most in flight together. Unset, all of
+/// them are, as before.
+#[nativelink_test(start_paused = true)]
+async fn max_concurrent_requests_bounds_existence_checks() -> Result<(), Error> {
+    const KEYS: usize = 64;
+    let digests = (0..KEYS)
+        .map(|i| numbered_digest(i, 100))
+        .collect::<Result<Vec<_>, _>>()?;
+    let keys: Vec<StoreKey> = digests.iter().map(StoreKey::from).collect();
+    for (limit, expected_peak) in [(4, 4), (0, KEYS)] {
+        let mock = MockTransport::new();
+        mock.hold_each_request(HOLD);
+        let store = create_test_store_with_request_limit(Arc::clone(&mock), limit)?;
+        let mut results = vec![None; KEYS];
+        store.has_with_results(&keys, &mut results).await?;
+        assert_eq!(results, vec![Some(0); KEYS]);
+        assert_eq!(mock.request_count(), KEYS);
+        assert_eq!(
+            mock.max_in_flight(),
+            expected_peak,
+            "existence checks in flight with max_concurrent_requests {limit}"
+        );
+    }
+    Ok(())
+}
+
+/// Uploads count against the same limit: small ones, sent in one request
+/// each, and the blocks of a large one, staged side by side.
+#[nativelink_test(start_paused = true)]
+async fn max_concurrent_requests_bounds_uploads() -> Result<(), Error> {
+    const SMALL: usize = 16;
+    const BLOCK: usize = 5 * 1024 * 1024;
+    const LIMIT: usize = 3;
+    let large = Bytes::from(vec![7u8; 4 * BLOCK]);
+    for limit in [LIMIT, 0] {
+        let mock = MockTransport::new();
+        mock.hold_each_request(HOLD);
+        let store = create_test_store_with_request_limit(Arc::clone(&mock), limit)?;
+        let small_uploads = (0..SMALL).map(|i| {
+            let store = Arc::clone(&store);
+            async move {
+                store
+                    .update_oneshot(numbered_digest(i, 3)?, Bytes::from_static(b"abc"))
+                    .await
+            }
+        });
+        let large_upload = store.update_oneshot(numbered_digest(SMALL, 4 * BLOCK)?, large.clone());
+        let (small_results, large_result) =
+            tokio::join!(futures::future::join_all(small_uploads), large_upload);
+        for result in small_results {
+            result?;
+        }
+        large_result?;
+        // Every small upload, four staged blocks and one commit.
+        assert_eq!(mock.request_count(), SMALL + 4 + 1);
+        if limit == 0 {
+            assert!(
+                mock.max_in_flight() > LIMIT,
+                "unbounded, {} uploads were in flight at most",
+                mock.max_in_flight()
+            );
+        } else {
+            assert_eq!(mock.max_in_flight(), limit, "uploads in flight");
+        }
+    }
+    Ok(())
+}
+
+/// A request that fails because the host ran out of local ports names the
+/// setting that bounds them, once a minute per store rather than once per
+/// failed request: under exhaustion nearly every request fails alike.
+#[nativelink_test]
+async fn running_out_of_local_ports_names_max_concurrent_requests() -> Result<(), Error> {
+    let unbounded_mock = MockTransport::new();
+    unbounded_mock.out_of_ports.store(true, Ordering::SeqCst);
+    let unbounded = create_test_store(Arc::clone(&unbounded_mock), None, None)?;
+    let bounded_mock = MockTransport::new();
+    bounded_mock.out_of_ports.store(true, Ordering::SeqCst);
+    let bounded = create_test_store_with_request_limit(Arc::clone(&bounded_mock), 8)?;
+    for _ in 0..3 {
+        assert!(unbounded.has(create_test_digest()?).await.is_err());
+        assert!(bounded.has(create_test_digest()?).await.is_err());
+    }
+    logs_assert(|lines: &[&str]| {
+        let count = |text: &str| lines.iter().filter(|line| line.contains(text)).count();
+        let hints = count("Out of local ports toward the Azure endpoint");
+        let set_it = count("Set max_concurrent_requests on it");
+        let lower_it = count("Lower max_concurrent_requests");
+        if (hints, set_it, lower_it) == (2, 1, 1) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{hints} port hints, {set_it} to set the limit, {lower_it} to lower it"
+            ))
+        }
+    });
+    Ok(())
+}
+
+/// The hint finds the operating system's error under the SDK's and the HTTP
+/// client's own. A real client that cannot bind its local address fails
+/// with the same `AddrNotAvailable` that a host out of ports gets from
+/// `connect()`, through the same chain of errors.
+#[nativelink_test]
+async fn out_of_local_ports_is_recognized_through_the_http_client() -> Result<(), Error> {
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let client = reqwest::Client::builder()
+        // TEST-NET-1 (RFC 5737) is assigned to no host, so binding it fails.
+        .local_address(core::net::IpAddr::from([192, 0, 2, 1]))
+        .build()
+        .map_err(|e| Error::from_std_err(Code::Internal, &e))?;
+    let request = Request::new(
+        Url::parse("http://127.0.0.1:9/").expect("valid URL"),
+        Method::Get,
+    );
+    let err = HttpClient::execute_request(&client, &request)
+        .await
+        .expect_err("binding an unassigned local address must fail");
+    assert!(is_out_of_local_ports(&err), "not recognized: {err:?}");
+
+    let refused = azure_core::Error::with_error(
+        ErrorKind::Connection,
+        std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
+        "failed to execute `reqwest` request",
+    );
+    assert!(!is_out_of_local_ports(&refused));
+    assert!(!is_out_of_local_ports(&azure_core::Error::from(
+        ErrorKind::HttpResponse {
+            status: StatusCode::ServiceUnavailable,
+            error_code: None,
+            raw_response: None,
+        }
+    )));
     Ok(())
 }

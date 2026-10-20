@@ -17,6 +17,7 @@ use core::time::Duration;
 use core::{cmp, mem};
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use azure_core::credentials::TokenCredential;
@@ -39,13 +40,14 @@ use nativelink_util::adaptive_permits::{AdaptivePermit, AdaptivePermits};
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
-use nativelink_util::metrics::record_object_store_throttle;
+use nativelink_util::metrics::{record_object_store_request_wait, record_object_store_throttle};
 use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
     RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use nativelink_util::{background_spawn, fs};
-use tokio::sync::mpsc;
+use parking_lot::Mutex;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio::time::sleep;
 use tracing::{Level, event};
 
@@ -76,6 +78,10 @@ const DEFAULT_BLOB_ENDPOINT_SUFFIX: &str = "blob.core.windows.net";
 /// Successful reads in a row before the adaptive read limit grows by one.
 const READ_LIMIT_GROW_AFTER: usize = 16;
 
+/// Shortest time between two warnings from one store that the host ran out
+/// of local ports.
+const PORT_HINT_INTERVAL: Duration = Duration::from_secs(60);
+
 #[derive(MetricsComponent)]
 pub struct AzureBlobStore<NowFn> {
     client: Arc<BlobContainerClient>,
@@ -96,6 +102,13 @@ pub struct AzureBlobStore<NowFn> {
     /// Bounds `GET` and `HEAD` requests in flight; `None` leaves them
     /// unbounded. See `CommonObjectSpec::max_concurrent_reads`.
     read_permits: Option<Arc<AdaptivePermits>>,
+    /// Bounds every request in flight, of any kind; `None` leaves them
+    /// unbounded. See `CommonObjectSpec::max_concurrent_requests`.
+    request_permits: Option<Arc<Semaphore>>,
+    #[metric(help = "The most requests this store keeps in flight at once, 0 for unbounded")]
+    max_concurrent_requests: usize,
+    /// When this store last warned that the host ran out of local ports.
+    last_port_hint: Mutex<Option<Instant>>,
 }
 
 impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
@@ -120,6 +133,7 @@ const STAGED_BLOCK_DISCARD_DELAY: Duration = Duration::from_secs(5);
 /// code of its own.
 struct StagedBlocksGuard {
     client: Arc<BlobContainerClient>,
+    requests: Option<Arc<Semaphore>>,
     blob_path: String,
     armed: bool,
 }
@@ -136,10 +150,11 @@ impl Drop for StagedBlocksGuard {
             return;
         }
         let client = Arc::clone(&self.client);
+        let requests = self.requests.take();
         let blob_path = mem::take(&mut self.blob_path);
         background_spawn!("azure_discard_staged_blocks", async move {
             sleep(STAGED_BLOCK_DISCARD_DELAY).await;
-            discard_staged_blocks(&client, &blob_path).await;
+            discard_staged_blocks(&client, requests.as_ref(), &blob_path).await;
         });
     }
 }
@@ -152,14 +167,22 @@ impl Drop for StagedBlocksGuard {
 /// the staged blocks next to it. With nothing committed the name holds only
 /// staged blocks and deleting it removes them. Failure here is logged, never
 /// returned: the upload has already failed, and the blocks are collected
-/// eventually either way.
-async fn discard_staged_blocks(client: &BlobContainerClient, blob_path: &str) {
+/// eventually either way. Each request takes a permit from `requests`
+/// like any other the store sends.
+async fn discard_staged_blocks(
+    client: &BlobContainerClient,
+    requests: Option<&Arc<Semaphore>>,
+    blob_path: &str,
+) {
     let blob_client = client.blob_client(blob_path);
-    let block_list = match blob_client
-        .block_blob_client()
-        .get_block_list(BlockListType::All, None)
-        .await
-    {
+    let block_list_result = {
+        let _request_permit = request_permit(requests).await;
+        blob_client
+            .block_blob_client()
+            .get_block_list(BlockListType::All, None)
+            .await
+    };
+    let block_list = match block_list_result {
         Ok(response) => match response.into_model() {
             Ok(block_list) => block_list,
             Err(err) => {
@@ -194,6 +217,7 @@ async fn discard_staged_blocks(client: &BlobContainerClient, blob_path: &str) {
         .into_iter()
         .filter_map(|block| block.name)
         .collect();
+    let _request_permit = request_permit(requests).await;
     let result = if committed.is_empty() {
         blob_client.delete(None).await.map(|_| ())
     } else {
@@ -225,6 +249,41 @@ async fn discard_staged_blocks(client: &BlobContainerClient, blob_path: &str) {
             "Could not discard the blocks a failed Azure upload left staged"
         ),
     }
+}
+
+/// A permit from the store's request pool when requests are bounded,
+/// counted on `store.object.request_waits` when none was free. Every path
+/// takes it after the read permit and before the process-wide open-file
+/// permit, so no two requests wait on each other's pools in opposite order.
+async fn request_permit(requests: Option<&Arc<Semaphore>>) -> Option<OwnedSemaphorePermit> {
+    let requests = requests?;
+    if requests.available_permits() == 0 {
+        record_object_store_request_wait("azure");
+    }
+    Some(
+        Arc::clone(requests)
+            .acquire_owned()
+            .await
+            .expect("The request permit pool is never closed"),
+    )
+}
+
+/// Whether `err` failed because this host had no local port left to
+/// connect from: `connect()` answers `EADDRNOTAVAIL` when every source port
+/// toward the destination is held, by a request in flight, an idle
+/// connection kept for reuse, or a closed one still in `TIME_WAIT`.
+pub fn is_out_of_local_ports(err: &(dyn core::error::Error + 'static)) -> bool {
+    let mut next = Some(err);
+    while let Some(err) = next {
+        if err
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|err| err.kind() == std::io::ErrorKind::AddrNotAvailable)
+        {
+            return true;
+        }
+        next = err.source();
+    }
+    false
 }
 
 impl<I, NowFn> AzureBlobStore<NowFn>
@@ -340,6 +399,9 @@ where
             };
             AdaptivePermits::new("azure", max, min, max, grow_after)
         });
+        let max_concurrent_requests = spec.common.max_concurrent_requests;
+        let request_permits = (max_concurrent_requests > 0)
+            .then(|| Arc::new(Semaphore::new(max_concurrent_requests)));
         let throttle_retry_budget =
             Duration::try_from_secs_f32(spec.common.throttle_retry_budget_s).map_err(|e| {
                 make_err!(
@@ -377,6 +439,9 @@ where
             throttle_retry_delay,
             throttle_retry_max_delay,
             read_permits,
+            request_permits,
+            max_concurrent_requests,
+            last_port_hint: Mutex::new(None),
         }))
     }
 
@@ -395,6 +460,42 @@ where
         match &self.read_permits {
             Some(pool) => Some(pool.acquire().await),
             None => None,
+        }
+    }
+
+    /// A request permit when requests are bounded; see [`request_permit`].
+    async fn request_permit(&self) -> Option<OwnedSemaphorePermit> {
+        request_permit(self.request_permits.as_ref()).await
+    }
+
+    /// Names the likely cause, and the setting that bounds it, when a
+    /// request failed because the host ran out of local ports. At most once
+    /// per `PORT_HINT_INTERVAL`: under exhaustion most requests fail alike.
+    fn hint_if_out_of_local_ports(&self, err: &azure_core::Error) {
+        if !is_out_of_local_ports(err) {
+            return;
+        }
+        {
+            let now = Instant::now();
+            let mut last = self.last_port_hint.lock();
+            if last.is_some_and(|last| now.duration_since(last) < PORT_HINT_INTERVAL) {
+                return;
+            }
+            *last = Some(now);
+        }
+        if self.max_concurrent_requests == 0 {
+            event!(
+                Level::WARN,
+                container = %self.container,
+                "Out of local ports toward the Azure endpoint (AddrNotAvailable), and this store's requests are unbounded. Set max_concurrent_requests on it to cap its connections; idle connections and ones in TIME_WAIT hold ports too"
+            );
+        } else {
+            event!(
+                Level::WARN,
+                container = %self.container,
+                max_concurrent_requests = self.max_concurrent_requests,
+                "Out of local ports toward the Azure endpoint (AddrNotAvailable). Lower max_concurrent_requests, and count every store in a shard, each of which holds up to that many; idle connections and ones in TIME_WAIT hold ports too"
+            );
         }
     }
 
@@ -419,8 +520,11 @@ where
     /// How long a throttled response (503 `ServerBusy` or 429) asked us to
     /// wait, or `None` when the error is anything else. The wait is the
     /// `Retry-After` header when present, never less than the configured
-    /// floor and never more than the configured cap.
+    /// floor and never more than the configured cap. Every failed request
+    /// passes through here, so this is also where running out of local
+    /// ports is named.
     fn throttle_wait(&self, err: &azure_core::Error, op: &'static str) -> Option<Duration> {
+        self.hint_if_out_of_local_ports(err);
         let ErrorKind::HttpResponse {
             status,
             error_code,
@@ -487,6 +591,7 @@ where
                 let blob_path = blob_path.clone();
                 let client = Arc::clone(&self.client);
                 async move {
+                    let _request_permit = self.request_permit().await;
                     let _permit = match fs::get_permit().await {
                         Ok(permit) => permit,
                         Err(e) => {
@@ -609,6 +714,7 @@ where
                                     let client = Arc::clone(&self.client);
                                     let blob_path = blob_path.clone();
                                     async move {
+                                        let _request_permit = self.request_permit().await;
                                         let _permit = match fs::get_permit().await {
                                             Ok(permit) => permit,
                                             Err(e) => {
@@ -718,6 +824,7 @@ where
                 let blob_path = blob_path.clone();
 
                 async move {
+                    let _request_permit = self.request_permit().await;
                     let _permit = match fs::get_permit().await {
                         Ok(permit) => permit,
                         Err(e) => {
@@ -839,21 +946,10 @@ where
                     let client = Arc::clone(&self.client);
                     let blob_path = blob_path.clone();
                     async move {
-                        let _permit = match fs::get_permit().await {
-                            Ok(permit) => permit,
-                            Err(e) => {
-                                return Some((
-                                    RetryResult::Retry(make_err!(
-                                        Code::Unavailable,
-                                        "Failed to acquire permit: {e}"
-                                    )),
-                                    reader,
-                                ));
-                            }
-                        };
-
                         // Collect through EOF before issuing a PUT. A short or failed
                         // producer must never replace a valid object with partial data.
+                        // No permit is held meanwhile: the bytes arrive at the
+                        // producer's pace, and no connection is open yet.
                         let content = match reader
                             .consume(Some(usize::try_from(sz).unwrap_or(usize::MAX).saturating_add(1)))
                             .await
@@ -864,6 +960,23 @@ where
                         if let Err(err) = upload_size.validate_size(content.len() as u64) {
                             return Some((RetryResult::Err(err), reader));
                         }
+
+                        let _request_permit = self.request_permit().await;
+                        let _permit = match fs::get_permit().await {
+                            Ok(permit) => permit,
+                            Err(e) => {
+                                // The next attempt reads the content again.
+                                let err = make_err!(
+                                    Code::Unavailable,
+                                    "Failed to acquire permit: {e}"
+                                );
+                                let retry = match reader.try_reset_stream() {
+                                    Ok(()) => RetryResult::Retry(err),
+                                    Err(reset_err) => RetryResult::Err(err.merge(reset_err)),
+                                };
+                                return Some((retry, reader));
+                            }
+                        };
                         let result = client
                             .blob_client(&blob_path)
                             .block_blob_client()
@@ -924,6 +1037,7 @@ where
         // week later, so a failure anywhere past this point discards what was staged.
         let mut guard = StagedBlocksGuard {
             client: Arc::clone(&self.client),
+            requests: self.request_permits.clone(),
             blob_path: blob_path.clone(),
             armed: true,
         };
@@ -932,7 +1046,7 @@ where
             .await;
         guard.disarm();
         if result.is_err() {
-            discard_staged_blocks(&self.client, &blob_path).await;
+            discard_staged_blocks(&self.client, self.request_permits.as_ref(), &blob_path).await;
         }
         result
     }
@@ -991,6 +1105,7 @@ where
                     // Held through the body: what is in flight is what the
                     // read limit says, not only what has been started.
                     let _read_permit = self.read_permit().await;
+                    let _request_permit = self.request_permit().await;
                     let _permit = match fs::get_permit().await {
                         Ok(permit) => permit,
                         Err(e) => {
