@@ -407,7 +407,7 @@ function unionBranchType(branch, known) {
 function renderUnion(name, def, known) {
   const out = [`## ${displayName(name)}`, ""];
   if (name == "ExperimentalCloudObjectSpec") {
-    out.push("See [`experimental_cloud_object_store`](#experimental_cloud_object_store-1) for details")
+    out.push("See [`experimental_cloud_object_store`](#experimental_cloud_object_store) for details")
   } else {
     if (def.description) out.push(sanitizeMarkdown(def.description), "");
     out.push("One of:", "");
