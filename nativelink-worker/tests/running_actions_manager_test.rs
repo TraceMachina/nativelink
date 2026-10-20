@@ -5126,12 +5126,12 @@ exit 0
     /// deadline leaves room for another attempt; then the last error comes
     /// back, naming the attempts, before the deadline itself fires.
     #[cfg(target_family = "unix")]
-    #[nativelink_test(start_paused = true)]
-    async fn prepare_action_stops_retrying_at_the_download_deadline()
-    -> Result<(), Box<dyn core::error::Error>> {
+    async fn check_prepare_stops_retrying_at_the_download_deadline(
+        code: Code,
+    ) -> Result<(), Box<dyn core::error::Error>> {
         let (running_actions_manager, action_digest, store) =
             fetch_setup(Duration::from_secs(5), |inner, digest| {
-                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+                FlakyStore::new(inner, digest, u64::MAX, code)
             })
             .await?;
         let operation_id = OperationId::default();
@@ -5164,6 +5164,22 @@ exit 0
             .await
             .expect("an entry was left behind");
         Ok(())
+    }
+
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_at_the_download_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        check_prepare_stops_retrying_at_the_download_deadline(Code::Unavailable).await
+    }
+
+    // Characterize the current policy: the same input returning DataLoss
+    // consumes the preparation retry window just like an unavailable store.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_unchanged_data_loss_at_the_download_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        check_prepare_stops_retrying_at_the_download_deadline(Code::DataLoss).await
     }
 
     /// An action with its own timeout is not retried past it: the scheduler
