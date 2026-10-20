@@ -22,11 +22,13 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::stores::{
-    CompressionSpec, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+    CacheMetricsSpec, CompressionSpec, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection,
+    StoreSpec, VerifySpec,
 };
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
+use nativelink_store::cache_metrics_store::CacheMetricsStore;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::compression_store::{
     CURRENT_STREAM_FORMAT_VERSION, CompressionStore, DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE, Footer,
@@ -35,6 +37,7 @@ use nativelink_store::compression_store::{
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::verify_store::VerifyStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
 };
@@ -90,12 +93,19 @@ mod recording_store {
         pub(super) has_key_count: AtomicUsize,
         pub(super) has_keys: Mutex<Vec<StoreKey<'static>>>,
         pub(super) update_count: AtomicUsize,
+        /// Every key a removal asked for; each one is refused.
+        pub(super) removed_keys: Mutex<Vec<StoreKey<'static>>>,
     }
 
     #[async_trait]
     impl StoreDriver for RecordingStore {
         async fn post_init(self: Arc<Self>) -> Result<(), Error> {
             Ok(())
+        }
+
+        async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+            self.removed_keys.lock().unwrap().push(key.into_owned());
+            Err(make_err!(Code::Unavailable, "removal refused"))
         }
 
         async fn has_with_results(
@@ -165,6 +175,7 @@ fn make_recording_compression_store() -> Result<(Arc<CompressionStore>, Arc<Reco
         has_key_count: AtomicUsize::new(0),
         has_keys: Mutex::new(Vec::new()),
         update_count: AtomicUsize::new(0),
+        removed_keys: Mutex::new(Vec::new()),
     });
     let store = CompressionStore::new(
         &CompressionSpec {
@@ -994,5 +1005,226 @@ async fn has_preserves_missing_digests_and_stored_string_key_sizes() -> Result<(
     let mut results = [None; 4];
     store.has_with_results(&keys, &mut results).await?;
     assert_eq!(results, [None, Some(4096), Some(0), named_stored_size]);
+    Ok(())
+}
+
+fn lz4_compression_spec() -> CompressionSpec {
+    CompressionSpec {
+        backend: StoreSpec::Memory(MemorySpec::default()),
+        compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+            nativelink_config::stores::Lz4Config::default(),
+        ),
+    }
+}
+
+/// `backend` wrapped so that repair may or may not remove from it.
+fn cache_tier(backend: Store, allow_remove: bool) -> Store {
+    Store::new(CacheMetricsStore::new(
+        &CacheMetricsSpec {
+            cache_type: "cas".to_string(),
+            allow_remove,
+            backend: StoreSpec::Memory(MemorySpec::default()),
+        },
+        backend,
+    ))
+}
+
+/// A CAS whose fast tier compresses into `fast_backend`, over a slow tier
+/// holding `content` that repair may not remove:
+/// `verify(size) -> fast_slow(fast: compression -> fast_backend, slow: protected memory)`.
+async fn verified_compressed_cache(
+    fast_backend: Store,
+    digest: DigestInfo,
+    content: &'static str,
+) -> Result<(Store, Store, Store), Error> {
+    let slow_backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+    slow_backend.update_oneshot(digest, content.into()).await?;
+    let fast = Store::new(CompressionStore::new(
+        &lz4_compression_spec(),
+        fast_backend,
+    )?);
+    let store = Store::new(VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Compression(Box::new(lz4_compression_spec())),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::Both,
+                slow_direction: StoreDirection::Both,
+                bypass_dedup_threshold_bytes: 0,
+            },
+            fast.clone(),
+            cache_tier(slow_backend.clone(), false),
+        )),
+    ));
+    Ok((store, fast, slow_backend))
+}
+
+/// A valid compressed container that expands to four bytes under a key that
+/// names ten fails verification; the repair drops the encoded fast copy, and
+/// the next read refills it from the correct slow copy.
+async fn truncated_encoded_copy_is_dropped_and_refilled(fast_backend: Store) -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH, 10)?;
+    let (store, fast, slow_backend) =
+        verified_compressed_cache(fast_backend.clone(), digest, "0123456789").await?;
+    fast.update_oneshot(digest, "0123".into()).await?;
+    assert!(fast_backend.has(digest).await?.is_some());
+
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert_eq!(
+        fast_backend.has(digest).await?,
+        None,
+        "the encoded fast copy was dropped"
+    );
+    assert_eq!(
+        slow_backend.has(digest).await?,
+        Some(10),
+        "the protected slow copy is kept"
+    );
+
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        "0123456789"
+    );
+    assert_eq!(
+        fast.get_part_unchunked(digest, 0, None).await?,
+        "0123456789",
+        "the fast tier was refilled from the slow copy"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn repair_drops_a_truncated_encoded_copy_from_memory() -> Result<(), Error> {
+    truncated_encoded_copy_is_dropped_and_refilled(Store::new(MemoryStore::new(
+        &MemorySpec::default(),
+    )))
+    .await
+}
+
+#[nativelink_test]
+async fn repair_drops_a_truncated_encoded_copy_from_filesystem() -> Result<(), Error> {
+    let directory = tempfile::tempdir()?;
+    let filesystem_spec = FilesystemSpec {
+        content_path: directory
+            .path()
+            .join("content")
+            .to_string_lossy()
+            .into_owned(),
+        temp_path: directory.path().join("temp").to_string_lossy().into_owned(),
+        block_size: 1,
+        ..Default::default()
+    };
+    truncated_encoded_copy_is_dropped_and_refilled(Store::new(
+        FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?,
+    ))
+    .await
+}
+
+/// Removal reaches the encoded copy under the key it was stored under, and
+/// the tier below decides: a protected tier keeps its value, an unprotected
+/// one drops it, and a missing entry is not reported as removed.
+#[nativelink_test]
+async fn remove_forwards_to_the_tier_holding_the_encoded_copy() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH, 10)?;
+    for allow_remove in [false, true] {
+        let backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let store = Store::new(CompressionStore::new(
+            &lz4_compression_spec(),
+            cache_tier(backend.clone(), allow_remove),
+        )?);
+        store.update_oneshot(digest, "0123456789".into()).await?;
+
+        assert_eq!(
+            store
+                .as_store_driver_pin()
+                .remove(StoreKey::from(digest))
+                .await?,
+            allow_remove
+        );
+        assert_eq!(
+            backend.has(digest).await?.is_some(),
+            !allow_remove,
+            "allow_remove: {allow_remove}"
+        );
+        if !allow_remove {
+            assert_eq!(
+                store.get_part_unchunked(digest, 0, None).await?,
+                "0123456789"
+            );
+        }
+    }
+
+    let store = Store::new(CompressionStore::new(
+        &lz4_compression_spec(),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?);
+    assert!(
+        !store
+            .as_store_driver_pin()
+            .remove(StoreKey::from(digest))
+            .await?,
+        "nothing stored, nothing removed"
+    );
+    Ok(())
+}
+
+/// A removal the tier below refuses fails with that tier's error, for the
+/// original key.
+#[nativelink_test]
+async fn remove_propagates_the_backend_error() -> Result<(), Error> {
+    let (store, inner) = make_recording_compression_store()?;
+    let digest = DigestInfo::try_new(VALID_HASH, 10)?;
+    let err = Store::new(store)
+        .as_store_driver_pin()
+        .remove(StoreKey::from(digest))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::Unavailable, "{err:?}");
+    assert_eq!(
+        *inner.removed_keys.lock().unwrap(),
+        vec![StoreKey::from(digest).into_owned()]
+    );
+    Ok(())
+}
+
+/// An encoded copy that cannot be decoded fails the read with the decoding
+/// error. That is not a size verdict, so nothing is removed and nothing is
+/// reported as repaired: the copy stays, and so does the correct slow copy.
+#[nativelink_test]
+async fn an_undecodable_encoded_copy_is_an_error_not_a_repair() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH, 10)?;
+    let fast_backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let (store, fast, slow_backend) =
+        verified_compressed_cache(fast_backend.clone(), digest, "0123456789").await?;
+    fast.update_oneshot(digest, "0123456789".into()).await?;
+
+    // Ten distinct bytes compress to one literal run: a token, then the
+    // bytes. A token claiming a longer run than the frame holds cannot be
+    // decoded.
+    let mut encoded = fast_backend
+        .get_part_unchunked(digest, 0, None)
+        .await?
+        .to_vec();
+    let literals = encoded
+        .windows(10)
+        .position(|window| window == b"0123456789")
+        .expect("the literal run is stored as is");
+    encoded[literals - 1] = 0xFF;
+    fast_backend.update_oneshot(digest, encoded.into()).await?;
+
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_ne!(err.code, Code::DataLoss, "{err:?}");
+    assert!(err.to_string().contains("Decompression error"), "{err:?}");
+    assert!(
+        fast_backend.has(digest).await?.is_some(),
+        "an undecodable copy is not removed"
+    );
+    assert_eq!(slow_backend.has(digest).await?, Some(10));
     Ok(())
 }

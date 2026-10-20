@@ -322,6 +322,21 @@ impl StoreDriver for CompressionStore {
         Ok(())
     }
 
+    /// Drops the encoded copy, which the inner store holds under the same
+    /// key, and returns the inner store's answer and error unchanged. `true`
+    /// means the encoded copy was dropped, never that a durable copy was
+    /// repaired. Whether the inner store may drop it is that store's
+    /// decision: a tier holding the only copy is protected the same way as
+    /// a bare memory or filesystem tier, by a `cache_metrics` wrapper whose
+    /// `allow_remove` is false.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store
+            .as_store_driver_pin()
+            .remove(key)
+            .await
+            .err_tip(|| "In CompressionStore::remove()")
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         digests: &[StoreKey<'_>],
