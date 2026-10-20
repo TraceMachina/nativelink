@@ -759,6 +759,15 @@ pub struct CacheMetricsSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cache_type: String,
 
+    /// Allow repair requests to remove the backend's copy. Defaults to false.
+    /// Enable only for disposable cache tiers with a separate correct copy to
+    /// refill from. Memory and filesystem stores evict when asked, even if
+    /// they hold the only copy. Keep this disabled when wrapping such a tier.
+    /// This only gates removal through this wrapper, not the backend's own
+    /// eviction policy. Place the wrapper around the tier inside the verifier.
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub allow_remove: bool,
+
     /// Store to wrap with cache operation metrics.
     pub backend: StoreSpec,
 }

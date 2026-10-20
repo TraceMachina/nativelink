@@ -625,10 +625,14 @@ pub trait StoreDriver:
     // for ref stores
     async fn post_init(self: Arc<Self>) -> Result<(), Error>;
 
-    /// Drops this store's own copy of `key`, so the next read repopulates it
-    /// from below; a store that holds the durable copy keeps it and answers
-    /// `false`. Used when a read proves a cached copy is bad. Returns whether
-    /// anything was dropped.
+    /// Drops a disposable copy of `key`, so the next read can repopulate it
+    /// from another tier. Returns whether anything was dropped. The default
+    /// keeps the copy and returns `false`.
+    ///
+    /// Memory and filesystem implementations always evict when asked; they
+    /// cannot infer whether they hold the durable copy. A composition must
+    /// protect such a tier from repair removal, for example with a
+    /// `cache_metrics` wrapper whose `allow_remove` is false.
     async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
         Ok(false)
     }
