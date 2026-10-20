@@ -54,6 +54,7 @@ async fn cache_metrics_store_is_only_constructed_when_configured() -> Result<(),
     let wrapped_store = store_factory(
         &StoreSpec::CacheMetrics(Box::new(CacheMetricsSpec {
             cache_type: "cas".to_string(),
+            allow_remove: false,
             backend: StoreSpec::Memory(MemorySpec::default()),
         })),
         &store_manager,
@@ -76,6 +77,7 @@ async fn cache_metrics_store_preserves_backend_store_semantics() -> Result<(), E
     let store = store_factory(
         &StoreSpec::CacheMetrics(Box::new(CacheMetricsSpec {
             cache_type: "cas".to_string(),
+            allow_remove: true,
             backend: StoreSpec::Memory(MemorySpec::default()),
         })),
         &store_manager,
@@ -117,6 +119,7 @@ async fn cache_metrics_store_preserves_backend_store_semantics() -> Result<(), E
 fn metrics_backend(name: &str) -> StoreSpec {
     StoreSpec::CacheMetrics(Box::new(CacheMetricsSpec {
         cache_type: "cas".into(),
+        allow_remove: true,
         backend: StoreSpec::RefStore(RefSpec { name: name.into() }),
     }))
 }
@@ -281,6 +284,62 @@ async fn verification_repairs_the_metrics_wrapped_memory_tier() -> Result<(), Er
 async fn verification_repairs_the_metrics_wrapped_filesystem_tier() -> Result<(), Error> {
     for truncated in ["", "short"] {
         repair_truncated_cache("filesystem", truncated).await?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verification_preserves_the_only_copy_by_default() -> Result<(), Error> {
+    for filesystem in [false, true] {
+        for truncated in ["", "short"] {
+            let directory = tempfile::tempdir()?;
+            let manager = Arc::new(StoreManager::new());
+            let durable_spec = if filesystem {
+                StoreSpec::Filesystem(FilesystemSpec {
+                    content_path: directory
+                        .path()
+                        .join("content")
+                        .to_string_lossy()
+                        .into_owned(),
+                    temp_path: directory.path().join("temp").to_string_lossy().into_owned(),
+                    block_size: 1,
+                    ..Default::default()
+                })
+            } else {
+                StoreSpec::Memory(MemorySpec::default())
+            };
+            let durable = store_factory(&durable_spec, &manager, None).await?;
+            manager.add_store("durable", durable.clone())?;
+            // An existing config must keep its only copy without opting in to eviction.
+            let wrapped_durable = serde_json::from_value(serde_json::json!({
+                "cache_metrics": {
+                    "cache_type": "cas",
+                    "backend": { "ref_store": { "name": "durable" } }
+                }
+            }))
+            .expect("existing cache_metrics configuration must deserialize");
+            let store = store_factory(
+                &StoreSpec::Verify(Box::new(VerifySpec {
+                    verify_size: true,
+                    verify_hash: false,
+                    backend: fast_slow(StoreSpec::Memory(MemorySpec::default()), wrapped_durable),
+                })),
+                &manager,
+                None,
+            )
+            .await?;
+            store.clone().into_inner().post_init().await?;
+            let digest = DigestInfo::try_new(VALID_HASH, 78)?;
+            durable.update_oneshot(digest, truncated.into()).await?;
+            for _ in 0..2 {
+                let error = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+                assert_eq!(error.code, Code::DataLoss, "{error:?}");
+                assert_eq!(
+                    durable.get_part_unchunked(digest, 0, None).await?,
+                    truncated.as_bytes()
+                );
+            }
+        }
     }
     Ok(())
 }
