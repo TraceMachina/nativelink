@@ -825,7 +825,9 @@ impl StoreDriver for InstrumentedSlowStore {
         if let Some(rx) = gate {
             let _ = rx.await;
         }
-        writer.send(Bytes::copy_from_slice(&self.data)).await?;
+        if !self.data.is_empty() {
+            writer.send(Bytes::copy_from_slice(&self.data)).await?;
+        }
         writer.send_eof()
     }
 
@@ -2249,5 +2251,99 @@ async fn has_still_skips_the_fast_store_when_the_slow_store_is_writable() -> Res
         None,
         "a blob only the fast store holds is reported missing so the client re-uploads it to the slow store"
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_preserves_memory_and_filesystem_values() -> Result<(), Error> {
+    let filesystem = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("upload_integrity_content"),
+        temp_path: make_temp_path("upload_integrity_temp"),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    for store in [
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(filesystem),
+    ] {
+        // AC and encoded values need not match the size in their key.
+        let key = DigestInfo::try_new(VALID_HASH, 999)?;
+        let good = Bytes::from(vec![7; 78]);
+        store.update_oneshot(key, good.clone()).await?;
+        for (size_info, payload) in [
+            (UploadSizeInfo::ExactSize(78), Bytes::new()),
+            (UploadSizeInfo::ExactSize(78), Bytes::from_static(b"short")),
+            (UploadSizeInfo::ExactSize(78), Bytes::from(vec![9; 79])),
+            (UploadSizeInfo::MaxSize(78), Bytes::from(vec![9; 79])),
+        ] {
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, _) = tokio::join!(store.update(key, rx, size_info), send);
+            assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            assert_eq!(store.get_part_unchunked(key, 0, None).await?, good);
+        }
+        // A normal write still uses the payload size rather than the key's size.
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async {
+            tx.send(good.clone()).await?;
+            tx.send_eof()
+        };
+        let (result, sent) =
+            tokio::join!(store.update(key, rx, UploadSizeInfo::ExactSize(78)), send);
+        assert_eq!(result?, 78);
+        sent?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(), Error> {
+    for data in [vec![], b"short".to_vec()] {
+        let filesystem = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: make_temp_path("short_read_content"),
+            temp_path: make_temp_path("short_read_temp"),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?;
+        for fast in [
+            Store::new(MemoryStore::new(&MemorySpec::default())),
+            Store::new(filesystem),
+        ] {
+            let digest = DigestInfo::try_new(VALID_HASH, 78)?;
+            let slow = Store::new(Arc::new(InstrumentedSlowStore {
+                digest,
+                data: data.clone(),
+                get_part_count: AtomicU64::new(0),
+                gate: Mutex::new(None),
+            }));
+            let store = FastSlowStore::new(
+                &FastSlowSpec {
+                    fast: StoreSpec::Memory(MemorySpec::default()),
+                    slow: StoreSpec::Memory(MemorySpec::default()),
+                    fast_direction: StoreDirection::default(),
+                    slow_direction: StoreDirection::default(),
+                    bypass_dedup_threshold_bytes: 0,
+                },
+                fast.clone(),
+                slow,
+            );
+            assert_eq!(
+                store
+                    .get_part_unchunked(digest, 0, None)
+                    .await
+                    .unwrap_err()
+                    .code,
+                Code::DataLoss
+            );
+            assert_eq!(fast.has(digest).await?, None);
+        }
+    }
     Ok(())
 }

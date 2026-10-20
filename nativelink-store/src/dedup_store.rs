@@ -215,9 +215,15 @@ impl StoreDriver for DedupStore {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        reader: DropCloserReadHalf,
-        _size_info: UploadSizeInfo,
+        mut reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
+        if is_zero_digest(key.borrow()) {
+            let size = reader.drain().await?;
+            UploadSizeInfo::ExactSize(0).validate_size(size)?;
+            size_info.validate_size(size)?;
+            return Ok(0);
+        }
         let mut bytes_reader = StreamReader::new(reader);
         let frame_reader = FramedRead::new(&mut bytes_reader, self.fast_cdc_decoder.clone());
         let index_entries: Vec<_> = frame_reader
@@ -246,6 +252,7 @@ impl StoreDriver for DedupStore {
             .await?;
 
         let total_size = index_entries.iter().map(DigestInfo::size_bytes).sum();
+        size_info.validate_size(total_size)?;
 
         let serialized_index = wincode::config::serialize(
             &DedupIndex {

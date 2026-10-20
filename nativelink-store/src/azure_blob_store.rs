@@ -36,9 +36,7 @@ use nativelink_config::stores::ExperimentalAzureSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::adaptive_permits::{AdaptivePermit, AdaptivePermits};
-use nativelink_util::buf_channel::{
-    DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
-};
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::record_object_store_throttle;
@@ -565,9 +563,12 @@ where
         self: Pin<&Self>,
         blob_path: &str,
         mut reader: DropCloserReadHalf,
-        max_size: u64,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let blob_path = blob_path.to_owned();
+        let max_size = match upload_size {
+            UploadSizeInfo::ExactSize(size) | UploadSizeInfo::MaxSize(size) => size,
+        };
         let block_size =
             cmp::min(max_size / (MAX_BLOCKS as u64 - 1), MAX_BLOCK_SIZE).max(DEFAULT_BLOCK_SIZE);
 
@@ -699,6 +700,10 @@ where
             return Err(err);
         }
 
+        // Reject an incomplete transfer before publishing its staged blocks.
+        // The caller discards them using the same cleanup as other failures.
+        upload_size.validate_size(total_uploaded)?;
+
         // Sorting block IDs to ensure consistent ordering of the committed blob.
         block_ids.sort_unstable();
 
@@ -804,7 +809,12 @@ where
     ) -> Result<u64, Error> {
         let blob_path = self.make_blob_path(&digest);
         // Handling zero-sized content check
-        if upload_size == UploadSizeInfo::ExactSize(0) {
+        if is_zero_digest(digest.borrow()) {
+            let size = reader.drain().await?;
+            // The empty digest constrains the content; the caller's transfer
+            // declaration must independently agree with the received size.
+            UploadSizeInfo::ExactSize(0).validate_size(size)?;
+            upload_size.validate_size(size)?;
             return Ok(0);
         }
 
@@ -842,46 +852,28 @@ where
                             }
                         };
 
-                        let (mut tx, mut rx) = make_buf_channel_pair();
-
-                        let result = {
-                            let reader_ref = &mut reader;
-                            let (upload_res, bind_res) = tokio::join!(
-                                async {
-                                    let mut buffer = Vec::with_capacity(
-                                        usize::try_from(sz).expect(
-                                            "size must be non-negative and fit in usize",
-                                        ),
-                                    );
-                                    while let Ok(Some(chunk)) = rx.try_next().await {
-                                        buffer.extend_from_slice(&chunk);
-                                    }
-
-                                    client
-                                        .blob_client(&blob_path)
-                                        .block_blob_client()
-                                        .upload(RequestContent::from(buffer), None)
-                                        .await
-                                        .map(|_| ())
-                                        .map_err(|e| {
-                                            (
-                                                make_err!(Code::Aborted, "{e:?}"),
-                                                self.throttle_wait(&e, "put"),
-                                            )
-                                        })
-                                },
-                                async { tx.bind_buffered(reader_ref).await }
-                            );
-
-                            match (upload_res, bind_res) {
-                                (Ok(()), Ok(())) => Ok(()),
-                                (Err(e), _) => Err(e),
-                                (_, Err(e)) => Err((e, None)),
-                            }
-                            .map_err(|(e, wait)| {
-                                (e.append("Failed to upload blob in single chunk"), wait)
-                            })
+                        // Collect through EOF before issuing a PUT. A short or failed
+                        // producer must never replace a valid object with partial data.
+                        let content = match reader
+                            .consume(Some(usize::try_from(sz).unwrap_or(usize::MAX).saturating_add(1)))
+                            .await
+                        {
+                            Ok(content) => content,
+                            Err(err) => return Some((RetryResult::Err(err), reader)),
                         };
+                        if let Err(err) = upload_size.validate_size(content.len() as u64) {
+                            return Some((RetryResult::Err(err), reader));
+                        }
+                        let result = client
+                            .blob_client(&blob_path)
+                            .block_blob_client()
+                            .upload(RequestContent::from(content.to_vec()), None)
+                            .await
+                            .map(|_| ())
+                            .map_err(|e| (
+                                make_err!(Code::Aborted, "{e:?}"),
+                                self.throttle_wait(&e, "put"),
+                            ));
 
                         match result {
                             Ok(()) => {
@@ -936,7 +928,7 @@ where
             armed: true,
         };
         let result = self
-            .upload_staged_blocks(&blob_path, reader, max_size)
+            .upload_staged_blocks(&blob_path, reader, upload_size)
             .await;
         guard.disarm();
         if result.is_err() {

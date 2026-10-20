@@ -449,6 +449,13 @@ impl StoreDriver for CompressionStore {
 
                 index_count += 1;
             }
+            upload_size.validate_size(received_amt)?;
+            if !reader.recv().await?.is_empty() {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Data after the declared compression input size"
+                ));
+            }
             // Index 0 is actually a pointer to the second chunk. This is because we don't need
             // an index for the first item, since it starts at position `{header_len}`.
             // The code above causes us to create 1 more index than we actually need, so we

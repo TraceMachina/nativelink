@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_lock::Mutex;
+use bytes::Bytes;
 use futures::stream::{self, unfold};
 use futures::{Stream, StreamExt};
 use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
@@ -320,6 +321,21 @@ async fn write_update_works_core(
 async fn write_update_works() -> Result<(), Error> {
     let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/sha256/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
     write_update_works_core(false, upload_pattern).await
+}
+
+#[nativelink_test]
+async fn empty_cas_blob_skips_remote_bytestream() -> Result<(), Error> {
+    let (server, port) = make_fake_bytestream_server().await;
+    let store = GrpcStore::new(&test_spec(format!("http://localhost:{port}"), false))?;
+    for digest in nativelink_store::cas_utils::ZERO_BYTE_DIGESTS {
+        store.update_oneshot(digest, Bytes::new()).await?;
+    }
+    let requests = server.write_requests.lock().await;
+    assert!(
+        requests.is_empty(),
+        "empty CAS blobs must not require an RPC"
+    );
+    Ok(())
 }
 
 #[nativelink_test]
@@ -1034,5 +1050,61 @@ async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<()
         got, expected_digests,
         "stitched responses must stay in request order"
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_never_commits_remote_bytestream() -> Result<(), Error> {
+    for compressed in [false, true] {
+        for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+            let (server, port) = make_fake_bytestream_server_draining().await;
+            let mut spec = test_spec(format!("http://localhost:{port}"), false);
+            spec.experimental_remote_cache_compression = Some(compressed);
+            let store = GrpcStore::new(&spec)?;
+            let digest = DigestInfo::try_new(VALID_HASH, 64 * 1024)?;
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, _) = tokio::join!(
+                store.update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes())),
+                send
+            );
+            assert!(
+                result.is_err(),
+                "short upload must fail (compressed={compressed})"
+            );
+            assert!(
+                server
+                    .write_requests
+                    .lock()
+                    .await
+                    .iter()
+                    .all(|request| !request.finish_write)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_oneshot_cas_upload_never_sends_remote_write() -> Result<(), Error> {
+    let (server, port) = make_fake_bytestream_server_draining().await;
+    let store = GrpcStore::new(&test_spec(format!("http://localhost:{port}"), false))?;
+    let digest = DigestInfo::try_new(VALID_HASH, 78)?;
+    for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+        assert_eq!(
+            store
+                .update_oneshot(digest, payload)
+                .await
+                .unwrap_err()
+                .code,
+            tonic::Code::InvalidArgument
+        );
+    }
+    assert!(server.write_requests.lock().await.is_empty());
     Ok(())
 }
