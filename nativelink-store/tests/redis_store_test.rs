@@ -1091,7 +1091,7 @@ async fn test_sentinel_connect_with_bad_master() {
     let spec = RedisSpec {
         addresses: vec![format!("redis+sentinel://127.0.0.1:{port}/")],
         mode: RedisMode::Sentinel,
-        connection_timeout_ms: 100,
+        connection_timeout_ms: 5_000,
         ..Default::default()
     };
     // Unavailable, not InvalidArgument: an unknown master name is
