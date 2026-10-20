@@ -220,6 +220,7 @@ build:asan --extra_toolchains=@rust_toolchains//:all
 build:cfi --config=nightly
 build:cfi --@rules_rust//:extra_rustc_flags=-Zsanitizer=cfi
 build:cfi --@rules_rust//rust/settings:lto=fat
+build:cfi --@rules_rust//:extra_rustc_flag=-Ccodegen-units=1
 
 # ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
 # since they tend to produce irreproducible false negatives.
