@@ -24,62 +24,62 @@ wrong.
 
 | Instrument | Prometheus series | Kind | Emitted | Under what conditions |
 | --- | --- | --- | --- | --- |
-| [`cache.operation.duration`](#cache-operation-duration) | `nativelink_cache_operation_duration` | Histogram | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
-| [`cache.operations`](#cache-operations) | `nativelink_cache_operations_total` | Counter | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
-| [`cache.io`](#cache-io) | `nativelink_cache_io_total` | Counter | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
-| [`cache.size`](#cache-size) | `nativelink_cache_size` | UpDownCounter | Yes | whenever the code path runs |
-| [`cache.entries`](#cache-entries) | `nativelink_cache_entries` | UpDownCounter | Yes | whenever the code path runs |
-| [`cache.item.size`](#cache-item-size) | `nativelink_cache_item_size` | Histogram | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
-| [`execution.stage.duration`](#execution-stage-duration) | `nativelink_execution_stage_duration` | Histogram | Conditionally | scheduler process only |
-| [`execution.total.duration`](#execution-total-duration) | `nativelink_execution_total_duration` | Histogram | Conditionally | scheduler process only |
-| [`execution.queue.time`](#execution-queue-time) | `nativelink_execution_queue_time` | Histogram | Conditionally | scheduler process only |
-| [`execution.active.count`](#execution-active-count) | `nativelink_execution_active_count` (unreferenced) | UpDownCounter | Conditionally | scheduler process only |
-| [`execution.completed.count`](#execution-completed-count) | `nativelink_execution_completed_count_total` | Counter | Conditionally | scheduler process only |
-| [`execution.stage.transitions`](#execution-stage-transitions) | `nativelink_execution_stage_transitions_total` | Counter | Conditionally | scheduler process only |
-| [`execution.cpu.time`](#execution-cpu-time) | `nativelink_execution_cpu_time` (unreferenced) | Histogram | Conditionally | scheduler process only |
-| [`execution.peak.memory`](#execution-peak-memory) | `nativelink_execution_peak_memory` (unreferenced) | Histogram | Conditionally | scheduler process only |
-| [`execution.output.size`](#execution-output-size) | `nativelink_execution_output_size` | Histogram | Conditionally | scheduler process only |
-| [`execution.retry.count`](#execution-retry-count) | `nativelink_execution_retry_count_total` | Counter | Conditionally | scheduler process only |
-| [`worker.input_mount.cache_hits`](#worker-input-mount-cache-hits) | `nativelink_worker_input_mount_cache_hits` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`worker.input_mount.cache_misses`](#worker-input-mount-cache-misses) | `nativelink_worker_input_mount_cache_misses` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`worker.input_mount.fallbacks`](#worker-input-mount-fallbacks) | `nativelink_worker_input_mount_fallbacks` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`worker.input_mount.prepare_failures`](#worker-input-mount-prepare-failures) | `nativelink_worker_input_mount_prepare_failures` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`worker.connected.count`](#worker-connected-count) | `nativelink_worker_connected_count` (unreferenced) | UpDownCounter | Conditionally | scheduler process only |
-| [`worker.connections`](#worker-connections) | `nativelink_worker_connections` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`worker.disconnections`](#worker-disconnections) | `nativelink_worker_disconnections` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`worker.input.relinks`](#worker-input-relinks) | `nativelink_worker_input_relinks` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`worker.prepare.retries`](#worker-prepare-retries) | `nativelink_worker_prepare_retries` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`scheduler.dispatch.requeues`](#scheduler-dispatch-requeues) | `nativelink_scheduler_dispatch_requeues` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`worker.keepalives`](#worker-keepalives) | `nativelink_worker_keepalives` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`worker.keepalive.gap`](#worker-keepalive-gap) | `nativelink_worker_keepalive_gap` (unreferenced) | Histogram | Conditionally | scheduler process only |
-| [`worker.state.count`](#worker-state-count) | `nativelink_worker_state_count` (unreferenced) | UpDownCounter | Conditionally | scheduler process only |
-| [`rpc.server.duration`](#rpc-server-duration) | `nativelink_rpc_server_duration` (unreferenced) | Histogram | Yes | whenever the code path runs |
-| [`scheduler.matching.duration`](#scheduler-matching-duration) | `nativelink_scheduler_matching_duration` (unreferenced) | Histogram | Conditionally | scheduler process only |
-| [`scheduler.matching.passes`](#scheduler-matching-passes) | `nativelink_scheduler_matching_passes` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`scheduler.unsatisfiable.queued`](#scheduler-unsatisfiable-queued) | `nativelink_scheduler_unsatisfiable_queued` (unreferenced) | Gauge | Conditionally | scheduler process only |
-| [`scheduler.unsatisfiable.failed`](#scheduler-unsatisfiable-failed) | `nativelink_scheduler_unsatisfiable_failed` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`scheduler.queue.depth`](#scheduler-queue-depth) | `nativelink_scheduler_queue_depth` (unreferenced) | Gauge | Conditionally | scheduler process only |
-| [`scheduler.queue.age`](#scheduler-queue-age) | `nativelink_scheduler_queue_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
-| [`scheduler.queue.oldest_age`](#scheduler-queue-oldest-age) | `nativelink_scheduler_queue_oldest_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
-| [`scheduler.executing.age`](#scheduler-executing-age) | `nativelink_scheduler_executing_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
-| [`scheduler.executing.oldest_age`](#scheduler-executing-oldest-age) | `nativelink_scheduler_executing_oldest_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
-| [`scheduler.queue.retired`](#scheduler-queue-retired) | `nativelink_scheduler_queue_retired` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`scheduler.matching.parked_dispatched`](#scheduler-matching-parked-dispatched) | `nativelink_scheduler_matching_parked_dispatched` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`scheduler.worker.holds`](#scheduler-worker-holds) | `nativelink_scheduler_worker_holds` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`scheduler.worker.held`](#scheduler-worker-held) | `nativelink_scheduler_worker_held` (unreferenced) | Gauge | Conditionally | scheduler process only |
-| [`scheduler.awaited_action.orphans`](#scheduler-awaited-action-orphans) | `nativelink_scheduler_awaited_action_orphans` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`scheduler.sweep.failures`](#scheduler-sweep-failures) | `nativelink_scheduler_sweep_failures` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`scheduler.hints.resolutions`](#scheduler-hints-resolutions) | `nativelink_scheduler_hints_resolutions` (unreferenced) | Counter | Conditionally | scheduler process only |
-| [`store.object.throttles`](#store-object-throttles) | `nativelink_store_object_throttles` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`store.object.read_limit`](#store-object-read-limit) | `nativelink_store_object_read_limit` (unreferenced) | Gauge | Yes | whenever the code path runs |
-| [`store.object.read_waits`](#store-object-read-waits) | `nativelink_store_object_read_waits` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`store.tier.operations`](#store-tier-operations) | `nativelink_store_tier_operations` (unreferenced) | Counter | Conditionally | only through a `fast_slow` store |
-| [`store.tier.io`](#store-tier-io) | `nativelink_store_tier_io` (unreferenced) | Counter | Conditionally | only through a `fast_slow` store |
-| [`health.checks`](#health-checks) | `nativelink_health_checks` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`connection.pool.available`](#connection-pool-available) | `nativelink_connection_pool_available` (unreferenced) | Histogram | Yes | whenever the code path runs |
-| [`connection.pool.acquisitions`](#connection-pool-acquisitions) | `nativelink_connection_pool_acquisitions` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`connection.reconnects`](#connection-reconnects) | `nativelink_connection_reconnects` (unreferenced) | Counter | Yes | whenever the code path runs |
-| [`retry.outcomes`](#retry-outcomes) | `nativelink_retry_outcomes` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`cache.operation.duration`](#cacheoperationduration) | `nativelink_cache_operation_duration` | Histogram | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
+| [`cache.operations`](#cacheoperations) | `nativelink_cache_operations_total` | Counter | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
+| [`cache.io`](#cacheio) | `nativelink_cache_io_total` | Counter | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
+| [`cache.size`](#cachesize) | `nativelink_cache_size` | UpDownCounter | Yes | whenever the code path runs |
+| [`cache.entries`](#cacheentries) | `nativelink_cache_entries` | UpDownCounter | Yes | whenever the code path runs |
+| [`cache.item.size`](#cacheitemsize) | `nativelink_cache_item_size` | Histogram | Conditionally | only for stores explicitly wrapped in a `cache_metrics` spec |
+| [`execution.stage.duration`](#executionstageduration) | `nativelink_execution_stage_duration` | Histogram | Conditionally | scheduler process only |
+| [`execution.total.duration`](#executiontotalduration) | `nativelink_execution_total_duration` | Histogram | Conditionally | scheduler process only |
+| [`execution.queue.time`](#executionqueuetime) | `nativelink_execution_queue_time` | Histogram | Conditionally | scheduler process only |
+| [`execution.active.count`](#executionactivecount) | `nativelink_execution_active_count` (unreferenced) | UpDownCounter | Conditionally | scheduler process only |
+| [`execution.completed.count`](#executioncompletedcount) | `nativelink_execution_completed_count_total` | Counter | Conditionally | scheduler process only |
+| [`execution.stage.transitions`](#executionstagetransitions) | `nativelink_execution_stage_transitions_total` | Counter | Conditionally | scheduler process only |
+| [`execution.cpu.time`](#executioncputime) | `nativelink_execution_cpu_time` (unreferenced) | Histogram | Conditionally | scheduler process only |
+| [`execution.peak.memory`](#executionpeakmemory) | `nativelink_execution_peak_memory` (unreferenced) | Histogram | Conditionally | scheduler process only |
+| [`execution.output.size`](#executionoutputsize) | `nativelink_execution_output_size` | Histogram | Conditionally | scheduler process only |
+| [`execution.retry.count`](#executionretrycount) | `nativelink_execution_retry_count_total` | Counter | Conditionally | scheduler process only |
+| [`worker.input_mount.cache_hits`](#workerinput_mountcache_hits) | `nativelink_worker_input_mount_cache_hits` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`worker.input_mount.cache_misses`](#workerinput_mountcache_misses) | `nativelink_worker_input_mount_cache_misses` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`worker.input_mount.fallbacks`](#workerinput_mountfallbacks) | `nativelink_worker_input_mount_fallbacks` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`worker.input_mount.prepare_failures`](#workerinput_mountprepare_failures) | `nativelink_worker_input_mount_prepare_failures` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`worker.connected.count`](#workerconnectedcount) | `nativelink_worker_connected_count` (unreferenced) | UpDownCounter | Conditionally | scheduler process only |
+| [`worker.connections`](#workerconnections) | `nativelink_worker_connections` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`worker.disconnections`](#workerdisconnections) | `nativelink_worker_disconnections` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`worker.input.relinks`](#workerinputrelinks) | `nativelink_worker_input_relinks` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`worker.prepare.retries`](#workerprepareretries) | `nativelink_worker_prepare_retries` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`scheduler.dispatch.requeues`](#schedulerdispatchrequeues) | `nativelink_scheduler_dispatch_requeues` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`worker.keepalives`](#workerkeepalives) | `nativelink_worker_keepalives` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`worker.keepalive.gap`](#workerkeepalivegap) | `nativelink_worker_keepalive_gap` (unreferenced) | Histogram | Conditionally | scheduler process only |
+| [`worker.state.count`](#workerstatecount) | `nativelink_worker_state_count` (unreferenced) | UpDownCounter | Conditionally | scheduler process only |
+| [`rpc.server.duration`](#rpcserverduration) | `nativelink_rpc_server_duration` (unreferenced) | Histogram | Yes | whenever the code path runs |
+| [`scheduler.matching.duration`](#schedulermatchingduration) | `nativelink_scheduler_matching_duration` (unreferenced) | Histogram | Conditionally | scheduler process only |
+| [`scheduler.matching.passes`](#schedulermatchingpasses) | `nativelink_scheduler_matching_passes` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`scheduler.unsatisfiable.queued`](#schedulerunsatisfiablequeued) | `nativelink_scheduler_unsatisfiable_queued` (unreferenced) | Gauge | Conditionally | scheduler process only |
+| [`scheduler.unsatisfiable.failed`](#schedulerunsatisfiablefailed) | `nativelink_scheduler_unsatisfiable_failed` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`scheduler.queue.depth`](#schedulerqueuedepth) | `nativelink_scheduler_queue_depth` (unreferenced) | Gauge | Conditionally | scheduler process only |
+| [`scheduler.queue.age`](#schedulerqueueage) | `nativelink_scheduler_queue_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
+| [`scheduler.queue.oldest_age`](#schedulerqueueoldest_age) | `nativelink_scheduler_queue_oldest_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
+| [`scheduler.executing.age`](#schedulerexecutingage) | `nativelink_scheduler_executing_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
+| [`scheduler.executing.oldest_age`](#schedulerexecutingoldest_age) | `nativelink_scheduler_executing_oldest_age` (unreferenced) | Gauge | Conditionally | scheduler process only |
+| [`scheduler.queue.retired`](#schedulerqueueretired) | `nativelink_scheduler_queue_retired` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`scheduler.matching.parked_dispatched`](#schedulermatchingparked_dispatched) | `nativelink_scheduler_matching_parked_dispatched` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`scheduler.worker.holds`](#schedulerworkerholds) | `nativelink_scheduler_worker_holds` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`scheduler.worker.held`](#schedulerworkerheld) | `nativelink_scheduler_worker_held` (unreferenced) | Gauge | Conditionally | scheduler process only |
+| [`scheduler.awaited_action.orphans`](#schedulerawaited_actionorphans) | `nativelink_scheduler_awaited_action_orphans` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`scheduler.sweep.failures`](#schedulersweepfailures) | `nativelink_scheduler_sweep_failures` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`scheduler.hints.resolutions`](#schedulerhintsresolutions) | `nativelink_scheduler_hints_resolutions` (unreferenced) | Counter | Conditionally | scheduler process only |
+| [`store.object.throttles`](#storeobjectthrottles) | `nativelink_store_object_throttles` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`store.object.read_limit`](#storeobjectread_limit) | `nativelink_store_object_read_limit` (unreferenced) | Gauge | Yes | whenever the code path runs |
+| [`store.object.read_waits`](#storeobjectread_waits) | `nativelink_store_object_read_waits` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`store.tier.operations`](#storetieroperations) | `nativelink_store_tier_operations` (unreferenced) | Counter | Conditionally | only through a `fast_slow` store |
+| [`store.tier.io`](#storetierio) | `nativelink_store_tier_io` (unreferenced) | Counter | Conditionally | only through a `fast_slow` store |
+| [`health.checks`](#healthchecks) | `nativelink_health_checks` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`connection.pool.available`](#connectionpoolavailable) | `nativelink_connection_pool_available` (unreferenced) | Histogram | Yes | whenever the code path runs |
+| [`connection.pool.acquisitions`](#connectionpoolacquisitions) | `nativelink_connection_pool_acquisitions` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`connection.reconnects`](#connectionreconnects) | `nativelink_connection_reconnects` (unreferenced) | Counter | Yes | whenever the code path runs |
+| [`retry.outcomes`](#retryoutcomes) | `nativelink_retry_outcomes` (unreferenced) | Counter | Yes | whenever the code path runs |
 
 ## How an instrument becomes a Prometheus series
 

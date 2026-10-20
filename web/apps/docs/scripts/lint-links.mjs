@@ -314,26 +314,24 @@ async function main() {
     }
   }
 
+  if (problems.length === 0 && warnings.length === 0) {
+    console.log(`lint:links: ${checked} internal links across ${pages.size} pages resolve.`);
+    return;
+  }
+
   if (warnings.length > 0) {
     console.warn(`lint:links: ${warnings.length} unresolved link(s) on generated pages.`);
-    console.warn(
-      "These do not fail the build: the fix belongs in the generator, not in\n" +
-        "the page, and not in whichever PR happened to run this next.\n",
-    );
     for (const { rel, line, message } of warnings) {
       console.warn(`  ${rel}:${line}  ${message}`);
     }
     console.warn("");
   }
 
-  if (problems.length === 0) {
-    console.log(`lint:links: ${checked} internal links across ${pages.size} pages resolve.`);
-    return;
-  }
-
-  console.error(`lint:links: ${problems.length} unresolved of ${checked} internal links:\n`);
-  for (const { rel, line, message } of problems) {
-    console.error(`  ${rel}:${line}  ${message}`);
+  if (problems.length > 0) {
+    console.error(`lint:links: ${problems.length} unresolved of ${checked} internal links:\n`);
+    for (const { rel, line, message } of problems) {
+      console.error(`  ${rel}:${line}  ${message}`);
+    }
   }
   console.error(
     "\nEvery internal link must resolve to a page that exists, at an anchor that\n" +
