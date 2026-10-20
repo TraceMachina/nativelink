@@ -81,6 +81,12 @@ from the `stores` or `schedulers` array. This is where the wiring described in
 | `admin` | REST endpoint for administrative tasks | nothing (path defaults to `/admin`) |
 | `health` | Health check endpoint | nothing (path defaults to `/status`) |
 
+In development builds, ByteStream rejects a completed upload whose byte count
+differs from the size in its CAS resource name, even without a `verify` store.
+See [upload integrity](/how-to/stores/compose-stores#upload-integrity).
+
+[Development implementation](https://github.com/TraceMachina/nativelink/blob/b7883e35eda1e66de537db19d3a4d61df2cf5cc7/nativelink-service/src/bytestream_server.rs).
+
 A cache-only deployment needs the first four. Adding execution adds
 `execution` and `worker_api`. The rest are opt-in.
 
