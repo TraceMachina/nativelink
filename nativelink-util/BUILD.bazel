@@ -14,6 +14,7 @@ rust_library(
     name = "nativelink-util",
     srcs = [
         "src/action_messages.rs",
+        "src/adaptive_permits.rs",
         "src/buf_channel.rs",
         "src/channel_body_for_tests.rs",
         "src/chunked_stream.rs",
@@ -100,6 +101,7 @@ rust_test_suite(
     timeout = "short",
     srcs = [
         "tests/action_messages_test.rs",
+        "tests/adaptive_permits_test.rs",
         "tests/buf_channel_test.rs",
         "tests/cache_size_metrics_test.rs",
         "tests/channel_body_for_tests_test.rs",
