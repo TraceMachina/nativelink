@@ -21,7 +21,7 @@ use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
 use memory_stats::memory_stats;
 use nativelink_config::stores::MemorySpec;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -99,7 +99,9 @@ async fn update_streamed(
 ) -> Result<(), Error> {
     let (mut tx, rx) = make_buf_channel_pair();
     let send_fut = async move {
-        tx.send(Bytes::from_static(data)).await?;
+        if !data.is_empty() {
+            tx.send(Bytes::from_static(data)).await?;
+        }
         tx.send_eof()
     };
     let pinned_store = Pin::new(store);
@@ -115,6 +117,78 @@ fn store_with_max_bytes(max_bytes: usize) -> Store {
             ..Default::default()
         }),
     }))
+}
+
+#[nativelink_test]
+async fn streamed_invalid_sizes_do_not_publish_or_replace_entries() -> Result<(), Error> {
+    let store = store_with_max_bytes(0);
+    let existing = DigestInfo::try_new(VALID_HASH1, 8)?;
+    let missing = DigestInfo::try_new(VALID_HASH2, 8)?;
+    store.update_oneshot(existing, "original".into()).await?;
+    let cases: [(UploadSizeInfo, &'static [u8]); 4] = [
+        (UploadSizeInfo::ExactSize(8), b""),
+        (UploadSizeInfo::ExactSize(8), b"short"),
+        (UploadSizeInfo::ExactSize(8), b"overlong!"),
+        (UploadSizeInfo::MaxSize(4), b"short"),
+    ];
+    for (size_info, payload) in cases {
+        for digest in [existing, missing] {
+            let error = update_streamed(&store, digest, payload, size_info)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, Code::InvalidArgument);
+            assert_eq!(store.has(missing).await?, None);
+            assert_eq!(
+                store.get_part_unchunked(existing, 0, None).await?,
+                b"original"[..]
+            );
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn streamed_invalid_oversized_writes_do_not_fire_eviction_callbacks() -> Result<(), Error> {
+    let store = store_with_max_bytes(4);
+    let healthy = DigestInfo::try_new(VALID_HASH1, 2)?;
+    update_streamed(&store, healthy, b"ok", UploadSizeInfo::ExactSize(2)).await?;
+    let count = Arc::new(AtomicUsize::new(0));
+    store.register_remove_callback(Arc::new(CountingRemoveCallback(count.clone())))?;
+    for declared in [4, 8] {
+        let missing = DigestInfo::try_new(VALID_HASH2, declared)?;
+        for payload in [b"".as_slice(), b"bad", b"overlong!"] {
+            let error = update_streamed(
+                &store,
+                missing,
+                payload,
+                UploadSizeInfo::ExactSize(declared),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, Code::InvalidArgument);
+            assert_eq!(store.has(missing).await?, None);
+            assert_eq!(store.get_part_unchunked(healthy, 0, None).await?, b"ok"[..]);
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn streamed_uploads_validate_transfer_size_instead_of_digest_size() -> Result<(), Error> {
+    let store = store_with_max_bytes(0);
+    let digest = DigestInfo::try_new(VALID_HASH1, 78)?;
+    // AC and encoded values may have a different size from the key's digest.
+    let cases: [(UploadSizeInfo, &'static [u8]); 3] = [
+        (UploadSizeInfo::ExactSize(0), b""),
+        (UploadSizeInfo::ExactSize(7), b"encoded"),
+        (UploadSizeInfo::MaxSize(78), b"short"),
+    ];
+    for (size_info, payload) in cases {
+        update_streamed(&store, digest, payload, size_info).await?;
+        assert_eq!(store.get_part_unchunked(digest, 0, None).await?, payload);
+    }
+    Ok(())
 }
 
 // A write whose exact size is >= `max_bytes` is skipped (drained, never buffered)

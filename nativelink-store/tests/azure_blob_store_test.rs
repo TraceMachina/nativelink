@@ -914,6 +914,39 @@ async fn test_update_zero_size() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn canonical_empty_upload_checks_content_and_declared_size() -> Result<(), Error> {
+    let cases: [(UploadSizeInfo, &'static [u8], bool); 5] = [
+        (UploadSizeInfo::ExactSize(1), b"", false),
+        (UploadSizeInfo::ExactSize(1), b"x", false),
+        (UploadSizeInfo::MaxSize(1), b"x", false),
+        (UploadSizeInfo::ExactSize(0), b"", true),
+        (UploadSizeInfo::MaxSize(1), b"", true),
+    ];
+    for digest in nativelink_store::cas_utils::ZERO_BYTE_DIGESTS {
+        for (upload_size, payload, valid) in cases {
+            let mock = MockTransport::new();
+            let store = create_test_store(Arc::clone(&mock), None, None)?;
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(Bytes::from_static(payload)).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, sent) = tokio::join!(store.update(digest, rx, upload_size), send);
+            sent?;
+            if valid {
+                assert_eq!(result?, 0);
+            } else {
+                assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            }
+            assert_eq!(mock.request_count(), 0);
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
 async fn test_update_with_retries() -> Result<(), Error> {
     const CONTENT_LENGTH: usize = 512;
 

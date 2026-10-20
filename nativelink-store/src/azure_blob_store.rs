@@ -811,6 +811,8 @@ where
         // Handling zero-sized content check
         if is_zero_digest(digest.borrow()) {
             let size = reader.drain().await?;
+            // The empty digest constrains the content; the caller's transfer
+            // declaration must independently agree with the received size.
             UploadSizeInfo::ExactSize(0).validate_size(size)?;
             upload_size.validate_size(size)?;
             return Ok(0);
