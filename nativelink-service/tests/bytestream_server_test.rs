@@ -2034,3 +2034,109 @@ async fn uuid_collision_does_not_deadlock() -> Result<(), Box<dyn core::error::E
     drop(tx1);
     Ok(())
 }
+
+#[nativelink_test]
+async fn resume_while_previous_stream_still_active() -> Result<(), Box<dyn core::error::Error>> {
+    // A client's Write dies on the client side (deadline, dropped proxy or
+    // tunnel connection) before the server has observed the stream ending, so
+    // the server still holds it as active. The client follows the ByteStream
+    // resume protocol: QueryWriteStatus, then Write at the reported
+    // committed_size with the same UUID. The server reported that offset, so
+    // it must not reject a write there as InvalidArgument: it fails retryably
+    // while the old stream is still active, and the retry joins the stream
+    // once it has gone idle.
+    //
+    // Previously this resume hit the UUID-collision path, got a fresh UUID
+    // that expects offset 0, and failed with "Received out of order data. Got
+    // 5, expected 0", which clients do not retry.
+    const DATA: &[u8] = b"0123456789";
+    const SPLIT: usize = 5;
+    let resource_name = make_resource_name(DATA.len());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+
+    // Writer 1: first half, stream left open so the server considers it active.
+    let (tx1, join1) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx1.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: DATA[..SPLIT].into(),
+    })?))
+    .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // The client thinks writer 1 is dead and asks where to resume.
+    let status = bs_server
+        .query_write_status(Request::new(QueryWriteStatusRequest {
+            resource_name: resource_name.clone(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(
+        status.committed_size,
+        i64::try_from(SPLIT)?,
+        "QueryWriteStatus should report the bytes received so far"
+    );
+
+    // Writer 2: resume at exactly the offset the server advertised.
+    let (tx2, join2) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx2.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: status.committed_size,
+        finish_write: true,
+        data: DATA[SPLIT..].into(),
+    })?))
+    .await?;
+    drop(tx2);
+
+    let result = tokio::time::timeout(core::time::Duration::from_secs(5), join2)
+        .await
+        .expect("resume hung")
+        .expect("task panicked");
+    let status_code = result
+        .expect_err("resume must not join a still-active stream")
+        .code();
+    assert_eq!(
+        status_code,
+        Code::Unavailable,
+        "Resume while the old stream is active must fail retryably"
+    );
+
+    // The server now observes writer 1 ending, which parks its stream as idle.
+    drop(tx1);
+    assert!(
+        join1.await.expect("task panicked").is_err(),
+        "Writer 1 ended early, so its Write should fail"
+    );
+
+    // The client retries the resume, exactly as before.
+    let status = bs_server
+        .query_write_status(Request::new(QueryWriteStatusRequest {
+            resource_name: resource_name.clone(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(status.committed_size, i64::try_from(SPLIT)?);
+    let (tx3, join3) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx3.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: status.committed_size,
+        finish_write: true,
+        data: DATA[SPLIT..].into(),
+    })?))
+    .await?;
+    drop(tx3);
+    join3
+        .await
+        .expect("task panicked")
+        .expect("Retried resume should join the idle stream and complete the upload");
+
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(HASH1, DATA.len())?;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, DATA);
+    Ok(())
+}
