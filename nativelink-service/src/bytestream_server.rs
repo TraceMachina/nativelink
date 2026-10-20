@@ -959,6 +959,11 @@ impl ByteStreamServer {
                 }
                 if write_request.finish_write {
                     // Gracefully close our stream.
+                    // REAPI requires the completed upload to match its digest:
+                    // https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto
+                    // Validate before EOF, which authorizes the store to commit.
+                    UploadSizeInfo::ExactSize(expected_size)
+                        .validate_size(tx.get_bytes_written())?;
                     tx.send_eof()
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
                     return Ok(());
@@ -1083,6 +1088,7 @@ impl ByteStreamServer {
         }
 
         // Direct update without channel overhead
+        UploadSizeInfo::ExactSize(expected_size).validate_size(bytes_received)?;
         let store = instance_info.store.clone();
         let store_update_context = make_ctx_for_hash_func(digest_function)?;
         store

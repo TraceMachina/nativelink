@@ -142,6 +142,7 @@ rust_test_suite(
     timeout = "moderate",
     srcs = [
         "tests/ac_utils_test.rs",
+        "tests/azure_blob_store_test.rs",
         "tests/azurite_store_test.rs",
         "tests/cache_metrics_store_test.rs",
         "tests/common_s3_utils_test.rs",

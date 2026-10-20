@@ -401,3 +401,47 @@ async fn has_with_zero_digest_returns_some_test() -> Result<(), Error> {
     }
     Ok(())
 }
+
+#[nativelink_test]
+async fn incomplete_upload_does_not_publish_dedup_index() -> Result<(), Error> {
+    use nativelink_util::buf_channel::make_buf_channel_pair;
+    use nativelink_util::store_trait::UploadSizeInfo;
+
+    let index = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = DedupStore::new(
+        &make_default_config(),
+        index.clone(),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?;
+    let key = DigestInfo::try_new(VALID_HASH1, 78)?;
+    for payload in [bytes::Bytes::new(), bytes::Bytes::from_static(b"short")] {
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, _) = tokio::join!(store.update(key, rx, UploadSizeInfo::ExactSize(78)), send);
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+        assert_eq!(index.has(key).await?, None);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn empty_cas_upload_does_not_publish_dedup_index() -> Result<(), Error> {
+    let index = MemoryStore::new(&MemorySpec::default());
+    let content = MemoryStore::new(&MemorySpec::default());
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(index.clone()),
+        Store::new(content.clone()),
+    )?;
+    for digest in ZERO_BYTE_DIGESTS {
+        store.update_oneshot(digest, bytes::Bytes::new()).await?;
+    }
+    assert_eq!(index.len_for_test(), 0);
+    assert_eq!(content.len_for_test(), 0);
+    Ok(())
+}

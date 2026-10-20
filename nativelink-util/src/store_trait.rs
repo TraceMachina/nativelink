@@ -88,6 +88,25 @@ pub enum UploadSizeInfo {
     MaxSize(u64),
 }
 
+impl UploadSizeInfo {
+    /// Check the payload length before publishing an upload. Use the transfer
+    /// size, not the key's digest size: AC values and encoded data may have a
+    /// different length from their keys.
+    pub fn validate_size(self, actual: u64) -> Result<(), Error> {
+        match self {
+            Self::ExactSize(expected) if actual != expected => Err(make_err!(
+                Code::InvalidArgument,
+                "Expected {expected} upload bytes, received {actual}"
+            )),
+            Self::MaxSize(maximum) if actual > maximum => Err(make_err!(
+                Code::InvalidArgument,
+                "Upload exceeded maximum size {maximum}: received {actual}"
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Utility to send all the data to the store from a file.
 // Note: This is not inlined because some code may want to bypass any underlying
 // optimizations that may be present in the inner store.

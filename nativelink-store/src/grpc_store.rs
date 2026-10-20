@@ -56,7 +56,7 @@ use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{RemoveCallback, StoreDriver, StoreKey, UploadSizeInfo};
 use nativelink_util::telemetry::{forward_client_headers, inject_context};
 use nativelink_util::wire_compression::{
-    stream_decode_compressed_upload, stream_encode_compressed_download_from_reader,
+    stream_decode_compressed_upload, stream_encode_compressed_upload_from_reader,
 };
 use nativelink_util::{background_spawn, default_health_status_indicator, tls_utils};
 use opentelemetry::context::Context;
@@ -1242,6 +1242,7 @@ impl GrpcStore {
         self: Pin<&Self>,
         digest: DigestInfo,
         reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         enum UploadCompletion {
             Write(Result<(), Error>),
@@ -1290,11 +1291,12 @@ impl GrpcStore {
 
         let (compressed_tx, compressed_rx) = make_buf_channel_pair();
         let mut reader = reader;
-        let encode_fut = stream_encode_compressed_download_from_reader(
+        let encode_fut = stream_encode_compressed_upload_from_reader(
             &mut reader,
             compressor::Value::Zstd,
             WIRE_COMPRESSION_ZSTD_LEVEL,
             compressed_tx,
+            size_info,
         );
 
         let local_state = LocalState {
@@ -1700,8 +1702,8 @@ impl StoreDriver for GrpcStore {
     async fn update(
         self: Pin<&Self>,
         key: StoreKey<'_>,
-        reader: DropCloserReadHalf,
-        size_info: UploadSizeInfo,
+        mut reader: DropCloserReadHalf,
+        mut size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
         const NON_RESUMABLE: bool = false;
 
@@ -1712,6 +1714,7 @@ impl StoreDriver for GrpcStore {
             bytes_received: i64,
             /// Remainder of a buffer too large to send as one `WriteRequest`.
             pending: Bytes,
+            size_info: UploadSizeInfo,
         }
 
         let is_digest_key = matches!(key, StoreKey::Digest(_));
@@ -1740,6 +1743,26 @@ impl StoreDriver for GrpcStore {
             return self.update_action_result_from_bytes(digest, reader).await;
         }
 
+        // This boundary knows it is writing CAS content, unlike generic stores
+        // that also hold AC values or encoded data under unrelated digest keys.
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Cas) && is_digest_key {
+            size_info.validate_size(digest.size_bytes())?;
+            size_info = UploadSizeInfo::ExactSize(digest.size_bytes());
+        }
+
+        // REAPI defines empty blobs as always available, even without an upload.
+        // https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto
+        // Only CAS digest keys qualify; AC values and event records still need writes.
+        if matches!(self.store_type, nativelink_config::stores::StoreType::Cas)
+            && is_digest_key
+            && crate::cas_utils::is_zero_digest(digest)
+        {
+            let size = reader.drain().await?;
+            UploadSizeInfo::ExactSize(0).validate_size(size)?;
+            size_info.validate_size(size)?;
+            return Ok(0);
+        }
+
         // Only real digest keys may take the compressed path: for a string key
         // `into_digest()` hashes the key itself, so the remote's mandatory
         // uncompressed-digest verification would reject the upload.
@@ -1747,7 +1770,7 @@ impl StoreDriver for GrpcStore {
             && is_digest_key
             && digest.size_bytes() >= WIRE_COMPRESSION_MIN_SIZE_BYTES
         {
-            return self.update_compressed(digest, reader).await;
+            return self.update_compressed(digest, reader, size_info).await;
         }
 
         let mut buf = Uuid::encode_buffer();
@@ -1793,6 +1816,7 @@ impl StoreDriver for GrpcStore {
             did_error: false,
             bytes_received: 0,
             pending: Bytes::new(),
+            size_info,
         };
 
         let stream = Box::pin(unfold(local_state, |mut local_state| async move {
@@ -1831,6 +1855,14 @@ impl StoreDriver for GrpcStore {
 
             let write_offset = local_state.bytes_received;
             local_state.bytes_received += data.len().try_into().unwrap_or(i64::MAX);
+            if data.is_empty()
+                && let Err(err) = local_state
+                    .size_info
+                    .validate_size(u64::try_from(local_state.bytes_received).unwrap_or(u64::MAX))
+            {
+                local_state.did_error = true;
+                return Some((Err(err), local_state));
+            }
 
             Some((
                 Ok(WriteRequest {

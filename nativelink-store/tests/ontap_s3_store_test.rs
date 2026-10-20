@@ -25,7 +25,7 @@ use http::status::StatusCode;
 use http_body::Frame;
 use mock_instant::thread_local::MockClock;
 use nativelink_config::stores::{CommonObjectSpec, ExperimentalOntapS3Spec};
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Code, Error, ResultExt, make_input_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::ontap_s3_store::OntapS3Store;
 use nativelink_util::buf_channel::make_buf_channel_pair;
@@ -731,5 +731,45 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
         .await
         .unwrap();
     mock_client.assert_requests_match(&[]);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_small_upload_never_sends_ontap_put() -> Result<(), Error> {
+    for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+        let mock = StaticReplayClient::new(vec![]);
+        let config = Builder::new()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::from_static(VSERVER_NAME))
+            .http_client(mock)
+            .build();
+        let store = OntapS3Store::new_with_client_and_jitter(
+            &ExperimentalOntapS3Spec {
+                bucket: BUCKET_NAME.to_string(),
+                vserver_name: VSERVER_NAME.to_string(),
+                endpoint: "https://example.com".to_string(),
+                ..Default::default()
+            },
+            aws_sdk_s3::Client::from_conf(config),
+            Arc::new(|_| Duration::from_secs(0)),
+            MockInstantWrapped::default,
+        )?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, _) = tokio::join!(
+            store.update(
+                DigestInfo::try_new(VALID_HASH1, 78)?,
+                rx,
+                UploadSizeInfo::ExactSize(78)
+            ),
+            send
+        );
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+    }
     Ok(())
 }

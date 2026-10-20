@@ -262,8 +262,11 @@ where
         if let UploadSizeInfo::ExactSize(size) = upload_size
             && size < MIN_MULTIPART_SIZE
         {
-            let content = reader.consume(Some(usize::try_from(size)?)).await?;
+            let content = reader
+                .consume(Some(usize::try_from(size)?.saturating_add(1)))
+                .await?;
             let content_len = content.len() as u64;
+            upload_size.validate_size(content_len)?;
             let client = &self.client;
 
             return self
@@ -291,7 +294,24 @@ where
         loop {
             let chunk = reader.consume(Some(self.max_chunk_size)).await?;
             if chunk.is_empty() {
+                upload_size.validate_size(offset)?;
                 break;
+            }
+            let end = offset + chunk.len() as u64;
+            if matches!(upload_size, UploadSizeInfo::MaxSize(_)) {
+                upload_size.validate_size(end)?;
+            }
+            if let UploadSizeInfo::ExactSize(expected) = upload_size
+                && (end >= expected || chunk.len() < self.max_chunk_size)
+            {
+                upload_size.validate_size(end)?;
+                // Do not commit the final chunk until the producer confirms EOF.
+                if !reader.recv().await?.is_empty() {
+                    return Err(make_err!(
+                        Code::InvalidArgument,
+                        "Data after exact upload size"
+                    ));
+                }
             }
             // If a full chunk wasn't read, then this is the full length.
             if chunk.len() < self.max_chunk_size {

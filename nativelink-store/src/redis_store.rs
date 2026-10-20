@@ -1090,7 +1090,7 @@ where
         self: Pin<&Self>,
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
-        _upload_size: UploadSizeInfo,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let final_key = self.encode_key(&key);
 
@@ -1203,6 +1203,7 @@ where
         }
 
         let expected_len = usize::try_from(total_len).unwrap_or(usize::MAX);
+        upload_size.validate_size(u64::from(total_len))?;
 
         // The chunk writes above reconnect on any transient failover error, so on a mid-write Redis
         // failover the data lands on the *current* master. The length check and

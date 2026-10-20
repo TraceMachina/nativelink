@@ -176,6 +176,7 @@ impl StoreDriver for MemoryStore {
                 .drain()
                 .await
                 .err_tip(|| "Failed to drain oversized write in memory_store::update")?;
+            size_info.validate_size(drained)?;
             warn!(
                 ?key,
                 size = sz,
@@ -207,6 +208,7 @@ impl StoreDriver for MemoryStore {
         };
 
         let len = final_buffer.len().try_into().unwrap_or(0);
+        size_info.validate_size(len)?;
         self.evicting_map
             .insert(key.into_owned().into(), BytesWrapper(final_buffer))
             .await;
