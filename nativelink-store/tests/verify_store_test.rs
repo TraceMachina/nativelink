@@ -56,9 +56,11 @@ async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(
         async fn has_with_results(
             self: Pin<&Self>,
             _keys: &[StoreKey<'_>],
-            _results: &mut [Option<u64>],
+            results: &mut [Option<u64>],
         ) -> Result<(), Error> {
-            unimplemented!()
+            // Every upload fails, so nothing is ever held.
+            results.fill(None);
+            Ok(())
         }
         async fn update(
             self: Pin<&Self>,
@@ -72,12 +74,12 @@ async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(
         }
         async fn get_part(
             self: Pin<&Self>,
-            _key: StoreKey<'_>,
+            key: StoreKey<'_>,
             _writer: &mut DropCloserWriteHalf,
             _offset: u64,
             _length: Option<u64>,
         ) -> Result<(), Error> {
-            unimplemented!()
+            Err(make_err!(Code::NotFound, "{key:?} was never stored"))
         }
         fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
             self
@@ -793,5 +795,69 @@ async fn verify_size_true_drops_a_copy_that_fails_verification() -> Result<(), E
     // And the next read reports NotFound, the signal for a re-upload.
     let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
     assert_eq!(err.code, Code::NotFound, "{err:?}");
+    Ok(())
+}
+
+/// A copy whose size disagrees with its digest is reported missing, so the
+/// client uploads the blob again and the upload replaces the copy. Reported
+/// present, as an empty object under a non-empty digest was, the client never
+/// uploads it again and every read of it fails.
+#[nativelink_test]
+async fn verify_size_true_reports_a_wrong_size_copy_missing() -> Result<(), Error> {
+    const VALID_HASH2: &str = "0123456789abcdef000000000000000000020000000000000123456789abcdef";
+    const VALID_HASH3: &str = "0123456789abcdef000000000000000000030000000000000123456789abcdef";
+    const VALID_HASH4: &str = "0123456789abcdef000000000000000000040000000000000123456789abcdef";
+
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    // Ten bytes claimed, none stored: what an upload that lost its body
+    // left behind.
+    let empty = DigestInfo::try_new(VALID_HASH1, 10)?;
+    inner_store.update_oneshot(empty, "".into()).await?;
+    // Ten bytes claimed, four stored.
+    let short = DigestInfo::try_new(VALID_HASH2, 10)?;
+    inner_store.update_oneshot(short, "1234".into()).await?;
+    let intact = DigestInfo::try_new(VALID_HASH3, 4)?;
+    inner_store.update_oneshot(intact, "1234".into()).await?;
+    let missing = DigestInfo::try_new(VALID_HASH4, 4)?;
+
+    assert_eq!(
+        store
+            .has_many(&[empty.into(), short.into(), intact.into(), missing.into()])
+            .await?,
+        vec![None, None, Some(4), None]
+    );
+    // An existence check removes nothing; the bad copy stays until the
+    // upload replaces it.
+    assert_eq!(inner_store.has(empty).await?, Some(0));
+
+    store.update_oneshot(empty, "0123456789".into()).await?;
+    assert_eq!(store.has(empty).await?, Some(10));
+    Ok(())
+}
+
+/// Without size verification an existence check reports what the tier
+/// below holds, as before.
+#[nativelink_test]
+async fn verify_size_false_reports_the_stored_size() -> Result<(), Error> {
+    let inner_store = MemoryStore::new(&MemorySpec::default());
+    let store = VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: false,
+            verify_hash: false,
+        },
+        Store::new(inner_store.clone()),
+    );
+    let empty = DigestInfo::try_new(VALID_HASH1, 10)?;
+    inner_store.update_oneshot(empty, "".into()).await?;
+    assert_eq!(store.has(empty).await?, Some(0));
     Ok(())
 }

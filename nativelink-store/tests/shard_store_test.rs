@@ -14,14 +14,19 @@
 
 use std::sync::Arc;
 
-use nativelink_config::stores::{MemorySpec, ShardSpec, StoreSpec};
-use nativelink_error::Error;
+use nativelink_config::stores::{
+    CacheMetricsSpec, FastSlowSpec, MemorySpec, ShardSpec, StoreDirection, StoreSpec, VerifySpec,
+};
+use nativelink_error::{Code, Error};
 use nativelink_macro::nativelink_test;
+use nativelink_store::cache_metrics_store::CacheMetricsStore;
+use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::shard_store::ShardStore;
+use nativelink_store::verify_store::VerifyStore;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -307,4 +312,110 @@ async fn verify_weights_left_bias() -> Result<(), Error> {
 #[nativelink_test]
 async fn verify_weights_right_bias() -> Result<(), Error> {
     verify_weights(&[1, 1, 1, 1, 1, 100], &[5, 13, 12, 5, 11, 954], 1000, false).await
+}
+
+/// A removal reaches the one store the key is sharded to, for digest and
+/// string keys alike, and leaves every other key where it is. Without it a
+/// repair asked of a shard never reaches the tier that holds the bad copy.
+#[nativelink_test]
+async fn remove_reaches_the_store_the_key_is_sharded_to() -> Result<(), Error> {
+    let (shard_store, stores) = make_stores(&[1, 1, 1]);
+    let store = Store::new(shard_store);
+    let keys: Vec<StoreKey<'static>> = (0u64..32)
+        .map(|i| {
+            let mut hasher = DigestHasherFunc::Blake3.hasher();
+            hasher.update(&i.to_le_bytes());
+            StoreKey::from(hasher.finalize_digest())
+        })
+        .chain((0..8).map(|i| StoreKey::from(format!("name-{i}"))))
+        .collect();
+    for key in &keys {
+        store.update_oneshot(key.borrow(), "1234".into()).await?;
+    }
+
+    for (removed, key) in keys.iter().enumerate() {
+        let mut holders = 0;
+        for inner in &stores {
+            if inner.has(key.borrow()).await?.is_some() {
+                holders += 1;
+            }
+        }
+        assert_eq!(holders, 1, "one shard holds {key:?}");
+
+        assert!(store.as_store_driver_pin().remove(key.borrow()).await?);
+        for inner in &stores {
+            assert_eq!(inner.has(key.borrow()).await?, None);
+        }
+        // Nothing is left to remove.
+        assert!(!store.as_store_driver_pin().remove(key.borrow()).await?);
+        // Every key not yet removed is still where it was put.
+        for kept in &keys[removed + 1..] {
+            assert_eq!(store.has(kept.borrow()).await?, Some(4), "{kept:?}");
+        }
+    }
+    Ok(())
+}
+
+/// The repair a failed read asks for, through a sharded cache tier: the
+/// truncated cached copy is evicted from the shard that holds it, the
+/// protected durable copy is kept, and the next read refills from it.
+#[nativelink_test]
+async fn a_truncated_copy_in_a_sharded_cache_is_evicted_and_refilled() -> Result<(), Error> {
+    let (shard_store, shards) = make_stores(&[1, 1]);
+    let durable = MemoryStore::new(&MemorySpec::default());
+    let store = Store::new(VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Memory(MemorySpec::default()),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            Store::new(shard_store.clone()),
+            // The durable copy refuses repair removal.
+            Store::new(CacheMetricsStore::new(
+                &CacheMetricsSpec {
+                    cache_type: "cas_durable".to_string(),
+                    allow_remove: false,
+                    backend: StoreSpec::Memory(MemorySpec::default()),
+                },
+                Store::new(durable.clone()),
+            )),
+        )),
+    ));
+    let digest = DigestInfo::try_new(
+        "0123456789abcdef000000000000000000010000000000000123456789abcdef",
+        10,
+    )?;
+    durable.update_oneshot(digest, "0123456789".into()).await?;
+    // Ten bytes claimed, four cached.
+    shard_store.update_oneshot(digest, "1234".into()).await?;
+
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    for shard in &shards {
+        assert_eq!(shard.has(digest).await?, None, "the cached copy is evicted");
+    }
+    assert_eq!(
+        durable.has(digest).await?,
+        Some(10),
+        "the durable copy is kept"
+    );
+
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        "0123456789"
+    );
+    assert_eq!(
+        shard_store.has(digest).await?,
+        Some(10),
+        "the read refilled the shard"
+    );
+    Ok(())
 }

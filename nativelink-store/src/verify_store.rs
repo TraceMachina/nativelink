@@ -204,7 +204,30 @@ impl StoreDriver for VerifyStore {
         digests: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
-        self.inner_store.has_with_results(digests, results).await
+        self.inner_store.has_with_results(digests, results).await?;
+        if !self.verify_size {
+            return Ok(());
+        }
+        // A digest names its size, and every store below answers with the
+        // size a read would deliver. A copy of any other size is one a read
+        // rejects, so it is reported missing: the client then uploads the
+        // blob again, and the upload replaces the bad copy in every tier.
+        // Reported present, the client would never upload it again and
+        // every read of it would fail.
+        for (key, result) in digests.iter().zip(results.iter_mut()) {
+            if let (StoreKey::Digest(digest), Some(size)) = (key, *result)
+                && size != digest.size_bytes()
+            {
+                self.size_verification_failures.inc();
+                warn!(
+                    ?key,
+                    stored_size = size,
+                    "Reporting a copy whose size disagrees with its digest as missing"
+                );
+                *result = None;
+            }
+        }
+        Ok(())
     }
 
     async fn update(

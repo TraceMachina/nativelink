@@ -651,7 +651,9 @@ pub trait StoreDriver:
     /// Memory and filesystem implementations always evict when asked; they
     /// cannot infer whether they hold the durable copy. A composition must
     /// protect such a tier from repair removal, for example with a
-    /// `cache_metrics` wrapper whose `allow_remove` is false.
+    /// `cache_metrics` wrapper whose `allow_remove` is false. Object stores
+    /// keep their copy; the Azure store drops only an empty object under a
+    /// non-empty digest, which no store writes on purpose.
     async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
         Ok(false)
     }

@@ -294,6 +294,11 @@ A store's share is its `weight` divided by the sum of all weights, so `SHARD_C`
 above takes half. `weight` defaults to `1`, so an unweighted list is an even
 split.
 
+In development builds, a repair request, the removal `verify` asks for after a
+read fails its size check, goes to the one store the key is placed in, as reads
+and writes do. A memory or filesystem shard evicts its copy when asked, so wrap
+a shard that holds the only copy in `cache_metrics` with `allow_remove: false`.
+
 <Callout type="warn" title="Changing the shard set invalidates placement">
   Blobs are placed by hashing against the current set of stores and weights.
   Add, remove or reweight a shard and existing entries stop being looked for
@@ -327,9 +332,9 @@ tier that holds the only copy: those stores cannot infer their role and will
 evict when asked. Put the wrapper around that tier, inside the verifier.
 
 This setting only gates repair requests passing through the wrapper. It does
-not change the backend's own eviction policy or make an Azure origin repairable.
-`removed=true` means a cached copy was removed; it does not prove the durable
-copy is correct. A corrupt origin still needs explicit, targeted repair.
+not change the backend's own eviction policy. `removed=true` means a cached
+copy was removed; it does not prove the durable copy is correct. What reaches a
+durable origin is described under [upload integrity](#upload-integrity).
 
 <SourceLink file="nativelink-store/src/cache_metrics_store.rs" symbol="CacheMetricsStore" />
 
@@ -393,10 +398,17 @@ committing the fast copy. A lazy backend can skip that size lookup, so keep
 Compression and deduplication check their input before committing the encoded
 value or index. Size checks alone do not detect corruption of the same length.
 
-These changes prevent new incomplete writes; they do not repair existing
-objects. Cache eviction can remove a bad local copy while leaving the durable
-object intact. A corrupt durable object needs explicit, targeted repair after
-its contents and expected digest have been checked.
+These changes prevent new incomplete writes. For a copy already written at
+the wrong size, in development builds `verify` with `verify_size: true`
+reports the blob missing to existence checks, so the client uploads it again
+and the upload replaces the copy in every tier. A read that fails the size
+check asks the tiers below to drop their copy: memory and filesystem tiers
+evict it unless a `cache_metrics` wrapper withholds `allow_remove`, a `shard`
+passes the request to the store that holds the key, and an Azure store deletes
+only an empty object under a digest that names content. Any other durable
+object is kept, including one cut short or corrupt at the right length; it
+needs explicit, targeted repair after its contents and expected digest have
+been checked.
 
 Development implementation: [transfer size validation](https://github.com/TraceMachina/nativelink/blob/b7883e35eda1e66de537db19d3a4d61df2cf5cc7/nativelink-util/src/store_trait.rs)
 and [cache fills](https://github.com/TraceMachina/nativelink/blob/b7883e35eda1e66de537db19d3a4d61df2cf5cc7/nativelink-store/src/fast_slow_store.rs).

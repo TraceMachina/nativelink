@@ -151,8 +151,10 @@ cool and archive tiers price retrieval in a way a build cache cannot afford.
 <li>
 
 **Grant access.** Assign the workload identity the Storage Blob Data
-Contributor role scoped to the container, or mint a SAS with read and write.
-The store never lists or deletes blobs.
+Contributor role scoped to the container, or mint a SAS with read, write and
+delete. The store never lists blobs. It deletes only what a failed upload
+left behind: the staged blocks of an upload that never committed, and an
+empty blob stored under a digest that names content.
 
 </li>
 
@@ -202,6 +204,21 @@ container, or a `sas_url` has expired. A SAS expiry surfaces as an
 authentication failure, so check the signature's window before assuming the
 role assignment is wrong. If the store did not start at all with a message
 about the Workload Identity credential, the `AZURE_*` variables are missing.
+
+</Accordion>
+
+<Accordion title="Reads of one blob fail with DataLoss" id="reads-of-one-blob-fail-with-dataloss">
+
+An upload that lost its body can leave an empty blob under a digest that names
+content; earlier releases could write one when a retried upload resent nothing.
+In development builds, a `verify` store with `verify_size: true` above this
+store reports such a blob missing, so the client uploads it again and the
+upload replaces it. A read of it fails with `DataLoss` and deletes it, so the
+next read is a `NotFound`, which clients answer with an upload. The store
+deletes only empty blobs: one that holds some of its bytes is kept, because a
+store above it, such as `compression`, may have written it shorter than the
+digest on purpose. Without delete permission the read logs the refusal and the
+blob stays until the next upload replaces it.
 
 </Accordion>
 
