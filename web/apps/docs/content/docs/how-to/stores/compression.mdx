@@ -27,6 +27,11 @@ what Bazel's `--remote_cache_compression` flag speaks: ByteStream reads and
 writes use `compressed-blobs/zstd/...` resource names, and the CAS batch RPCs
 accept and serve zstd-compressed payloads.
 
+In development builds, compression validates the raw transfer size before publishing the encoded
+value. Its backend receives the encoded size bound, not the raw digest size. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## Requirements [#requirements]
 
 - A Bazel client with `--remote_cache_compression` (available since Bazel 5).

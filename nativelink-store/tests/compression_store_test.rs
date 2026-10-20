@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use nativelink_config::stores::{CompressionSpec, MemorySpec, StoreSpec};
+use nativelink_config::stores::{
+    CompressionSpec, FastSlowSpec, FilesystemSpec, MemorySpec, StoreDirection, StoreSpec,
+};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
@@ -30,6 +32,8 @@ use nativelink_store::compression_store::{
     CURRENT_STREAM_FORMAT_VERSION, CompressionStore, DEFAULT_BLOCK_SIZE, FOOTER_FRAME_TYPE, Footer,
     Lz4Config, SliceIndex, WincodeConfig,
 };
+use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_util::buf_channel::{
     DropCloserReadHalf, DropCloserWriteHalf, make_buf_channel_pair,
@@ -848,5 +852,147 @@ async fn regression_test_range_start_not_greater_than_end() -> Result<(), Error>
         }
     }
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_reports_the_size_the_digest_declares_not_the_compressed_one() -> Result<(), Error> {
+    let inner_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        },
+        inner_store.clone(),
+    )?;
+    let store = Pin::new(store.as_ref());
+
+    // Highly compressible, so the framed object is far smaller than the blob.
+    let data = vec![b'a'; 4096];
+    let digest = DigestInfo::try_new(VALID_HASH, data.len())?;
+    store.update_oneshot(digest, data.into()).await?;
+
+    let compressed = inner_store
+        .has(digest)
+        .await?
+        .expect("the inner store holds the object");
+    assert!(
+        compressed < 4096,
+        "the inner object should be compressed, got {compressed}"
+    );
+    assert_eq!(
+        store.has(digest).await?,
+        Some(4096),
+        "a fast-slow tier sizes its copy from this answer, so it has to be the decompressed length"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_does_not_publish_compressed_blob() -> Result<(), Error> {
+    let backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        },
+        backend.clone(),
+    )?;
+    let key = DigestInfo::try_new(VALID_HASH, 78)?;
+    for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, _) = tokio::join!(store.update(key, rx, UploadSizeInfo::ExactSize(78)), send);
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+        assert_eq!(backend.has(key).await?, None);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn compressed_slow_tier_refills_filesystem_with_the_uncompressed_size() -> Result<(), Error> {
+    // Exercise both a blob that shrinks and one whose framing makes it grow.
+    for data in [vec![b'a'; 4096], b"tiny".to_vec()] {
+        let directory = tempfile::tempdir()?;
+        let filesystem_spec = FilesystemSpec {
+            content_path: directory
+                .path()
+                .join("content")
+                .to_string_lossy()
+                .into_owned(),
+            temp_path: directory.path().join("temp").to_string_lossy().into_owned(),
+            block_size: 1,
+            ..Default::default()
+        };
+        let compression_spec = CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        };
+        let backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let slow = Store::new(CompressionStore::new(&compression_spec, backend.clone())?);
+        let fast = Store::new(FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?);
+        let store = Store::new(FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Filesystem(filesystem_spec),
+                slow: StoreSpec::Compression(Box::new(compression_spec)),
+                fast_direction: StoreDirection::Both,
+                slow_direction: StoreDirection::Both,
+                bypass_dedup_threshold_bytes: 0,
+            },
+            fast.clone(),
+            slow.clone(),
+        ));
+        let digest = DigestInfo::try_new(VALID_HASH, data.len())?;
+        slow.update_oneshot(digest, data.clone().into()).await?;
+        assert_ne!(backend.has(digest).await?, Some(data.len() as u64));
+        assert_eq!(fast.has(digest).await?, None);
+
+        assert_eq!(store.get_part_unchunked(digest, 0, None).await?, data);
+        assert_eq!(fast.has(digest).await?, Some(data.len() as u64));
+        assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, data);
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_preserves_missing_digests_and_stored_string_key_sizes() -> Result<(), Error> {
+    let backend = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config::default(),
+            ),
+        },
+        backend.clone(),
+    )?;
+    let digest = DigestInfo::try_new(VALID_HASH, 4096)?;
+    let named = StoreKey::new_str("named-blob");
+    store
+        .update_oneshot(digest, vec![b'a'; 4096].into())
+        .await?;
+    store.update_oneshot(named.borrow(), "tiny".into()).await?;
+    let named_stored_size = backend.has(named.borrow()).await?;
+    assert_ne!(named_stored_size, Some(4));
+    let keys = [
+        StoreKey::from(DigestInfo::try_new(VALID_HASH, 78)?),
+        StoreKey::from(digest),
+        StoreKey::from(ZERO_BYTE_DIGESTS[0]),
+        named,
+    ];
+    let mut results = [None; 4];
+    store.has_with_results(&keys, &mut results).await?;
+    assert_eq!(results, [None, Some(4096), Some(0), named_stored_size]);
     Ok(())
 }

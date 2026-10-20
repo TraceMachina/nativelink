@@ -73,6 +73,43 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
     Ok(store_manager)
 }
 
+#[nativelink_test]
+async fn rejects_incomplete_bytestream_without_verification_wrapper()
+-> Result<(), Box<dyn core::error::Error>> {
+    for streaming in [false, true] {
+        for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+            let manager = Arc::new(StoreManager::new());
+            let memory_spec = StoreSpec::Memory(MemorySpec::default());
+            let spec = if streaming {
+                StoreSpec::FastSlow(Box::new(nativelink_config::stores::FastSlowSpec {
+                    fast: memory_spec.clone(),
+                    slow: memory_spec,
+                    fast_direction: nativelink_config::stores::StoreDirection::default(),
+                    slow_direction: nativelink_config::stores::StoreDirection::default(),
+                    bypass_dedup_threshold_bytes: 0,
+                }))
+            } else {
+                memory_spec
+            };
+            let store = store_factory(&spec, &manager, None).await?;
+            manager.add_store("main_cas", store.clone())?;
+            let server = Arc::new(make_bytestream_server(&manager, None)?);
+            let (tx, handle) = make_stream_and_writer_spawn(server, None);
+            tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+                resource_name: make_resource_name(78),
+                write_offset: 0,
+                finish_write: true,
+                data: payload.clone(),
+            })?))
+            .await?;
+            let error = handle.await?.expect_err("short uploads must fail");
+            assert_eq!(error.code(), Code::InvalidArgument);
+            assert_eq!(store.has(DigestInfo::try_new(HASH1, 78)?).await?, None);
+        }
+    }
+    Ok(())
+}
+
 async fn make_verify_store_manager() -> Result<Arc<StoreManager>, Error> {
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store(
@@ -1878,7 +1915,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
         // Test to ensure if we send exactly our max message size, it will succeed.
         let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(data.len()),
             write_offset: 0,
             finish_write: true,
             data,
@@ -1899,7 +1936,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
             MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1
         ]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(data.len()),
             write_offset: 0,
             finish_write: true,
             data,
