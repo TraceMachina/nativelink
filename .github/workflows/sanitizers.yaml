@@ -40,6 +40,7 @@ jobs:
         uses: ./.github/actions/free-disk
 
       - name: Setup Bazel
+        if: matrix.sanitizer == 'asan'
         uses: >- # v0.19.0
           bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
         with:
@@ -47,6 +48,7 @@ jobs:
           repository-cache: true
 
       - name: Setup NativeLink Cloud
+        if: matrix.sanitizer == 'asan'
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -62,4 +64,30 @@ jobs:
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
       - name: Run Bazel tests
+        if: matrix.sanitizer == 'asan'
         run: bazel test --config=${{ matrix.sanitizer }} --config=nl-quiet --lockfile_mode=error --verbose_failures //...
+
+      # TSan needs an instrumented standard library. The Bazel Rust
+      # toolchain downloads prebuilt std, so use Cargo's build-std here.
+      - name: Set up TSan toolchain
+        if: matrix.sanitizer == 'tsan'
+        run: rustup toolchain install nightly --profile minimal --component rust-src
+
+      - name: Disable AppArmor namespace restrictions
+        if: matrix.sanitizer == 'tsan'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up Azurite test runner
+        if: matrix.sanitizer == 'tsan'
+        uses: ./.github/actions/setup-azurite-test-runner
+
+      - name: Run TSan tests
+        if: matrix.sanitizer == 'tsan'
+        env:
+          RUSTFLAGS: -Zsanitizer=thread
+          RUSTDOCFLAGS: -Zsanitizer=thread
+          RUST_TEST_THREADS: 1
+        # https://github.com/bazelbuild/rules_rust/issues/2068: TSan requires `std` to be instrumented
+        # rules_rust doesn't support rebuilding `std`
+        run: >-
+          cargo test --locked --workspace -Zbuild-std
