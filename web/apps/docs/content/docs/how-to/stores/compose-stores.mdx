@@ -215,6 +215,12 @@ thing from [remote cache compression](/how-to/stores/compression), which
 compresses on the wire between the client and NativeLink. The two are
 independent and can both be on.
 
+In development builds, existence checks for present digest keys report the
+digest's uncompressed size. This lets a `fast_slow` store refill a raw cache
+tier from the compressed backend using the correct transfer size. String keys
+still report the stored, compressed size; they do not declare an uncompressed
+length, so that combination still needs separate handling.
+
 ### `dedup`: store the changed parts only [#dedup--store-the-changed-parts-only]
 
 Splits blobs into content-defined chunks, stores each chunk once, and keeps a
