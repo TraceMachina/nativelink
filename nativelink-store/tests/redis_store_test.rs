@@ -3266,3 +3266,40 @@ async fn test_count_by_index_prefix_reads_a_resp3_reply() -> Result<(), Error> {
     assert_eq!(count, 7);
     Ok(())
 }
+
+#[nativelink_test]
+async fn incomplete_upload_never_renames_redis_temp_key() -> Result<(), Error> {
+    for payload in [
+        Bytes::new(),
+        Bytes::from_static(b"short"),
+        Bytes::from(vec![9; 79]),
+    ] {
+        let key = DigestInfo::try_new(VALID_HASH1, 78)?;
+        let commands = if payload.is_empty() {
+            vec![]
+        } else {
+            vec![MockCmd::new(
+                redis::cmd("SETRANGE")
+                    .arg(make_temp_key(&key.to_string()))
+                    .arg(0)
+                    .arg(payload.to_vec()),
+                Ok(Value::Int(i64::try_from(payload.len()).unwrap())),
+            )]
+        };
+        // Any STRLEN or RENAME beyond these temporary writes is unexpected.
+        let store = make_mock_store(commands).await;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, _) = tokio::join!(
+            StoreLike::update(&store, key, rx, UploadSizeInfo::ExactSize(78)),
+            send
+        );
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+    }
+    Ok(())
+}

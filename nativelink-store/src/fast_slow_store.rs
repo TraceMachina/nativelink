@@ -334,6 +334,12 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to read data data buffer from slow store")?;
                 if output_buf.is_empty() {
+                    reader_stream_size
+                        .validate_size(bytes_received)
+                        .map_err(|mut err| {
+                            err.code = Code::DataLoss;
+                            err.append("Slow store ended before the cache fill was complete")
+                        })?;
                     // Write out our EOF.
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.
@@ -394,11 +400,12 @@ impl FastSlowStore {
                     },
                 )
             }
+            Err(err) if err.code == Code::DataLoss => Err(err),
             Err(err) => match slow_res {
                 // The slow store lost the blob under the read (an evicting
                 // tier behind a gRPC store, say): the same missing input as
                 // a blob that was never there.
-                Err(slow_err) if slow_err.code == Code::NotFound => {
+                Err(slow_err) if matches!(slow_err.code, Code::NotFound | Code::DataLoss) => {
                     Err(name_missing_digest(slow_err, &key))
                 }
                 _ => fast_res.merge(slow_res).merge(Err(err)),

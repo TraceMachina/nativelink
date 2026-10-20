@@ -20,6 +20,11 @@ it is not is cheap per byte. Use it for small, hot, shared objects (the Action
 Cache, scheduler state, the index side of a `dedup` store) and put the bulk
 CAS somewhere that prices storage by the gigabyte.
 
+In development builds, Redis validates the byte count before renaming a temporary upload key to the
+final key. An invalid upload cannot replace an existing value. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## The recipe [#the-recipe]
 
 ```json5

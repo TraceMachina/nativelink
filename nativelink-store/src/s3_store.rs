@@ -331,6 +331,13 @@ where
             UploadSizeInfo::ExactSize(sz) | UploadSizeInfo::MaxSize(sz) => sz,
         };
 
+        if is_zero_digest(digest.borrow()) {
+            let size = reader.drain().await?;
+            UploadSizeInfo::ExactSize(0).validate_size(size)?;
+            upload_size.validate_size(size)?;
+            return Ok(0);
+        }
+
         // Sanity check S3 maximum upload size.
         if max_size > MAX_UPLOAD_SIZE {
             return Err(make_err!(
@@ -358,34 +365,34 @@ where
             return self
                 .retrier
                 .retry(unfold(reader, move |mut reader| async move {
-                    // We need to make a new pair here because the aws sdk does not give us
-                    // back the body after we send it in order to retry.
-                    let (mut tx, rx) = make_buf_channel_pair();
-
-                    // Upload the data to the S3 backend.
-                    let result = {
-                        let reader_ref = &mut reader;
-                        let (upload_res, bind_res) = tokio::join!(
-                            self.s3_client
-                                .put_object()
-                                .bucket(&self.bucket)
-                                .key(s3_path.clone())
-                                .content_length(sz.try_into().unwrap_or(i64::MAX))
-                                .body(ByteStream::from_body_1_x(BodyWrapper {
-                                    reader: rx,
-                                    size: sz,
-                                }))
-                                .send()
-                                .map_ok_or_else(|e| Err(Error::from_std_err(Code::Aborted, &e)), |_| Ok(sz)),
-                            // Stream all data from the reader channel to the writer channel.
-                            tx.bind_buffered(reader_ref)
-                        );
-                        match (upload_res, bind_res) {
-                            (Ok(size), Ok(())) => Ok(size),
-                            (Err(e), _) | (_, Err(e)) => Err(e),
-                        }
-                        .err_tip(|| "Failed to upload file to s3 in single chunk")
+                    let content = match reader
+                        .consume(Some(usize::try_from(sz).unwrap_or(usize::MAX).saturating_add(1)))
+                        .await
+                    {
+                        Ok(content) => content,
+                        Err(err) => return Some((RetryResult::Err(err), reader)),
                     };
+                    if let Err(err) = upload_size.validate_size(content.len() as u64) {
+                        return Some((RetryResult::Err(err), reader));
+                    }
+                    let (mut tx, rx) = make_buf_channel_pair();
+                    if !content.is_empty()
+                        && let Err(err) = tx.send(content).await
+                    {
+                        return Some((RetryResult::Err(err), reader));
+                    }
+                    if let Err(err) = tx.send_eof() {
+                        return Some((RetryResult::Err(err), reader));
+                    }
+                    let result = self.s3_client
+                        .put_object()
+                        .bucket(&self.bucket)
+                        .key(s3_path.clone())
+                        .content_length(sz.try_into().unwrap_or(i64::MAX))
+                        .body(ByteStream::from_body_1_x(BodyWrapper { reader: rx, size: sz }))
+                        .send()
+                        .map_ok_or_else(|e| Err(Error::from_std_err(Code::Aborted, &e)), |_| Ok(sz))
+                        .await;
 
                     // If we failed to upload the file, check to see if we can retry.
                     let retry_result = result.map_or_else(|mut err| {
@@ -555,6 +562,8 @@ where
                     Some(fut) = rx.recv() => upload_futures.push(fut),
                 }
             }
+
+            upload_size.validate_size(total_uploaded)?;
 
             // Even though the spec does not require parts to be sorted by number, we do it just in case
             // there's an S3 implementation that requires it.

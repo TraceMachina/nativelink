@@ -1842,6 +1842,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         mut temp_file: FileSlot,
         final_key: StoreKey<'static>,
         mut reader: DropCloserReadHalf,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         let mut data_size = 0;
         loop {
@@ -1860,6 +1861,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
             data_size += data_len as u64;
         }
 
+        upload_size.validate_size(data_size)?;
         let permit = if let Some(sem) = &self.write_semaphore {
             Some(sem.acquire().await.map_err(|err| {
                 Error::from_std_err(Code::Internal, &err).append("Write semaphore closed")
@@ -2122,10 +2124,12 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         mut reader: DropCloserReadHalf,
-        _upload_size: UploadSizeInfo,
+        upload_size: UploadSizeInfo,
     ) -> Result<u64, Error> {
         if is_zero_digest(key.borrow()) {
-            // don't need to add, because zero length files are just assumed to exist.
+            let size = reader.drain().await?;
+            UploadSizeInfo::ExactSize(0).validate_size(size)?;
+            upload_size.validate_size(size)?;
             return Ok(0);
         }
 
@@ -2141,7 +2145,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
         let (entry, temp_file, temp_full_path) = self.make_temp_file(temp_key).await?;
 
-        self.update_file(entry, temp_file, key.into_owned(), reader)
+        self.update_file(entry, temp_file, key.into_owned(), reader, upload_size)
             .await
             .err_tip(|| {
                 format!(
@@ -2160,6 +2164,7 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
 
     async fn update_oneshot(self: Pin<&Self>, key: StoreKey<'_>, data: Bytes) -> Result<(), Error> {
         if is_zero_digest(key.borrow()) {
+            UploadSizeInfo::ExactSize(0).validate_size(data.len() as u64)?;
             return Ok(());
         }
 
@@ -2209,20 +2214,22 @@ impl<Fe: FileEntry> StoreDriver for FilesystemStore<Fe> {
         self: Pin<&Self>,
         key: StoreKey<'_>,
         path: OsString,
-        file: FileSlot,
+        mut file: FileSlot,
         upload_size: UploadSizeInfo,
     ) -> Result<(u64, Option<FileSlot>), Error> {
-        let file_size = match upload_size {
-            UploadSizeInfo::ExactSize(size) => size,
-            UploadSizeInfo::MaxSize(_) => file
-                .as_ref()
-                .metadata()
-                .await
-                .err_tip(|| format!("While reading metadata for {}", path.display()))?
-                .len(),
-        };
-        if file_size == 0 {
-            // don't need to add, because zero length files are just assumed to exist
+        file.flush()
+            .await
+            .err_tip(|| "Flushing whole-file upload before checking its size")?;
+        let file_size = file
+            .as_ref()
+            .metadata()
+            .await
+            .err_tip(|| format!("While reading metadata for {}", path.display()))?
+            .len();
+        upload_size.validate_size(file_size)?;
+        if is_zero_digest(key.borrow()) {
+            UploadSizeInfo::ExactSize(0).validate_size(file_size)?;
+            // Empty CAS blobs are implicit; ordinary empty values still need a file.
             return Ok((0, None));
         }
         let generation = self.get_and_update_generation()?;

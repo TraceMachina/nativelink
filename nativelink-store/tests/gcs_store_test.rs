@@ -1016,3 +1016,30 @@ async fn get_part_ignores_empty_stream_chunks() -> Result<(), Error> {
 
     Ok(())
 }
+
+#[nativelink_test]
+async fn incomplete_upload_never_publishes_gcs_object() -> Result<(), Error> {
+    for expected in [78, 8 * 1024 * 1024] {
+        for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+            let ops = Arc::new(MockGcsOperations::new());
+            let store = create_test_store(ops.clone()).await?;
+            let key = DigestInfo::try_new(VALID_HASH1, expected)?;
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, _) = tokio::join!(
+                store.update(key, rx, UploadSizeInfo::ExactSize(expected)),
+                send
+            );
+            assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            let calls = ops.get_call_counts();
+            assert_eq!(calls.write_calls.load(Ordering::Relaxed), 0);
+            assert_eq!(calls.upload_chunk_calls.load(Ordering::Relaxed), 0);
+        }
+    }
+    Ok(())
+}

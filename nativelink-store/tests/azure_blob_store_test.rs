@@ -117,6 +117,7 @@ struct MockTransport {
     /// that a retry resumed rather than started again.
     download_ranges: Mutex<Vec<Option<String>>>,
     count: AtomicUsize,
+    uploaded_bodies: Mutex<Vec<Bytes>>,
 }
 
 impl MockTransport {
@@ -236,7 +237,13 @@ impl HttpClient for MockTransport {
             Method::Put if query.contains("comp=block") => {
                 Self::pop(&self.stage_block).unwrap_or_else(created)
             }
-            Method::Put => Self::pop(&self.upload).unwrap_or_else(created),
+            Method::Put => {
+                self.uploaded_bodies
+                    .lock()
+                    .unwrap()
+                    .push(Bytes::from(request.body()));
+                Self::pop(&self.upload).unwrap_or_else(created)
+            }
             other => {
                 return Err(azure_core::Error::with_message(
                     ErrorKind::Other,
@@ -298,6 +305,134 @@ fn create_test_store_with_common(
 
 fn create_test_digest() -> Result<DigestInfo, Error> {
     DigestInfo::try_new(TEST_HASH, TEST_SIZE)
+}
+
+#[nativelink_test]
+async fn rejects_incomplete_small_azure_uploads() -> Result<(), Error> {
+    for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+        let mock = MockTransport::new();
+        let store = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
+        let digest = DigestInfo::try_new(TEST_HASH, 78)?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let expected = payload.clone();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, sent) = tokio::join!(
+            store.update(digest, rx, UploadSizeInfo::ExactSize(78)),
+            send
+        );
+        sent?;
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+        assert!(
+            mock.uploaded_bodies.lock().unwrap().is_empty(),
+            "invalid payload {expected:?} must not reach Azure"
+        );
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn rejects_disconnected_azure_upload_without_hanging() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    let store = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
+    let digest = DigestInfo::try_new(TEST_HASH, 78)?;
+    let (tx, rx) = make_buf_channel_pair();
+    drop(tx);
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        store.update(digest, rx, UploadSizeInfo::ExactSize(78)),
+    )
+    .await;
+    assert!(
+        result
+            .expect("disconnected uploads must finish promptly")
+            .is_err()
+    );
+    assert_eq!(mock.request_count(), 0);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn rejects_incomplete_azure_upload_through_verify() -> Result<(), Error> {
+    use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
+    use nativelink_store::verify_store::VerifyStore;
+    use nativelink_util::store_trait::Store;
+
+    let mock = MockTransport::new();
+    let azure = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
+    let store = VerifyStore::new(
+        &VerifySpec {
+            verify_size: true,
+            verify_hash: false,
+            backend: StoreSpec::Memory(MemorySpec::default()),
+        },
+        Store::new(azure),
+    );
+    let digest = DigestInfo::try_new(TEST_HASH, 78)?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    tx.send_eof()?;
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        store.update(digest, rx, UploadSizeInfo::ExactSize(78)),
+    )
+    .await;
+    assert_eq!(
+        result
+            .expect("verification errors must finish promptly")
+            .unwrap_err()
+            .code,
+        Code::InvalidArgument
+    );
+    assert_eq!(mock.request_count(), 0);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn rejects_incomplete_azure_cache_fill() -> Result<(), Error> {
+    use nativelink_config::stores::{FastSlowSpec, MemorySpec, StoreSpec};
+    use nativelink_store::fast_slow_store::FastSlowStore;
+    use nativelink_store::memory_store::MemoryStore;
+    use nativelink_util::store_trait::Store;
+
+    let mock = MockTransport::new();
+    mock.push_properties(properties_ok(78));
+    mock.push_download(download_ok(StatusCode::Ok, Vec::new()));
+    let azure = create_test_store(Arc::clone(&mock), Some(Retry::default()), None)?;
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let store = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: nativelink_config::stores::StoreDirection::default(),
+            slow_direction: nativelink_config::stores::StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast.clone(),
+        Store::new(nativelink_store::verify_store::VerifyStore::new(
+            &nativelink_config::stores::VerifySpec {
+                verify_size: true,
+                verify_hash: false,
+                backend: StoreSpec::Memory(MemorySpec::default()),
+            },
+            Store::new(azure),
+        )),
+    );
+    let digest = DigestInfo::try_new(TEST_HASH, 78)?;
+    assert_eq!(fast.has(digest).await?, None);
+    assert_eq!(
+        store
+            .get_part_unchunked(digest, 0, None)
+            .await
+            .unwrap_err()
+            .code,
+        Code::DataLoss
+    );
+    assert_eq!(fast.has(digest).await?, None);
+    Ok(())
 }
 
 #[nativelink_test]
@@ -573,7 +708,7 @@ async fn a_throttled_download_waits_at_most_the_cap() -> Result<(), Error> {
     assert_eq!(result, VALUE.as_bytes());
     assert_eq!(mock.request_count(), 2);
     assert!(
-        started.elapsed() >= cap && started.elapsed() < Duration::from_secs(3600),
+        started.elapsed() >= cap && started.elapsed() < Duration::from_hours(1),
         "waited {:?}, expected the {cap:?} cap, not the hour asked for",
         started.elapsed()
     );
@@ -759,7 +894,11 @@ async fn test_update_zero_size() -> Result<(), Error> {
     let store = create_test_store(Arc::clone(&mock), None, None)?;
     let (mut tx, rx) = make_buf_channel_pair();
 
-    let update_fut = store.update(create_test_digest()?, rx, UploadSizeInfo::ExactSize(0));
+    let update_fut = store.update(
+        nativelink_store::cas_utils::ZERO_BYTE_DIGESTS[0],
+        rx,
+        UploadSizeInfo::ExactSize(0),
+    );
     let send_fut = async move { tx.send_eof() };
 
     let (update_result, send_result) = tokio::join!(update_fut, send_fut);
@@ -771,6 +910,39 @@ async fn test_update_zero_size() -> Result<(), Error> {
         0,
         "Zero-size upload should not make any requests"
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn canonical_empty_upload_checks_content_and_declared_size() -> Result<(), Error> {
+    let cases: [(UploadSizeInfo, &'static [u8], bool); 5] = [
+        (UploadSizeInfo::ExactSize(1), b"", false),
+        (UploadSizeInfo::ExactSize(1), b"x", false),
+        (UploadSizeInfo::MaxSize(1), b"x", false),
+        (UploadSizeInfo::ExactSize(0), b"", true),
+        (UploadSizeInfo::MaxSize(1), b"", true),
+    ];
+    for digest in nativelink_store::cas_utils::ZERO_BYTE_DIGESTS {
+        for (upload_size, payload, valid) in cases {
+            let mock = MockTransport::new();
+            let store = create_test_store(Arc::clone(&mock), None, None)?;
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(Bytes::from_static(payload)).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, sent) = tokio::join!(store.update(digest, rx, upload_size), send);
+            sent?;
+            if valid {
+                assert_eq!(result?, 0);
+            } else {
+                assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            }
+            assert_eq!(mock.request_count(), 0);
+        }
+    }
     Ok(())
 }
 
@@ -1074,6 +1246,85 @@ async fn a_fixed_read_limit_does_not_move_on_a_throttle() -> Result<(), Error> {
         .get_part_unchunked(create_test_digest()?, 0, None)
         .await?;
     assert_eq!(store.read_limit(), Some(8));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_multipart_upload_never_commits_azure_blocks() -> Result<(), Error> {
+    for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+        let mock = MockTransport::new();
+        let store = create_test_store(mock.clone(), None, None)?;
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async move {
+            if !payload.is_empty() {
+                tx.send(payload).await?;
+            }
+            tx.send_eof()
+        };
+        let (result, _) = tokio::join!(
+            store.update(
+                DigestInfo::try_new(TEST_HASH, 8 * 1024 * 1024)?,
+                rx,
+                UploadSizeInfo::ExactSize(8 * 1024 * 1024)
+            ),
+            send
+        );
+        assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+        assert!(mock.committed_block_list().is_none());
+        assert!(mock.uploaded_bodies.lock().unwrap().is_empty());
+    }
+    Ok(())
+}
+
+// Size validation must run inside the guarded upload so failure also discards
+// staged blocks, while retaining any previously committed copy.
+#[nativelink_test]
+async fn invalid_multipart_size_discards_staged_blocks_and_preserves_committed_copy()
+-> Result<(), Error> {
+    const BLOCK: usize = 5 * 1024 * 1024;
+    for upload_size in [
+        UploadSizeInfo::ExactSize(8 * 1024 * 1024),
+        UploadSizeInfo::MaxSize(4 * 1024 * 1024),
+    ] {
+        for existing_copy in [false, true] {
+            let mock = MockTransport::new();
+            let committed = if existing_copy {
+                &["old-a", "old-b"][..]
+            } else {
+                &[]
+            };
+            mock.push_block_list(block_list_ok(
+                committed,
+                &["00000000000000000000000000000000"],
+            ));
+            let store = create_test_store(Arc::clone(&mock), None, None)?;
+            let digest = DigestInfo::try_new(TEST_HASH, 8 * 1024 * 1024)?;
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                tx.send(Bytes::from(vec![7u8; BLOCK])).await?;
+                tx.send_eof()
+            };
+            let (result, sent) = tokio::join!(store.update(digest, rx, upload_size), send);
+            sent?;
+            assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            assert_eq!(mock.request_count(), 3, "stage, inspect, then discard");
+            if existing_copy {
+                assert_eq!(mock.deleted(), Vec::<String>::new());
+                let retained = mock
+                    .committed_block_list()
+                    .expect("retain committed blocks");
+                let retained = core::str::from_utf8(&retained).expect("utf-8");
+                for id in committed {
+                    let encoded = azure_core::base64::encode(id.as_bytes());
+                    assert!(retained.contains(&format!("<Committed>{encoded}</Committed>")));
+                }
+                assert!(!retained.contains("<Latest>") && !retained.contains("<Uncommitted>"));
+            } else {
+                assert_eq!(mock.deleted(), vec![format!("/{TEST_CONTAINER}/{digest}")]);
+                assert!(mock.committed_block_list().is_none());
+            }
+        }
+    }
     Ok(())
 }
 

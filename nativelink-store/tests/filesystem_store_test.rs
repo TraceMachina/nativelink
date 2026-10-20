@@ -1119,7 +1119,8 @@ async fn update_oneshot_with_zero_digest() -> Result<(), Error> {
 #[nativelink_test]
 async fn update_with_zero_digest() -> Result<(), Error> {
     wrap_update_zero_digest(async |digest, store| {
-        let (_writer, reader) = make_buf_channel_pair();
+        let (mut writer, reader) = make_buf_channel_pair();
+        writer.send_eof()?;
         store
             .update(digest, reader, UploadSizeInfo::ExactSize(0))
             .await
@@ -1436,7 +1437,9 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
 
     let file_path = OsString::from(format!("{temp_path}/dummy_file"));
     let original_inode = {
-        let file = fs::create_file(&file_path).await?;
+        let mut file = fs::create_file(&file_path).await?;
+        file.write_all(value.as_bytes()).await?;
+        file.flush().await?;
         let original_inode = file.as_ref().metadata().await?.ino();
 
         let result = store
@@ -3116,5 +3119,29 @@ async fn partial_migration_stays_readable_and_retries_next_startup() -> Result<(
         Bytes::from(VALUE1),
     );
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_whole_file_does_not_replace_existing_blob() -> Result<(), Error> {
+    let temp_path = make_temp_path("whole_file_integrity");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("whole_file_integrity_content"),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    let key = DigestInfo::try_new(HASH1, 78)?;
+    let good = Bytes::from(vec![7; 78]);
+    store.update_oneshot(key, good.clone()).await?;
+    let path = OsString::from(format!("{temp_path}/incomplete"));
+    let file = fs::create_file(&path).await?;
+    let error = store
+        .update_with_whole_file(key, path, file, UploadSizeInfo::ExactSize(78))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, Code::InvalidArgument);
+    assert_eq!(store.get_part_unchunked(key, 0, None).await?, good);
     Ok(())
 }

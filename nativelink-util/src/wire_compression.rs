@@ -27,6 +27,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::compressor;
 use crate::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use crate::common::DigestInfo;
 use crate::digest_hasher::{DigestHasher, DigestHasherFunc};
+use crate::store_trait::UploadSizeInfo;
 
 /// Zstd compression level for wire compression.
 /// Level 0 in the zstd crate means "use default" (currently 3).
@@ -289,7 +290,36 @@ pub async fn stream_encode_compressed_download_from_reader(
     raw_rx: &mut DropCloserReadHalf,
     wire_compressor: compressor::Value,
     compression_level: i32,
+    tx: DropCloserWriteHalf,
+) -> Result<(), Error> {
+    stream_encode_from_reader(raw_rx, wire_compressor, compression_level, tx, None).await
+}
+
+/// Encode an upload without finishing the compressed frame or committing EOF
+/// unless the uncompressed input satisfies its declared transfer size.
+pub async fn stream_encode_compressed_upload_from_reader(
+    raw_rx: &mut DropCloserReadHalf,
+    wire_compressor: compressor::Value,
+    compression_level: i32,
+    tx: DropCloserWriteHalf,
+    size_info: UploadSizeInfo,
+) -> Result<(), Error> {
+    stream_encode_from_reader(
+        raw_rx,
+        wire_compressor,
+        compression_level,
+        tx,
+        Some(size_info),
+    )
+    .await
+}
+
+async fn stream_encode_from_reader(
+    raw_rx: &mut DropCloserReadHalf,
+    wire_compressor: compressor::Value,
+    compression_level: i32,
     mut tx: DropCloserWriteHalf,
+    size_info: Option<UploadSizeInfo>,
 ) -> Result<(), Error> {
     use zstd::stream::raw::{Encoder, InBuffer, Operation, OutBuffer};
 
@@ -305,6 +335,7 @@ pub async fn stream_encode_compressed_download_from_reader(
     // `CCtx::out_size()` guarantees a full compressed block always fits, so
     // the encoder never stalls for lack of output space within one `run`.
     let mut out_buf = vec![0u8; zstd::zstd_safe::CCtx::out_size()];
+    let mut received = 0;
     loop {
         let chunk = raw_rx
             .recv()
@@ -313,6 +344,7 @@ pub async fn stream_encode_compressed_download_from_reader(
         if chunk.is_empty() {
             break; // EOF.
         }
+        received += chunk.len() as u64;
         let mut in_buffer = InBuffer::around(&chunk);
         while in_buffer.pos() < in_buffer.src.len() {
             let mut out_buffer = OutBuffer::around(out_buf.as_mut_slice());
@@ -324,6 +356,10 @@ pub async fn stream_encode_compressed_download_from_reader(
                 tx.send(Bytes::copy_from_slice(produced)).await?;
             }
         }
+    }
+
+    if let Some(size_info) = size_info {
+        size_info.validate_size(received)?;
     }
 
     // Finish the frame: flush any internally buffered compressed data plus
