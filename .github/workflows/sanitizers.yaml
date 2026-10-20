@@ -90,4 +90,4 @@ jobs:
         # https://github.com/bazelbuild/rules_rust/issues/2068: TSan requires `std` to be instrumented
         # rules_rust doesn't support rebuilding `std`
         run: >-
-          cargo test +nightly --locked --workspace -Zbuild-std
+          cargo +nightly test --locked --workspace -Zbuild-std
