@@ -1703,6 +1703,8 @@ impl StoreDriver for GrpcStore {
         reader: DropCloserReadHalf,
         size_info: UploadSizeInfo,
     ) -> Result<u64, Error> {
+        const NON_RESUMABLE: bool = false;
+
         struct LocalState {
             resource_name: String,
             reader: DropCloserReadHalf,
@@ -1843,12 +1845,26 @@ impl StoreDriver for GrpcStore {
             ))
         }));
 
-        self.write(
+        // A store upload cannot replay bytes already consumed from its reader.
+        // The upstream may have lost the upload entirely, so replaying just the
+        // last two messages at nonzero offsets is not a safe resume strategy.
+        self.write_internal(
             WriteRequestStreamWrapper::from(stream)
                 .await
                 .err_tip(|| "in GrpcStore::update()")?,
+            NON_RESUMABLE,
         )
         .await
+        .map_err(|mut err| {
+            if is_retryable_code(err.code) {
+                let upstream_code = err.code;
+                err = err.append(format!(
+                    "Upstream upload failed with {upstream_code:?}; retry the full blob from offset zero"
+                ));
+                err.code = Code::Unavailable;
+            }
+            err
+        })
         .err_tip(|| "in GrpcStore::update()")?;
 
         Ok(digest.size_bytes())
