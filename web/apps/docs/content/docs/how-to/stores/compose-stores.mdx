@@ -126,6 +126,10 @@ and rejects the write on a mismatch. Reads pass straight through to the
 backend unchecked, so this protects what enters the store, not what a backend
 later hands back.
 
+In development builds, an upload failure from the backend keeps its error
+status when the verification store's forwarding channel closes as a consequence. Size
+and hash mismatches still return `InvalidArgument`.
+
 <SourceLink file="nativelink-store/src/verify_store.rs" symbol="VerifyStore" />
 
 ```json5
@@ -309,6 +313,20 @@ The wrapper is opt-in: stores not wrapped by it are built without it and pay
 none of its hot-path timing cost. Wrap the layer whose behaviour you actually
 want to see, not every layer.
 
+In development builds, `allow_remove: true` lets repair requests pass through
+the wrapper. It defaults to `false`, preserving the backend's copy when a size
+check detects bad content. Enable it only on disposable cache tiers with a
+separate correct copy to refill from. Keep it disabled on a filesystem or memory
+tier that holds the only copy: those stores cannot infer their role and will
+evict when asked. Put the wrapper around that tier, inside the verifier.
+
+This setting only gates repair requests passing through the wrapper. It does
+not change the backend's own eviction policy or make an Azure origin repairable.
+`removed=true` means a cached copy was removed; it does not prove the durable
+copy is correct. A corrupt origin still needs explicit, targeted repair.
+
+<SourceLink file="nativelink-store/src/cache_metrics_store.rs" symbol="CacheMetricsStore" />
+
 ### The three with nothing to configure [#the-three-with-nothing-to-configure]
 
 `memory` takes an `eviction_policy` and nothing else. It is the right fast half
@@ -318,6 +336,15 @@ restart.
 `grpc` points at another REAPI cache upstream, and can attach `headers` and
 forward selected headers from the incoming request. Use it to front an existing
 cache.
+
+In development builds, uncompressed CAS uploads through the store interface
+return `Unavailable` after a transient upstream failure so the caller can
+restart the full blob from offset zero. Once streaming starts, the store
+cannot replay the whole blob and does not resume by replaying its last two
+messages. Permanent upstream errors keep their original status. Direct
+ByteStream proxy writes retain their existing resume behavior.
+
+<SourceLink file="nativelink-store/src/grpc_store.rs" symbol="GrpcStore" />
 
 Development builds also support `grpc.store_type: "event_sink"` for forwarding
 BEP and origin events to a dedicated receiver. This mode accepts string keys

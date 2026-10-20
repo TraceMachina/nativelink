@@ -62,7 +62,7 @@ impl VerifyStore {
 
     async fn inner_check_update<D: DigestHasher>(
         &self,
-        mut tx: DropCloserWriteHalf,
+        tx: &mut DropCloserWriteHalf,
         mut rx: DropCloserReadHalf,
         maybe_expected_digest_size: Option<u64>,
         original_hash: &PackedHash,
@@ -246,19 +246,32 @@ impl StoreDriver for VerifyStore {
         let (tx, rx) = make_buf_channel_pair();
 
         let update_fut = self.inner_store.update(digest, rx, size_info);
-        let check_fut = self.inner_check_update(
-            tx,
-            reader,
-            maybe_digest_size,
-            digest.packed_hash(),
-            digest_function,
-            hasher.as_mut(),
-        );
+        let check_fut = async move {
+            let mut tx = tx;
+            let result = self
+                .inner_check_update(
+                    &mut tx,
+                    reader,
+                    maybe_digest_size,
+                    digest.packed_hash(),
+                    digest_function,
+                    hasher.as_mut(),
+                )
+                .await;
+            // Inspect the channel before dropping it. Keep it in this future so
+            // a validation failure also wakes the inner store's reader.
+            (result, tx.is_pipe_broken())
+        };
 
-        let (update_res, check_res) = tokio::join!(update_fut, check_fut);
+        let (update_res, (check_res, forwarding_failed)) = tokio::join!(update_fut, check_fut);
 
         match (update_res, check_res) {
-            // Prioritize the check future's error, as it's more specific.
+            // A failed send is a consequence of the inner store's failure, not
+            // a validation error. Preserve its code and both error messages.
+            (Err(update_err), Err(check_err)) if forwarding_failed => {
+                Err(update_err.merge(check_err))
+            }
+            // Size/hash or input-stream failures remain the checker's verdict.
             (_, Err(e)) | (Err(e), Ok(_)) => Err(e),
             (Ok(size), Ok(_)) => Ok(size),
         }

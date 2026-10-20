@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod action_messages;
+pub mod adaptive_permits;
 pub mod buf_channel;
 pub mod channel_body_for_tests;
 pub mod chunked_stream;
