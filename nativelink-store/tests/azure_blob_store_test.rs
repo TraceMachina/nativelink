@@ -1276,7 +1276,7 @@ async fn invalid_multipart_size_discards_staged_blocks_and_preserves_committed_c
             assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
             assert_eq!(mock.request_count(), 3, "stage, inspect, then discard");
             if existing_copy {
-                assert!(mock.deleted().is_empty());
+                assert_eq!(mock.deleted(), Vec::<String>::new());
                 let retained = mock
                     .committed_block_list()
                     .expect("retain committed blocks");
