@@ -481,6 +481,10 @@ where
 
     async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
         let blob_path = self.make_blob_path(digest);
+        let declared_size = match digest.borrow() {
+            StoreKey::Digest(digest) => Some(digest.size_bytes()),
+            StoreKey::Str(_) => None,
+        };
 
         self.retrier
             .retry(unfold((), move |state| {
@@ -518,6 +522,19 @@ where
                                 }
                             }
                             let blob_size = props.content_length().ok().flatten().unwrap_or(0);
+                            // An empty object cannot be a blob whose digest
+                            // names bytes, compressed or not: a failed upload
+                            // published it. Reported present it is read as
+                            // DataLoss forever and never uploaded again, so
+                            // say it is missing and let the client replace it.
+                            if blob_size == 0 && declared_size.is_some_and(|size| size > 0) {
+                                event!(
+                                    Level::WARN,
+                                    blob_path,
+                                    "Azure holds an empty object for a digest that names bytes; reporting it missing"
+                                );
+                                return Some((RetryResult::Ok(None), state));
+                            }
                             Some((RetryResult::Ok(Some(blob_size)), state))
                         }
                         Err(err) => {
@@ -1074,6 +1091,23 @@ where
                             }
                         }
 
+                        // A body of no bytes where the digest names some is
+                        // the empty object a failed upload left behind, not
+                        // the blob: NotFound sends the client back to upload
+                        // it, where EOF would hand on an empty input.
+                        if writer.get_bytes_written() == 0
+                            && size_from_key.is_some_and(|size| size > offset)
+                            && max_bytes.is_none_or(|max| max > 0)
+                        {
+                            return Err((
+                                make_err!(
+                                    Code::NotFound,
+                                    "Azure holds an empty object for {blob_path}, which names {} bytes; treating it as missing so the client uploads it again",
+                                    size_from_key.unwrap_or(0)
+                                ),
+                                None,
+                            ));
+                        }
                         writer.send_eof().map_err(|e| {
                             (
                                 make_err!(Code::Aborted, "Failed to send EOF to writer: {e:?}"),

@@ -423,13 +423,15 @@ async fn rejects_incomplete_azure_cache_fill() -> Result<(), Error> {
     );
     let digest = DigestInfo::try_new(TEST_HASH, 78)?;
     assert_eq!(fast.has(digest).await?, None);
+    // The empty object is reported missing rather than read as a short blob,
+    // and either way nothing lands in the fast tier.
     assert_eq!(
         store
             .get_part_unchunked(digest, 0, None)
             .await
             .unwrap_err()
             .code,
-        Code::DataLoss
+        Code::NotFound
     );
     assert_eq!(fast.has(digest).await?, None);
     Ok(())
@@ -458,6 +460,35 @@ async fn test_has_object_not_found() -> Result<(), Error> {
 
     assert_eq!(result, None);
     assert_eq!(mock.request_count(), 1);
+    Ok(())
+}
+
+/// An empty object under a digest that names bytes is what a failed upload
+/// published; the store reports it missing so the client uploads it again
+/// instead of reading it as `DataLoss` forever.
+#[nativelink_test]
+async fn has_treats_an_empty_object_as_missing() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(properties_ok(0));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+    assert_eq!(store.has(create_test_digest()?).await?, None);
+    assert_eq!(mock.request_count(), 1);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_part_treats_an_empty_object_as_missing() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_download(download_ok(StatusCode::Ok, Vec::new()));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert!(err.to_string().contains("empty object"), "{err:?}");
     Ok(())
 }
 
