@@ -1970,8 +1970,9 @@ Each entry binds one socket and decides what is reachable on it:
 
 ## The eleven services
 
-A cache-only deployment needs the first four. Adding execution adds
-`execution` and `worker_api`. The rest are opt-in.
+In development builds, ByteStream rejects a completed upload whose byte count
+differs from the size in its CAS resource name, even without a `verify` store.
+See [upload integrity](/how-to/stores/compose-stores#upload-integrity).
 
 ## Instance names
 
@@ -2556,6 +2557,13 @@ Wraps a store to record hit rates and timings under a label:
 `memory` takes an `eviction_policy` and nothing else. It is the right fast half
 for a short-lived process and the wrong one for anything that must survive a
 restart.
+
+## Upload integrity
+
+Development builds validate the declared transfer size before publishing an
+upload. A stream that ends early, exceeds its declared size, or disconnects
+must not replace an existing value with incomplete content. `ExactSize`
+requires equality; `MaxSize` is an upper bound.
 
 ## The order the layers go in
 
