@@ -96,6 +96,11 @@ jobs:
           RUST_TEST_THREADS: 1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           RUST_BACKTRACE: 1
+          # rustc 787af2b8c formats trait-object types for CFI diagnostics
+          # without emitting an ordinary diagnostic, triggering its
+          # trimmed_def_paths assertion. Logging mode exempts this invariant.
+          # Keep compiler logging quiet while retaining CFI runtime reports.
+          RUSTC_LOG: error
           # Bound simultaneous LLD instances and avoid CI-only incremental state.
           CARGO_BUILD_JOBS: '2'
           CARGO_INCREMENTAL: '0'
