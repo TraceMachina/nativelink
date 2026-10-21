@@ -3,6 +3,56 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0](https://github.com/TraceMachina/nativelink/compare/v1.7.7..v1.8.0) - 2026-10-21
+
+
+
+### ⛰️  Features
+
+- Bound object store reads with an adaptive permit pool, Azure first ([#2941](https://github.com/TraceMachina/nativelink/issues/2941)) - ([3e3237c](https://github.com/TraceMachina/nativelink/commit/3e3237cd8371e56f1d62ca65b1cbc8b6a75fa758))
+- add option to mount cached input directories as read-only ([#2751](https://github.com/TraceMachina/nativelink/issues/2751)) - ([786c2c2](https://github.com/TraceMachina/nativelink/commit/786c2c2f0da02711e2b632ab0a19524a2a953f9d))
+- Bound a worker's input fetches with one pool across the actions it stages ([#2952](https://github.com/TraceMachina/nativelink/issues/2952)) - ([23b4472](https://github.com/TraceMachina/nativelink/commit/23b4472a09ea1467708e5980b8ae846a9542625f))
+- Grow and jitter consecutive throttle waits in the retrier ([#2939](https://github.com/TraceMachina/nativelink/issues/2939)) - ([23e76a8](https://github.com/TraceMachina/nativelink/commit/23e76a8ab132b4940bba4b3fa02f9f07a0418aba))
+
+### 🐛 Bug Fixes
+
+- *(evicting_map)* stop has() batch from cascading-evicting every queried blob ([#2840](https://github.com/TraceMachina/nativelink/issues/2840)) - ([56085a4](https://github.com/TraceMachina/nativelink/commit/56085a463f6ec417f025239a6733b6ebbfdca973))
+- *(remote-exec)* handle scheduling edge cases and output flush ([#1533](https://github.com/TraceMachina/nativelink/issues/1533)) ([#2963](https://github.com/TraceMachina/nativelink/issues/2963)) - ([1b9362d](https://github.com/TraceMachina/nativelink/commit/1b9362d1f58665ba035cdfea479f88415b9cf3be))
+- Restore per-action input fetches as the worker default and suggest a shared pool under load ([#2984](https://github.com/TraceMachina/nativelink/issues/2984)) - ([2a3ad61](https://github.com/TraceMachina/nativelink/commit/2a3ad61c5902e8aad90a7ff11b5a1bc56294c882))
+- Report empty Azure and Redis objects under a non-empty digest as missing and stop cutting unbounded Azure reads ([#2993](https://github.com/TraceMachina/nativelink/issues/2993)) - ([76e17f5](https://github.com/TraceMachina/nativelink/commit/76e17f519b6d19eee8a634500fd84d19d1898b50))
+- Report the digest size from the compression store has, not the compressed one ([#2960](https://github.com/TraceMachina/nativelink/issues/2960)) - ([a1e6efb](https://github.com/TraceMachina/nativelink/commit/a1e6efb55d9ba0af3cd1b33ce0bdef6788383d96))
+- Reject incomplete CAS uploads before publishing blobs ([#2974](https://github.com/TraceMachina/nativelink/issues/2974)) - ([086289a](https://github.com/TraceMachina/nativelink/commit/086289a0639b46f4973f235532c056ebab628ebe))
+- Reconnect and retry the Redis length check after a failover ([#2961](https://github.com/TraceMachina/nativelink/issues/2961)) - ([11dc077](https://github.com/TraceMachina/nativelink/commit/11dc07771261c45791ce9e25495ad1ab892c563c))
+- Discard the blocks a failed Azure upload left staged ([#2969](https://github.com/TraceMachina/nativelink/issues/2969)) - ([2966660](https://github.com/TraceMachina/nativelink/commit/29666603725f5e185f9b513f29e26dce0d783c20))
+- Forward cache removal through CacheMetricsStore ([#2968](https://github.com/TraceMachina/nativelink/issues/2968)) - ([7abc434](https://github.com/TraceMachina/nativelink/commit/7abc434b887790b97f4eedd0253290fa9b313941))
+- Preserve retryable failures in CAS uploads ([#2966](https://github.com/TraceMachina/nativelink/issues/2966)) - ([94c86c0](https://github.com/TraceMachina/nativelink/commit/94c86c0715079363dd9c6c233d7fcfd5b32d7cd2))
+- Return Unavailable when resuming an active ByteStream upload ([#2889](https://github.com/TraceMachina/nativelink/issues/2889)) - ([a55baad](https://github.com/TraceMachina/nativelink/commit/a55baad786fceb487e06927039db327502c799d4))
+- Count the fast store toward presence when the slow store is read-only ([#2959](https://github.com/TraceMachina/nativelink/issues/2959)) - ([bd87f4d](https://github.com/TraceMachina/nativelink/commit/bd87f4d6f982c46ec2272c85aa614fac665cd659))
+- Reduce matcher contention after lost assignments ([#2954](https://github.com/TraceMachina/nativelink/issues/2954)) - ([8431150](https://github.com/TraceMachina/nativelink/commit/843115085cd746664d10fecd9838a29394891b54))
+- Write every upload through the existence cache instead of discarding one it believes present ([#2951](https://github.com/TraceMachina/nativelink/issues/2951)) - ([d05d910](https://github.com/TraceMachina/nativelink/commit/d05d910fe750e9ba9f0f1f160db464fa7244c1b5))
+- propagate completeness backend errors instead of swallowing them ([#2815](https://github.com/TraceMachina/nativelink/issues/2815)) - ([7149987](https://github.com/TraceMachina/nativelink/commit/7149987fc5c51e62ce68ff134f0a674430af05ea))
+- close two subscription-lifecycle windows that silently drop events ([#2839](https://github.com/TraceMachina/nativelink/issues/2839)) - ([89ea706](https://github.com/TraceMachina/nativelink/commit/89ea706c34b440d02ded72fef602c3649187d5d5))
+- map transport-originated Unknown to retryable Unavailable ([#2816](https://github.com/TraceMachina/nativelink/issues/2816)) - ([0cd82ff](https://github.com/TraceMachina/nativelink/commit/0cd82fffc2dc9de9e213bf5d754fb05fd2cbf9d5))
+
+### 📚 Documentation
+
+- Correct various metric links ([#2977](https://github.com/TraceMachina/nativelink/issues/2977)) - ([f66c65c](https://github.com/TraceMachina/nativelink/commit/f66c65c14f16f2d7f732294c8c119d59f6965fb3))
+
+### 🧪 Testing & CI
+
+- run Bazel Native nightly and on merge, not on every PR ([#2880](https://github.com/TraceMachina/nativelink/issues/2880)) - ([616c315](https://github.com/TraceMachina/nativelink/commit/616c315b6a16d1d786a93db0e9addda3ac244a23))
+- Split rbe-toolchain test into generate and test ([#2964](https://github.com/TraceMachina/nativelink/issues/2964)) - ([6a52a66](https://github.com/TraceMachina/nativelink/commit/6a52a6681eebcec1e30754ae14043949a48627fc))
+- defer cargo, integration, and coverage lanes to nightly ([#2877](https://github.com/TraceMachina/nativelink/issues/2877)) - ([34da49a](https://github.com/TraceMachina/nativelink/commit/34da49a443ce7c796da05177a347e4174996b9c4))
+
+### ⬆️ Bumps & Version Updates
+
+- Upgrade stale git and curl apt pins in the Dockerfiles ([#2995](https://github.com/TraceMachina/nativelink/issues/2995)) - ([e1c6ed2](https://github.com/TraceMachina/nativelink/commit/e1c6ed2213bfa648ba9ec60781aaa6b06d513741))
+- Fix vulnerable dependencies in fuzzing, Azurite, and web tooling ([#2965](https://github.com/TraceMachina/nativelink/issues/2965)) - ([c788277](https://github.com/TraceMachina/nativelink/commit/c788277abfd5b7571cb19d080ae86e8ddcc95a2b))
+- Update Rust crate zip to v9 [SECURITY] ([#2956](https://github.com/TraceMachina/nativelink/issues/2956)) - ([d5f7f9b](https://github.com/TraceMachina/nativelink/commit/d5f7f9b188f59e0284dc9d6952ac894b9722303e))
+- Update renovate.json5 ([#2950](https://github.com/TraceMachina/nativelink/issues/2950)) - ([5186112](https://github.com/TraceMachina/nativelink/commit/518611285ced0c0889c9d1b19abcdee7e16ea497))
+- Update Rust crate rustls to v0.23.46 [SECURITY] ([#2938](https://github.com/TraceMachina/nativelink/issues/2938)) - ([f798fa1](https://github.com/TraceMachina/nativelink/commit/f798fa160f78225f059996f945d73334cfa0dcd1))
+- Upgrade curl to 8.5.0-2ubuntu10.16 ([#2942](https://github.com/TraceMachina/nativelink/issues/2942)) - ([8bf6be1](https://github.com/TraceMachina/nativelink/commit/8bf6be139660bab7310b88129629c1fd78ccb8be))
+
 ## [1.7.7](https://github.com/TraceMachina/nativelink/compare/v1.7.6..v1.7.7) - 2026-10-14
 
 
