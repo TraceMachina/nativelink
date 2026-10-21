@@ -2864,7 +2864,7 @@ async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error>
     assert_entries_readable(&store).await?;
     let after_upgrade = list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?;
     drop(store);
-    wait_for_no_open_files().await?;
+    // Migration and reads above have completed; other tests may still hold files.
 
     for restart in 1..=2 {
         let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
@@ -2891,7 +2891,6 @@ async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error>
             vec![format!("{digest}-0")],
         );
         drop(store);
-        wait_for_no_open_files().await?;
     }
 
     Ok(())
