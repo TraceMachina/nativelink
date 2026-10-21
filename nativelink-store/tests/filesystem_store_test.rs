@@ -2917,7 +2917,6 @@ async fn generations_assigned_after_upgrade_survive_restart() -> Result<(), Erro
         .update_oneshot(StoreKey::new_str("bar"), VALUE2.into())
         .await?;
     drop(store);
-    wait_for_no_open_files().await?;
 
     let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
         content_path: content_path.clone(),
@@ -2973,7 +2972,6 @@ async fn startup_keeps_newest_generation_and_advances_counter() -> Result<(), Er
     store.update_oneshot("key", VALUE1.into()).await?;
     assert_eq!(list_file_names(&dir).await?, vec!["key-101"]);
     drop(store);
-    wait_for_no_open_files().await?;
     let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
     assert_eq!(
         store.get_part_unchunked("key", 0, None).await?,
@@ -3097,7 +3095,6 @@ async fn partial_migration_stays_readable_and_retries_next_startup() -> Result<(
         vec![format!("{MOVED_KEY}-0")],
     );
     drop(store);
-    wait_for_no_open_files().await?;
 
     BLOCK_MIGRATION.store(false, Ordering::Release);
     let store =
