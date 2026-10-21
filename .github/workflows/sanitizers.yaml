@@ -85,7 +85,26 @@ jobs:
         if: matrix.sanitizer == 'msan'
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y clang cmake
+          sudo apt-get install --no-install-recommends -y clang cmake llvm
+          # cc-rs selects HOST_* when host and target triples match. Use
+          # Cargo's per-build-script Rust flags to distinguish target builds.
+          cat > "$RUNNER_TEMP/msan-clang" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          compiler=clang
+          if [[ "${0##*/}" == msan-clang++ ]]; then
+            compiler=clang++
+          fi
+          IFS=$'\x1f' read -r -a rustflags <<< "${CARGO_ENCODED_RUSTFLAGS:-}"
+          for flag in "${rustflags[@]}"; do
+            if [[ "$flag" == -Zsanitizer=memory ]]; then
+              exec "$compiler" -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer "$@"
+            fi
+          done
+          exec "$compiler" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/msan-clang"
+          ln -s "$RUNNER_TEMP/msan-clang" "$RUNNER_TEMP/msan-clang++"
 
       - name: Run MemorySanitizer tests
         if: matrix.sanitizer == 'msan'
@@ -93,11 +112,10 @@ jobs:
           RUSTFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
           RUSTDOCFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
           RUST_TEST_THREADS: 1
-          # cc-rs target flags leave host build tools uninstrumented.
-          TARGET_CC: clang
-          TARGET_CXX: clang++
-          TARGET_CFLAGS: -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer
-          TARGET_CXXFLAGS: -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer
+          # The wrappers instrument only builds whose Rust code uses MSan.
+          CC: ${{ runner.temp }}/msan-clang
+          CXX: ${{ runner.temp }}/msan-clang++
+          MSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
         # Rebuild std with the same instrumentation; keep host tools unsanitized.
         run: >-
           cargo +nightly-2026-08-26 test --locked --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
