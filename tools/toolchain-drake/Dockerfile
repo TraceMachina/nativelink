@@ -15,7 +15,7 @@
 FROM ubuntu:noble-20250925@sha256:728785b59223d755e3e5c5af178fab1be7031f3522c5ccd7a0b32b80d8248123 AS dependencies
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
-        git=1:2.43.0-1ubuntu7.3 \
+        git=1:2.43.0-1ubuntu7.4 \
         ca-certificates=20240203 \
         && apt-get clean \
         && rm -rf /var/lib/apt/lists/* \
