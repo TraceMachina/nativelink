@@ -84,12 +84,13 @@ jobs:
       - name: Run CFI tests
         if: matrix.sanitizer == 'cfi'
         env:
-          RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
-          RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
+          RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
+          RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
           RUST_TEST_THREADS: 1
         # Work around an associated-type normalization ICE in the nightly's new
         # trait solver (triggered by der 0.7.10 during CFI codegen).
         # The CFI LTO requirement also applies to Cargo's target-discovery probe.
+        # Split Rust LTO units consistently so LLD can perform CFI type tests.
         # Use rustc's bundled LLD: Ubuntu's LLVM 18 LLD cannot read LLVM 23
         # bitcode emitted by the pinned nightly. Avoid forcing fat LTO on
         # mixed crate-type libraries such as crc-fast.
