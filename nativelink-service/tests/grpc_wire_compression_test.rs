@@ -540,7 +540,7 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
         // Send the oversized frame but withhold wire EOF. The decoder must
         // reject the size overshoot without waiting for the held stream.
         hold_compressed_read_after_chunks: Some(corrupt_chunks),
-        compressed_read_payload: Some(Bytes::from(corrupt)),
+        compressed_read_payload: Some(corrupt),
         identity_read_payload: Some(content),
         ..Default::default()
     })
