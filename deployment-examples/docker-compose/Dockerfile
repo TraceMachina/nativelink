@@ -47,7 +47,7 @@ RUN ARCH_SUFFIX=amd64 \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
-        git=1:2.43.0-1ubuntu7.3 \
+        git=1:2.43.0-1ubuntu7.4 \
         gcc=4:13.2.0-7ubuntu1 \
         g++=4:13.2.0-7ubuntu1 \
         python3=3.12.3-0ubuntu2.1 \

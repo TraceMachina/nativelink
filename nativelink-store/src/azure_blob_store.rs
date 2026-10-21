@@ -481,6 +481,10 @@ where
 
     async fn has(self: Pin<&Self>, digest: &StoreKey<'_>) -> Result<Option<u64>, Error> {
         let blob_path = self.make_blob_path(digest);
+        let declared_size = match digest.borrow() {
+            StoreKey::Digest(digest) => Some(digest.size_bytes()),
+            StoreKey::Str(_) => None,
+        };
 
         self.retrier
             .retry(unfold((), move |state| {
@@ -518,6 +522,19 @@ where
                                 }
                             }
                             let blob_size = props.content_length().ok().flatten().unwrap_or(0);
+                            // An empty object cannot be a blob whose digest
+                            // names bytes, compressed or not: a failed upload
+                            // published it. Reported present it is read as
+                            // DataLoss forever and never uploaded again, so
+                            // say it is missing and let the client replace it.
+                            if blob_size == 0 && declared_size.is_some_and(|size| size > 0) {
+                                event!(
+                                    Level::WARN,
+                                    blob_path,
+                                    "Azure holds an empty object for a digest that names bytes; reporting it missing"
+                                );
+                                return Some((RetryResult::Ok(None), state));
+                            }
                             Some((RetryResult::Ok(Some(blob_size)), state))
                         }
                         Err(err) => {
@@ -953,22 +970,19 @@ where
 
         let blob_path = self.make_blob_path(&key);
 
-        // How many bytes this read may yield. An explicit length wins; with
-        // none, a digest key still states its own size, and a CAS object is
-        // exactly that long. Bounding on it matters because the store must
-        // not hand the caller more than the digest promises: a blob that is
-        // longer than its digest, however it got that way, has the content
-        // as its prefix, and the rest is not ours to pass on. Without this
-        // the surplus travels to `verify_store`, which rejects the whole
-        // stream, and the read fails for a blob that was readable.
+        // How many bytes this read may yield: the explicit length when the
+        // caller gives one, else the whole object. The digest's own size is
+        // not a bound here. A compression store above reads the object it
+        // wrote under this key, and an lz4 frame of data that does not
+        // compress is longer than the digest it is stored under; cut at the
+        // digest's size it is a torn frame and every read of that blob fails.
+        // A raw object longer than its digest, which the upload-size
+        // validation no longer publishes, is the verify store's to judge.
         let size_from_key = match &key {
             StoreKey::Digest(digest) => Some(digest.size_bytes()),
             StoreKey::Str(_) => None,
         };
-        let max_bytes = match length {
-            Some(len) => Some(len),
-            None => size_from_key.map(|size| size.saturating_sub(offset)),
-        };
+        let max_bytes = length;
 
         self.retrier
             .retry(unfold(writer, move |writer| {
@@ -1074,6 +1088,23 @@ where
                             }
                         }
 
+                        // A body of no bytes where the digest names some is
+                        // the empty object a failed upload left behind, not
+                        // the blob: NotFound sends the client back to upload
+                        // it, where EOF would hand on an empty input.
+                        if writer.get_bytes_written() == 0
+                            && size_from_key.is_some_and(|size| size > offset)
+                            && max_bytes.is_none_or(|max| max > 0)
+                        {
+                            return Err((
+                                make_err!(
+                                    Code::NotFound,
+                                    "Azure holds an empty object for {blob_path}, which names {} bytes; treating it as missing so the client uploads it again",
+                                    size_from_key.unwrap_or(0)
+                                ),
+                                None,
+                            ));
+                        }
                         writer.send_eof().map_err(|e| {
                             (
                                 make_err!(Code::Aborted, "Failed to send EOF to writer: {e:?}"),
