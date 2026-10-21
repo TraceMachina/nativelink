@@ -530,10 +530,15 @@ async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::e
     let (extra, _) = make_mixed_content(0x99, 1024 * 1024);
     let mut oversized = content.to_vec();
     oversized.extend_from_slice(&extra);
-    let corrupt =
-        nativelink_util::wire_compression::compress(Bytes::from(oversized), compressor::Value::Zstd)?;
+    let corrupt = nativelink_util::wire_compression::compress(
+        Bytes::from(oversized),
+        compressor::Value::Zstd,
+    )?;
     let corrupt_chunks = corrupt.len().div_ceil(64 * 1024);
-    assert!(corrupt_chunks >= 4, "test payload must span several wire chunks");
+    assert!(
+        corrupt_chunks >= 4,
+        "test payload must span several wire chunks"
+    );
     let identity_reads = Arc::new(AtomicU64::new(0));
     let port = start_fake_bytestream_server(FakeByteStream {
         identity_reads: identity_reads.clone(),
