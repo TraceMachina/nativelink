@@ -26,8 +26,8 @@ use azure_core::http::{RequestContent, RetryOptions, StatusCode, Transport, Url}
 use azure_identity::WorkloadIdentityCredential;
 use azure_storage_blob::clients::{BlobContainerClient, BlobContainerClientOptions};
 use azure_storage_blob::models::{
-    BlobClientDownloadOptions, BlobClientGetPropertiesResultHeaders, BlockListType,
-    BlockLookupList, HttpRange, StorageErrorCode,
+    BlobClientDeleteOptions, BlobClientDownloadOptions, BlobClientGetPropertiesResultHeaders,
+    BlockListType, BlockLookupList, HttpRange, StorageErrorCode,
 };
 use futures::future::FusedFuture;
 use futures::stream::{FuturesUnordered, unfold};
@@ -792,6 +792,78 @@ where
 {
     async fn post_init(self: Arc<Self>) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Deletes an empty object stored under a digest that names content,
+    /// and nothing else. Any other object may be the only copy, or a valid
+    /// encoding of one written by a store above (a compressed frame, for
+    /// one), which this store cannot tell from a bad copy by its length, so
+    /// it is kept and `false` returned. No encoding holds content in zero
+    /// bytes: an empty object under a non-empty digest is what an upload
+    /// that lost its body left behind, and while it stands this store finds
+    /// the blob and every read of it fails. The delete is conditional on the
+    /// object read, so an upload that replaced it in the meantime survives.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let StoreKey::Digest(digest) = &key else {
+            return Ok(false);
+        };
+        if digest.size_bytes() == 0 {
+            return Ok(false);
+        }
+        let blob_path = self.make_blob_path(&key);
+        let blob_client = self.client.blob_client(&blob_path);
+        let etag = {
+            let _permit = fs::get_permit().await?;
+            match blob_client.get_properties(None).await {
+                Ok(props) => {
+                    if props.content_length().ok().flatten() != Some(0) {
+                        return Ok(false);
+                    }
+                    props.etag().ok().flatten()
+                }
+                Err(err) if err.http_status() == Some(StatusCode::NotFound) => return Ok(false),
+                Err(err) => {
+                    return Err(make_err!(
+                        Code::Unavailable,
+                        "Failed to get blob properties before removing {blob_path}: {err:?}"
+                    ));
+                }
+            }
+        };
+        // Without a version to condition on, a delete could remove an upload
+        // that replaced the empty object since it was read.
+        let Some(etag) = etag else {
+            return Ok(false);
+        };
+        let options = BlobClientDeleteOptions {
+            if_match: Some(etag),
+            ..Default::default()
+        };
+        let _permit = fs::get_permit().await?;
+        match blob_client.delete(Some(options)).await {
+            Ok(_) => {
+                event!(
+                    Level::WARN,
+                    blob_path,
+                    digest_size = digest.size_bytes(),
+                    "Deleted an empty Azure blob stored under a non-empty digest"
+                );
+                Ok(true)
+            }
+            // Gone already, or replaced since it was read.
+            Err(err)
+                if matches!(
+                    err.http_status(),
+                    Some(StatusCode::NotFound | StatusCode::PreconditionFailed)
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(make_err!(
+                Code::Unavailable,
+                "Failed to delete the empty blob {blob_path}: {err:?}"
+            )),
+        }
     }
 
     async fn has_with_results(

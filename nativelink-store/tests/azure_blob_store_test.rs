@@ -24,14 +24,19 @@ use azure_core::http::{
 };
 use azure_storage_blob::clients::{BlobContainerClient, BlobContainerClientOptions};
 use bytes::{BufMut, Bytes, BytesMut};
-use nativelink_config::stores::{CommonObjectSpec, ExperimentalAzureSpec, Retry};
+use nativelink_config::stores::{
+    CommonObjectSpec, ExperimentalAzureSpec, MemorySpec, Retry, ShardConfig, ShardSpec, StoreSpec,
+    VerifySpec,
+};
 use nativelink_error::{Code, Error, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_store::azure_blob_store::AzureBlobStore;
+use nativelink_store::shard_store::ShardStore;
+use nativelink_store::verify_store::VerifyStore;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
-use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike, UploadSizeInfo};
 use sha2::{Digest, Sha256};
 
 const TEST_CONTAINER: &str = "test-container";
@@ -59,6 +64,13 @@ fn properties_ok(content_length: u64) -> CannedResponse {
         ],
         body: Vec::new(),
     }
+}
+
+/// Properties of a blob as Azure reports them, version tag included.
+fn properties_with_etag(content_length: u64, etag: &str) -> CannedResponse {
+    let mut response = properties_ok(content_length);
+    response.headers.push(("etag", etag.to_string()));
+    response
 }
 
 const fn error_response(status: StatusCode) -> CannedResponse {
@@ -110,6 +122,9 @@ struct MockTransport {
     block_list: Mutex<VecDeque<CannedResponse>>,
     /// Every blob path a `Delete Blob` request named, in order.
     deleted: Mutex<Vec<String>>,
+    /// The `If-Match` header of every `Delete Blob` request, in order.
+    delete_if_match: Mutex<Vec<Option<String>>>,
+    delete: Mutex<VecDeque<CannedResponse>>,
     /// Raw XML body of the last `commit_block_list` request (the committed block
     /// list), captured so tests can assert the exact set/order of block ids.
     committed_block_list: Mutex<Option<Bytes>>,
@@ -159,6 +174,14 @@ impl MockTransport {
 
     fn deleted(&self) -> Vec<String> {
         self.deleted.lock().unwrap().clone()
+    }
+
+    fn delete_if_match(&self) -> Vec<Option<String>> {
+        self.delete_if_match.lock().unwrap().clone()
+    }
+
+    fn push_delete(&self, response: CannedResponse) {
+        self.delete.lock().unwrap().push_back(response);
     }
 
     fn pop(queue: &Mutex<VecDeque<CannedResponse>>) -> Option<CannedResponse> {
@@ -214,11 +237,18 @@ impl HttpClient for MockTransport {
                     .lock()
                     .unwrap()
                     .push(request.url().path().to_owned());
-                CannedResponse {
+                self.delete_if_match.lock().unwrap().push(
+                    request
+                        .headers()
+                        .iter()
+                        .find(|(name, _)| name.as_str().eq_ignore_ascii_case("if-match"))
+                        .map(|(_, value)| value.as_str().to_owned()),
+                );
+                Self::pop(&self.delete).unwrap_or_else(|| CannedResponse {
                     status: StatusCode::Accepted,
                     headers: Vec::new(),
                     body: Vec::new(),
-                }
+                })
             }
             Method::Get => {
                 self.download_ranges.lock().unwrap().push(
@@ -412,8 +442,8 @@ async fn rejects_incomplete_azure_cache_fill() -> Result<(), Error> {
             bypass_dedup_threshold_bytes: 0,
         },
         fast.clone(),
-        Store::new(nativelink_store::verify_store::VerifyStore::new(
-            &nativelink_config::stores::VerifySpec {
+        Store::new(VerifyStore::new(
+            &VerifySpec {
                 verify_size: true,
                 verify_hash: false,
                 backend: StoreSpec::Memory(MemorySpec::default()),
@@ -1495,5 +1525,201 @@ async fn dropped_staged_upload_discards_its_blocks() -> Result<(), Error> {
         "the dropped upload's staged blocks are discarded"
     );
     assert!(mock.committed_block_list().is_none());
+    Ok(())
+}
+
+/// What an upload that lost its body left behind: an empty object under a
+/// digest that names content. `remove` deletes it, conditional on the
+/// version it read.
+#[nativelink_test]
+async fn remove_deletes_an_empty_blob_under_a_non_empty_digest() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(properties_with_etag(0, "\"0x8DEMPTY\""));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+    let digest = create_test_digest()?;
+
+    assert!(
+        store
+            .as_store_driver_pin()
+            .remove(StoreKey::from(digest))
+            .await?
+    );
+    assert_eq!(
+        mock.deleted(),
+        vec![format!("/{TEST_CONTAINER}/{TEST_HASH}-{TEST_SIZE}")]
+    );
+    assert_eq!(
+        mock.delete_if_match(),
+        vec![Some("\"0x8DEMPTY\"".to_string())]
+    );
+    Ok(())
+}
+
+/// An object that holds bytes may be the only copy, or a valid encoding of
+/// one written by a store above, whatever its length: it is kept.
+#[nativelink_test]
+async fn remove_keeps_a_blob_that_holds_bytes() -> Result<(), Error> {
+    for content_length in [1, TEST_SIZE / 2, TEST_SIZE, TEST_SIZE * 2] {
+        let mock = MockTransport::new();
+        mock.push_properties(properties_with_etag(content_length, "\"0x8DFULL\""));
+        let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+        assert!(
+            !store
+                .as_store_driver_pin()
+                .remove(StoreKey::from(create_test_digest()?))
+                .await?,
+            "a {content_length}-byte object is kept"
+        );
+        assert!(mock.deleted().is_empty());
+    }
+    Ok(())
+}
+
+/// An upload that replaced the empty object after it was read makes the
+/// conditional delete fail, and the new copy survives.
+#[nativelink_test]
+async fn remove_keeps_a_blob_replaced_since_it_was_read() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(properties_with_etag(0, "\"0x8DEMPTY\""));
+    mock.push_delete(error_response(StatusCode::PreconditionFailed));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+    assert!(
+        !store
+            .as_store_driver_pin()
+            .remove(StoreKey::from(create_test_digest()?))
+            .await?
+    );
+    assert_eq!(mock.deleted().len(), 1, "the delete was attempted once");
+    Ok(())
+}
+
+/// Without a version to condition on, the delete is not sent.
+#[nativelink_test]
+async fn remove_keeps_an_empty_blob_without_an_etag() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(properties_ok(0));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+    assert!(
+        !store
+            .as_store_driver_pin()
+            .remove(StoreKey::from(create_test_digest()?))
+            .await?
+    );
+    assert!(mock.deleted().is_empty());
+    Ok(())
+}
+
+/// A missing blob has nothing to remove; the empty digest and string keys
+/// name no length to judge an object by, so nothing is even asked.
+#[nativelink_test]
+async fn remove_leaves_missing_blobs_and_unsized_keys_alone() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(not_found());
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+    assert!(
+        !store
+            .as_store_driver_pin()
+            .remove(StoreKey::from(create_test_digest()?))
+            .await?
+    );
+    assert_eq!(mock.request_count(), 1);
+
+    let mock = MockTransport::new();
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+    let zero_digest = DigestInfo::try_new(
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        0,
+    )?;
+    for key in [StoreKey::from(zero_digest), StoreKey::from("some/name")] {
+        assert!(!store.as_store_driver_pin().remove(key).await?);
+    }
+    assert_eq!(mock.request_count(), 0);
+    assert!(mock.deleted().is_empty());
+    Ok(())
+}
+
+/// The composition that serves a CAS from Azure: a size-verifying store over
+/// a shard of Azure stores. An empty object under a non-empty digest is
+/// reported missing, so the client uploads the blob again; and a read of it
+/// fails verification and deletes it, so the next read is a `NotFound` the
+/// client answers with an upload, instead of the same failure every time.
+#[nativelink_test]
+async fn verify_over_a_shard_repairs_an_empty_azure_blob() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    // `has`, then the read's `remove`.
+    mock.push_properties(properties_with_etag(0, "\"0x8DEMPTY\""));
+    mock.push_properties(properties_with_etag(0, "\"0x8DEMPTY\""));
+    mock.push_download(download_ok(StatusCode::Ok, Vec::new()));
+    let azure = create_test_store(Arc::clone(&mock), None, None)?;
+    // The shard spec is read for its weights only.
+    let shard = ShardStore::new(
+        &ShardSpec {
+            stores: vec![ShardConfig {
+                store: StoreSpec::Memory(MemorySpec::default()),
+                weight: Some(1),
+            }],
+        },
+        vec![Store::new(azure)],
+    )?;
+    let store = Store::new(VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(shard),
+    ));
+    let digest = create_test_digest()?;
+
+    assert_eq!(store.has(digest).await?, None);
+
+    let err = store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("an empty copy of a 100-byte blob fails the read");
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert_eq!(
+        mock.deleted(),
+        vec![format!("/{TEST_CONTAINER}/{TEST_HASH}-{TEST_SIZE}")],
+        "the read's repair reached the Azure store through the shard"
+    );
+    assert_eq!(
+        mock.delete_if_match(),
+        vec![Some("\"0x8DEMPTY\"".to_string())]
+    );
+    Ok(())
+}
+
+/// An error from the Azure store reaches the caller of a shard's `remove`
+/// instead of reading as nothing removed.
+#[nativelink_test]
+async fn a_failed_remove_through_a_shard_reports_the_error() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(error_response(StatusCode::Forbidden));
+    let azure = create_test_store(Arc::clone(&mock), None, None)?;
+    let shard = Store::new(ShardStore::new(
+        &ShardSpec {
+            stores: vec![ShardConfig {
+                store: StoreSpec::Memory(MemorySpec::default()),
+                weight: Some(1),
+            }],
+        },
+        vec![Store::new(azure)],
+    )?);
+
+    let err = shard
+        .as_store_driver_pin()
+        .remove(StoreKey::from(create_test_digest()?))
+        .await
+        .expect_err("a refused properties request fails the removal");
+    assert_eq!(err.code, Code::Unavailable, "{err:?}");
+    assert!(
+        err.to_string().contains("In ShardStore::remove()"),
+        "{err:?}"
+    );
+    assert!(mock.deleted().is_empty());
     Ok(())
 }

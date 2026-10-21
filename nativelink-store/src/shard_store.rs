@@ -156,6 +156,17 @@ impl StoreDriver for ShardStore {
         Ok(())
     }
 
+    /// Asks the one store the key is sharded to, which is the only one that
+    /// can hold it.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let store = self.get_store(&key);
+        store
+            .as_store_driver_pin()
+            .remove(key)
+            .await
+            .err_tip(|| "In ShardStore::remove()")
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],
