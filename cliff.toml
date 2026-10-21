@@ -103,6 +103,8 @@ commit_parsers = [
   { message = "propagate completeness backend errors instead of swallowing them", group = "<!-- 2 -->🐛 Bug Fixes" },
   # #2881 and its revert #2953 cancel out; one rule skips both.
   { message = "Reject short and torn uploads in ByteStream and FilesystemStore", skip = true },
+  # Changelog updates on the release branch describe no change of their own.
+  { message = "the v1.8.0 changelog", skip = true },
 
   # v1.7.7: pinned by subject, since their bodies trip the generic word rules.
   { message = "Clear a read-only tree without changing the mode", group = "<!-- 2 -->🐛 Bug Fixes" },

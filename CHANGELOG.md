@@ -45,6 +45,7 @@ All notable changes to this project will be documented in this file.
 
 ### ⬆️ Bumps & Version Updates
 
+- Upgrade stale git and curl apt pins in the Dockerfiles ([#2995](https://github.com/TraceMachina/nativelink/issues/2995)) - ([e1c6ed2](https://github.com/TraceMachina/nativelink/commit/e1c6ed2213bfa648ba9ec60781aaa6b06d513741))
 - Fix vulnerable dependencies in fuzzing, Azurite, and web tooling ([#2965](https://github.com/TraceMachina/nativelink/issues/2965)) - ([c788277](https://github.com/TraceMachina/nativelink/commit/c788277abfd5b7571cb19d080ae86e8ddcc95a2b))
 - Update Rust crate zip to v9 [SECURITY] ([#2956](https://github.com/TraceMachina/nativelink/issues/2956)) - ([d5f7f9b](https://github.com/TraceMachina/nativelink/commit/d5f7f9b188f59e0284dc9d6952ac894b9722303e))
 - Update renovate.json5 ([#2950](https://github.com/TraceMachina/nativelink/issues/2950)) - ([5186112](https://github.com/TraceMachina/nativelink/commit/518611285ced0c0889c9d1b19abcdee7e16ea497))
