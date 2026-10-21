@@ -84,6 +84,12 @@ jobs:
       - name: Run CFI tests
         if: matrix.sanitizer == 'cfi'
         env:
+          # Native build scripts also emit LLVM bitcode for linker-plugin LTO.
+          # Match Rust's split-unit metadata on Clang-generated bitcode.
+          CC: clang
+          CXX: clang++
+          CFLAGS: -fsplit-lto-unit
+          CXXFLAGS: -fsplit-lto-unit
           RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
           RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
           RUST_TEST_THREADS: 1
