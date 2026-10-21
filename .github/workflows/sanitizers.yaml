@@ -96,6 +96,14 @@ jobs:
             compiler=clang++
           fi
           IFS=$'\x1f' read -r -a rustflags <<< "${CARGO_ENCODED_RUSTFLAGS:-}"
+          # ring's .S sources suppress their definitions when Clang reports
+          # memory_sanitizer via -fsanitize=memory (OPENSSL_NO_ASM). Assembly
+          # cannot be MSan-instrumented, so compile it without that flag.
+          for source in "$@"; do
+            case "$source" in
+              *.S|*.s) exec "$compiler" "$@" ;;
+            esac
+          done
           for flag in "${rustflags[@]}"; do
             if [[ "$flag" == -Zsanitizer=memory ]]; then
               exec "$compiler" -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer "$@"
