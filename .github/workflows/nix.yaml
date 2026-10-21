@@ -131,28 +131,14 @@ jobs:
         os:
           - ubuntu-24.04
     name: Installation / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
-    steps:
-      - name: Checkout
-        uses: >- # v6.0.2
-          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-
-      - name: Test nix run
-        run: |
-          nix run -L .#nativelink-is-executable-test
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
-        with:
-          nix_name: .#nativelink-is-executable-test
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+    uses: ./.github/workflows/_nix-command.yaml
+    with:
+      runner: ${{ matrix.os }}
+      command: nix run -L .#nativelink-is-executable-test
+      nix-name: .#nativelink-is-executable-test
+      timeout-minutes: 180
+    secrets:
+      nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   integration:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -167,21 +153,12 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-
       - name: Test ${{ matrix.test-name }} run
-        run: |
-          nix run -L .#${{ matrix.test-name }}-with-nativelink-test
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
+        uses: ./.github/actions/run-nix-command
         with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-          nix_name: .#${{ matrix.test-name }}-with-nativelink-test
+          command: nix run -L .#${{ matrix.test-name }}-with-nativelink-test
+          nativelink-attic-token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix-name: .#${{ matrix.test-name }}-with-nativelink-test
 
   # rbe-toolchain is slow because it has many subcommands, so split it out
   generate-rbe-commands:

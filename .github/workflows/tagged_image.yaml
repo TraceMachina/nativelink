@@ -42,13 +42,8 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-
       - name: Upload image
-        uses: ./.github/actions/test-and-upload-image
+        uses: ./.github/actions/publish-image
         with:
           testing: false
           image: ${{ matrix.image }}
@@ -60,12 +55,7 @@ jobs:
           # steps in test-and-upload-image are skipped and the tag never gets
           # attached to the pushed images.
           force-push: true
-          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
-          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-          nix_name: .#${{ matrix.image }}
+          ghcr-username: ${{ vars.GHCR_PUBLISH_USER }}
+          ghcr-password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          nix-name: .#${{ matrix.image }}
+          nativelink-attic-token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}

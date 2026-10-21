@@ -52,23 +52,20 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-
       - id: version
         uses: ./.github/actions/generate-version
 
       - name: Test and upload ${{ matrix.image }}
-        uses: ./.github/actions/test-and-upload-image
+        uses: ./.github/actions/publish-image
         with:
           image: ${{ matrix.image }}
           multi-arch: ${{ matrix.multi-arch }}
           components: ${{ matrix.components }}
           tag: ${{ steps.version.outputs.version-string }}
-          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
-          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          ghcr-username: ${{ vars.GHCR_PUBLISH_USER }}
+          ghcr-password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          nix-name: .#${{ matrix.image }}
+          nativelink-attic-token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Upload trivy scan results to GitHub Security tab
         uses: >- # v4.36.2
@@ -76,9 +73,3 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
         if: ${{ contains(fromJson('["refs/heads/main", "refs/pull/2457/merge"]'), github.ref) }}
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}

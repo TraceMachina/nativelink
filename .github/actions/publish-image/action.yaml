@@ -1,0 +1,53 @@
+name: Publish image
+description: Prepare Nix, test or publish one image, and tear Nix down.
+inputs:
+  image:
+    required: true
+  multi-arch:
+    required: true
+  components:
+    required: false
+    default: ""
+  tag:
+    required: true
+  testing:
+    required: false
+    default: "true"
+  force-push:
+    required: false
+    default: "false"
+  ghcr-username:
+    required: true
+  ghcr-password:
+    required: true
+  nix-name:
+    required: false
+    default: ""
+  nativelink-attic-token:
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Prepare Nix worker
+      uses: ./.github/actions/prepare-nix
+      with:
+        nativelink_attic_token: ${{ inputs.nativelink-attic-token }}
+
+    - name: Test and upload image
+      uses: ./.github/actions/test-and-upload-image
+      with:
+        image: ${{ inputs.image }}
+        multi-arch: ${{ inputs.multi-arch }}
+        components: ${{ inputs.components }}
+        tag: ${{ inputs.tag }}
+        testing: ${{ inputs.testing }}
+        force-push: ${{ inputs.force-push }}
+        GHCR_USERNAME: ${{ inputs.ghcr-username }}
+        GHCR_PASSWORD: ${{ inputs.ghcr-password }}
+
+    - name: Teardown Nix worker
+      uses: ./.github/actions/end-nix
+      if: always()
+      with:
+        nix_name: ${{ inputs.nix-name }}
+        nativelink_attic_token: ${{ inputs.nativelink-attic-token }}

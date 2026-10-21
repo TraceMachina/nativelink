@@ -36,18 +36,8 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Free disk space
-        uses: ./.github/actions/free-disk
-
-      - name: Setup Bazel
-        uses: >- # v0.19.0
-          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-
-      - name: Setup NativeLink Cloud
-        uses: ./.github/actions/setup-nativelink-cloud
+      - name: Set up Bazel CI
+        uses: ./.github/actions/setup-bazel-ci
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}

@@ -45,12 +45,8 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Free disk space
-        uses: ./.github/actions/free-disk
-
-      - name: Setup NativeLink Cloud
-        id: setup-nativelink-cloud
-        uses: ./.github/actions/setup-nativelink-cloud
+      - name: Set up Bazel CI
+        uses: ./.github/actions/setup-bazel-ci
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
@@ -63,16 +59,6 @@ jobs:
           # Remote execution only on Linux; the action hard-fails exec on
           # non-Linux runners, so macOS lanes fall back to cache.
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
-
-      - name: Setup Bazel
-        uses: >- # v0.19.0
-          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          # Only enable when we don't have remote cache, otherwise it just gets very slow
-          # and enormous
-          disk-cache: ${{ steps.setup-nativelink-cloud.outputs.enabled == 'false'}}
 
       - name: Show Bazel version
         run: bazel --version
@@ -97,7 +83,6 @@ jobs:
           elif [ "$RUNNER_OS" == "Windows" ]; then
             bazel \
               --lockfile_mode=error \
-              --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
               test \
               --config=windows \
               //... \
@@ -116,16 +101,12 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-      - name: Free disk space
-        uses: ./.github/actions/free-disk
-
       - uses: hoverkraft-tech/compose-action@11beaa1c2dae4e8ed7b1665aa074723b6cecb0e4 # v3.0.0
         with:
           compose-file: src/bin/docker-compose.store-tester.yaml
 
-      - name: Setup NativeLink Cloud
-        id: setup-nativelink-cloud
-        uses: ./.github/actions/setup-nativelink-cloud
+      - name: Set up Bazel CI
+        uses: ./.github/actions/setup-bazel-ci
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
@@ -138,16 +119,6 @@ jobs:
           # Remote execution only on Linux; the action hard-fails exec on
           # non-Linux runners, so macOS lanes fall back to cache.
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
-
-      - name: Setup Bazel
-        uses: >- # v0.19.0
-          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
-        with:
-          bazelisk-cache: true
-          repository-cache: true
-          # Only enable when we don't have remote cache, otherwise it just gets very slow
-          # and enormous
-          disk-cache: ${{ steps.setup-nativelink-cloud.outputs.enabled == 'false'}}
 
       - name: Run Store tester with sentinel
         run: |

@@ -1,0 +1,49 @@
+name: Reusable Nix command
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: false
+        default: ubuntu-24.04
+        type: string
+      command:
+        required: true
+        type: string
+      working-directory:
+        required: false
+        default: .
+        type: string
+      nix-name:
+        required: false
+        default: ""
+        type: string
+      skip-free-disk:
+        required: false
+        default: false
+        type: boolean
+      timeout-minutes:
+        required: false
+        default: 30
+        type: number
+    secrets:
+      nativelink_attic_token:
+        required: true
+
+jobs:
+  run:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Run Nix command
+        uses: ./.github/actions/run-nix-command
+        with:
+          command: ${{ inputs.command }}
+          working-directory: ${{ inputs.working-directory }}
+          nix-name: ${{ inputs.nix-name }}
+          skip-free-disk: ${{ inputs.skip-free-disk }}
+          nativelink-attic-token: ${{ secrets.nativelink_attic_token }}
