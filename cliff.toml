@@ -93,6 +93,7 @@ commit_parsers = [
   { message = "Reject incomplete CAS uploads before publishing blobs", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Report empty Azure and Redis objects under a non-empty digest as missing", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Report the digest size from the compression store has", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Restore per-action input fetches as the worker default", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Return Unavailable when resuming an active ByteStream upload", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Write every upload through the existence cache", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "add option to mount cached input directories as read-only", group = "<!-- 1 -->⛰️  Features" },
