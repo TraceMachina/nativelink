@@ -1321,9 +1321,17 @@ pub struct LocalWorkerConfig {
     /// CAS or the object store, so this bounds what one worker asks of
     /// them at a time: several cold actions share this many fetches
     /// instead of each opening its own. Blobs already in the store are
-    /// linked without one.
+    /// linked without one. 0 shares no pool; each action fetches on its
+    /// own.
     ///
-    /// Default: 64
+    /// Without a pool, an action fetches up to 64 inputs at a time per
+    /// directory of its input tree. Set this when several cold actions on
+    /// one worker overload the CAS or the object store behind it; 64 is a
+    /// good start. A worker without it logs a warning suggesting it, at
+    /// most every 10 minutes, when an input fetch times out or fails with
+    /// a transient error other than `DataLoss`.
+    ///
+    /// Default: 0 (no shared pool)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_input_downloads: usize,
 

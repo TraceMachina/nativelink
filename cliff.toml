@@ -78,6 +78,35 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.8.0: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Bound a worker's input fetches with one pool across the actions it stages", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Bound object store reads with an adaptive permit pool", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Correct various metric links", group = "<!-- 3 -->📚 Documentation" },
+  { message = "Count the fast store toward presence when the slow store is read-only", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Discard the blocks a failed Azure upload left staged", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Fix vulnerable dependencies in fuzzing, Azurite, and web tooling", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Forward cache removal through CacheMetricsStore", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Grow and jitter consecutive throttle waits in the retrier", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Preserve retryable failures in CAS uploads", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Reconnect and retry the Redis length check after a failover", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Reduce matcher contention after lost assignments", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Reject incomplete CAS uploads before publishing blobs", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Report empty Azure and Redis objects under a non-empty digest as missing", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Report the digest size from the compression store has", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Restore per-action input fetches as the worker default", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Return Unavailable when resuming an active ByteStream upload", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Write every upload through the existence cache", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "add option to mount cached input directories as read-only", group = "<!-- 1 -->⛰️  Features" },
+  { message = "batch from cascading-evicting every queried blob", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "close two subscription-lifecycle windows that silently drop events", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "handle scheduling edge cases and output flush", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "map transport-originated Unknown to retryable Unavailable", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "propagate completeness backend errors instead of swallowing them", group = "<!-- 2 -->🐛 Bug Fixes" },
+  # #2881 and its revert #2953 cancel out; one rule skips both.
+  { message = "Reject short and torn uploads in ByteStream and FilesystemStore", skip = true },
+  # Changelog updates on the release branch describe no change of their own.
+  { message = "the v1.8.0 changelog", skip = true },
+
   # v1.7.7: pinned by subject, since their bodies trip the generic word rules.
   { message = "Clear a read-only tree without changing the mode", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Count retries, recoveries and exhausted retries per client", group = "<!-- 1 -->⛰️  Features" },
