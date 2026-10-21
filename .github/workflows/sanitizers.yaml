@@ -109,7 +109,7 @@ jobs:
           export RUSTFLAGS="$RUSTFLAGS -Clink-arg=--ld-path=$RUNNER_TEMP/ld.lld"
           export RUSTDOCFLAGS="$RUSTDOCFLAGS -Clink-arg=--ld-path=$RUNNER_TEMP/ld.lld"
           cargo +nightly-2026-08-26 test --locked --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
-      
+
       # Inspect the actual CFI bitcode inputs when LLD reports inconsistent
       # split-LTO units. No effect on successful builds or test coverage.
       - name: Diagnose CFI LTO inputs
@@ -119,4 +119,3 @@ jobs:
           python3 .github/scripts/diagnose-cfi-lto.py \
             "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-dis" \
             target/x86_64-unknown-linux-gnu/debug
-
