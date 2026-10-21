@@ -84,14 +84,13 @@ jobs:
       - name: Run CFI tests
         if: matrix.sanitizer == 'cfi'
         env:
-          CARGO_PROFILE_TEST_LTO: fat
-          RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Ccodegen-units=1
-          RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Ccodegen-units=1
+          RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Clinker-plugin-lto -Clinker=clang -Clink-arg=-fuse-ld=lld -Ccodegen-units=1
+          RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Clinker-plugin-lto -Clinker=clang -Clink-arg=-fuse-ld=lld -Ccodegen-units=1
           RUST_TEST_THREADS: 1
         # Work around an associated-type normalization ICE in the nightly's new
         # trait solver (triggered by der 0.7.10 during CFI codegen).
-        # Cargo enables LTO only on linkable outputs, not mixed-type libraries
-        # (e.g. crc-fast produces rlib + cdylib + staticlib).
+        # The CFI LTO requirement also applies to Cargo's target-discovery probe.
+        # Linker-plugin LTO avoids forcing fat LTO on mixed crate-type libraries.
         # Rebuild std with the same instrumentation; keep host tools unsanitized.
         run: >-
           cargo +nightly-2026-08-26 test --locked --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
