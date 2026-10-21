@@ -1,5 +1,5 @@
 ---
-name: Bazel Native
+name: CI / Bazel
 
 on:
   # Bazel Native (the non-Nix Bazel toolchain, across Bazel 9.1.1 + 8.7.0) is
@@ -24,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Keep the existing required check names on the project-pinned Bazel.
+          # Keep stable job display names on the project-pinned Bazel lane.
           - os: ubuntu-24.04
             bazel_version: 9.1.1
             check_name: ubuntu-24.04

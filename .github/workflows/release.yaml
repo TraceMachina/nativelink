@@ -8,7 +8,7 @@
 # SLSA provenance (`*.intoto.jsonl`) among the release assets. The cosign image
 # signatures in GHCR are NOT visible to that check, which is why container-only
 # signing left the score at zero.
-name: Signed release artifacts
+name: Release / Signed artifacts
 
 on:
   # Fires automatically the moment a maintainer clicks "Publish release".

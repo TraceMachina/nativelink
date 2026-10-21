@@ -15,7 +15,7 @@
 #     GITHUB_TOKEN do not trigger CI workflows, so required checks would never
 #     report and auto-merge would never fire. Without the secret this workflow
 #     still opens the PR; it just needs a human to merge it.
-name: Regenerate config reference
+name: Docs / Regenerate config
 
 on:
   push:

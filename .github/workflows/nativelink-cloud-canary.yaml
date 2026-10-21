@@ -1,5 +1,5 @@
 ---
-name: NativeLink Cloud Canary
+name: CI / Canary
 
 on:
   schedule:

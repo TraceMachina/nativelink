@@ -1,5 +1,5 @@
 ---
-name: Coverage
+name: CI / Coverage
 
 on:
   # Coverage is expensive (xlarge runner, 180-min cap) and non-gating (no
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   coverage:
-    name: Coverage
+    name: Generate
     runs-on: xlarge-ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -60,7 +60,7 @@ jobs:
 
   deploy:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    name: Deploy Coverage
+    name: Deploy
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
