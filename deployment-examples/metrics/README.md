@@ -134,7 +134,7 @@ wrapped with `cache_metrics`; configuring OTEL alone doesn't enable them.
 | `nativelink_execution_total_duration` | Histogram | Total execution time from submission to completion | `execution_instance` |
 | `nativelink_execution_queue_time` | Histogram | Time spent waiting in queue | `execution_priority` |
 | `nativelink_execution_active_count` | Gauge | Current actions in each stage | `execution_stage` |
-| `nativelink_execution_completed_count_total` | Counter | Completed executions | `execution_result`, `execution_action_digest` |
+| `nativelink_execution_completed_count_total` | Counter | Completed executions | `execution_result` |
 | `nativelink_execution_stage_transitions_total` | Counter | Stage transition events | `execution_instance`, `execution_priority` |
 | `nativelink_execution_output_size` | Histogram | Size of execution outputs | - |
 | `nativelink_execution_retry_count_total` | Counter | Number of retries | - |
