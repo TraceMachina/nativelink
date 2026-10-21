@@ -3,7 +3,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.8.0](https://github.com/TraceMachina/nativelink/compare/v1.7.7..v1.8.0) - 2026-10-20
+## [1.8.0](https://github.com/TraceMachina/nativelink/compare/v1.7.7..v1.8.0) - 2026-10-21
 
 
 
@@ -18,6 +18,7 @@ All notable changes to this project will be documented in this file.
 
 - *(evicting_map)* stop has() batch from cascading-evicting every queried blob ([#2840](https://github.com/TraceMachina/nativelink/issues/2840)) - ([56085a4](https://github.com/TraceMachina/nativelink/commit/56085a463f6ec417f025239a6733b6ebbfdca973))
 - *(remote-exec)* handle scheduling edge cases and output flush ([#1533](https://github.com/TraceMachina/nativelink/issues/1533)) ([#2963](https://github.com/TraceMachina/nativelink/issues/2963)) - ([1b9362d](https://github.com/TraceMachina/nativelink/commit/1b9362d1f58665ba035cdfea479f88415b9cf3be))
+- Report empty Azure and Redis objects under a non-empty digest as missing and stop cutting unbounded Azure reads ([#2993](https://github.com/TraceMachina/nativelink/issues/2993)) - ([76e17f5](https://github.com/TraceMachina/nativelink/commit/76e17f519b6d19eee8a634500fd84d19d1898b50))
 - Report the digest size from the compression store has, not the compressed one ([#2960](https://github.com/TraceMachina/nativelink/issues/2960)) - ([a1e6efb](https://github.com/TraceMachina/nativelink/commit/a1e6efb55d9ba0af3cd1b33ce0bdef6788383d96))
 - Reject incomplete CAS uploads before publishing blobs ([#2974](https://github.com/TraceMachina/nativelink/issues/2974)) - ([086289a](https://github.com/TraceMachina/nativelink/commit/086289a0639b46f4973f235532c056ebab628ebe))
 - Reconnect and retry the Redis length check after a failover ([#2961](https://github.com/TraceMachina/nativelink/issues/2961)) - ([11dc077](https://github.com/TraceMachina/nativelink/commit/11dc07771261c45791ce9e25495ad1ab892c563c))

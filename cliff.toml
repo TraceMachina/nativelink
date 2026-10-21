@@ -91,6 +91,7 @@ commit_parsers = [
   { message = "Reconnect and retry the Redis length check after a failover", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Reduce matcher contention after lost assignments", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Reject incomplete CAS uploads before publishing blobs", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Report empty Azure and Redis objects under a non-empty digest as missing", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Report the digest size from the compression store has", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Return Unavailable when resuming an active ByteStream upload", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "Write every upload through the existence cache", group = "<!-- 2 -->🐛 Bug Fixes" },
