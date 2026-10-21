@@ -969,7 +969,20 @@ where
                     }
                 };
 
-                *result = if exists { Some(blob_len) } else { None };
+                // An empty value cannot be a blob whose digest names bytes: a
+                // failed upload left it. Reported present it is read as
+                // DataLoss forever and never uploaded again.
+                *result = match (exists, blob_len) {
+                    (false, _) => None,
+                    (true, 0) if matches!(key.borrow(), StoreKey::Digest(digest) if digest.size_bytes() > 0) => {
+                        warn!(
+                            ?key,
+                            "Redis holds an empty value for a digest that names bytes; reporting it missing"
+                        );
+                        None
+                    }
+                    (true, len) => Some(len),
+                };
 
                 Ok::<_, Error>(())
             })
@@ -1497,6 +1510,19 @@ where
                 return Err(make_err!(
                     Code::NotFound,
                     "Data not found in Redis store for digest: {key:?}"
+                ));
+            }
+            // The key exists and holds nothing, yet the digest names bytes
+            // from this offset on: that is the empty value a failed upload
+            // left, not the blob. NotFound sends the client back to upload it.
+            if let StoreKey::Digest(digest) = key.borrow()
+                && digest.size_bytes() > u64::try_from(data_start).unwrap_or(u64::MAX)
+                && length.is_none_or(|len| len > 0)
+            {
+                return Err(make_err!(
+                    Code::NotFound,
+                    "Redis holds an empty value for {key:?}, which names {} bytes; treating it as missing so the client uploads it again",
+                    digest.size_bytes()
                 ));
             }
         }
