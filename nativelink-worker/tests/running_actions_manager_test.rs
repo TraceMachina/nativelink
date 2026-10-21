@@ -5055,6 +5055,38 @@ exit 0
         Ok(())
     }
 
+    /// A read that fails with `DataLoss` is retried like any transient
+    /// failure, but it means a bad stored copy rather than an overloaded
+    /// store, so a worker without a pool is not told to set one.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_with_data_loss_suggests_nothing()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::DataLoss)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two corrupt reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} pool suggestions for corrupt reads")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
     /// A worker that already shares a pool is not told to set one.
     #[cfg(target_family = "unix")]
     #[nativelink_test(start_paused = true)]

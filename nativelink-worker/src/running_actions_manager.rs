@@ -5027,12 +5027,14 @@ impl RunningActionsManagerImpl {
 
     /// Suggests `max_concurrent_input_downloads` when this worker fetches
     /// without a shared pool and a fetch just failed or stalled the way an
-    /// overloaded store makes it.
+    /// overloaded store makes it. `DataLoss` is retried as transient but
+    /// means a truncated or corrupt stored copy, not a struggling store, so
+    /// it suggests nothing.
     fn suggest_input_download_pool(&self, operation_id: &OperationId, error: &Error) {
         let Some(hint) = &self.input_pool_hint else {
             return;
         };
-        if hint.due(Instant::now()) {
+        if error.code != Code::DataLoss && hint.due(Instant::now()) {
             warn!(
                 %operation_id,
                 %error,
