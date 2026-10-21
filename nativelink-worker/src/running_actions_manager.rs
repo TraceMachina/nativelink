@@ -739,6 +739,41 @@ async fn acquire_download_permit(downloads: &Semaphore) -> Result<SemaphorePermi
         .map_err(|e| make_err!(Code::Internal, "Input download pool closed: {e:?}"))
 }
 
+/// The pool `max_concurrent_input_downloads` asks for. At 0, the default,
+/// the pool is too large to bound anything: each action then fetches its
+/// inputs on its own, limited only by the per-level fan-out above.
+fn input_download_pool(max_concurrent_input_downloads: usize) -> Semaphore {
+    Semaphore::new(match max_concurrent_input_downloads {
+        0 => Semaphore::MAX_PERMITS,
+        n => n.min(Semaphore::MAX_PERMITS),
+    })
+}
+
+/// How often a worker without `max_concurrent_input_downloads` may suggest
+/// setting it. The signs that call for it arrive in storms; one line per
+/// storm is advice, one per failed fetch would bury it.
+const INPUT_POOL_HINT_INTERVAL: Duration = Duration::from_mins(10);
+
+/// Suggests a shared input pool to a worker running without one, at most
+/// once per `INPUT_POOL_HINT_INTERVAL`.
+#[derive(Debug, Default)]
+struct InputPoolHint {
+    last: Mutex<Option<Instant>>,
+}
+
+impl InputPoolHint {
+    /// Whether the hint is due at `now`. When it is, the next one is not
+    /// due until a full interval has passed.
+    fn due(&self, now: Instant) -> bool {
+        let mut last = self.last.lock();
+        if last.is_some_and(|last| now.saturating_duration_since(last) < INPUT_POOL_HINT_INTERVAL) {
+            return false;
+        }
+        *last = Some(now);
+        true
+    }
+}
+
 /// Keeps every digest used by an action present in locally eviction-managed
 /// CAS tiers.
 ///
@@ -847,9 +882,10 @@ pub fn download_to_directory<'a>(
     current_directory: &'a str,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
-        // A pool of this call's own; the worker's shared one arrives through
+        // No shared pool, as for a worker without
+        // `max_concurrent_input_downloads`; the worker's own arrives through
         // `prepare_action_inputs`.
-        let downloads = Semaphore::new(DOWNLOAD_TO_DIRECTORY_CONCURRENCY);
+        let downloads = input_download_pool(0);
         download_to_directory_bounded(
             cas_store,
             filesystem_store,
@@ -2563,6 +2599,8 @@ impl RunningActionImpl {
                     return Err(err);
                 }
             };
+            self.running_actions_manager
+                .suggest_input_download_pool(&self.operation_id, &err);
             let pause = prepare_retry_pause(attempt, &self.action_info.input_root_digest);
             if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
                 retries.settle("exhausted");
@@ -4240,6 +4278,7 @@ impl RunningAction for RunningActionImpl {
     async fn prepare_action(self: Arc<Self>) -> Result<Arc<Self>, Error> {
         let download_timeout = self.running_actions_manager.max_download_timeout;
         let operation_id = self.operation_id.clone();
+        let manager = self.running_actions_manager.clone();
         let metrics = self.metrics().clone();
         let mut kill_rx = self.kill_token.subscribe();
         // The retry loop inside stops short of this; the timeout below is
@@ -4299,11 +4338,13 @@ impl RunningAction for RunningActionImpl {
                 timeout_s = download_timeout.as_secs(),
                 "prepare_action: input fetch timed out"
             );
-            make_err!(
+            let err = make_err!(
                 Code::DeadlineExceeded,
                 "Fetching the inputs of operation {operation_id} took longer than max_download_timeout ({}s)",
                 download_timeout.as_secs(),
-            )
+            );
+            manager.suggest_input_download_pool(&operation_id, &err);
+            err
         })
         .and_then(|res| res);
         if let Err(ref e) = res {
@@ -4582,7 +4623,8 @@ pub struct ExecutionConfiguration {
     /// Point `TMPDIR` at a directory of the action's own, removed with it.
     pub set_tmpdir: bool,
     /// How many input blobs the worker fetches into its store at once,
-    /// across every action it is staging; 0 takes the default of 64.
+    /// across every action it is staging; 0 shares no pool, and each action
+    /// fetches on its own.
     pub max_concurrent_input_downloads: usize,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
@@ -4962,8 +5004,12 @@ pub struct RunningActionsManagerImpl {
     active_input_leases: bool,
     /// The pool every input fetch draws a permit from, shared by all the
     /// actions this worker stages; see
-    /// `ExecutionConfiguration::max_concurrent_input_downloads`.
+    /// `ExecutionConfiguration::max_concurrent_input_downloads`. Without
+    /// one configured it is too large to bound anything.
     input_downloads: Semaphore,
+    /// Set while no pool is configured, to suggest one when fetches show
+    /// the store behind them struggling.
+    input_pool_hint: Option<InputPoolHint>,
     #[cfg(target_os = "linux")]
     readonly_input_mounts: Vec<String>,
     persistent_worker_pool: PersistentWorkerPool,
@@ -4974,9 +5020,27 @@ pub struct RunningActionsManagerImpl {
 
 impl RunningActionsManagerImpl {
     /// Permits free in the input fetch pool right now; with nothing staging,
-    /// the pool's size.
+    /// the pool's size, which is `Semaphore::MAX_PERMITS` without one.
     pub fn free_input_downloads(&self) -> usize {
         self.input_downloads.available_permits()
+    }
+
+    /// Suggests `max_concurrent_input_downloads` when this worker fetches
+    /// without a shared pool and a fetch just failed or stalled the way an
+    /// overloaded store makes it. `DataLoss` is retried as transient but
+    /// means a truncated or corrupt stored copy, not a struggling store, so
+    /// it suggests nothing.
+    fn suggest_input_download_pool(&self, operation_id: &OperationId, error: &Error) {
+        let Some(hint) = &self.input_pool_hint else {
+            return;
+        };
+        if error.code != Code::DataLoss && hint.due(Instant::now()) {
+            warn!(
+                %operation_id,
+                %error,
+                "Input fetches are failing or stalling while max_concurrent_input_downloads is unset: every action this worker stages fetches its inputs on its own, and several cold actions at once can overload the CAS and the object store behind it. Consider setting max_concurrent_input_downloads to 64 so they share one pool of fetches (logged at most every 10 minutes)"
+            );
+        }
     }
 
     pub fn new_with_callbacks(
@@ -5010,16 +5074,14 @@ impl RunningActionsManagerImpl {
         let persistent_worker_pool =
             PersistentWorkerPool::new(args.execution_configuration.persistent_workers.pool);
         let persistent_worker_sweeper = persistent_worker_pool.spawn_sweeper();
-        let input_downloads = Semaphore::new(
-            match args.execution_configuration.max_concurrent_input_downloads {
-                0 => DOWNLOAD_TO_DIRECTORY_CONCURRENCY,
-                n => n,
-            },
-        );
+        let max_downloads = args.execution_configuration.max_concurrent_input_downloads;
+        let input_downloads = input_download_pool(max_downloads);
+        let input_pool_hint = (max_downloads == 0).then(InputPoolHint::default);
         Ok(Self {
             root_action_directory: args.root_action_directory,
             execution_configuration: args.execution_configuration,
             input_downloads,
+            input_pool_hint,
             cas_store: args.cas_store,
             filesystem_store,
             upload_action_results: UploadActionResults::new(
@@ -5740,6 +5802,38 @@ mod tests {
         .await;
         assert_eq!(result.unwrap_err().code, Code::Unavailable);
         assert_eq!(resolves.load(Ordering::Relaxed), 0);
+    }
+
+    /// The hint is reported for the first sign of trouble and then not
+    /// again until a full interval has passed, however many signs follow.
+    #[test]
+    fn input_pool_hint_is_due_once_per_interval() {
+        let hint = InputPoolHint::default();
+        let start = Instant::now();
+        assert!(hint.due(start), "the first sign is reported");
+        assert!(!hint.due(start), "a second sign at once is not");
+        let almost = start + INPUT_POOL_HINT_INTERVAL - Duration::from_secs(1);
+        assert!(!hint.due(almost), "nor one before the interval has passed");
+        let next = start + INPUT_POOL_HINT_INTERVAL;
+        assert!(hint.due(next), "one a full interval later is reported");
+        assert!(
+            !hint.due(next + Duration::from_secs(1)),
+            "and starts the next interval"
+        );
+    }
+
+    #[test]
+    fn input_download_pool_is_unbounded_only_when_unset() {
+        assert_eq!(
+            input_download_pool(0).available_permits(),
+            Semaphore::MAX_PERMITS
+        );
+        assert_eq!(input_download_pool(64).available_permits(), 64);
+        assert_eq!(
+            input_download_pool(usize::MAX).available_permits(),
+            Semaphore::MAX_PERMITS,
+            "a value past what a semaphore holds is clamped, not a panic"
+        );
     }
 
     #[test]
