@@ -71,7 +71,7 @@ jobs:
       # toolchain downloads prebuilt std, so use Cargo's build-std here.
       - name: Set up CFI toolchain
         if: matrix.sanitizer == 'cfi'
-        run: rustup toolchain install nightly-2026-08-26 --profile minimal --component rust-src
+        run: rustup toolchain install nightly-2026-08-26 --profile minimal --component rust-src --component llvm-tools-preview
 
       - name: Disable AppArmor namespace restrictions
         if: matrix.sanitizer == 'cfi'
@@ -103,3 +103,14 @@ jobs:
           export RUSTFLAGS="$RUSTFLAGS -Clink-arg=--ld-path=$RUNNER_TEMP/ld.lld"
           export RUSTDOCFLAGS="$RUSTDOCFLAGS -Clink-arg=--ld-path=$RUNNER_TEMP/ld.lld"
           cargo +nightly-2026-08-26 test --locked --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
+      
+      # Inspect the actual CFI bitcode inputs when LLD reports inconsistent
+      # split-LTO units. No effect on successful builds or test coverage.
+      - name: Diagnose CFI LTO inputs
+        if: failure() && matrix.sanitizer == 'cfi'
+        run: |
+          sysroot="$(rustup run nightly-2026-08-26 rustc --print sysroot)"
+          python3 .github/scripts/diagnose-cfi-lto.py \
+            "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-dis" \
+            target/x86_64-unknown-linux-gnu/debug
+
