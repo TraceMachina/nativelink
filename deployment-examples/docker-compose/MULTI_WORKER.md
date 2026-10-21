@@ -4,6 +4,7 @@ This guide explains how to run NativeLink with multiple workers using Docker Com
 
 ## Prerequisites
 
+- **macOS**: This setup has not been tested on macOS hardware.
 - **Architecture**: This setup currently only works on **x86_64/amd64** architectures. ARM64/Apple Silicon isn't supported for the test client container.
 - **Google Cloud CLI**: If using the test client container from `gcr.io/bazel-public/bazel`, you'll need:
   1. [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed
