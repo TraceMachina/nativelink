@@ -65,6 +65,7 @@ def main():
     offenders = Counter()
     examples = []
     errors = []
+    flag_samples = {}
     archives = sorted(p for p in args.target_dir.rglob("*") if p.suffix in (".rlib", ".a"))
     objects = sorted(args.target_dir.rglob("*.o"))
     print(f"Inspecting {len(archives)} archives and {len(objects)} standalone objects", flush=True)
@@ -82,6 +83,15 @@ def main():
         match = SPLIT_FLAG.search(process.stdout)
         split = bool(match and int(match.group(1)) == 1)
         counts["split=1" if split else "split=0 or missing"] += 1
+        suffix = ".rlib" if ".rlib ::" in label else ".a" if ".a ::" in label else ".o"
+        sample_key = (suffix, "split" if split else "unsplit")
+        if sample_key not in flag_samples:
+            flag = next(
+                (line.strip() for line in process.stdout.splitlines()
+                 if b"EnableSplitLTOUnit" in line),
+                b"<EnableSplitLTOUnit not present in disassembly>",
+            )
+            flag_samples[sample_key] = (label, flag.decode("utf-8", errors="replace")[:200])
         if not split:
             offenders[label.rsplit(" :: ", 1)[0]] += 1
             if len(examples) < 45:
@@ -111,6 +121,10 @@ def main():
     print("LLVM bitcode split-LTO metadata counts:")
     for name, count in sorted(counts.items()):
         print(f"  {name}: {count}")
+    print("Representative LLVM metadata by input type:")
+    for (suffix, state), (label, flag) in sorted(flag_samples.items()):
+        print(f"  {suffix} / {state}: {label}")
+        print(f"    {flag}")
     print("Archives containing modules without EnableSplitLTOUnit=1:")
     for name, count in offenders.most_common(40):
         print(f"  {count:4}  {name}")
