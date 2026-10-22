@@ -18,6 +18,11 @@ import cluster_credentials
 
 
 class BenchmarkTest(unittest.TestCase):
+    def test_docs_lint_does_not_depend_on_a_floating_vale_release(self):
+        workflow = Path('.github/workflows/vale.yaml').read_text()
+        action = workflow.split('errata-ai/vale-action@', 1)[1]
+        self.assertRegex(action, r'(?m)^\s+version: ["\x27]?\d+\.\d+\.\d+["\x27]?\s*$')
+
     def test_dispatch_payload_excludes_other_job_credentials(self):
         env = {name: 'value' for name in ('NL_API_KEY', 'NL_CLUSTER_ENDPOINT', 'NL_CLUSTER_BEP_ENDPOINT',
                'NL_INSTANCE', 'NL_RESULTS_URL', 'NL_WORKER_IMAGE', 'BENCHMARK_STARTED')}
