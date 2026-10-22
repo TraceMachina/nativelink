@@ -26,3 +26,29 @@ RUN set -eu \
 # so libgit2 refuses to open it and every flake fetch fails. The system file
 # is the one Nix reads: HOME points at /github/home, which root does not own.
 RUN printf '[safe]\n\tdirectory = *\n' > /etc/gitconfig
+
+# nixos/nix ships max-jobs = 1, so anything missing from the store builds
+# serially. The Determinate installer this image replaces leaves it at auto.
+RUN printf '%s\n' \
+    'max-jobs = auto' \
+    'fallback = true' \
+    'keep-outputs = true' \
+    'log-lines = 100' \
+    >> /etc/nix/nix.conf
+
+# Warm the store and the fetcher cache with everything an RBE job pulls before
+# its first test. The fetcher cache lives under HOME rather than in the store,
+# so the job has to run with HOME=/root to get the warm copy.
+#
+# TraceMachina/attic is deliberately absent: the nativelink attic cache serves
+# it, and this build cannot reach that cache, so it would compile from source.
+COPY flake.nix flake.lock /opt/warm-flake/
+RUN set -eu \
+    && rev=$(nix eval --raw --impure --expr \
+         '(builtins.fromJSON (builtins.readFile /opt/warm-flake/flake.lock)).nodes.nixpkgs.locked.rev') \
+    && printf '{"version":2,"flakes":[{"from":{"type":"indirect","id":"nixpkgs"},"to":{"type":"github","owner":"NixOS","repo":"nixpkgs","rev":"%s"}}]}' \
+         "$rev" > /etc/nix/registry.json \
+    && cd /opt/warm-flake \
+    && nix flake archive --json > /dev/null \
+    && nix build --no-link nixpkgs#attic-client \
+    && nix-store --optimise

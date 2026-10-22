@@ -6,6 +6,9 @@ on:
     paths:
       - ".github/ci/nix-rbe/**"
       - ".github/workflows/ci-image.yaml"
+      # The image carries the locked flake inputs, so it goes stale with them.
+      - "flake.lock"
+      - "flake.nix"
   workflow_dispatch:
 
 permissions:
