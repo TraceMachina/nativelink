@@ -213,9 +213,14 @@ jobs:
     strategy:
       matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
     runs-on: ubuntu-24.04
-    # The bootstrap image is published by the PR below this one.
+    # Experimental stand-in for ghcr.io/tracemachina/nativelink-ci:nix-rbe.
+    # Private package, so the job has to log in. Digest is the manual publish
+    # from PR 3008; the version is removed after 2026-10-28T17:00:00Z.
     container:
-      image: ghcr.io/tracemachina/nativelink-ci:nix-rbe
+      image: ghcr.io/tracemachina/nativelink-ci-experimental:nix-rbe-pr-3008@sha256:1d58564ce2a6f10b0965e815729ca8edd71b6624ac8c2c004708a8e79f90bb60
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
       env:
         NIX_CONFIG: experimental-features = nix-command flakes
     timeout-minutes: 45
