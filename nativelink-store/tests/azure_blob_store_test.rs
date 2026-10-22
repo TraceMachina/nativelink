@@ -1497,3 +1497,19 @@ async fn dropped_staged_upload_discards_its_blocks() -> Result<(), Error> {
     assert!(mock.committed_block_list().is_none());
     Ok(())
 }
+
+#[test]
+fn tls_roots_exclude_distrusted_emsign_ecc_root() {
+    // RUSTSEC-2026-0381: webpki-roots before 1.0.10 still trusts this root,
+    // which lets certificate paths through distrusted emSign intermediates.
+    // The Azure transport builds its root store from this list.
+    const DISTRUSTED_CN: &[u8] = b"emSign ECC Root CA - G3";
+    let trusted = webpki_roots::TLS_SERVER_ROOTS.iter().find(|anchor| {
+        anchor
+            .subject
+            .windows(DISTRUSTED_CN.len())
+            .any(|window| window == DISTRUSTED_CN)
+    });
+    assert!(trusted.is_none(), "distrusted root is still trusted");
+    assert!(!webpki_roots::TLS_SERVER_ROOTS.is_empty());
+}
