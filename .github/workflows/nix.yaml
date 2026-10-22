@@ -20,6 +20,11 @@ on:
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
   workflow_dispatch:
+    inputs:
+      rbe_only:
+        description: Run only the RBE matrix
+        type: boolean
+        default: false
 
 permissions: read-all
 
@@ -29,7 +34,7 @@ concurrency:
 
 jobs:
   nix-bazel:
-    if: ${{ github.event_name != 'schedule' }}
+    if: ${{ github.event_name != 'schedule' && inputs.rbe_only != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +92,7 @@ jobs:
 
   # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.rbe_only != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +129,7 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   installation:
-    if: ${{ github.event_name != 'schedule' }}
+    if: ${{ github.event_name != 'schedule' && inputs.rbe_only != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -155,7 +160,7 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   integration:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.rbe_only != true }}
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
@@ -213,6 +218,22 @@ jobs:
     strategy:
       matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
     runs-on: ubuntu-24.04
+    # Experimental stand-in for ghcr.io/tracemachina/nativelink-ci:nix-rbe.
+    # Private package, so the job has to log in. Digest is the manual publish
+    # from PR 3008; the version is removed after 2026-10-28T17:00:00Z.
+    container:
+      image: ghcr.io/tracemachina/nativelink-ci-experimental:nix-rbe-pr-3008-warm3@sha256:8c2ec5672dc7da782190a25ca838b7042414d1251dc1e2010ff32d0fb739b5fb
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      env:
+        NIX_CONFIG: experimental-features = nix-command flakes
+        # The runner sets HOME=/github/home, which root does not own, so Nix
+        # falls back to /root while attic keeps writing the substituter it
+        # registers to /github/home. Nix then never sees the nativelink cache
+        # and rebuilds attic from source. Point both at the warm /root copy.
+        XDG_CONFIG_HOME: /root/.config
+        XDG_CACHE_HOME: /root/.cache
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -223,6 +244,8 @@ jobs:
         uses: ./.github/actions/prepare-nix
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix_preinstalled: true
+          skip_free_disk: true
 
       - name: Test ${{ matrix.command }} with rbe
         run: |
