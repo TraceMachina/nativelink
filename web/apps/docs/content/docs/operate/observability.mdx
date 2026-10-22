@@ -67,12 +67,12 @@ export RUST_LOG=info
 <Callout type="warn" title="NL_OTEL_ENDPOINT needs a scheme and an explicit port">
 
   The value is parsed as a URL and the host and port are pulled out
-  individually, and each step `unwrap`s. A value with no scheme, or with no
-  explicit port, yields `None` for the port and **panics the process during
-  startup**, before it binds a socket.
+  individually. A value with no scheme, or with no explicit port, **stops the
+  process during startup** with an error, before it binds a socket, rather
+  than falling back to a default.
 
   `http://otel-collector:4317` is correct. `otel-collector:4317` and
-  `http://otel-collector` both crash the binary.
+  `http://otel-collector` both stop the binary.
 
 </Callout>
 
@@ -85,12 +85,28 @@ a cluster, because it re-resolves the collector's DNS as pods move. Either way
 the transport is OTLP over gRPC: the binary is built with only the gRPC
 exporter, so `OTEL_EXPORTER_OTLP_PROTOCOL` cannot switch it to HTTP.
 
+An `https://` endpoint, in either variable, gets TLS. Without further
+configuration the collector's certificate is checked against the host's
+system trust store, which is what you want for a collector behind a
+public certificate. For a collector with a private CA, set
+`OTEL_EXPORTER_OTLP_CERTIFICATE` to the PEM file of that CA and only it is
+trusted. For a collector that asks the client for a certificate (mTLS), set
+`OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` and `OTEL_EXPORTER_OTLP_CLIENT_KEY`
+together. These are the OpenTelemetry specification's own variable names,
+so a worker outside the cluster (a macOS worker, say) reaches the cluster's
+collector with the same configuration any other OTLP client would use. The
+per-signal forms (`OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE` and so on) win over
+the general one, as the specification says.
+
 The rest of the surface is small enough to state in full:
 
 | Variable | Default | What it does here |
 | --- | --- | --- |
-| `NL_OTEL_ENDPOINT` | unset | One shared gRPC channel for logs, traces and metrics. Panics on a malformed value. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Used only when `NL_OTEL_ENDPOINT` is unset. |
+| `NL_OTEL_ENDPOINT` | unset | One shared gRPC channel for logs, traces and metrics. Stops the process on a malformed value. An `https://` value gets TLS; a per-signal certificate variable gives that signal a channel of its own, built with its material. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Used only when `NL_OTEL_ENDPOINT` is unset. An `https://` value gets TLS. |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset | Path to the PEM CA that signs the collector's certificate. Set, it is the only CA trusted; unset, the system trust store is. |
+| `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` | unset | Path to the PEM certificate the exporter presents to the collector for mTLS. Requires `OTEL_EXPORTER_OTLP_CLIENT_KEY`; one without the other stops the process. |
+| `OTEL_EXPORTER_OTLP_CLIENT_KEY` | unset | Path to the PEM private key for that certificate. |
 | `OTEL_EXPORTER_OTLP_COMPRESSION` | unset | `gzip` or `zstd` on the gRPC exporters; the shipped Kubernetes manifests set `zstd`. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | How often metrics flush. NativeLink sets no interval, so the SDK default of one minute applies. This is the first hop in the [reaction-time budget](/operate/autoscaling-reference#the-reaction-time-budget); lower it to 10000 before you scale on anything. |
 | `RUST_LOG` | `info` | Applies to the stdout layer **and** to all three OTLP layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled. |
@@ -460,7 +476,8 @@ not your pipeline.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Process panics at startup with a URL error | `NL_OTEL_ENDPOINT` has no scheme or no explicit port | Use `http://host:4317` |
+| Process stops at startup with a URL error | `NL_OTEL_ENDPOINT` has no scheme or no explicit port | Use `http://host:4317` |
+| Process stops at startup naming an `OTEL_EXPORTER_OTLP_*` variable | A certificate variable names a file the process cannot read, or a client certificate is set without its key | Fix the path, or set `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` and `OTEL_EXPORTER_OTLP_CLIENT_KEY` together |
 | No metrics anywhere, process healthy | Nothing is pushing; check `otelcol_receiver_accepted_metric_points` on `:8888` | Verify the endpoint and that it is set on the process you are looking for |
 | Metrics appear a minute late | `OTEL_METRIC_EXPORT_INTERVAL` defaults to 60 s | Set `10000` |
 | `nativelink_execution_*` present, `nativelink_cache_*` missing | No store is wrapped | [Turn on cache metrics](#turn-on-cache-metrics) |

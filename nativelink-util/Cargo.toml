@@ -34,6 +34,7 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
   "grpc-tonic",
   "logs",
   "metrics",
+  "tls-ring",
   "trace",
   "zstd-tonic",
 ] }
