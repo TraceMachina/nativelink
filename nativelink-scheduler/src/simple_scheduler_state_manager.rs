@@ -22,7 +22,7 @@ use std::time::SystemTime;
 use async_lock::Mutex;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, TryStreamExt, future, stream};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::action_messages::{
@@ -1626,9 +1626,9 @@ where
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
             .filter_map(|listed| async move { listed_or_lost(listed) })
-            .try_filter_map(|awaited_action_subscriber| async move {
-                borrow_listed(awaited_action_subscriber).await
-            })
+            .map(read_listed)
+            .buffered(LISTING_READ_CONCURRENCY)
+            .try_filter_map(|read| future::ready(Ok(read)))
             .try_filter_map(move |(subscriber, awaited_action)| {
                 let filter = filter.clone();
                 async move {
@@ -1665,6 +1665,23 @@ fn listed_or_lost<S>(listed: Result<S, Error>) -> Option<Result<S, Error>> {
         }
         listed => Some(listed),
     }
+}
+
+/// How many listed records a filter pass reads at once. On the Redis
+/// backend each read is a round trip for the record's client keepalive, and
+/// one at a time a queue of 7,000 took several seconds to list, for the
+/// matcher on every pass and for the admin API's demand listing, which the
+/// provisioner gives 5 s. The reads are still handed on in the store's
+/// order, and the predicate behind them, which can write, still runs one
+/// record at a time.
+pub const LISTING_READ_CONCURRENCY: usize = 64;
+
+/// `borrow_listed` behind the listing's own result, as one future per row
+/// for `buffered`: a row the store could not hand over stays its error.
+async fn read_listed<S: AwaitedActionSubscriber>(
+    listed: Result<S, Error>,
+) -> Result<Option<(S, AwaitedAction)>, Error> {
+    borrow_listed(listed?).await
 }
 
 /// Reads the record behind a listed subscriber. A record the index listed
