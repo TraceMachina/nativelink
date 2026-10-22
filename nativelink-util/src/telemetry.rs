@@ -881,10 +881,10 @@ mod tests {
         // A value that is not a URL is not https; the exporter rejects it.
         // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
         unsafe { env::set_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "collector:4317:https") };
-        let unparseable = exporter_tls_config("TRACES");
+        let unparsable = exporter_tls_config("TRACES");
         clear_otlp_tls_env();
         assert!(traces.unwrap().is_some(), "HTTPS:// is an https endpoint");
-        assert!(unparseable.unwrap().is_none());
+        assert!(unparsable.unwrap().is_none());
     }
 
     #[serial(env)]
