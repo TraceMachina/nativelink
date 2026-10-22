@@ -140,6 +140,70 @@ async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Res
     Ok(())
 }
 
+/// A filesystem slow tier fills the fast tier with the blob's content length,
+/// not its block-rounded size on disk, for CAS digest and string keys alike.
+#[nativelink_test]
+async fn filesystem_slow_tier_fills_fast_tier_with_content_length() -> Result<(), Error> {
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        // The default block size (4 KiB): the tier rounds sizes up to it.
+        ..Default::default()
+    };
+    let slow_store = Store::new(FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?);
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Filesystem(filesystem_spec),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast_store.clone(),
+        slow_store.clone(),
+    ));
+
+    // 4097 bytes spans a second block: the bug is not limited to small blobs.
+    for (key, size) in [
+        (StoreKey::Digest(DigestInfo::try_new(VALID_HASH, 206)?), 206),
+        (StoreKey::new_str("action_cache_entry"), 538),
+        (
+            StoreKey::Digest(DigestInfo::try_new(VALID_HASH, 4097)?),
+            4097,
+        ),
+    ] {
+        let data = Bytes::from(make_random_data(size));
+        slow_store
+            .update_oneshot(key.borrow(), data.clone())
+            .await?;
+        assert_eq!(
+            fast_store.has(key.borrow()).await?,
+            None,
+            "{key:?}: the blob starts out only in the slow tier"
+        );
+
+        assert_eq!(
+            fast_slow_store
+                .get_part_unchunked(key.borrow(), 0, None)
+                .await?,
+            data,
+            "{key:?}: reading through fast_slow fills the fast tier from the slow tier"
+        );
+        assert_eq!(
+            slow_store.has(key.borrow()).await?,
+            Some(size as u64),
+            "{key:?}: the filesystem tier reports content length, not size on disk"
+        );
+        assert_eq!(
+            fast_store.get_part_unchunked(key.borrow(), 0, None).await?,
+            data,
+            "{key:?}: the fast tier holds the filled copy"
+        );
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn write_large_amount_to_both_stores_test() -> Result<(), Error> {
     let (store, fast_store, slow_store) = make_stores();
