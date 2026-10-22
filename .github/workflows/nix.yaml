@@ -228,10 +228,12 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
       env:
         NIX_CONFIG: experimental-features = nix-command flakes
-        # The image warms Nix's fetcher cache under /root. Nix already falls
-        # back here because root does not own /github/home, but attic reads
-        # HOME directly, and the two must agree on where nix.conf lives.
-        HOME: /root
+        # The runner sets HOME=/github/home, which root does not own, so Nix
+        # falls back to /root while attic keeps writing the substituter it
+        # registers to /github/home. Nix then never sees the nativelink cache
+        # and rebuilds attic from source. Point both at the warm /root copy.
+        XDG_CONFIG_HOME: /root/.config
+        XDG_CACHE_HOME: /root/.cache
     timeout-minutes: 45
     steps:
       - name: Checkout
