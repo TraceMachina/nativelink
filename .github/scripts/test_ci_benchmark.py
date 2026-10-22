@@ -18,6 +18,32 @@ import cluster_credentials
 
 
 class BenchmarkTest(unittest.TestCase):
+    def test_primary_ci_dispatches_builds_without_a_hosted_baseline(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        for hosted_build in ('matrix:', 'baseline', 'prepare-nix', 'setup-bazel', 'bazel test'):
+            self.assertNotIn(hosted_build, workflow)
+        self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
+        self.assertIn("inputs.repetitions || '1'", workflow)
+        self.assertNotIn('  nix-bazel:', Path('.github/workflows/nix.yaml').read_text())
+        pinned_version = Path('.bazelversion').read_text().strip()
+        self.assertNotIn(f'bazel_version: {pinned_version}',
+                         Path('.github/workflows/native-bazel.yaml').read_text())
+
+    def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'cluster.json'
+            result = {'revision': 'a' * 40, 'total_seconds': 12, 'runs': [{
+                'iteration': 1, 'seconds': 10, 'exit_code': 7,
+                'cache': ci_benchmark.cache_usage({'runnerCount': [
+                    {'name': 'total', 'count': 10}, {'name': 'remote cache hit', 'count': 2}]}),
+                'tests': {'cached': 2, 'total': 3, 'failed': 1}}]}
+            path.write_text(json.dumps(result))
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                ci_benchmark.summarize(path)
+            self.assertIn('Not captured', output.getvalue())
+            self.assertIn('Unknown', output.getvalue())
+            self.assertIn('2/3 | failed', output.getvalue())
+
     def test_docs_lint_does_not_depend_on_a_floating_vale_release(self):
         workflow = Path('.github/workflows/vale.yaml').read_text()
         action = workflow.split('errata-ai/vale-action@', 1)[1]
@@ -27,11 +53,19 @@ class BenchmarkTest(unittest.TestCase):
         env = {name: 'value' for name in ('NL_API_KEY', 'NL_CLUSTER_ENDPOINT', 'NL_CLUSTER_BEP_ENDPOINT',
                'NL_INSTANCE', 'NL_RESULTS_URL', 'NL_WORKER_IMAGE', 'BENCHMARK_STARTED')}
         env.update(GITHUB_SHA='a' * 40, GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
+                   GITHUB_REPOSITORY='TraceMachina/nativelink', GITHUB_EVENT_NAME='push',
+                   GITHUB_REF='refs/heads/feature/example',
                    GITHUB_TOKEN='never-forward', ACTIONS_ID_TOKEN_REQUEST_TOKEN='never-forward')
         result = cluster_ci.payload(env, 3)
         self.assertNotIn('never-forward', json.dumps(result))
         self.assertEqual(result['NL_SUMMARY_DIRECTORY'], '/workspace/ci-results/123-1')
         self.assertEqual(result['NL_PERSISTENT_CACHE'], '/workspace')
+        for change in ({'GITHUB_REPOSITORY': 'outside/nativelink'},
+                       {'GITHUB_EVENT_NAME': 'pull_request'},
+                       {'GITHUB_EVENT_NAME': 'pull_request_target'},
+                       {'GITHUB_REF': 'refs/pull/1/merge'}, {'GITHUB_REF': 'refs/tags/v1'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                cluster_ci.payload({**env, **change}, 3)
 
     def test_federation_keeps_tokens_out_of_kubeconfig(self):
         env = {'NL_GCP_PROVIDER': 'projects/123/locations/global/workloadIdentityPools/ci/providers/github',
@@ -117,6 +151,8 @@ class BenchmarkTest(unittest.TestCase):
         self.assertGreater(flags.index("--jobs=48"), flags.index("--config=nl-rbe"))
         with self.assertRaises(ValueError):
             ci_benchmark.configuration("cluster", {**env, "NL_API_KEY": ""})
+        with self.assertRaises(ValueError):
+            ci_benchmark.configuration("baseline", env)
 
     def test_failure_is_retained_and_stops_warm_repetitions(self):
         with tempfile.TemporaryDirectory() as directory:

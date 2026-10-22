@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run identical test workloads and retain only whitelisted aggregate evidence."""
+"""Run the cluster workload and retain only whitelisted aggregate evidence."""
 
 import argparse
 import json
@@ -57,11 +57,9 @@ def aggregates(path):
 def configuration(lane, environ):
     if not environ.get("NL_API_KEY"):
         raise ValueError("The CI API key is missing")
-    if lane == "baseline":
-        claim = environ["NL_BASELINE_CLAIM"]
-        cache, bep = f"grpcs://cas-{claim}", f"grpcs://bes-{claim}"
-    else:
-        cache, bep = environ["NL_CLUSTER_ENDPOINT"], environ["NL_CLUSTER_BEP_ENDPOINT"]
+    if lane != "cluster":
+        raise ValueError("CI execution must use the retained cluster client")
+    cache, bep = environ["NL_CLUSTER_ENDPOINT"], environ["NL_CLUSTER_BEP_ENDPOINT"]
     endpoints = (cache, bep)
     for endpoint in endpoints:
         parsed = urlsplit(endpoint)
@@ -78,21 +76,18 @@ def configuration(lane, environ):
              "--lockfile_mode=error", "--verbose_failures"]
     for host in sorted({urlsplit(endpoint).hostname for endpoint in endpoints}):
         flags.append(f"--credential_helper={host}={helper}")
-    if lane == "cluster":
-        flags += ["--config=nl-rbe", f"--remote_executor={cache}",
-                  f"--remote_instance_name={environ['NL_INSTANCE']}",
-                  f"--bes_results_url={environ['NL_RESULTS_URL']}",
-                  f"--remote_default_exec_properties=container-image={environ['NL_WORKER_IMAGE']}",
-                  "--remote_default_exec_properties=cpu_count=1000",
-                  "--remote_default_exec_properties=memory_kb=2000000",
-                  "--remote_default_exec_properties=disk_kb=1000000",
-                  "--remote_upload_local_results=true", "--jobs=48"]
-        if environ.get("NL_PERSISTENT_CACHE"):
-            root = environ["NL_PERSISTENT_CACHE"]
-            flags += [f"--disk_cache={root}/cache/actions",
-                      f"--repository_cache={root}/cache/repositories"]
-    else:
-        flags += ["--remote_upload_local_results=false"]
+    flags += ["--config=nl-rbe", f"--remote_executor={cache}",
+              f"--remote_instance_name={environ['NL_INSTANCE']}",
+              f"--bes_results_url={environ['NL_RESULTS_URL']}",
+              f"--remote_default_exec_properties=container-image={environ['NL_WORKER_IMAGE']}",
+              "--remote_default_exec_properties=cpu_count=1000",
+              "--remote_default_exec_properties=memory_kb=2000000",
+              "--remote_default_exec_properties=disk_kb=1000000",
+              "--remote_upload_local_results=true", "--jobs=48"]
+    if environ.get("NL_PERSISTENT_CACHE"):
+        root = environ["NL_PERSISTENT_CACHE"]
+        flags += [f"--disk_cache={root}/cache/actions",
+                  f"--repository_cache={root}/cache/repositories"]
     return flags, " ".join(endpoints)
 
 
@@ -147,6 +142,24 @@ def run(args):
     return status
 
 
+def summarize(path):
+    result = json.loads(path.read_text())
+    print("## NativeLink cluster CI\n")
+    print(f"Source: `{result['revision']}`\n")
+    print(f"Setup plus all iterations: {result['total_seconds']:.2f}s\n")
+    print("| Iteration | Build/test (s) | Total reuse | Local hits | Disk hits | Remote hits | Cached test targets | Result |")
+    print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    for run in result['runs']:
+        cache, tests = run['cache'], run['tests']
+        ratio = cache['total_reuse_percent']
+        percentage = f"{ratio:.2f}%" if ratio is not None else 'Not captured'
+        counts = [str(cache[name]) if cache[name] is not None else 'Unknown'
+                  for name in ('local_action_hits', 'disk_hits', 'remote_hits')]
+        status = 'failed' if run['exit_code'] else 'passed'
+        print(f"| {run['iteration']} | {run['seconds']:.2f} | {percentage} | "
+              f"{' | '.join(counts)} | {tests['cached']}/{tests['total']} | {status} |")
+
+
 def compare(directory):
     paths = sorted(directory.glob("*.json"))
     if {path.stem for path in paths} != {"baseline", "cluster"}:
@@ -192,12 +205,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     runner = sub.add_parser("run")
-    runner.add_argument("--lane", choices=("baseline", "cluster"), required=True)
+    runner.add_argument("--lane", choices=("cluster",), required=True)
     runner.add_argument("--repetitions", type=int, choices=range(1, 21), default=3)
     runner.add_argument("--output", type=Path, required=True)
     reporter = sub.add_parser("compare")
     reporter.add_argument("directory", type=Path)
+    summary = sub.add_parser("summarize")
+    summary.add_argument("path", type=Path)
     arguments = parser.parse_args()
     if arguments.command == "run":
         raise SystemExit(run(arguments))
-    compare(arguments.directory)
+    if arguments.command == "summarize":
+        summarize(arguments.path)
+    else:
+        compare(arguments.directory)

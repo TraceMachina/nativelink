@@ -1,47 +1,43 @@
-name: CI / Parallel cluster benchmark
+name: CI / NativeLink
 
 on:
   push:
-    branches: [main, feature/parallel-cluster-ci]
+    branches: ['**']
     paths-ignore:
       - 'web/**'
       - '.github/styles/**'
   workflow_dispatch:
     inputs:
       repetitions:
-        description: Identical-source iterations per lane (1–20)
-        default: '3'
+        description: Identical-source iterations (1–20)
+        default: '1'
         required: true
         type: string
 
 permissions:
   contents: read
 
-# One benchmark at a time, with its two lanes running in parallel. Shared warm
-# state and write credentials are for trusted branches, never fork PR code.
-# Repository policy requires approval for all external contributors' fork PR
-# workflows. Members run automatically; approval does not grant cluster access.
+# Keep the filename stable: the federated identity is bound to this workflow.
+# The hosted job dispatches work; Nix, downloads and Bazel stay on the cluster.
+# Outside fork workflows require repository approval and do not receive this
+# environment or its credentials.
 concurrency:
   group: parallel-cluster-benchmark
   cancel-in-progress: false
 
 jobs:
-  benchmark:
+  cluster:
     if: >-
       github.repository == 'TraceMachina/nativelink' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/parallel-cluster-ci')
-    name: Benchmark / ${{ matrix.lane }}
+      startsWith(github.ref, 'refs/heads/') &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    name: NativeLink / Linux
     environment: cluster-ci-benchmark
     permissions:
       contents: read
       id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        lane: [baseline, cluster]
     steps:
       - name: Start setup timer
         run: echo "BENCHMARK_STARTED=$(date +%s)" >> "$GITHUB_ENV"
@@ -50,19 +46,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test benchmark reporting and credential isolation
+      - name: Test CI reporting and credential isolation
         run: python3 -m unittest discover -s .github/scripts -p 'test_ci_benchmark.py' -v
 
-      # Same Nix preparation as the existing Bazel Dev PR lane: public cache
-      # reads, without starting a token-authenticated Attic uploader.
-      - name: Prepare Nix
-        if: matrix.lane == 'baseline'
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ''
-
       - name: Install pinned cluster client
-        if: matrix.lane == 'cluster'
         run: |
           curl --fail --location --retry 3 \
             https://dl.k8s.io/release/v1.36.3/bin/linux/amd64/kubectl \
@@ -71,26 +58,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/kubectl"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
-      - name: Run identical workloads
-        if: matrix.lane == 'baseline'
-        env:
-          NL_API_KEY: ${{ secrets[matrix.lane == 'cluster' && 'NATIVELINK_CLUSTER_API_KEY' || 'NATIVELINK_STAGING_API_KEY_RO'] }}
-          NL_BASELINE_CLAIM: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
-          NL_CLUSTER_ENDPOINT: ${{ vars.NATIVELINK_CLUSTER_ENDPOINT }}
-          NL_CLUSTER_BEP_ENDPOINT: ${{ vars.NATIVELINK_CLUSTER_BEP_ENDPOINT }}
-          NL_INSTANCE: ${{ vars.NATIVELINK_CLUSTER_INSTANCE }}
-          NL_RESULTS_URL: ${{ vars.NATIVELINK_CLUSTER_RESULTS_URL }}
-          NL_WORKER_IMAGE: ${{ vars.NATIVELINK_CLUSTER_WORKER_IMAGE }}
-          LANE: ${{ matrix.lane }}
-          REPETITIONS: ${{ inputs.repetitions || '3' }}
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/ci_benchmark.py run \
-            --lane "$LANE" --repetitions "$REPETITIONS" \
-            --output "$RUNNER_TEMP/benchmark-summary"
-
       - name: Run on the retained cluster client
-        if: matrix.lane == 'cluster'
         env:
           NL_API_KEY: ${{ secrets.NATIVELINK_CLUSTER_API_KEY }}
           NL_CLUSTER_ENDPOINT: ${{ vars.NATIVELINK_CLUSTER_ENDPOINT }}
@@ -104,34 +72,24 @@ jobs:
           NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
           NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
           NL_GKE_POD: ${{ vars.NL_GKE_POD }}
-          REPETITIONS: ${{ inputs.repetitions || '3' }}
+          REPETITIONS: ${{ inputs.repetitions || '1' }}
         run: |
           python3 .github/scripts/cluster_ci.py --repetitions "$REPETITIONS" \
             --output "$RUNNER_TEMP/benchmark-summary"
+
+      - name: Summarize build, tests and cache reuse
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/benchmark-summary/cluster.json" ]; then
+            python3 .github/scripts/ci_benchmark.py summarize \
+              "$RUNNER_TEMP/benchmark-summary/cluster.json" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload aggregate evidence only
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          name: benchmark-${{ matrix.lane }}
+          name: cluster-ci
           path: ${{ runner.temp }}/benchmark-summary/*.json
           if-no-files-found: error
           retention-days: 14
-
-  compare:
-    if: always() && needs.benchmark.result != 'skipped'
-    needs: benchmark
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: benchmark-*
-          path: ${{ runner.temp }}/benchmark-summary
-          merge-multiple: true
-      - name: Compare setup, first run and warm repetitions
-        run: |
-          python3 .github/scripts/ci_benchmark.py compare \
-            "$RUNNER_TEMP/benchmark-summary" >> "$GITHUB_STEP_SUMMARY"

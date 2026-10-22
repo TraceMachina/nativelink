@@ -52,6 +52,10 @@ def kubeconfig(environ):
 
 
 def payload(environ, repetitions):
+    if (environ.get('GITHUB_REPOSITORY') != 'TraceMachina/nativelink'
+            or environ.get('GITHUB_EVENT_NAME') not in ('push', 'workflow_dispatch')
+            or not environ.get('GITHUB_REF', '').startswith('refs/heads/')):
+        raise ValueError('Only trusted repository branch runs may use the retained client')
     if not re.fullmatch(r"[0-9a-f]{40}", environ["GITHUB_SHA"]):
         raise ValueError("Expected an exact source revision")
     run = environ["GITHUB_RUN_ID"] + "-" + environ["GITHUB_RUN_ATTEMPT"]
