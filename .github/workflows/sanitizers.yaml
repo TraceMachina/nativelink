@@ -129,6 +129,11 @@ jobs:
           # while Cargo recompiles the standard library with -Zbuild-std.
           python3 .github/scripts/patch-cfi-glibc.py \
             "$(rustup run nightly-2026-08-26 rustc --print sysroot)"
+          # ipnet 2.11.0 boxes parser closures as dyn FnMut; nightly's CFI
+          # rejects its Rust-only indirect call. Rewrite this one parser on
+          # the disposable runner without weakening CFI or changing Cargo.lock.
+          cargo +nightly-2026-08-26 fetch --locked --target x86_64-unknown-linux-gnu
+          python3 .github/scripts/patch-cfi-ipnet.py
           # The workspace's CI-oriented smol profile reduces build artifacts
           # from roughly 12 GB to 1 GB, easing CFI link pressure.
           cargo +nightly-2026-08-26 test --locked --workspace --profile smol -Zbuild-std --target x86_64-unknown-linux-gnu
