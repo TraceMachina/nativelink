@@ -1587,6 +1587,15 @@ pub struct LocalWorkerConfig {
     /// zombie processes and also provides additional hermeticity. If explicitly set
     /// to true and it is not supported the worker will exit with an error.
     ///
+    /// The action runs as PID 1 of its own PID namespace, and `/proc` is
+    /// remounted inside it, so the processes listed there are the action's
+    /// own, each under the PID the action knows it by: a process reading
+    /// `/proc/<pid>` for a child it forked finds that child, not whichever
+    /// host process has the number. If the worker's environment refuses that
+    /// mount (an unprivileged container that masks paths under `/proc` does)
+    /// the worker logs a warning at startup and actions see the host's
+    /// `/proc` instead.
+    ///
     /// Note: this will fail for non-privileged Dockerised workers, as workers in
     /// Docker don't have permissions to make a new user namespace. Privileged
     /// containers can do this.

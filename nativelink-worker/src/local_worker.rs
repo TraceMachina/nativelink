@@ -1182,6 +1182,10 @@ pub async fn new_local_worker(
             {
                 return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
             }
+            // Warns when it cannot; the action then sees the host's /proc.
+            if *use_namespaces {
+                crate::namespace_utils::fresh_proc_supported();
+            }
             if !*use_namespaces {
                 crate::running_actions_manager::UseNamespaces::No
             } else if use_mount_namespace {

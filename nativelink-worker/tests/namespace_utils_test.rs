@@ -77,6 +77,95 @@ async fn test_namespaces_supported() -> Result<(), Error> {
     // Isolating /tmp is only possible inside a mount namespace, regardless of
     // what the host supports.
     assert!(!namespace_utils::namespaces_supported(false, true));
+    // Likewise a host property; it only has to answer.
+    let _fresh_proc = namespace_utils::fresh_proc_supported();
+    Ok(())
+}
+
+/// Runs the issue #3003 shape inside the namespaces: fork a child, then
+/// look it up under /proc by the PID the fork returned. The script prints
+/// what PID 1 is, the child's command line as /proc reports it, and how
+/// many processes /proc lists.
+const PROC_SCRIPT: &str = "\
+    init=$(cat /proc/1/comm); \
+    sleep 30 & child=$!; \
+    cmdline=$(tr '\\0' ' ' < /proc/$child/cmdline); \
+    listed=$(ls -d /proc/[0-9]* | wc -l); \
+    kill $child; \
+    echo \"$init|$cmdline|$listed\"";
+
+/// Checks the output of [`PROC_SCRIPT`]: /proc belongs to the action's PID
+/// namespace, where the shell is PID 1, the forked child is the sleep, and
+/// the few processes listed are the action's own.
+fn assert_proc_is_the_actions(output: &std::process::Output) {
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "The action could not read its child under /proc: {output:?}",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let fields: Vec<&str> = stdout.trim().split('|').collect();
+    assert_eq!(3, fields.len(), "Unexpected output: {stdout:?}");
+    assert_eq!("sh", fields[0], "PID 1 under /proc is not the action");
+    assert_eq!(
+        "sleep 30 ", fields[1],
+        "/proc/<pid> of the forked child is not that child"
+    );
+    let listed: usize = fields[2].trim().parse().expect("a process count");
+    assert!(
+        listed < 10,
+        "/proc lists {listed} processes, which is the host's, not the action's"
+    );
+}
+
+/// Without a mount namespace of its own, the action's /proc matches its
+/// PID namespace, and the host's /proc is untouched.
+#[nativelink_test]
+async fn test_configure_namespace_proc_matches_pid_namespace() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(false, false)
+        || !namespace_utils::fresh_proc_supported()
+    {
+        return Ok(());
+    }
+
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    let mut command = Command::new("sh");
+    command.args(["-c", PROC_SCRIPT]);
+    // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
+    unsafe {
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+        });
+    }
+    let output = command.output()?;
+    assert_proc_is_the_actions(&output);
+
+    // The mount was private to the action: here /proc is still the host's.
+    let host_init = std::fs::read_to_string("/proc/1/comm").err_tip(|| "Reading /proc/1/comm")?;
+    assert_ne!(
+        "sh",
+        host_init.trim(),
+        "The action's /proc leaked to the host"
+    );
+    Ok(())
+}
+
+/// With the root masked and a private /tmp as well, the fresh /proc is
+/// still in place.
+#[nativelink_test]
+async fn test_configure_namespace_mount_proc_matches_pid_namespace() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(true, true)
+        || !namespace_utils::fresh_proc_supported()
+    {
+        return Ok(());
+    }
+
+    let root_path = unique_path(&std::env::temp_dir(), "nativelink_test_root");
+    let action_path = root_path.join("action");
+    std::fs::create_dir_all(&action_path).err_tip(|| "Failed to create action dir")?;
+    let output = namespaced_sh(PROC_SCRIPT, true, &root_path, &action_path).output()?;
+    assert_proc_is_the_actions(&output);
     Ok(())
 }
 
