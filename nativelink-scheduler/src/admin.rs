@@ -50,8 +50,8 @@ pub struct QueuedDemand {
     pub client_last_seen_ms: Option<u64>,
 }
 
-/// Every queued action of the scheduler, oldest first as the store yields
-/// them.
+/// Every queued action of the scheduler, highest priority first and then
+/// oldest, as the store yields them.
 pub async fn queued_demand(scheduler: &dyn ClientStateManager) -> Result<Vec<QueuedDemand>, Error> {
     let mut stream = scheduler
         .filter_operations(OperationFilter {
@@ -65,11 +65,11 @@ pub async fn queued_demand(scheduler: &dyn ClientStateManager) -> Result<Vec<Que
         .err_tip(|| "Listing queued operations for the admin API")?;
     let mut out = Vec::new();
     while let Some(result) = stream.next().await {
-        // The filter read the record once; each read below is a fresh one,
-        // and the record can have moved on or gone in between. One that is
-        // gone or cannot be decoded is left out and counted, one that has
-        // since been dispatched is no longer demand, and a store failure is
-        // the listing's error.
+        // On the Redis backend the reads below return the record as the
+        // listing read it; on the memory one they are live, and the record
+        // can have moved on or gone in between. One that is gone or cannot
+        // be decoded is left out and counted, one no longer queued is no
+        // longer demand, and a store failure is the listing's error.
         let Some((state, _)) = still_listed(result.as_state().await)? else {
             continue;
         };
