@@ -222,7 +222,7 @@ jobs:
     # Private package, so the job has to log in. Digest is the manual publish
     # from PR 3008; the version is removed after 2026-10-28T17:00:00Z.
     container:
-      image: ghcr.io/tracemachina/nativelink-ci-experimental:nix-rbe-pr-3008@sha256:1d58564ce2a6f10b0965e815729ca8edd71b6624ac8c2c004708a8e79f90bb60
+      image: ghcr.io/tracemachina/nativelink-ci-experimental:nix-rbe-pr-3008-gha@sha256:58f7f2f4407c5ca774bbc51baa23678ac6b31740b9752dee9f0e514a474a646d
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
