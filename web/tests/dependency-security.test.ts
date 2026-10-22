@@ -38,3 +38,17 @@ test("patched Sharp renders SVG through its bundled librsvg", async () => {
   expect(info.width).toBe(8);
   expect(info.height).toBe(4);
 });
+
+test("installed Next.js and DOMPurify include the October 2026 fixes", () => {
+  // GHSA-2464-fhr4-w9xw, GHSA-673q-mjm6-r5xr, GHSA-p3m5-59mp-jv5r: fixed in Next.js 16.4.1.
+  // GHSA-c6gr-qvv4-5v3f, GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr: fixed in DOMPurify 3.4.17.
+  const atLeast = (version: string, minimum: string) =>
+    Bun.semver.order(version, minimum) >= 0;
+  for (const app of ["web", "docs"]) {
+    const { version } = require(
+      require.resolve("next/package.json", { paths: [`${import.meta.dir}/../apps/${app}`] }),
+    );
+    expect(atLeast(version, "16.4.1")).toBe(true);
+  }
+  expect(atLeast(require("dompurify/package.json").version, "3.4.17")).toBe(true);
+});
