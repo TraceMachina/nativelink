@@ -169,6 +169,106 @@ async fn test_configure_namespace_proc_matches_pid_namespace() -> Result<(), Err
     Ok(())
 }
 
+/// Installs a seccomp filter on the calling thread that answers every
+/// `mount` with EPERM, as a hardened container's syscall policy might.
+/// For a pre-exec hook: the filter is inherited by what the hook execs.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn deny_mount_syscall() -> std::io::Result<()> {
+    const fn stmt(code: u32, k: u32) -> libc::sock_filter {
+        libc::sock_filter {
+            code: code as u16,
+            jt: 0,
+            jf: 0,
+            k,
+        }
+    }
+    // Load the syscall number; if it is mount, return EPERM; else allow.
+    let mut filter = [
+        stmt(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0),
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: libc::SYS_mount as u32,
+        },
+        stmt(
+            libc::BPF_RET | libc::BPF_K,
+            libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+        ),
+        stmt(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    // SAFETY: prctl is async-signal-safe; the program points at the stack
+    // array above, which outlives the call.
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: As above.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::SECCOMP_MODE_FILTER,
+            &raw const program,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// A syscall policy that denies `mount` leaves `use_namespaces` without
+/// `use_mount_namespace` working as it did before the fresh /proc: the
+/// action still gets its PID namespace, with the host's /proc. With
+/// `use_mount_namespace` the mount is required, so that spawn still fails
+/// with the policy's refusal rather than running unmasked.
+#[nativelink_test]
+async fn test_configure_namespace_without_mount_survives_a_denied_mount_syscall()
+-> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(false, false) {
+        return Ok(());
+    }
+
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    let mut command = Command::new("sh");
+    command.args(["-c", "echo pid=$$"]);
+    // SAFETY: both calls are async-signal-safe and intended for pre_exec.
+    unsafe {
+        command.pre_exec(move || {
+            deny_mount_syscall()?;
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+        });
+    }
+    let output = command.output()?;
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "The action did not run with mount denied: {output:?}",
+    );
+    assert_eq!("pid=1", String::from_utf8_lossy(&output.stdout).trim());
+
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    let mut masked = Command::new("sh");
+    masked.args(["-c", "true"]);
+    // SAFETY: As above.
+    unsafe {
+        masked.pre_exec(move || {
+            deny_mount_syscall()?;
+            namespace_utils::configure_namespace(true, None, &root_dir, &action_dir)
+        });
+    }
+    let err = masked
+        .output()
+        .expect_err("the root mask needs mount, so the spawn fails");
+    assert_eq!(Some(libc::EPERM), err.raw_os_error(), "{err}");
+    Ok(())
+}
+
 /// With the root masked and a private /tmp as well, the fresh /proc is
 /// still in place.
 #[nativelink_test]
