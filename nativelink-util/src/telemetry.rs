@@ -21,7 +21,7 @@ use base64::Engine;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
 use ginepro::LoadBalancedChannel;
 use hyper::http::Response;
-use nativelink_error::{Code, ResultExt, make_err};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
 use opentelemetry::propagation::{Injector, TextMapCompositePropagator, TextMapPropagator};
 use opentelemetry::trace::{TraceContextExt, Tracer, TracerProvider};
@@ -38,6 +38,7 @@ use opentelemetry_sdk::propagation::{BaggagePropagator, TraceContextPropagator};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message;
+use tonic::transport::{Certificate, ClientTlsConfig, Identity};
 use tracing::debug;
 use tracing::metadata::LevelFilter;
 use tracing_opentelemetry::{MetricsLayer, layer};
@@ -110,7 +111,7 @@ fn tracing_stdout_layer() -> impl Layer<Registry> {
 ///
 /// Returns `Err` if logging was already initialized or if the exporters can't
 /// be initialized.
-pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
+pub async fn init_tracing() -> Result<(), Error> {
     static INITIALIZED: OnceLock<()> = OnceLock::new();
 
     if INITIALIZED.get().is_some() {
@@ -131,12 +132,15 @@ pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
 
     init_propagator();
 
-    let maybe_channel = maybe_load_balanced_channel().await;
+    let maybe_channel = maybe_load_balanced_channel().await?;
 
     // Logs
     let mut log_exporter_builder = LogExporter::builder().with_tonic();
     if let Some(channel) = maybe_channel.clone() {
         log_exporter_builder = log_exporter_builder.with_channel(channel.into());
+    }
+    if let Some(tls_config) = exporter_tls_config("LOGS")? {
+        log_exporter_builder = log_exporter_builder.with_tls_config(tls_config);
     }
     let otlp_log_layer = OpenTelemetryTracingBridge::new(
         &SdkLoggerProvider::builder()
@@ -156,6 +160,9 @@ pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
     let mut span_exporter_builder = SpanExporter::builder().with_tonic();
     if let Some(channel) = maybe_channel.clone() {
         span_exporter_builder = span_exporter_builder.with_channel(channel.into());
+    }
+    if let Some(tls_config) = exporter_tls_config("TRACES")? {
+        span_exporter_builder = span_exporter_builder.with_tls_config(tls_config);
     }
     let otlp_trace_layer = layer()
         .with_tracer(
@@ -177,6 +184,9 @@ pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
     let mut metric_exporter_builder = MetricExporter::builder().with_tonic();
     if let Some(channel) = maybe_channel {
         metric_exporter_builder = metric_exporter_builder.with_channel(channel.into());
+    }
+    if let Some(tls_config) = exporter_tls_config("METRICS")? {
+        metric_exporter_builder = metric_exporter_builder.with_tls_config(tls_config);
     }
     let meter_provider = SdkMeterProvider::builder()
         .with_resource(resource)
@@ -209,38 +219,160 @@ pub async fn init_tracing() -> Result<(), nativelink_error::Error> {
 pub const NL_OTEL_ENDPOINT: &str = "NL_OTEL_ENDPOINT";
 
 /// Creates a load-balanced gRPC channel for the endpoint configured via
-/// [`NL_OTEL_ENDPOINT`], or returns `None` if the variable isn't set.
+/// [`NL_OTEL_ENDPOINT`], or returns `None` if the variable isn't set. An
+/// `https://` endpoint gets TLS, with the material the OpenTelemetry
+/// certificate variables name (see [`otlp_tls_config`]) or the system trust
+/// store without them.
 ///
 /// Public so that integration tests can verify that exporters behave the
 /// same with and without the load-balanced channel.
-pub async fn maybe_load_balanced_channel() -> Option<LoadBalancedChannel> {
-    match env::var(NL_OTEL_ENDPOINT) {
-        Ok(endpoint) => {
-            let url = Url::parse(endpoint.as_str())
-                .map_err(|e| {
-                    make_err!(Code::Internal, "Unable to parse endpoint {endpoint}: {e:?}")
-                })
-                .unwrap();
-
-            let host = url
-                .host()
-                .err_tip(|| format!("Unable to get host from endpoint {endpoint}"))
-                .unwrap();
-            let port = url
-                .port()
-                .err_tip(|| format!("Unable to get port from endpoint {endpoint}"))
-                .unwrap();
-
-            Some(
-                LoadBalancedChannel::builder((host.to_string(), port))
-                    .channel()
-                    .await
-                    .map_err(|e| make_err!(Code::Internal, "Invalid hostname '{endpoint}': {e}"))
-                    .unwrap(),
+///
+/// # Errors
+///
+/// Returns `Err` if the endpoint is not a URL with a host and an explicit
+/// port, if its hostname cannot be resolved, or if the certificate variables
+/// name files that cannot be read.
+pub async fn maybe_load_balanced_channel() -> Result<Option<LoadBalancedChannel>, Error> {
+    let Ok(endpoint) = env::var(NL_OTEL_ENDPOINT) else {
+        return Ok(None);
+    };
+    let url = Url::parse(endpoint.as_str())
+        .map_err(|e| {
+            make_err!(
+                Code::InvalidArgument,
+                "Unable to parse endpoint {endpoint}: {e:?}"
             )
-        }
-        Err(_) => None,
+        })
+        .err_tip(|| format!("In {NL_OTEL_ENDPOINT}"))?;
+
+    let host = url
+        .host()
+        .err_tip(|| format!("Unable to get host from endpoint {endpoint}"))?;
+    let port = url
+        .port()
+        .err_tip(|| format!("Unable to get port from endpoint {endpoint}"))?;
+
+    let mut builder = LoadBalancedChannel::builder((host.to_string(), port));
+    if url.scheme() == "https" {
+        let tls_config = otlp_tls_config(None)?.unwrap_or_else(system_roots_tls_config);
+        builder = builder.with_tls(tls_config);
     }
+    builder
+        .channel()
+        .await
+        .map_err(|e| make_err!(Code::Internal, "Invalid hostname '{endpoint}': {e}"))
+        .map(Some)
+}
+
+/// The OpenTelemetry specification's variables for the OTLP exporters' TLS
+/// material, as the suffix after `OTEL_EXPORTER_OTLP_`: the CA that signs
+/// the collector's certificate, and the certificate and key the exporter
+/// presents when the collector asks for one. `opentelemetry-otlp` 0.32 does
+/// not read these itself, so they are read here.
+const OTLP_CERTIFICATE: &str = "CERTIFICATE";
+const OTLP_CLIENT_CERTIFICATE: &str = "CLIENT_CERTIFICATE";
+const OTLP_CLIENT_KEY: &str = "CLIENT_KEY";
+
+/// The default OTLP endpoint of the gRPC exporters, as `opentelemetry-otlp`
+/// resolves it when no endpoint variable is set.
+const OTLP_GRPC_ENDPOINT_DEFAULT: &str = "http://localhost:4317";
+
+/// Looks an OTLP variable up the way the specification orders them: the
+/// per-signal form (`OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE`) wins over the
+/// general one (`OTEL_EXPORTER_OTLP_CERTIFICATE`), and an empty value counts
+/// as unset. Returns the name that was found with its value, for messages.
+fn otlp_env_var(signal: Option<&str>, suffix: &str) -> Option<(String, String)> {
+    signal
+        .map(|signal| format!("OTEL_EXPORTER_OTLP_{signal}_{suffix}"))
+        .into_iter()
+        .chain(core::iter::once(format!("OTEL_EXPORTER_OTLP_{suffix}")))
+        .find_map(|name| {
+            env::var(&name)
+                .ok()
+                .filter(|value| !value.is_empty())
+                .map(|value| (name, value))
+        })
+}
+
+/// Whether the exporter for `signal` will talk to an `https://` endpoint,
+/// resolved the way `opentelemetry-otlp` resolves it.
+fn otlp_endpoint_is_https(signal: &str) -> bool {
+    otlp_env_var(Some(signal), "ENDPOINT")
+        .map_or_else(
+            || OTLP_GRPC_ENDPOINT_DEFAULT.to_string(),
+            |(_, value)| value,
+        )
+        .starts_with("https://")
+}
+
+/// A TLS configuration that trusts the system's certificate store: what an
+/// `https://` collector gets when no certificate variable names a CA.
+/// tonic's bare `ClientTlsConfig::new()` trusts nothing at all.
+fn system_roots_tls_config() -> ClientTlsConfig {
+    ClientTlsConfig::new().with_enabled_roots()
+}
+
+fn read_pem((name, path): &(String, String)) -> Result<Vec<u8>, Error> {
+    std::fs::read(path).map_err(|e| {
+        make_err!(
+            Code::InvalidArgument,
+            "Could not read {path}, which {name} names: {e}"
+        )
+    })
+}
+
+/// The TLS configuration the OpenTelemetry certificate variables describe
+/// for `signal` (`LOGS`, `TRACES` or `METRICS`; `None` reads only the
+/// general variables), or `None` when none of them is set.
+///
+/// `OTEL_EXPORTER_OTLP_CERTIFICATE` names the CA to verify the collector
+/// with, and then only that CA is trusted; without it the system trust store
+/// is. `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` and
+/// `OTEL_EXPORTER_OTLP_CLIENT_KEY` name the identity to present for mTLS
+/// and have to be set together. Each has a per-signal form that wins over
+/// the general one. The files are read here, once, at startup.
+///
+/// # Errors
+///
+/// Returns `Err` if a named file cannot be read, or if only one of the
+/// client certificate and key is set.
+pub fn otlp_tls_config(signal: Option<&str>) -> Result<Option<ClientTlsConfig>, Error> {
+    let ca = otlp_env_var(signal, OTLP_CERTIFICATE);
+    let client_certificate = otlp_env_var(signal, OTLP_CLIENT_CERTIFICATE);
+    let client_key = otlp_env_var(signal, OTLP_CLIENT_KEY);
+    if ca.is_none() && client_certificate.is_none() && client_key.is_none() {
+        return Ok(None);
+    }
+    let mut config = match &ca {
+        Some(ca) => ClientTlsConfig::new().ca_certificate(Certificate::from_pem(read_pem(ca)?)),
+        None => system_roots_tls_config(),
+    };
+    match (&client_certificate, &client_key) {
+        (Some(certificate), Some(key)) => {
+            config = config.identity(Identity::from_pem(read_pem(certificate)?, read_pem(key)?));
+        }
+        (None, None) => {}
+        (Some((name, _)), None) | (None, Some((name, _))) => {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "{name} is set without its pair: a client certificate and its key have to be \
+                 set together, as OTEL_EXPORTER_OTLP_{OTLP_CLIENT_CERTIFICATE} and \
+                 OTEL_EXPORTER_OTLP_{OTLP_CLIENT_KEY} or their per-signal forms"
+            ));
+        }
+    }
+    Ok(Some(config))
+}
+
+/// The TLS configuration for the exporter of `signal` when it builds its
+/// own channel: the certificate variables' when any is set, the system
+/// trust store for an `https://` endpoint without them, and nothing for a
+/// plaintext endpoint. Loading the system store is deferred to the moment
+/// it is needed because it fails on a host without a certificate bundle,
+/// which a plaintext deployment need not have.
+fn exporter_tls_config(signal: &str) -> Result<Option<ClientTlsConfig>, Error> {
+    Ok(otlp_tls_config(Some(signal))?
+        .or_else(|| otlp_endpoint_is_https(signal).then(system_roots_tls_config)))
 }
 /// This is the header that bazel sends when using the `--remote_header` flag.
 /// TODO(palfrey): Bazel supports other headers, and we should optimize their usage.
@@ -505,7 +637,10 @@ mod tests {
         // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
         unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
         assert!(
-            maybe_load_balanced_channel().await.is_none(),
+            maybe_load_balanced_channel()
+                .await
+                .expect("an unset endpoint is not an error")
+                .is_none(),
             "Expected None when {NL_OTEL_ENDPOINT} is unset"
         );
     }
@@ -526,8 +661,197 @@ mod tests {
         // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
         unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
         assert!(
-            result.is_some(),
+            result.expect("a valid endpoint builds").is_some(),
             "Expected Some(channel) when {NL_OTEL_ENDPOINT} points to a valid URL"
+        );
+    }
+
+    /// Clears every OTLP variable a TLS test may set, before and after it.
+    fn clear_otlp_tls_env() {
+        for signal in ["", "LOGS_", "TRACES_", "METRICS_"] {
+            for suffix in [
+                "ENDPOINT",
+                "CERTIFICATE",
+                "CLIENT_CERTIFICATE",
+                "CLIENT_KEY",
+            ] {
+                // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+                unsafe { env::remove_var(format!("OTEL_EXPORTER_OTLP_{signal}{suffix}")) };
+            }
+        }
+    }
+
+    /// Writes dummy PEM bytes to a file in `dir`; tonic only stores them
+    /// until a connection is made, so the content need not parse.
+    fn pem_file(dir: &tempfile::TempDir, name: &str) -> String {
+        let path = dir.path().join(name);
+        std::fs::write(&path, format!("-----BEGIN {name}-----\n")).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    // The exporter used to refuse an https endpoint outright ("uses HTTPS
+    // but no TLS feature is enabled"); this fails without `tls-ring` on
+    // `opentelemetry-otlp`.
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn https_endpoint_builds_an_exporter() {
+        clear_otlp_tls_env();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "https://localhost:4317") };
+        let mut builder = SpanExporter::builder().with_tonic();
+        if let Some(tls_config) = exporter_tls_config("TRACES").unwrap() {
+            builder = builder.with_tls_config(tls_config);
+        }
+        let result = builder.with_protocol(Protocol::Grpc).build();
+        clear_otlp_tls_env();
+        assert!(
+            result.is_ok(),
+            "An https endpoint must build an exporter: {:?}",
+            result.err()
+        );
+    }
+
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn tls_config_absent_without_variables() {
+        clear_otlp_tls_env();
+        assert!(otlp_tls_config(Some("TRACES")).unwrap().is_none());
+        assert!(otlp_tls_config(None).unwrap().is_none());
+        // A plaintext endpoint gets no TLS configuration at all, so a host
+        // without a certificate store still exports.
+        assert!(exporter_tls_config("TRACES").unwrap().is_none());
+        // An empty value is unset, as the specification says.
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CERTIFICATE", "") };
+        let result = otlp_tls_config(Some("TRACES"));
+        clear_otlp_tls_env();
+        assert!(result.unwrap().is_none());
+    }
+
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn tls_config_present_with_ca_certificate() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let ca = pem_file(&dir, "ca");
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CERTIFICATE", &ca) };
+        let general = otlp_tls_config(None);
+        let per_signal = otlp_tls_config(Some("METRICS"));
+        // The variables apply to a plaintext endpoint too; the scheme is
+        // the exporter's to judge.
+        let exporter = exporter_tls_config("METRICS");
+        clear_otlp_tls_env();
+        assert!(general.unwrap().is_some());
+        assert!(per_signal.unwrap().is_some());
+        assert!(exporter.unwrap().is_some());
+    }
+
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn tls_config_with_client_identity() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let certificate = pem_file(&dir, "client");
+        let key = pem_file(&dir, "key");
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", &certificate) };
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CLIENT_KEY", &key) };
+        let result = otlp_tls_config(Some("LOGS"));
+        clear_otlp_tls_env();
+        assert!(result.unwrap().is_some());
+    }
+
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn per_signal_variable_wins_over_the_general_one() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let ca = pem_file(&dir, "ca");
+        let missing = dir.path().join("missing").to_str().unwrap().to_string();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CERTIFICATE", &missing) };
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE", &ca) };
+        let traces = otlp_tls_config(Some("TRACES"));
+        let metrics = otlp_tls_config(Some("METRICS"));
+        let general = otlp_tls_config(None);
+        clear_otlp_tls_env();
+        assert!(traces.unwrap().is_some(), "TRACES names a readable file");
+        let metrics_err = metrics.expect_err("METRICS falls back to the general, missing file");
+        assert_eq!(metrics_err.code, Code::InvalidArgument);
+        assert!(
+            metrics_err
+                .to_string()
+                .contains("OTEL_EXPORTER_OTLP_CERTIFICATE"),
+            "{metrics_err}"
+        );
+        assert_eq!(
+            general.expect_err("the general file is missing").code,
+            Code::InvalidArgument
+        );
+    }
+
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn client_certificate_without_key_is_rejected() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let certificate = pem_file(&dir, "client");
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", &certificate) };
+        let without_key = otlp_tls_config(Some("LOGS"));
+        clear_otlp_tls_env();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY", &certificate) };
+        let without_certificate = otlp_tls_config(Some("LOGS"));
+        clear_otlp_tls_env();
+        for result in [without_key, without_certificate] {
+            let err = result.expect_err("half an identity is an error");
+            assert_eq!(err.code, Code::InvalidArgument);
+            assert!(
+                err.to_string().contains("OTEL_EXPORTER_OTLP_CLIENT_KEY"),
+                "{err}"
+            );
+        }
+    }
+
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn missing_certificate_file_is_rejected() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.pem").to_str().unwrap().to_string();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CERTIFICATE", &missing) };
+        let result = otlp_tls_config(Some("METRICS"));
+        clear_otlp_tls_env();
+        let err = result.expect_err("a missing file is an error");
+        assert_eq!(err.code, Code::InvalidArgument);
+        assert!(err.to_string().contains("missing.pem"), "{err}");
+        assert!(
+            err.to_string().contains("OTEL_EXPORTER_OTLP_CERTIFICATE"),
+            "{err}"
+        );
+    }
+
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn https_endpoint_without_variables_trusts_the_system_store() {
+        clear_otlp_tls_env();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "https://collector:4317") };
+        let logs = exporter_tls_config("LOGS");
+        let traces = exporter_tls_config("TRACES");
+        clear_otlp_tls_env();
+        assert!(
+            logs.unwrap().is_some(),
+            "an https endpoint gets a TLS config"
+        );
+        assert!(
+            traces.unwrap().is_none(),
+            "the default endpoint is plaintext"
         );
     }
 
