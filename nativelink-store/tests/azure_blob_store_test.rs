@@ -1519,6 +1519,7 @@ fn tls_roots_exclude_distrusted_emsign_ecc_root() {
 #[test]
 fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
     use rustls::client::danger::ServerCertVerifier;
+    use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 
     // RUSTSEC-2026-0382: rustls-webpki before 0.103.16 accepts paths through
@@ -1527,9 +1528,7 @@ fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
     // by a test root; the control leaf is the same chain with a fresh key.
     let mut roots = rustls::RootCertStore::empty();
     roots
-        .add(CertificateDer::from(
-            &include_bytes!("data/emsign_test_root.der")[..],
-        ))
+        .add(CertificateDer::from_pem_slice(include_bytes!("data/emsign_test_root.pem")).unwrap())
         .unwrap();
     let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
         Arc::new(roots),
@@ -1539,7 +1538,7 @@ fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
     .unwrap();
     let verify = |leaf: &'static [u8]| {
         verifier.verify_server_cert(
-            &CertificateDer::from(leaf),
+            &CertificateDer::from_pem_slice(leaf).unwrap(),
             &[],
             &ServerName::try_from("distrusted.test").unwrap(),
             &[],
@@ -1548,7 +1547,7 @@ fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
         )
     };
 
-    verify(include_bytes!("data/emsign_control_leaf.der")).unwrap();
-    let err = verify(include_bytes!("data/emsign_distrusted_leaf.der")).unwrap_err();
+    verify(include_bytes!("data/emsign_control_leaf.pem")).unwrap();
+    let err = verify(include_bytes!("data/emsign_distrusted_leaf.pem")).unwrap_err();
     assert!(format!("{err:?}").contains("CertDistrusted"), "{err:?}");
 }
