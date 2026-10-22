@@ -368,14 +368,17 @@ fn otlp_env_var(signal: Option<&str>, suffix: &str) -> Option<(String, String)> 
 }
 
 /// Whether the exporter for `signal` will talk to an `https://` endpoint,
-/// resolved the way `opentelemetry-otlp` resolves it.
+/// resolved the way `opentelemetry-otlp` resolves it. The scheme is
+/// compared case-insensitively, as the SDK accepts `HTTPS://` too; a value
+/// that does not parse as a URL counts as plaintext and is left for the
+/// exporter to reject. (The `NL_OTEL_ENDPOINT` path parses its value with
+/// `Url` as well, so it judges the scheme the same way.)
 fn otlp_endpoint_is_https(signal: &str) -> bool {
-    otlp_env_var(Some(signal), "ENDPOINT")
-        .map_or_else(
-            || OTLP_GRPC_ENDPOINT_DEFAULT.to_string(),
-            |(_, value)| value,
-        )
-        .starts_with("https://")
+    let endpoint = otlp_env_var(Some(signal), "ENDPOINT").map_or_else(
+        || OTLP_GRPC_ENDPOINT_DEFAULT.to_string(),
+        |(_, value)| value,
+    );
+    Url::parse(&endpoint).is_ok_and(|url| url.scheme() == "https")
 }
 
 /// A TLS configuration that trusts the system's certificate store: what an
@@ -438,14 +441,20 @@ pub fn otlp_tls_config(signal: Option<&str>) -> Result<Option<ClientTlsConfig>, 
 }
 
 /// The TLS configuration for the exporter of `signal` when it builds its
-/// own channel: the certificate variables' when any is set, the system
-/// trust store for an `https://` endpoint without them, and nothing for a
-/// plaintext endpoint. Loading the system store is deferred to the moment
-/// it is needed because it fails on a host without a certificate bundle,
-/// which a plaintext deployment need not have.
+/// own channel: nothing for a plaintext endpoint, whatever the certificate
+/// variables say, and for an `https://` endpoint the variables' material or
+/// the system trust store without them. A plaintext signal must get no
+/// configuration at all: the exporter would still hand it to tonic, which
+/// loads the trust roots as it builds the connector and fails on a host
+/// without a certificate bundle, so a deployment that sends one signal
+/// over TLS and another in plaintext would die building the plaintext one.
 fn exporter_tls_config(signal: &str) -> Result<Option<ClientTlsConfig>, Error> {
-    Ok(otlp_tls_config(Some(signal))?
-        .or_else(|| otlp_endpoint_is_https(signal).then(system_roots_tls_config)))
+    if !otlp_endpoint_is_https(signal) {
+        return Ok(None);
+    }
+    Ok(Some(
+        otlp_tls_config(Some(signal))?.unwrap_or_else(system_roots_tls_config),
+    ))
 }
 /// This is the header that bazel sends when using the `--remote_header` flag.
 /// TODO(palfrey): Bazel supports other headers, and we should optimize their usage.
@@ -811,13 +820,71 @@ mod tests {
         unsafe { env::set_var("OTEL_EXPORTER_OTLP_CERTIFICATE", &ca) };
         let general = otlp_tls_config(None);
         let per_signal = otlp_tls_config(Some("METRICS"));
-        // The variables apply to a plaintext endpoint too; the scheme is
-        // the exporter's to judge.
+        // The endpoint is the plaintext default, so the exporter gets no
+        // TLS configuration however the variables are set.
         let exporter = exporter_tls_config("METRICS");
         clear_otlp_tls_env();
         assert!(general.unwrap().is_some());
         assert!(per_signal.unwrap().is_some());
-        assert!(exporter.unwrap().is_some());
+        assert!(exporter.unwrap().is_none());
+    }
+
+    // A deployment that sends metrics over TLS with an identity and logs in
+    // plaintext: the plaintext signal must get no TLS configuration, or the
+    // exporter loads the trust roots for it and a host without a
+    // certificate bundle dies building the log exporter.
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn plaintext_signal_gets_no_tls_config_whatever_the_variables() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let certificate = pem_file(&dir, "client");
+        let key = pem_file(&dir, "key");
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE", &certificate) };
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CLIENT_KEY", &key) };
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe {
+            env::set_var(
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "https://collector:4317",
+            );
+        };
+        let logs = exporter_tls_config("LOGS");
+        let metrics = exporter_tls_config("METRICS");
+        clear_otlp_tls_env();
+        assert!(
+            logs.unwrap().is_none(),
+            "the plaintext default endpoint gets no TLS configuration"
+        );
+        assert!(
+            metrics.unwrap().is_some(),
+            "the https endpoint gets the variables' configuration"
+        );
+    }
+
+    // The SDK accepts an uppercase scheme; an `HTTPS://` endpoint has to
+    // get its trust roots too, or the process starts with an empty store.
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn uppercase_https_scheme_gets_the_default_roots() {
+        clear_otlp_tls_env();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe {
+            env::set_var(
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "HTTPS://collector:4317",
+            );
+        };
+        let traces = exporter_tls_config("TRACES");
+        // A value that is not a URL is not https; the exporter rejects it.
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "collector:4317:https") };
+        let unparseable = exporter_tls_config("TRACES");
+        clear_otlp_tls_env();
+        assert!(traces.unwrap().is_some(), "HTTPS:// is an https endpoint");
+        assert!(unparseable.unwrap().is_none());
     }
 
     #[serial(env)]
