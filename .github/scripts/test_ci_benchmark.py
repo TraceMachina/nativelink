@@ -125,6 +125,25 @@ class BenchmarkTest(unittest.TestCase):
             self.assertEqual(result["exit_code"], 7)
             self.assertEqual(len(result["runs"]), 1)
 
+    def test_host_bazel_does_not_inherit_the_nix_library_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = {
+                'nix': '#!/bin/sh\nwhile [ "$1" != --command ]; do shift; done\nshift\n'
+                       'export LD_LIBRARY_PATH=/incompatible/nix-runtime\nexec "$@"\n',
+                'bazel': '#!/bin/sh\nif [ -n "${LD_LIBRARY_PATH+x}" ]; then exit 81; fi\n',
+            }
+            for name, script in scripts.items():
+                path = root / name
+                path.write_text(script)
+                path.chmod(0o755)
+            args = type('Args', (), {'lane': 'cluster', 'repetitions': 1, 'output': root})()
+            with patch.dict(os.environ, {'PATH': str(root) + os.pathsep + os.environ['PATH'],
+                                         'NL_API_KEY': 'test-only-key', 'GITHUB_SHA': 'a' * 40,
+                                         'BENCHMARK_STARTED': '0'}), \
+                    patch.object(ci_benchmark, 'configuration', return_value=([], '')):
+                self.assertEqual(ci_benchmark.run(args), 0)
+
     def test_comparison_requires_both_lanes_and_matching_revisions(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(ValueError):

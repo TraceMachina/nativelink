@@ -123,7 +123,10 @@ def run(args):
             if environ.get("NL_PERSISTENT_CACHE"):
                 startup = [f"--output_user_root={environ['NL_PERSISTENT_CACHE']}/bazel-ci",
                            "--max_idle_secs=0", "--host_jvm_args=-Xmx4g"]
-            command = ["nix", "develop", "--impure", "--command", "bazel", *startup, "test", "//...",
+            # The shell's C++ library path supports native Node addons. Host
+            # Bazel must use its own runtime, particularly on older glibc.
+            command = ["nix", "develop", "--impure", "--command", "env", "-u", "LD_LIBRARY_PATH",
+                       "bazel", *startup, "test", "//...",
                        *flags, f"--invocation_id={invocation}", f"--build_event_json_file={bep}"]
             before = time.monotonic()
             status = execute(command, environ)

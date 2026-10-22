@@ -16,11 +16,16 @@ repetitions, retains its exit code and still uploads aggregate evidence. The
 comparison job needs both lane reports and matching source revisions.
 
 The first iteration is **not a cold-cache measurement**: remote caches may
-already contain results and the cluster lane may restore a disk snapshot.
+already contain results and the cluster lane retains persistent cache volumes.
 Later iterations retain the same client and Bazel process. The cluster lane
 also preserves that client state across workflow runs; the hosted baseline
 starts on a fresh runner. Cache state and resource capacity differ between the
 lanes, so results measure the complete CI setup.
+
+The Nix shell supplies a C++ runtime for native Node modules. The benchmark
+removes that library-path override only when launching host Bazel, which must
+use its own runtime. This avoids loading newer Nix C++ libraries against an
+older host `glibc`. Other Nix shell commands keep their normal environment.
 
 ## Configuration and trust
 
