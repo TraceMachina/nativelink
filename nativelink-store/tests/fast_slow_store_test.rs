@@ -2411,3 +2411,157 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
     }
     Ok(())
 }
+
+#[nativelink_test]
+async fn populate_preserves_retryable_slow_store_error_code_when_mid_stream_read_fails()
+-> Result<(), Error> {
+    #[derive(Debug, MetricsComponent)]
+    struct MidStreamFailingSlowStore {
+        size: u64,
+        code: Code,
+    }
+
+    #[async_trait]
+    impl StoreDriver for MidStreamFailingSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _digests: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            for slot in results.iter_mut() {
+                *slot = Some(self.size);
+            }
+            Ok(())
+        }
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            _reader: DropCloserReadHalf,
+            _upload_size: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            Ok(0)
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send(Bytes::from_static(b"partial")).await?;
+            Err(make_err!(self.code, "upstream stream reset"))
+        }
+        fn inner_store(&self, _digest: Option<StoreKey<'_>>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(MidStreamFailingSlowStore);
+
+    let digest = DigestInfo::try_new(VALID_HASH, 1024)?;
+    for expected_code in [Code::Unavailable, Code::ResourceExhausted, Code::Aborted] {
+        let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+        let slow = Store::new(Arc::new(MidStreamFailingSlowStore {
+            size: 1024,
+            code: expected_code,
+        }));
+        let store = FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Memory(MemorySpec::default()),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+            },
+            fast,
+            slow,
+        );
+        let err = store
+            .get_part_unchunked(digest, 0, None)
+            .await
+            .expect_err("mid-stream slow-store failure must fail the read");
+        assert_eq!(
+            err.code, expected_code,
+            "Expected slow-store error code {expected_code:?}, got {:?}: {err:?}",
+            err.code
+        );
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn concurrent_followers_fall_back_to_slow_store_under_fast_tier_eviction() -> Result<(), Error>
+{
+    use nativelink_config::stores::EvictionPolicy;
+    use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
+
+    let fast_spec = FilesystemSpec {
+        content_path: make_temp_path("follower_eviction_fast_content"),
+        temp_path: make_temp_path("follower_eviction_fast_temp"),
+        eviction_policy: Some(EvictionPolicy {
+            max_bytes: 32 * 1024,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let fast_fs = Store::new(FilesystemStore::<FileEntryImpl>::new(&fast_spec).await?);
+    let slow_fs = Store::new(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: make_temp_path("follower_eviction_slow_content"),
+            temp_path: make_temp_path("follower_eviction_slow_temp"),
+            ..Default::default()
+        })
+        .await?,
+    );
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(fast_spec),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast_fs,
+        slow_fs.clone(),
+    ));
+
+    let mut blobs = Vec::with_capacity(16);
+    for i in 0..16usize {
+        let data = Bytes::from(make_random_data(500 + (i * 13)));
+        let mut hasher = DigestHasherFunc::Sha256.hasher();
+        hasher.update(&data);
+        let digest = hasher.finalize_digest();
+        slow_fs.update_oneshot(digest, data.clone()).await?;
+        blobs.push((digest, data));
+    }
+
+    let mut tasks = Vec::with_capacity(64);
+    for idx in 0..64usize {
+        let store = store.clone();
+        let (digest, expected) = blobs[idx % blobs.len()].clone();
+        tasks.push(async move {
+            let actual = store.get_part_unchunked(digest, 0, None).await?;
+            assert_eq!(actual, expected);
+            Result::<_, Error>::Ok(())
+        });
+    }
+
+    for res in join_all(tasks).await {
+        res?;
+    }
+    Ok(())
+}
