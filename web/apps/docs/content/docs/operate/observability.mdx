@@ -102,7 +102,7 @@ The rest of the surface is small enough to state in full:
 
 | Variable | Default | What it does here |
 | --- | --- | --- |
-| `NL_OTEL_ENDPOINT` | unset | One shared gRPC channel for logs, traces and metrics. Stops the process on a malformed value. An `https://` value gets TLS. |
+| `NL_OTEL_ENDPOINT` | unset | One shared gRPC channel for logs, traces and metrics. Stops the process on a malformed value. An `https://` value gets TLS; a per-signal certificate variable gives that signal a channel of its own, built with its material. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Used only when `NL_OTEL_ENDPOINT` is unset. An `https://` value gets TLS. |
 | `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset | Path to the PEM CA that signs the collector's certificate. Set, it is the only CA trusted; unset, the system trust store is. |
 | `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` | unset | Path to the PEM certificate the exporter presents to the collector for mTLS. Requires `OTEL_EXPORTER_OTLP_CLIENT_KEY`; one without the other stops the process. |

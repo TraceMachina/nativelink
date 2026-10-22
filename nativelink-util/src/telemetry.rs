@@ -132,11 +132,11 @@ pub async fn init_tracing() -> Result<(), Error> {
 
     init_propagator();
 
-    let maybe_channel = maybe_load_balanced_channel().await?;
+    let channels = load_balanced_channels().await?;
 
     // Logs
     let mut log_exporter_builder = LogExporter::builder().with_tonic();
-    if let Some(channel) = maybe_channel.clone() {
+    if let Some(channel) = channels.logs {
         log_exporter_builder = log_exporter_builder.with_channel(channel.into());
     }
     if let Some(tls_config) = exporter_tls_config("LOGS")? {
@@ -158,7 +158,7 @@ pub async fn init_tracing() -> Result<(), Error> {
 
     // Traces
     let mut span_exporter_builder = SpanExporter::builder().with_tonic();
-    if let Some(channel) = maybe_channel.clone() {
+    if let Some(channel) = channels.traces {
         span_exporter_builder = span_exporter_builder.with_channel(channel.into());
     }
     if let Some(tls_config) = exporter_tls_config("TRACES")? {
@@ -182,7 +182,7 @@ pub async fn init_tracing() -> Result<(), Error> {
 
     // Metrics
     let mut metric_exporter_builder = MetricExporter::builder().with_tonic();
-    if let Some(channel) = maybe_channel {
+    if let Some(channel) = channels.metrics {
         metric_exporter_builder = metric_exporter_builder.with_channel(channel.into());
     }
     if let Some(tls_config) = exporter_tls_config("METRICS")? {
@@ -218,21 +218,94 @@ pub async fn init_tracing() -> Result<(), Error> {
 /// Environment variable pointing OTLP exporters at a load-balanced endpoint.
 pub const NL_OTEL_ENDPOINT: &str = "NL_OTEL_ENDPOINT";
 
+/// The OTLP signals, as the OpenTelemetry specification spells them in the
+/// per-signal variables (`OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE`).
+const OTLP_SIGNALS: [&str; 3] = ["LOGS", "TRACES", "METRICS"];
+
+/// The load-balanced channel each exporter sends on when
+/// [`NL_OTEL_ENDPOINT`] is set, and `None` for each when it is not.
+///
+/// The common case is one channel shared by all three. A channel carries
+/// its TLS configuration, and an exporter given a channel ignores its own
+/// `with_tls_config`, so a signal with a certificate variable of its own
+/// gets a channel of its own, built with that signal's material.
+#[derive(Debug, Default)]
+pub struct SignalChannels {
+    pub logs: Option<LoadBalancedChannel>,
+    pub traces: Option<LoadBalancedChannel>,
+    pub metrics: Option<LoadBalancedChannel>,
+}
+
+/// Whether any per-signal certificate variable is set and non-empty, which
+/// is when the signals need channels of their own.
+fn any_per_signal_tls_variable_set() -> bool {
+    OTLP_SIGNALS.iter().any(|signal| {
+        [OTLP_CERTIFICATE, OTLP_CLIENT_CERTIFICATE, OTLP_CLIENT_KEY]
+            .iter()
+            .any(|suffix| {
+                env::var(format!("OTEL_EXPORTER_OTLP_{signal}_{suffix}"))
+                    .is_ok_and(|value| !value.is_empty())
+            })
+    })
+}
+
+/// Builds the channels the exporters send on when [`NL_OTEL_ENDPOINT`] is
+/// set: one shared channel with the general certificate variables, or, when
+/// any per-signal certificate variable is set, one per signal with that
+/// signal's resolution of the variables. Without the endpoint variable
+/// every field is `None` and each exporter builds its own connection.
+///
+/// # Errors
+///
+/// As [`load_balanced_channel_for`].
+pub async fn load_balanced_channels() -> Result<SignalChannels, Error> {
+    if env::var(NL_OTEL_ENDPOINT).is_err() {
+        return Ok(SignalChannels::default());
+    }
+    if !any_per_signal_tls_variable_set() {
+        let shared = load_balanced_channel_for(None).await?;
+        return Ok(SignalChannels {
+            logs: shared.clone(),
+            traces: shared.clone(),
+            metrics: shared,
+        });
+    }
+    Ok(SignalChannels {
+        logs: load_balanced_channel_for(Some("LOGS")).await?,
+        traces: load_balanced_channel_for(Some("TRACES")).await?,
+        metrics: load_balanced_channel_for(Some("METRICS")).await?,
+    })
+}
+
+/// Creates a load-balanced gRPC channel for the endpoint configured via
+/// [`NL_OTEL_ENDPOINT`] with the general certificate variables, or returns
+/// `None` if the variable isn't set. This is [`load_balanced_channel_for`]
+/// with no signal, kept for the integration tests that verify exporters
+/// behave the same with and without the load-balanced channel;
+/// [`init_tracing`] goes through [`load_balanced_channels`].
+///
+/// # Errors
+///
+/// As [`load_balanced_channel_for`].
+pub async fn maybe_load_balanced_channel() -> Result<Option<LoadBalancedChannel>, Error> {
+    load_balanced_channel_for(None).await
+}
+
 /// Creates a load-balanced gRPC channel for the endpoint configured via
 /// [`NL_OTEL_ENDPOINT`], or returns `None` if the variable isn't set. An
 /// `https://` endpoint gets TLS, with the material the OpenTelemetry
-/// certificate variables name (see [`otlp_tls_config`]) or the system trust
-/// store without them.
-///
-/// Public so that integration tests can verify that exporters behave the
-/// same with and without the load-balanced channel.
+/// certificate variables name for `signal` (see [`otlp_tls_config`]) or the
+/// system trust store without them; a plaintext endpoint gets no TLS
+/// configuration at all.
 ///
 /// # Errors
 ///
 /// Returns `Err` if the endpoint is not a URL with a host and an explicit
 /// port, if its hostname cannot be resolved, or if the certificate variables
 /// name files that cannot be read.
-pub async fn maybe_load_balanced_channel() -> Result<Option<LoadBalancedChannel>, Error> {
+pub async fn load_balanced_channel_for(
+    signal: Option<&str>,
+) -> Result<Option<LoadBalancedChannel>, Error> {
     let Ok(endpoint) = env::var(NL_OTEL_ENDPOINT) else {
         return Ok(None);
     };
@@ -254,7 +327,7 @@ pub async fn maybe_load_balanced_channel() -> Result<Option<LoadBalancedChannel>
 
     let mut builder = LoadBalancedChannel::builder((host.to_string(), port));
     if url.scheme() == "https" {
-        let tls_config = otlp_tls_config(None)?.unwrap_or_else(system_roots_tls_config);
+        let tls_config = otlp_tls_config(signal)?.unwrap_or_else(system_roots_tls_config);
         builder = builder.with_tls(tls_config);
     }
     builder
@@ -834,6 +907,97 @@ mod tests {
             err.to_string().contains("OTEL_EXPORTER_OTLP_CERTIFICATE"),
             "{err}"
         );
+    }
+
+    // A per-signal certificate variable has to reach the channel the
+    // exporter is handed: an exporter given a channel ignores its own TLS
+    // configuration, so a shared channel built from the general variables
+    // alone failed the handshake with "unknown CA" for a signal whose CA
+    // is set per signal.
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn per_signal_certificate_reaches_the_load_balanced_channel() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let ca = pem_file(&dir, "ca");
+        let missing = dir.path().join("missing").to_str().unwrap().to_string();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var(NL_OTEL_ENDPOINT, "https://localhost:4317") };
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CERTIFICATE", &missing) };
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE", &ca) };
+        assert!(any_per_signal_tls_variable_set());
+        let traces = load_balanced_channel_for(Some("TRACES")).await;
+        let metrics = load_balanced_channel_for(Some("METRICS")).await;
+        let all = load_balanced_channels().await;
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
+        clear_otlp_tls_env();
+
+        // METRICS falls back to the general variable, whose file is
+        // missing; that error precedes any name resolution, so it holds
+        // with or without DNS, and so does the whole-set build that
+        // includes METRICS.
+        for result in [metrics, all.map(|channels| channels.metrics)] {
+            let err = result.expect_err("the general CA file is missing");
+            assert_eq!(err.code, Code::InvalidArgument);
+            assert!(
+                err.to_string().contains("OTEL_EXPORTER_OTLP_CERTIFICATE"),
+                "{err}"
+            );
+        }
+        // TRACES reads its own file; building the channel then resolves
+        // the host, which needs DNS.
+        if dns_configured() {
+            assert!(
+                traces.expect("TRACES names a readable CA").is_some(),
+                "Expected a channel for TRACES when {NL_OTEL_ENDPOINT} is set"
+            );
+        } else {
+            eprintln!(
+                "Skipping the TRACES channel assertion: no DNS configuration \
+                 available (e.g. sandboxed Nix build)"
+            );
+        }
+    }
+
+    // Without a per-signal variable the three signals share one channel,
+    // and without the endpoint variable they get none.
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn signals_share_one_channel_without_per_signal_variables() {
+        clear_otlp_tls_env();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
+        assert!(!any_per_signal_tls_variable_set());
+        let channels = load_balanced_channels()
+            .await
+            .expect("an unset endpoint is not an error");
+        assert!(channels.logs.is_none() && channels.traces.is_none() && channels.metrics.is_none());
+
+        // An empty per-signal value is unset, so it does not split the
+        // channel either.
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY", "") };
+        let split = any_per_signal_tls_variable_set();
+        clear_otlp_tls_env();
+        assert!(!split);
+
+        if !dns_configured() {
+            eprintln!(
+                "Skipping the shared channel assertion: no DNS configuration \
+                 available (e.g. sandboxed Nix build)"
+            );
+            return;
+        }
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var(NL_OTEL_ENDPOINT, "http://localhost:4317") };
+        let channels = load_balanced_channels().await;
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::remove_var(NL_OTEL_ENDPOINT) };
+        let channels = channels.expect("a valid endpoint builds");
+        assert!(channels.logs.is_some() && channels.traces.is_some() && channels.metrics.is_some());
     }
 
     #[serial(env)]
