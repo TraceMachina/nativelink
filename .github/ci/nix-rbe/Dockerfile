@@ -27,6 +27,10 @@ RUN set -eu \
 # is the one Nix reads: HOME points at /github/home, which root does not own.
 RUN printf '[safe]\n\tdirectory = *\n' > /etc/gitconfig
 
+# nixos/nix leaves /bin/sh as the only entry in /bin, but scripts the tests
+# run, bazel-retry among them, carry a /bin/bash shebang.
+RUN ln -s "$(readlink -f /bin/sh)" /bin/bash
+
 # nixos/nix ships max-jobs = 1, so anything missing from the store builds
 # serially. The Determinate installer this image replaces leaves it at auto.
 RUN printf '%s\n' \
