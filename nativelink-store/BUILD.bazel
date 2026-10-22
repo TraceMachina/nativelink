@@ -173,6 +173,9 @@ rust_test_suite(
         "tests/verify_store_test.rs",
     ],
     compile_data = [
+        "tests/data/emsign_control_leaf.der",
+        "tests/data/emsign_distrusted_leaf.der",
+        "tests/data/emsign_test_root.der",
         "tests/mongo_runner/mod.rs",
         "tests/mongo_runner/process.rs",
         "tests/mongo_runner/extractor.rs",

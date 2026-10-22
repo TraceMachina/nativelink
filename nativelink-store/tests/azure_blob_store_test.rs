@@ -1515,3 +1515,40 @@ fn tls_roots_exclude_distrusted_emsign_ecc_root() {
     // distrusted root was removed.
     assert_ne!(webpki_roots::TLS_SERVER_ROOTS, []);
 }
+
+#[test]
+fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
+    use rustls::client::danger::ServerCertVerifier;
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+
+    // RUSTSEC-2026-0382: rustls-webpki before 0.103.16 accepts paths through
+    // emSign intermediates whose private keys are public. The distrusted
+    // leaf carries one of those public keys (eMudhra's OV TLS CA - G3), issued
+    // by a test root; the control leaf is the same chain with a fresh key.
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(CertificateDer::from(
+            &include_bytes!("data/emsign_test_root.der")[..],
+        ))
+        .unwrap();
+    let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(roots),
+        Arc::new(rustls::crypto::ring::default_provider()),
+    )
+    .build()
+    .unwrap();
+    let verify = |leaf: &'static [u8]| {
+        verifier.verify_server_cert(
+            &CertificateDer::from(leaf),
+            &[],
+            &ServerName::try_from("distrusted.test").unwrap(),
+            &[],
+            // 2030-01-01, inside the fixtures' validity.
+            UnixTime::since_unix_epoch(Duration::from_hours(525_960)),
+        )
+    };
+
+    verify(include_bytes!("data/emsign_control_leaf.der")).unwrap();
+    let err = verify(include_bytes!("data/emsign_distrusted_leaf.der")).unwrap_err();
+    assert!(format!("{err:?}").contains("CertDistrusted"), "{err:?}");
+}
