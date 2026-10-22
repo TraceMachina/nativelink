@@ -7,8 +7,8 @@ leaves the required CI workflows unchanged:
 - **baseline** uses the existing Nix preparation, hermetic toolchain and staging
   remote cache in read-only mode, matching the current Bazel Dev PR lane.
 - **cluster** uses the same Nix preparation and hermetic toolchain, with remote
-  execution on the configured warm worker pool, writable remote cache, and
-  GitHub snapshots of Bazel's action disk cache and repository downloads.
+  execution on the configured warm worker pool and a retained client that
+  preserves the Bazel JVM, action disk cache, repository downloads and Nix store.
 
 Both use `.bazelversion`; neither disables test-result caching. Repetitions
 default to three and manual runs accept 1–20. A failed build stops that lane's
@@ -17,10 +17,10 @@ comparison job needs both lane reports and matching source revisions.
 
 The first iteration is **not a cold-cache measurement**: remote caches may
 already contain results and the cluster lane may restore a disk snapshot.
-Later iterations keep the same hosted runner and Bazel process. This workflow
-does not use the cluster's persistent Bazel/Nix client volumes or retain a hosted
-runner's JVM across workflow runs. Measure a persistent client separately
-before attributing a speedup to those features.
+Later iterations retain the same client and Bazel process. The cluster lane
+also preserves that client state across workflow runs; the hosted baseline
+starts on a fresh runner. Cache state and resource capacity differ between the
+lanes, so results measure the complete CI setup.
 
 ## Configuration and trust
 
@@ -44,7 +44,7 @@ environment variables:
 | `NATIVELINK_CLUSTER_WORKER_IMAGE` | Exact image property advertised by the worker pool |
 
 The cluster lane reserves 1,000 CPU units, 2,000,000 KB memory and 1,000,000 KB
-disk per action, with at most 12 concurrent jobs. Those values must fit the
+disk per action, with at most 48 concurrent jobs. Those values must fit the
 configured pool. A missing key stops the build without an anonymous fallback.
 
 The credential helper reads the key from its environment and returns it only
@@ -54,6 +54,31 @@ shell tracing, dump the environment, or upload raw BEP/log/profile files.
 Rotate or revoke this dedicated key through the API and GitHub environment.
 The credential-helper protocol is defined in the
 [Bazel design](https://github.com/bazelbuild/proposals/blob/main/designs/2022-06-07-bazel-credential-helpers.md).
+
+## Retained client access
+
+The cluster job uses GitHub OIDC and a dedicated federated service account,
+restricted to this exact workflow, repository identity, environment and trusted
+branches. Its Kubernetes role permits inspecting and executing in one named
+client pod; it cannot read Secrets or execute in database/worker pods. No GCP
+service account key or developer cluster credentials are distributed.
+
+Configure `NL_GCP_PROVIDER`, `NL_GCP_SERVICE_ACCOUNT`, `NL_GKE_SERVER`,
+`NL_GKE_CA_DATA`, `NL_GKE_NAMESPACE`, and `NL_GKE_POD` as environment variables.
+The API address and CA are configuration, not credentials. The exec plugin
+exchanges the job's identity for a short-lived token in memory. The generated
+cluster configuration contains only the server, CA and plugin path.
+
+The dispatch sends the build key through encrypted stdin, never through command
+arguments or a key file. It forwards only selected build variables, excluding
+GitHub and OIDC credentials. The retained checkout rejects tracked edits before
+switching to the exact commit, and a file lock permits only one active job. The
+persistent client is for trusted serialized code, with no Kubernetes service
+account token mounted. A bounded process timeout limits an abandoned dispatch.
+
+The timeout test also distinguishes a terminated zombie from a live child.
+That expectation issue was discovered during a soak test in our systems; host
+reaping timing must not decide whether the worker terminated the process.
 
 ## Reading results
 

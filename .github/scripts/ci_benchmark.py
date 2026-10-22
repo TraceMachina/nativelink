@@ -86,7 +86,11 @@ def configuration(lane, environ):
                   "--remote_default_exec_properties=cpu_count=1000",
                   "--remote_default_exec_properties=memory_kb=2000000",
                   "--remote_default_exec_properties=disk_kb=1000000",
-                  "--remote_upload_local_results=true", "--jobs=12"]
+                  "--remote_upload_local_results=true", "--jobs=48"]
+        if environ.get("NL_PERSISTENT_CACHE"):
+            root = environ["NL_PERSISTENT_CACHE"]
+            flags += [f"--disk_cache={root}/cache/actions",
+                      f"--repository_cache={root}/cache/repositories"]
     else:
         flags += ["--remote_upload_local_results=false"]
     return flags, " ".join(endpoints)
@@ -115,7 +119,11 @@ def run(args):
         for index in range(args.repetitions):
             bep = Path(temporary) / "events.json"
             invocation = str(uuid.uuid4())
-            command = ["nix", "develop", "--impure", "--command", "bazel", "test", "//...",
+            startup = []
+            if environ.get("NL_PERSISTENT_CACHE"):
+                startup = [f"--output_user_root={environ['NL_PERSISTENT_CACHE']}/bazel-ci",
+                           "--max_idle_secs=0", "--host_jvm_args=-Xmx4g"]
+            command = ["nix", "develop", "--impure", "--command", "bazel", *startup, "test", "//...",
                        *flags, f"--invocation_id={invocation}", f"--build_event_json_file={bep}"]
             before = time.monotonic()
             status = execute(command, environ)
@@ -172,7 +180,7 @@ def compare(directory):
     print("\nFirst-run cache state is pre-existing/unknown, not cold. Warm repeats retain the same "
           "client process and test-result caching. Baseline uses the current staging cache in "
           "read-only mode; cluster uses its separate writable cache and warm execution workers. "
-          "Hosted clients do not reuse the cluster's Bazel/Nix PVCs. Build and test time is combined; "
+          "The cluster client retains its Bazel and Nix state between runs. Build and test time is combined; "
           "setup excludes runner queue time and cache-save teardown. Cache-layer counts are in the JSON "
           "artifacts; cached tests overlap action reuse and are not added to it.")
 

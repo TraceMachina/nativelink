@@ -13,9 +13,47 @@ from unittest.mock import patch
 
 import benchmark_credentials
 import ci_benchmark
+import cluster_ci
+import cluster_credentials
 
 
 class BenchmarkTest(unittest.TestCase):
+    def test_dispatch_payload_excludes_other_job_credentials(self):
+        env = {name: 'value' for name in ('NL_API_KEY', 'NL_CLUSTER_ENDPOINT', 'NL_CLUSTER_BEP_ENDPOINT',
+               'NL_INSTANCE', 'NL_RESULTS_URL', 'NL_WORKER_IMAGE', 'BENCHMARK_STARTED')}
+        env.update(GITHUB_SHA='a' * 40, GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
+                   GITHUB_TOKEN='never-forward', ACTIONS_ID_TOKEN_REQUEST_TOKEN='never-forward')
+        result = cluster_ci.payload(env, 3)
+        self.assertNotIn('never-forward', json.dumps(result))
+        self.assertEqual(result['NL_SUMMARY_DIRECTORY'], '/workspace/ci-results/123-1')
+        self.assertEqual(result['NL_PERSISTENT_CACHE'], '/workspace')
+
+    def test_federation_keeps_tokens_out_of_kubeconfig(self):
+        env = {'NL_GCP_PROVIDER': 'projects/123/locations/global/workloadIdentityPools/ci/providers/github',
+               'NL_GCP_SERVICE_ACCOUNT': 'ci-test@example.iam.gserviceaccount.com',
+               'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://example.actions.githubusercontent.com/token?x=1',
+               'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'request-secret', 'NL_GKE_SERVER': 'https://cluster.example',
+               'NL_GKE_CA_DATA': 'public-ca', 'NL_GKE_NAMESPACE': 'test'}
+        responses = [{'value': 'identity-secret'}, {'access_token': 'sts-secret'},
+                     {'accessToken': 'short-lived-secret', 'expireTime': '2026-10-22T23:00:00Z'}]
+        with patch.object(cluster_credentials, 'request_json', side_effect=responses) as request:
+            result = cluster_credentials.credential(env)
+        self.assertEqual(result['status']['token'], 'short-lived-secret')
+        self.assertIn('audience=', request.call_args_list[0].args[0])
+        self.assertEqual(request.call_args_list[1].args[2]['subjectToken'], 'identity-secret')
+        config = json.dumps(cluster_ci.kubeconfig(env))
+        for secret in ('request-secret', 'identity-secret', 'sts-secret', 'short-lived-secret'):
+            self.assertNotIn(secret, config)
+        self.assertNotIn('token', cluster_ci.kubeconfig(env)['users'][0]['user'])
+
+    def test_oidc_rejects_untrusted_token_destinations(self):
+        env = {'NL_GCP_PROVIDER': 'projects/123/locations/global/workloadIdentityPools/ci/providers/github',
+               'NL_GCP_SERVICE_ACCOUNT': 'ci-test@example.iam.gserviceaccount.com',
+               'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://evil.example/token'}
+        with patch.object(cluster_credentials, 'request_json') as request, self.assertRaises(ValueError):
+            cluster_credentials.credential(env)
+        request.assert_not_called()
+
     def test_total_reuse_counts_local_hits_once_and_uses_spawn_outcomes(self):
         # One action may spawn multiple processes; total-internal is not a
         # valid denominator. Test-result hits must not be added again either.
@@ -69,7 +107,7 @@ class BenchmarkTest(unittest.TestCase):
                "NL_WORKER_IMAGE": "image@sha256:123"}
         flags, endpoints = ci_benchmark.configuration("cluster", env)
         self.assertNotIn(env["NL_API_KEY"], " ".join(flags) + endpoints)
-        self.assertGreater(flags.index("--jobs=12"), flags.index("--config=nl-rbe"))
+        self.assertGreater(flags.index("--jobs=48"), flags.index("--config=nl-rbe"))
         with self.assertRaises(ValueError):
             ci_benchmark.configuration("cluster", {**env, "NL_API_KEY": ""})
 
