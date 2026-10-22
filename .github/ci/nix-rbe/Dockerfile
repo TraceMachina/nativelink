@@ -21,3 +21,8 @@ RUN set -eu \
        done) \
     && ln -s "$stdcxx" "$glibc/libstdc++.so.6" \
     && ln -s "$(dirname "$stdcxx")/libgcc_s.so.1" "$glibc/libgcc_s.so.1"
+
+# The runner checks the workspace out as uid 1001 but the job runs as root,
+# so libgit2 refuses to open it and every flake fetch fails. The system file
+# is the one Nix reads: HOME points at /github/home, which root does not own.
+RUN printf '[safe]\n\tdirectory = *\n' > /etc/gitconfig
