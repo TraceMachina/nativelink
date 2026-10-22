@@ -85,14 +85,32 @@ async fn test_namespaces_supported() -> Result<(), Error> {
 /// Runs the issue #3003 shape inside the namespaces: fork a child, then
 /// look it up under /proc by the PID the fork returned. The script prints
 /// what PID 1 is, the child's command line as /proc reports it, and how
-/// many processes /proc lists.
+/// many processes /proc lists. Right after the fork the child may still
+/// be the shell, not yet exec'd into sleep, so the script gives it up to
+/// five seconds to get there before reading the command line it reports.
 const PROC_SCRIPT: &str = "\
     init=$(cat /proc/1/comm); \
     sleep 30 & child=$!; \
+    i=0; \
+    until [ \"$(tr '\\0' ' ' < /proc/$child/cmdline)\" = 'sleep 30 ' ] || [ $i -ge 500 ]; do \
+        i=$((i + 1)); sleep 0.01; \
+    done; \
     cmdline=$(tr '\\0' ' ' < /proc/$child/cmdline); \
     listed=$(ls -d /proc/[0-9]* | wc -l); \
     kill $child; \
     echo \"$init|$cmdline|$listed\"";
+
+/// The `/proc` mounts of this process's mount namespace, one mountinfo
+/// line each. A fresh `/proc` that escaped an action's private namespace
+/// would show up here as an extra one.
+fn host_proc_mounts() -> Result<Vec<String>, Error> {
+    Ok(std::fs::read_to_string("/proc/self/mountinfo")
+        .err_tip(|| "Reading /proc/self/mountinfo")?
+        .lines()
+        .filter(|line| line.split(' ').nth(4) == Some("/proc"))
+        .map(String::from)
+        .collect())
+}
 
 /// Checks the output of [`PROC_SCRIPT`]: /proc belongs to the action's PID
 /// namespace, where the shell is PID 1, the forked child is the sleep, and
@@ -128,6 +146,7 @@ async fn test_configure_namespace_proc_matches_pid_namespace() -> Result<(), Err
         return Ok(());
     }
 
+    let proc_mounts_before = host_proc_mounts()?;
     let root_dir = CString::new("/tmp").unwrap();
     let action_dir = CString::new("/tmp/action").unwrap();
     let mut command = Command::new("sh");
@@ -141,11 +160,10 @@ async fn test_configure_namespace_proc_matches_pid_namespace() -> Result<(), Err
     let output = command.output()?;
     assert_proc_is_the_actions(&output);
 
-    // The mount was private to the action: here /proc is still the host's.
-    let host_init = std::fs::read_to_string("/proc/1/comm").err_tip(|| "Reading /proc/1/comm")?;
-    assert_ne!(
-        "sh",
-        host_init.trim(),
+    // The mount was private to the action: here /proc is what it was.
+    assert_eq!(
+        proc_mounts_before,
+        host_proc_mounts()?,
         "The action's /proc leaked to the host"
     );
     Ok(())
