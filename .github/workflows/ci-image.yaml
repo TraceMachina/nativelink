@@ -1,0 +1,37 @@
+name: CI / Publish Nix RBE image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/ci/nix-rbe/**"
+      - ".github/workflows/ci-image.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and publish
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/nativelink-ci
+        run: |
+          set -euo pipefail
+          docker build \
+            --file .github/ci/nix-rbe/Dockerfile \
+            --tag "$IMAGE:nix-rbe" \
+            --tag "$IMAGE:nix-rbe-${GITHUB_SHA}" \
+            .
+          docker push "$IMAGE:nix-rbe"
+          docker push "$IMAGE:nix-rbe-${GITHUB_SHA}"

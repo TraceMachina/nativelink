@@ -215,9 +215,8 @@ jobs:
     runs-on: ubuntu-24.04
     # PoC: avoid installing Nix separately in every RBE matrix job.
     container:
-      # Nixery adds the Node runtime required by JavaScript Actions such as
-      # actions/checkout, which the upstream nix image does not provide.
-      image: nixery.dev/shell/nix/git/nodejs/curl@sha256:ebe524d5b65fe708a7a3f16bd319b5a508947c882672c527f28460edb0d881eb
+      # Published by CI / Publish Nix RBE image from the repository itself.
+      image: ghcr.io/tracemachina/nativelink-ci:nix-rbe
       env:
         NIX_CONFIG: experimental-features = nix-command flakes
     timeout-minutes: 45
