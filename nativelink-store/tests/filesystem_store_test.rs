@@ -182,6 +182,10 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<H
         self.inner.as_ref().unwrap().len()
     }
 
+    fn content_len(&self) -> u64 {
+        self.inner.as_ref().unwrap().content_len()
+    }
+
     fn is_empty(&self) -> bool {
         self.inner.as_ref().unwrap().is_empty()
     }
@@ -1353,6 +1357,68 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
     store.update_oneshot(digest_5kb, value_5kb.into()).await?;
     let long_entry = store.get_file_entry_for_digest(&digest_5kb).await?;
     assert_eq!(long_entry.size_on_disk(), 8 * 1024);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_reports_content_length_while_eviction_counts_size_on_disk() -> Result<(), Error> {
+    const BLOCK_SIZE: u64 = 4 * 1024;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    let value_5kb: String = "xabcd".repeat(1024);
+    let digest_5kb = DigestInfo::try_new(HASH2, value_5kb.len())?;
+    store.update_oneshot(digest_5kb, value_5kb.into()).await?;
+    store
+        .update_oneshot(StoreKey::new_str("action_result"), "x".repeat(538).into())
+        .await?;
+    assert_eq!(
+        store
+            .get_file_entry_for_digest(&digest_5kb)
+            .await?
+            .size_on_disk(),
+        2 * BLOCK_SIZE
+    );
+    assert_eq!(
+        store.has(digest_5kb).await?,
+        Some(5 * 1024),
+        "has() must report the content length, not the size on disk"
+    );
+    assert_eq!(
+        store.has(StoreKey::new_str("action_result")).await?,
+        Some(538)
+    );
+    assert_eq!(store.has(StoreKey::new_str("missing")).await?, None);
+
+    // Room for two one-block entries: the third pushes the total to max_bytes
+    // and evicts the oldest. Counted by content length (1 + 2 + 3 bytes) all
+    // three would stay.
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        eviction_policy: Some(EvictionPolicy {
+            max_bytes: usize::try_from(3 * BLOCK_SIZE).unwrap(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let digests = [1, 2, 3].map(|size| DigestInfo::try_new(HASH1, size).unwrap());
+    for digest in digests {
+        let data = make_random_data(usize::try_from(digest.size_bytes()).unwrap());
+        store.update_oneshot(digest, data.into()).await?;
+    }
+    assert_eq!(
+        store.has(digests[0]).await?,
+        None,
+        "each entry counts as a full block for eviction, so the oldest was evicted"
+    );
+    assert_eq!(store.has(digests[1]).await?, Some(2));
+    assert_eq!(store.has(digests[2]).await?, Some(3));
     Ok(())
 }
 
