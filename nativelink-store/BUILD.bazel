@@ -223,6 +223,7 @@ rust_test_suite(
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",
+        "@crates//:rcgen",
         "@crates//:redis",
         "@crates//:redis-test",
         "@crates//:regex",
