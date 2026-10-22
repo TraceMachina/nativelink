@@ -241,6 +241,7 @@ rust_test_suite(
         "@crates//:tracing-test",
         "@crates//:url",
         "@crates//:uuid",
+        "@crates//:webpki-roots",
         "@crates//:wincode",
         "@crates//:zip",
     ],

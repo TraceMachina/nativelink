@@ -731,6 +731,12 @@ impl LenEntry for FileEntryImpl {
         self.size_on_disk()
     }
 
+    /// The file's actual length; `len()` is rounded up to whole blocks.
+    #[inline]
+    fn content_len(&self) -> u64 {
+        self.data_size
+    }
+
     fn is_empty(&self) -> bool {
         self.data_size == 0
     }

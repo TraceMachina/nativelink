@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use core::ops::Bound;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,7 +35,7 @@ use nativelink_scheduler::awaited_action_db::{
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::simple_scheduler_state_manager::{
-    SimpleSchedulerStateManager, TimeoutCause,
+    LISTING_READ_CONCURRENCY, SimpleSchedulerStateManager, TimeoutCause,
 };
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_registry::WorkerRegistry;
@@ -48,7 +49,7 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
-    OperationStageFlags, UpdateOperationType, WorkerStateManager,
+    OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::{Notify, mpsc};
@@ -1548,6 +1549,277 @@ async fn executing_sweep_lost_result_counts_against_max_job_retries() -> Result<
             .iter()
             .any(|m| m.contains("never reached the scheduler")),
         "the failure names the lost result: {err:?}"
+    );
+    Ok(())
+}
+
+/// How many record reads a listing has in flight, and the most it ever had.
+#[derive(Default)]
+struct ReadGauge {
+    in_flight: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+/// A subscriber whose first record read takes `delay`, counted on the
+/// gauge, as the Redis subscriber's keepalive round trip does; later reads
+/// come from its copy, as they do there.
+struct Slow<S> {
+    inner: S,
+    delay: Duration,
+    read_once: AtomicBool,
+    gauge: Arc<ReadGauge>,
+}
+
+impl<S: AwaitedActionSubscriber> AwaitedActionSubscriber for Slow<S> {
+    async fn changed(&mut self) -> Result<AwaitedAction, Error> {
+        self.inner.changed().await
+    }
+
+    async fn borrow(&self) -> Result<AwaitedAction, Error> {
+        if !self.read_once.swap(true, Ordering::SeqCst) {
+            let now = self.gauge.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.gauge.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.gauge.in_flight.fetch_sub(1, Ordering::SeqCst);
+        }
+        self.inner.borrow().await
+    }
+}
+
+/// The memory database behind a slow store: the record a listing hands back
+/// first takes the longest to read, so reads finished out of order show up
+/// as a listing out of order.
+struct SlowDb<T: AwaitedActionDb> {
+    inner: T,
+    gauge: Arc<ReadGauge>,
+}
+
+impl<T: AwaitedActionDb> MetricsComponent for SlowDb<T> {
+    fn publish(
+        &self,
+        kind: MetricKind,
+        field_metadata: MetricFieldData,
+    ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+        self.inner.publish(kind, field_metadata)
+    }
+}
+
+impl<T: AwaitedActionDb> SlowDb<T> {
+    fn slow(&self, subscriber: T::Subscriber, delay: Duration) -> Slow<T::Subscriber> {
+        Slow {
+            inner: subscriber,
+            delay,
+            read_once: AtomicBool::new(false),
+            gauge: self.gauge.clone(),
+        }
+    }
+
+    fn slow_listing(
+        &self,
+        listed: Vec<Result<T::Subscriber, Error>>,
+    ) -> Vec<Result<Slow<T::Subscriber>, Error>> {
+        let n = listed.len();
+        listed
+            .into_iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let delay = Duration::from_millis(u64::try_from(n - i).expect("fits"));
+                item.map(|subscriber| self.slow(subscriber, delay))
+            })
+            .collect()
+    }
+}
+
+impl<T: AwaitedActionDb> AwaitedActionDb for SlowDb<T> {
+    type Subscriber = Slow<T::Subscriber>;
+
+    async fn get_awaited_action_by_id(
+        &self,
+        client_operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        Ok(self
+            .inner
+            .get_awaited_action_by_id(client_operation_id)
+            .await?
+            .map(|subscriber| self.slow(subscriber, Duration::ZERO)))
+    }
+
+    async fn get_all_awaited_actions(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let listed: Vec<_> = self.inner.get_all_awaited_actions().await?.collect().await;
+        Ok(stream::iter(self.slow_listing(listed)))
+    }
+
+    async fn get_by_operation_id(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<Self::Subscriber>, Error> {
+        Ok(self
+            .inner
+            .get_by_operation_id(operation_id)
+            .await?
+            .map(|subscriber| self.slow(subscriber, Duration::ZERO)))
+    }
+
+    async fn get_range_of_actions(
+        &self,
+        state: SortedAwaitedActionState,
+        start: Bound<SortedAwaitedAction>,
+        end: Bound<SortedAwaitedAction>,
+        desc: bool,
+    ) -> Result<impl Stream<Item = Result<Self::Subscriber, Error>> + Send, Error> {
+        let listed: Vec<_> = self
+            .inner
+            .get_range_of_actions(state, start, end, desc)
+            .await?
+            .collect()
+            .await;
+        Ok(stream::iter(self.slow_listing(listed)))
+    }
+
+    async fn update_awaited_action(&self, new_awaited_action: AwaitedAction) -> Result<(), Error> {
+        self.inner.update_awaited_action(new_awaited_action).await
+    }
+
+    async fn add_action(
+        &self,
+        client_operation_id: OperationId,
+        action_info: Arc<ActionInfo>,
+        no_event_action_timeout: Duration,
+    ) -> Result<Self::Subscriber, Error> {
+        let subscriber = self
+            .inner
+            .add_action(client_operation_id, action_info, no_event_action_timeout)
+            .await?;
+        Ok(self.slow(subscriber, Duration::ZERO))
+    }
+}
+
+fn slow_state_manager(
+    gauge: Arc<ReadGauge>,
+) -> Arc<
+    SimpleSchedulerStateManager<
+        impl AwaitedActionDb,
+        MockInstantWrapped,
+        fn() -> MockInstantWrapped,
+    >,
+> {
+    let task_change_notify = Arc::new(Notify::new());
+    SimpleSchedulerStateManager::new(
+        5,
+        WORKER_TIMEOUT,
+        Duration::from_mins(5),
+        MAX_EXECUTING,
+        SlowDb {
+            inner: memory_awaited_action_db_factory(
+                0,
+                &task_change_notify,
+                MockInstantWrapped::default,
+            ),
+            gauge,
+        },
+        MockInstantWrapped::default,
+        Some(Arc::new(WorkerRegistry::new())),
+    )
+}
+
+/// Queues actions with priorities `0..n` and returns their client listeners.
+async fn add_prioritised_actions(
+    state_mgr: &impl ClientStateManager,
+    n: i32,
+) -> Result<Vec<Box<dyn ActionStateResult>>, Error> {
+    let mut clients = Vec::new();
+    for priority in 0..n {
+        let mut info = action_info(make_system_time(0));
+        info.priority = priority;
+        clients.push(
+            state_mgr
+                .add_action(OperationId::default(), Arc::new(info))
+                .await?,
+        );
+    }
+    Ok(clients)
+}
+
+/// The listing reads its records many at a time, since on a Redis backend
+/// each read is a round trip, and still hands them back in the store's
+/// order, highest priority first.
+#[nativelink_test]
+async fn the_listing_reads_records_concurrently_in_the_stores_order() -> Result<(), Error> {
+    const QUEUE: i32 = 100;
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let gauge = Arc::new(ReadGauge::default());
+    let state_mgr = slow_state_manager(gauge.clone());
+    // Kept so the clients count as waiting.
+    let _clients = add_prioritised_actions(state_mgr.as_ref(), QUEUE).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        },
+    )
+    .await?
+    .collect::<Vec<_>>()
+    .await;
+    let mut priorities = Vec::with_capacity(listed.len());
+    for operation in &listed {
+        priorities.push(operation.as_action_info().await?.0.priority);
+    }
+    let expected: Vec<i32> = (0..QUEUE).rev().collect();
+    assert_eq!(priorities, expected, "the listing keeps the store's order");
+    assert_eq!(
+        gauge.peak.load(Ordering::SeqCst),
+        LISTING_READ_CONCURRENCY,
+        "the reads run this many at a time"
+    );
+    Ok(())
+}
+
+/// The memory store's listing is read whole, under one hold of the store's
+/// lock taken when the listing is requested, and the stream then only hands
+/// out what was read. The lock must not be taken inside the stream: the
+/// filter pass reads rows 64 at a time, so while it hands rows on it keeps
+/// asking the listing for more, and a lock wait that asking starts is
+/// parked inside the stream, polled again only when the next row is asked
+/// for. Once that wait has been starved past async-lock's fairness
+/// threshold the lock is reserved for it, and when the matcher then writes
+/// for a row it was handed, on the same task, it waits for the same lock:
+/// nothing polls the parked wait, and the scheduler stops for good. Reading
+/// lazily was how that wait got into the stream; a row added after the
+/// listing was requested is therefore not in it.
+#[nativelink_test]
+async fn the_listing_is_read_whole_when_it_is_requested() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    // Kept so the clients count as waiting.
+    let _clients = add_prioritised_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        },
+    )
+    .await?;
+    // Added after the listing was requested, before any of it was read.
+    let _late = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+
+    let listed: Vec<_> = listed.collect().await;
+    assert_eq!(
+        listed.len(),
+        3,
+        "the listing holds what was there when it was requested"
     );
     Ok(())
 }
