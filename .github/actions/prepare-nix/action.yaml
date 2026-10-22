@@ -7,10 +7,6 @@ inputs:
   skip_free_disk:
     required: false
     default: "false"
-  nix_preinstalled:
-    description: "Skip installing Nix when the job runs in a Nix container."
-    required: false
-    default: "false"
 runs:
   using: "composite"
   steps:
@@ -19,7 +15,6 @@ runs:
       if: ${{ inputs.skip_free_disk != 'true' }}
 
     - name: Install Nix
-      if: ${{ inputs.nix_preinstalled != 'true' }}
       # Stay on the Determinate installer: the nix-quick-install switch (Nix
       # 2.34.7) makes the nix2container multi-arch image publish fail with a
       # layer digest mismatch. See the tagged image workflow.
