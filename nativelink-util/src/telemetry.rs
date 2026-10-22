@@ -135,13 +135,8 @@ pub async fn init_tracing() -> Result<(), Error> {
     let channels = load_balanced_channels().await?;
 
     // Logs
-    let mut log_exporter_builder = LogExporter::builder().with_tonic();
-    if let Some(channel) = channels.logs {
-        log_exporter_builder = log_exporter_builder.with_channel(channel.into());
-    }
-    if let Some(tls_config) = exporter_tls_config("LOGS")? {
-        log_exporter_builder = log_exporter_builder.with_tls_config(tls_config);
-    }
+    let log_exporter_builder =
+        with_transport(LogExporter::builder().with_tonic(), channels.logs, "LOGS")?;
     let otlp_log_layer = OpenTelemetryTracingBridge::new(
         &SdkLoggerProvider::builder()
             .with_resource(resource.clone())
@@ -157,13 +152,11 @@ pub async fn init_tracing() -> Result<(), Error> {
     .with_filter(otlp_filter());
 
     // Traces
-    let mut span_exporter_builder = SpanExporter::builder().with_tonic();
-    if let Some(channel) = channels.traces {
-        span_exporter_builder = span_exporter_builder.with_channel(channel.into());
-    }
-    if let Some(tls_config) = exporter_tls_config("TRACES")? {
-        span_exporter_builder = span_exporter_builder.with_tls_config(tls_config);
-    }
+    let span_exporter_builder = with_transport(
+        SpanExporter::builder().with_tonic(),
+        channels.traces,
+        "TRACES",
+    )?;
     let otlp_trace_layer = layer()
         .with_tracer(
             SdkTracerProvider::builder()
@@ -181,13 +174,11 @@ pub async fn init_tracing() -> Result<(), Error> {
         .with_filter(otlp_filter());
 
     // Metrics
-    let mut metric_exporter_builder = MetricExporter::builder().with_tonic();
-    if let Some(channel) = channels.metrics {
-        metric_exporter_builder = metric_exporter_builder.with_channel(channel.into());
-    }
-    if let Some(tls_config) = exporter_tls_config("METRICS")? {
-        metric_exporter_builder = metric_exporter_builder.with_tls_config(tls_config);
-    }
+    let metric_exporter_builder = with_transport(
+        MetricExporter::builder().with_tonic(),
+        channels.metrics,
+        "METRICS",
+    )?;
     let meter_provider = SdkMeterProvider::builder()
         .with_resource(resource)
         .with_periodic_exporter(
@@ -455,6 +446,27 @@ fn exporter_tls_config(signal: &str) -> Result<Option<ClientTlsConfig>, Error> {
     Ok(Some(
         otlp_tls_config(Some(signal))?.unwrap_or_else(system_roots_tls_config),
     ))
+}
+
+/// Gives the exporter builder for `signal` its transport: the channel
+/// [`NL_OTEL_ENDPOINT`] supplied, which carries its own TLS configuration,
+/// or else the TLS configuration the signal's own endpoint calls for. With
+/// a channel the SDK's endpoint is ignored, so it is not examined either:
+/// an `OTEL_EXPORTER_OTLP_ENDPOINT` left pointing at an `https://`
+/// collector, with a certificate file that is no longer there, must not
+/// stop a process that is not going to connect to it.
+fn with_transport<B: WithTonicConfig>(
+    builder: B,
+    channel: Option<LoadBalancedChannel>,
+    signal: &str,
+) -> Result<B, Error> {
+    if let Some(channel) = channel {
+        return Ok(builder.with_channel(channel.into()));
+    }
+    Ok(match exporter_tls_config(signal)? {
+        Some(tls_config) => builder.with_tls_config(tls_config),
+        None => builder,
+    })
 }
 /// This is the header that bazel sends when using the `--remote_header` flag.
 /// TODO(palfrey): Bazel supports other headers, and we should optimize their usage.
@@ -1084,6 +1096,59 @@ mod tests {
             traces.unwrap().is_none(),
             "the default endpoint is plaintext"
         );
+    }
+
+    // An exporter handed the NL_OTEL_ENDPOINT channel sends on that channel,
+    // so the SDK endpoint it would otherwise use, and that endpoint's
+    // certificate variables, are not examined: a stale https endpoint with
+    // a missing CA file used to stop startup although nothing was going to
+    // connect to it.
+    #[serial(env)]
+    #[nativelink_test("crate")]
+    async fn supplied_channel_skips_the_sdk_endpoints_tls_configuration() {
+        clear_otlp_tls_env();
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.pem").to_str().unwrap().to_string();
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "https://unused.example:4317") };
+        // SAFETY: `#[serial(env)]` serializes all env-var writes across tests.
+        unsafe { env::set_var("OTEL_EXPORTER_OTLP_CERTIFICATE", &missing) };
+        // Without a channel the exporter would connect to that endpoint, so
+        // its missing CA file is an error.
+        let own_connection = with_transport(SpanExporter::builder().with_tonic(), None, "TRACES");
+        let channel = if dns_configured() {
+            LoadBalancedChannel::builder(("localhost", 4317))
+                .channel()
+                .await
+                .ok()
+        } else {
+            eprintln!(
+                "Skipping the supplied-channel assertion: no DNS configuration \
+                 available (e.g. sandboxed Nix build)"
+            );
+            None
+        };
+        let supplied = channel.map(|channel| {
+            with_transport(
+                SpanExporter::builder().with_tonic(),
+                Some(channel),
+                "TRACES",
+            )
+        });
+        clear_otlp_tls_env();
+        assert_eq!(
+            own_connection
+                .expect_err("the missing CA file is an error for an exporter that would use it")
+                .code,
+            Code::InvalidArgument
+        );
+        if let Some(supplied) = supplied {
+            assert!(
+                supplied.is_ok(),
+                "a supplied channel must not read the ignored endpoint's variables: {:?}",
+                supplied.err()
+            );
+        }
     }
 
     #[test]
