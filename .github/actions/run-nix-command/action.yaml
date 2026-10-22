@@ -1,0 +1,43 @@
+name: Run Nix command
+description: Prepare the Nix worker, run one command, and always tear it down.
+inputs:
+  command:
+    description: Command to run after Nix has been prepared.
+    required: true
+  working-directory:
+    description: Directory from which to run the command.
+    required: false
+    default: .
+  nix-name:
+    description: Optional Nix attribute to push to Attic during teardown.
+    required: false
+    default: ""
+  skip-free-disk:
+    description: Skip the disk cleanup performed by prepare-nix.
+    required: false
+    default: "false"
+  nativelink-attic-token:
+    description: Attic token used by the Nix setup and teardown actions.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Prepare Nix worker
+      uses: ./.github/actions/prepare-nix
+      with:
+        nativelink_attic_token: ${{ inputs.nativelink-attic-token }}
+        skip_free_disk: ${{ inputs.skip-free-disk }}
+
+    - name: Run Nix command
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        NIX_COMMAND: ${{ inputs.command }}
+      run: bash -c "$NIX_COMMAND"
+      shell: bash -euo pipefail {0}
+
+    - name: Teardown Nix worker
+      uses: ./.github/actions/end-nix
+      if: always()
+      with:
+        nix_name: ${{ inputs.nix-name }}
+        nativelink_attic_token: ${{ inputs.nativelink-attic-token }}

@@ -136,25 +136,22 @@ jobs:
         with:
           ref: ${{ needs.check-trigger.outputs.pr_sha }}
 
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-
       - id: version
         uses: ./.github/actions/generate-version
 
       - name: Upload image
-        uses: ./.github/actions/test-and-upload-image
+        uses: ./.github/actions/publish-image
         with:
           testing: false
           image: ${{ needs.check-trigger.outputs.image }}
           multi-arch: ${{ needs.check-trigger.outputs.multi-arch }}
           components: ${{ needs.check-trigger.outputs.components }}
           tag: ${{ steps.version.outputs.version-string }}
-          GHCR_USERNAME: ${{ vars.GHCR_PUBLISH_USER }}
-          GHCR_PASSWORD: ${{ secrets.GHCR_PUBLISH_TOKEN }}
+          ghcr-username: ${{ vars.GHCR_PUBLISH_USER }}
+          ghcr-password: ${{ secrets.GHCR_PUBLISH_TOKEN }}
           force-push: true
+          nix-name: .#${{ needs.check-trigger.outputs.image }}
+          nativelink-attic-token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
       - name: Output image info
         run: |
@@ -181,9 +178,3 @@ jobs:
             } catch (e) {
               core.warning(`Could not post comment: ${e.message}`);
             }
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}

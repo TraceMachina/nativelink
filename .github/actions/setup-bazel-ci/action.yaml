@@ -1,0 +1,55 @@
+name: Set up Bazel CI
+description: Set up disk space, NativeLink Cloud, and Bazel's local caches.
+inputs:
+  ci-mode:
+    description: NativeLink Cloud CI mode.
+    required: false
+    default: ""
+  claim-base:
+    required: false
+    default: ""
+  bes-results-url:
+    required: false
+    default: ""
+  api-key:
+    required: false
+    default: ""
+  mode:
+    required: false
+    default: read
+  exec:
+    required: false
+    default: off
+  setup-bazel:
+    description: Whether to install and configure Bazel's local caches.
+    required: false
+    default: "true"
+outputs:
+  cloud-enabled:
+    description: Whether NativeLink Cloud was enabled.
+    value: ${{ steps.cloud.outputs.enabled }}
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      uses: ./.github/actions/free-disk
+
+    - name: Set up NativeLink Cloud
+      id: cloud
+      uses: ./.github/actions/setup-nativelink-cloud
+      with:
+        ci-mode: ${{ inputs.ci-mode }}
+        claim-base: ${{ inputs.claim-base }}
+        bes-results-url: ${{ inputs.bes-results-url }}
+        api-key: ${{ inputs.api-key }}
+        mode: ${{ inputs.mode }}
+        exec: ${{ inputs.exec }}
+
+    - name: Set up Bazel
+      if: inputs.setup-bazel == 'true'
+      uses: >-
+        bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+      with:
+        bazelisk-cache: true
+        repository-cache: true
+        disk-cache: ${{ steps.cloud.outputs.enabled == 'false' }}

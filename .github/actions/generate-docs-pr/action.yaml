@@ -1,0 +1,86 @@
+name: Generate docs and open PR
+description: Run a Nix-backed docs generator and open or update its maintenance PR.
+inputs:
+  command:
+    description: Generator command to run inside the web Nix development shell.
+    required: true
+  working-directory:
+    required: false
+    default: web
+  changed-path:
+    description: Path whose changes should be committed.
+    required: true
+  branch:
+    required: true
+  commit-message:
+    required: true
+  pr-title:
+    required: true
+  pr-body:
+    required: true
+  nix-name:
+    required: false
+    default: ""
+  nativelink-attic-token:
+    required: true
+  workflow-pr-token:
+    description: Token used to create a PR whose checks can run.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Prepare Nix worker
+      uses: ./.github/actions/prepare-nix
+      with:
+        nativelink_attic_token: ${{ inputs.nativelink-attic-token }}
+
+    - name: Generate documentation
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GENERATOR_COMMAND: ${{ inputs.command }}
+      run: nix develop --impure --command bash -c "$GENERATOR_COMMAND"
+      shell: bash -euo pipefail {0}
+
+    - name: Open auto-merge PR
+      env:
+        GH_TOKEN: ${{ inputs.workflow-pr-token || github.token }}
+        GENERATED_PATH: ${{ inputs.changed-path }}
+        BRANCH: ${{ inputs.branch }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        PR_TITLE: ${{ inputs.pr-title }}
+        PR_BODY: ${{ inputs.pr-body }}
+      run: |
+        set -euo pipefail
+        if [[ -z "$(git status --porcelain -- "${GENERATED_PATH}")" ]]; then
+          echo "Generated documentation is already up to date; nothing to do."
+          exit 0
+        fi
+
+        git config user.name "documentation bot"
+        git config user.email "bot@tracemachina.com"
+        git switch -c "${BRANCH}"
+        git add "${GENERATED_PATH}"
+        git commit -m "${COMMIT_MESSAGE}"
+        git push --force origin "${BRANCH}"
+
+        PR_URL=$(gh pr list --head "${BRANCH}" --base main --state open --json url --jq '.[0].url // empty')
+        if [[ -z "${PR_URL}" ]]; then
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "${BRANCH}" \
+            --title "${PR_TITLE}" \
+            --body "${PR_BODY}")
+        fi
+        echo "PR: ${PR_URL}"
+
+        gh pr merge --auto --squash "${PR_URL}" ||
+          echo "::notice::Auto-merge could not be enabled; merge ${PR_URL} manually."
+      shell: bash -euo pipefail {0}
+
+    - name: Teardown Nix worker
+      uses: ./.github/actions/end-nix
+      if: always()
+      with:
+        nix_name: ${{ inputs.nix-name }}
+        nativelink_attic_token: ${{ inputs.nativelink-attic-token }}
