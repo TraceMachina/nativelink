@@ -1511,5 +1511,7 @@ fn tls_roots_exclude_distrusted_emsign_ecc_root() {
             .any(|window| window == DISTRUSTED_CN)
     });
     assert!(trusted.is_none(), "distrusted root is still trusted");
-    assert!(!webpki_roots::TLS_SERVER_ROOTS.is_empty());
+    // An empty store would make the check above pass without proving the
+    // distrusted root was removed.
+    assert_ne!(webpki_roots::TLS_SERVER_ROOTS, []);
 }
