@@ -222,12 +222,16 @@ jobs:
     # Private package, so the job has to log in. Digest is the manual publish
     # from PR 3008; the version is removed after 2026-10-28T17:00:00Z.
     container:
-      image: ghcr.io/tracemachina/nativelink-ci-experimental:nix-rbe-pr-3008-gha2@sha256:f8f2f97db439dd681462192dc3c4e27309c7529f0f8b2e8e16ef6d37859b1243
+      image: ghcr.io/tracemachina/nativelink-ci-experimental:nix-rbe-pr-3008-warm@sha256:110deb1056a9bc2bb8fa96e6794ab7bd109deafafa74669ad59148844adf43b5
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       env:
         NIX_CONFIG: experimental-features = nix-command flakes
+        # The image warms Nix's fetcher cache under /root. Nix already falls
+        # back here because root does not own /github/home, but attic reads
+        # HOME directly, and the two must agree on where nix.conf lives.
+        HOME: /root
     timeout-minutes: 45
     steps:
       - name: Checkout
