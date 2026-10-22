@@ -517,6 +517,7 @@
                   ps.requests
                 ]);
             };
+            prepare-release = pkgs.callPackage tools/prepare-release.nix {};
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
           }
@@ -587,6 +588,7 @@
               pkgs.pre-commit
               pkgs.git-cliff
               pkgs.buck2
+              packages.prepare-release
               packages.update-module-hashes
               pkgs.python3
 
