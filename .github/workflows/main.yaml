@@ -1,4 +1,4 @@
-name: CI
+name: CI / Integration
 
 # Controls when the workflow will run.
 on:
@@ -87,6 +87,7 @@ jobs:
   #       ' 2>&1 | ( ! grep '         PASSED in ' ) # If we get PASSED without (cache) it means there's a cache issue.
 
   integration-tests:
+    name: Integration tests
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

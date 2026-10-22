@@ -1,5 +1,5 @@
 ---
-name: Cargo Native
+name: CI / Cargo
 
 on:
   # Cargo Native (Linux + Windows) is deferred to a nightly schedule +

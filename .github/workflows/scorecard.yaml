@@ -1,5 +1,5 @@
 ---
-name: Scorecard supply-chain security
+name: Security / Scorecard
 on:
   schedule:
     # Non-peak hour 23:15 on Tuesdays.
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   analysis:
-    name: Scorecard analysis
+    name: Analyze
     runs-on: ubuntu-24.04
     permissions:
       security-events: write

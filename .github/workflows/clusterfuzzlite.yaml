@@ -1,5 +1,5 @@
 ---
-name: ClusterFuzzLite
+name: CI / Fuzz
 
 on:
   pull_request:
@@ -31,6 +31,7 @@ concurrency:
 
 jobs:
   fuzz:
+    name: Fuzz
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
