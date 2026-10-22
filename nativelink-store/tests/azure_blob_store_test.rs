@@ -1515,3 +1515,69 @@ fn tls_roots_exclude_distrusted_emsign_ecc_root() {
     // distrusted root was removed.
     assert_ne!(webpki_roots::TLS_SERVER_ROOTS, []);
 }
+
+#[test]
+fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
+    use rcgen::{
+        BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, PKCS_ECDSA_P384_SHA384,
+        PublicKeyData, SignatureAlgorithm,
+    };
+    use rustls::client::danger::ServerCertVerifier;
+    use rustls::pki_types::{ServerName, UnixTime};
+
+    // The public key of eMudhra's OV TLS CA - G3 (an uncompressed P-384
+    // point), one of the intermediates rustls-webpki distrusts.
+    struct DistrustedKey(Vec<u8>);
+    impl PublicKeyData for DistrustedKey {
+        fn der_bytes(&self) -> &[u8] {
+            &self.0
+        }
+        fn algorithm(&self) -> &'static SignatureAlgorithm {
+            &PKCS_ECDSA_P384_SHA384
+        }
+    }
+    let point = [
+        "0473897aa0eb3cfdca8b12402ffaf0abc4e1212baf8dee778ac9ee2d6db83fac",
+        "280c5e05638ae7a2acd71c322a8e361cdeb9f69c4302b9dd8d73d1cc6caab2cc",
+        "0aee4e216ce979dd518a4af4b626e5684cdd658037ed0c854e4cc12f4cf8646d",
+        "0d",
+    ]
+    .concat();
+    let distrusted_key = DistrustedKey(hex::decode(point).unwrap());
+
+    // RUSTSEC-2026-0382: rustls-webpki before 0.103.16 accepts paths through
+    // emSign intermediates whose private keys are public. A test root issues
+    // one leaf for the distrusted key and a control leaf for a fresh key.
+    let root_key = KeyPair::generate().unwrap();
+    let mut root_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let root = root_params.self_signed(&root_key).unwrap();
+    let issuer = Issuer::new(root_params, root_key);
+    let leaf_params = CertificateParams::new(vec!["distrusted.test".to_string()]).unwrap();
+    let distrusted = leaf_params.signed_by(&distrusted_key, &issuer).unwrap();
+    let control = leaf_params
+        .signed_by(&KeyPair::generate().unwrap(), &issuer)
+        .unwrap();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(root.der().clone()).unwrap();
+    let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(roots),
+        Arc::new(rustls::crypto::ring::default_provider()),
+    )
+    .build()
+    .unwrap();
+    let verify = |leaf: &rcgen::Certificate| {
+        verifier.verify_server_cert(
+            leaf.der(),
+            &[],
+            &ServerName::try_from("distrusted.test").unwrap(),
+            &[],
+            UnixTime::now(),
+        )
+    };
+
+    verify(&control).unwrap();
+    let err = verify(&distrusted).unwrap_err();
+    assert!(format!("{err:?}").contains("CertDistrusted"), "{err:?}");
+}

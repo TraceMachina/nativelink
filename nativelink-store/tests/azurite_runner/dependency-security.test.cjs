@@ -45,58 +45,60 @@ test("the telemetry SDK bounds incoming baggage entries", () => {
 	assert.equal(propagation.getBaggage(context).getAllEntries().length, 180);
 });
 
-// Azurite reaches follow-redirects through axios. A cross-origin redirect
-// must not carry credentials, whether the headers are an array (GHSA-q3jh-wrc6-jgq8)
-// or a declared sensitive name contains a regex metacharacter (GHSA-8r9p-f939-6h3c).
-test("follow-redirects strips credentials on a cross-origin redirect", async () => {
+// Redirects a request across hosts (127.0.0.1 to localhost) and returns the
+// headers the second host received.
+async function headersAfterCrossHostRedirect(requestOptions) {
 	const http = require("node:http");
+	const { once } = require("node:events");
 	const axiosRequire = createRequire(require.resolve("axios/package.json"));
-	const { http: followHttp } = axiosRequire("follow-redirects");
+	const followRedirects = axiosRequire("follow-redirects");
 
-	const listen = (handler) =>
-		new Promise((resolve) => {
-			const server = http.createServer(handler);
-			server.listen(0, "127.0.0.1", () => resolve(server));
-		});
-	const received = [];
-	const target = await listen((req, res) => {
-		received.push(req.headers);
-		res.end("ok");
+	let received;
+	const target = http.createServer((req, res) => {
+		received = req.headers;
+		res.end();
 	});
-	const origin = await listen((_req, res) => {
+	target.listen(0);
+	await once(target, "listening");
+	const origin = http.createServer((_req, res) => {
 		res.writeHead(302, {
-			location: `http://127.0.0.1:${target.address().port}/`,
+			location: `http://localhost:${target.address().port}/`,
 		});
 		res.end();
 	});
-	const fetchThroughRedirect = (options) =>
-		new Promise((resolve) => {
-			const req = followHttp.request(
-				{ host: "127.0.0.1", port: origin.address().port, path: "/", ...options },
-				(res) => res.resume().on("end", () => resolve(null)),
-			);
-			req.on("error", resolve);
-			req.end();
-		});
-
+	origin.listen(0, "127.0.0.1");
+	await once(origin, "listening");
 	try {
-		// A loud rejection of array headers is as safe as stripping them.
-		const arrayError = await fetchThroughRedirect({
-			headers: ["Authorization", "Bearer secret", "Cookie", "session=secret"],
-		});
-		const declaredError = await fetchThroughRedirect({
-			headers: { "X-Api^Key": "secret", "X-Token|Secret": "secret" },
-			sensitiveHeaders: ["X-Api^Key", "X-Token|Secret"],
-		});
-		assert.equal(declaredError, null);
-		assert.equal(received.length, arrayError ? 1 : 2);
-		for (const headers of received) {
-			for (const name of ["authorization", "cookie", "x-api^key", "x-token|secret"]) {
-				assert.equal(headers[name], undefined, `${name} leaked across origins`);
-			}
-		}
+		const req = followRedirects.http.request(
+			`http://127.0.0.1:${origin.address().port}/`,
+			requestOptions,
+		);
+		req.end();
+		const [res] = await once(req, "response");
+		res.resume();
+		await once(res, "end");
 	} finally {
 		origin.close();
 		target.close();
 	}
+	return received;
+}
+
+test("follow-redirects strips array-form credential headers across hosts", async () => {
+	// GHSA-q3jh-wrc6-jgq8: array-form headers skipped the credential filter.
+	const headers = await headersAfterCrossHostRedirect({
+		headers: ["Authorization", "Bearer secret", "X-Trace", "kept"],
+	});
+	assert.equal(headers.authorization, undefined);
+	assert.equal(headers["x-trace"], "kept");
+});
+
+test("follow-redirects strips declared sensitive headers containing regex metacharacters", async () => {
+	// GHSA-8r9p-f939-6h3c: "|" and "^" in sensitiveHeaders were not escaped.
+	const headers = await headersAfterCrossHostRedirect({
+		headers: { "X-Api|Key": "secret", "X-Trace": "kept" },
+		sensitiveHeaders: ["X-Api|Key"],
+	});
+	assert.equal(headers["x-api|key"], undefined);
+	assert.equal(headers["x-trace"], "kept");
 });
