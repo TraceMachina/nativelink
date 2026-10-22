@@ -22,16 +22,18 @@ catch { process.stderr.write('Invalid dispatch payload\n'); process.exit(1); }
 const script = `
 set -euo pipefail
 exec 9>/workspace/ci.lock
-flock -n 9
+flock 9
 cd /workspace/nativelink
 git -c safe.directory=/workspace/nativelink diff --quiet HEAD --
 git -c safe.directory=/workspace/nativelink fetch --depth=1 https://github.com/TraceMachina/nativelink.git "$GITHUB_SHA"
 git -c safe.directory=/workspace/nativelink checkout --detach "$GITHUB_SHA"
 mkdir -p "$NL_SUMMARY_DIRECTORY"
-exec timeout --signal=TERM --kill-after=60 9000 python3 .github/scripts/ci_benchmark.py run --lane cluster --repetitions "$NL_REPETITIONS" --output "$NL_SUMMARY_DIRECTORY"
+exec python3 .github/scripts/ci_benchmark.py run --lane cluster --repetitions "$NL_REPETITIONS" --output "$NL_SUMMARY_DIRECTORY"
 `;
 const env = {...process.env, ...payload};
-const result = spawnSync('bash', ['-euc', script], {env, stdio: ['ignore','inherit','inherit']});
+// The deadline includes waiting for the retained checkout's lock.
+const result = spawnSync('timeout', ['--signal=TERM', '--kill-after=60', '9000', 'bash', '-euc', script],
+                         {env, stdio: ['ignore','inherit','inherit']});
 process.exit(result.status ?? 1);
 """
 

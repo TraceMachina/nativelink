@@ -91,7 +91,10 @@ cluster credentials are distributed. A temporary cluster configuration contains 
 settings and the exec-plugin path. Selected build variables travel over
 encrypted stdin; GitHub and OIDC credentials are not forwarded to the client.
 The checkout rejects tracked edits before changing to the exact source commit;
-a file lock serializes writers and a bounded timeout limits abandoned work.
+a file lock serializes writers and a bounded timeout includes lock waiting.
+GitHub concurrency is per branch so a different PR cannot cancel another
+branch's pending job. Dispatches wait for the retained checkout instead of
+failing immediately when another build holds its lock.
 
 The timeout test distinguishes a terminated zombie from a live child. That
 expectation issue was discovered during a soak test in our systems; host reaping

@@ -22,7 +22,7 @@ permissions:
 # Outside fork workflows require repository approval and do not receive this
 # environment or its credentials.
 concurrency:
-  group: parallel-cluster-benchmark
+  group: cluster-ci-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
