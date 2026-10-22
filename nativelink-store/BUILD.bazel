@@ -173,9 +173,6 @@ rust_test_suite(
         "tests/verify_store_test.rs",
     ],
     compile_data = [
-        "tests/data/emsign_control_leaf.pem",
-        "tests/data/emsign_distrusted_leaf.pem",
-        "tests/data/emsign_test_root.pem",
         "tests/mongo_runner/mod.rs",
         "tests/mongo_runner/process.rs",
         "tests/mongo_runner/extractor.rs",
@@ -226,6 +223,7 @@ rust_test_suite(
         "@crates//:parking_lot",
         "@crates//:pretty_assertions",
         "@crates//:rand",
+        "@crates//:rcgen",
         "@crates//:redis",
         "@crates//:redis-test",
         "@crates//:regex",

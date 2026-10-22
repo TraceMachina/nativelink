@@ -1518,36 +1518,66 @@ fn tls_roots_exclude_distrusted_emsign_ecc_root() {
 
 #[test]
 fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
+    use rcgen::{
+        BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, PKCS_ECDSA_P384_SHA384,
+        PublicKeyData, SignatureAlgorithm,
+    };
     use rustls::client::danger::ServerCertVerifier;
-    use rustls::pki_types::pem::PemObject;
-    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::pki_types::{ServerName, UnixTime};
+
+    // The public key of eMudhra's OV TLS CA - G3 (an uncompressed P-384
+    // point), one of the intermediates rustls-webpki distrusts.
+    struct DistrustedKey(Vec<u8>);
+    impl PublicKeyData for DistrustedKey {
+        fn der_bytes(&self) -> &[u8] {
+            &self.0
+        }
+        fn algorithm(&self) -> &'static SignatureAlgorithm {
+            &PKCS_ECDSA_P384_SHA384
+        }
+    }
+    let point = [
+        "0473897aa0eb3cfdca8b12402ffaf0abc4e1212baf8dee778ac9ee2d6db83fac",
+        "280c5e05638ae7a2acd71c322a8e361cdeb9f69c4302b9dd8d73d1cc6caab2cc",
+        "0aee4e216ce979dd518a4af4b626e5684cdd658037ed0c854e4cc12f4cf8646d",
+        "0d",
+    ]
+    .concat();
+    let distrusted_key = DistrustedKey(hex::decode(point).unwrap());
 
     // RUSTSEC-2026-0382: rustls-webpki before 0.103.16 accepts paths through
-    // emSign intermediates whose private keys are public. The distrusted
-    // leaf carries one of those public keys (eMudhra's OV TLS CA - G3), issued
-    // by a test root; the control leaf is the same chain with a fresh key.
-    let mut roots = rustls::RootCertStore::empty();
-    roots
-        .add(CertificateDer::from_pem_slice(include_bytes!("data/emsign_test_root.pem")).unwrap())
+    // emSign intermediates whose private keys are public. A test root issues
+    // one leaf for the distrusted key and a control leaf for a fresh key.
+    let root_key = KeyPair::generate().unwrap();
+    let mut root_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let root = root_params.self_signed(&root_key).unwrap();
+    let issuer = Issuer::new(root_params, root_key);
+    let leaf_params = CertificateParams::new(vec!["distrusted.test".to_string()]).unwrap();
+    let distrusted = leaf_params.signed_by(&distrusted_key, &issuer).unwrap();
+    let control = leaf_params
+        .signed_by(&KeyPair::generate().unwrap(), &issuer)
         .unwrap();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(root.der().clone()).unwrap();
     let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
         Arc::new(roots),
         Arc::new(rustls::crypto::ring::default_provider()),
     )
     .build()
     .unwrap();
-    let verify = |leaf: &'static [u8]| {
+    let verify = |leaf: &rcgen::Certificate| {
         verifier.verify_server_cert(
-            &CertificateDer::from_pem_slice(leaf).unwrap(),
+            leaf.der(),
             &[],
             &ServerName::try_from("distrusted.test").unwrap(),
             &[],
-            // 2030-01-01, inside the fixtures' validity.
-            UnixTime::since_unix_epoch(Duration::from_hours(525_960)),
+            UnixTime::now(),
         )
     };
 
-    verify(include_bytes!("data/emsign_control_leaf.pem")).unwrap();
-    let err = verify(include_bytes!("data/emsign_distrusted_leaf.pem")).unwrap_err();
+    verify(&control).unwrap();
+    let err = verify(&distrusted).unwrap_err();
     assert!(format!("{err:?}").contains("CertDistrusted"), "{err:?}");
 }
