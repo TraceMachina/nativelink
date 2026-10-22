@@ -1778,3 +1778,48 @@ async fn the_listing_reads_records_concurrently_in_the_stores_order() -> Result<
     );
     Ok(())
 }
+
+/// The memory store's listing is read whole, under one hold of the store's
+/// lock taken when the listing is requested, and the stream then only hands
+/// out what was read. The lock must not be taken inside the stream: the
+/// filter pass reads rows 64 at a time, so while it hands rows on it keeps
+/// asking the listing for more, and a lock wait that asking starts is
+/// parked inside the stream, polled again only when the next row is asked
+/// for. Once that wait has been starved past async-lock's fairness
+/// threshold the lock is reserved for it, and when the matcher then writes
+/// for a row it was handed, on the same task, it waits for the same lock:
+/// nothing polls the parked wait, and the scheduler stops for good. Reading
+/// lazily was how that wait got into the stream; a row added after the
+/// listing was requested is therefore not in it.
+#[nativelink_test]
+async fn the_listing_is_read_whole_when_it_is_requested() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    // Kept so the clients count as waiting.
+    let _clients = add_prioritised_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        },
+    )
+    .await?;
+    // Added after the listing was requested, before any of it was read.
+    let _late = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+
+    let listed: Vec<_> = listed.collect().await;
+    assert_eq!(
+        listed.len(),
+        3,
+        "the listing holds what was there when it was requested"
+    );
+    Ok(())
+}
