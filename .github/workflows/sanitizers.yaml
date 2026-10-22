@@ -91,8 +91,11 @@ jobs:
           CXX: clang++
           CFLAGS: -fsplit-lto-unit
           CXXFLAGS: -fsplit-lto-unit
-          RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
-          RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1
+          # getrandom 0.3.4 otherwise indirectly calls uninstrumented glibc
+          # getrandom(2), which trips CFI. Its documented linux_raw backend
+          # uses the same kernel syscall directly, retaining Rust CFI checks.
+          RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1 --cfg=getrandom_backend="linux_raw"
+          RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1 --cfg=getrandom_backend="linux_raw"
           RUST_TEST_THREADS: 1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           RUST_BACKTRACE: 1
