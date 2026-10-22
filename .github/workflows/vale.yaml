@@ -1,12 +1,14 @@
 ---
-name: Vale
+name: CI / Docs
 
 on: [pull_request]
 
 permissions: read-all
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # workflow_ref (not workflow name) so this file and docs-lint.yaml can share
+  # the "CI / Docs" display prefix without cancelling each other.
+  group: ${{ github.workflow_ref }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:

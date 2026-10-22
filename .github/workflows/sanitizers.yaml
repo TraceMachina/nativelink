@@ -1,5 +1,5 @@
 ---
-name: Sanitizers
+name: CI / Sanitizers
 
 on:
   push:

@@ -1,5 +1,5 @@
 ---
-name: "CodeQL"
+name: "Security / CodeQL"
 
 on:
   push:
@@ -18,7 +18,9 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze
+    # Job display name kept as "CodeQL" so the branch-protection required
+    # check context continues to match after the workflow rename.
+    name: CodeQL
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
