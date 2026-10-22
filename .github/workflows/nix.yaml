@@ -213,6 +213,11 @@ jobs:
     strategy:
       matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
     runs-on: ubuntu-24.04
+    # The bootstrap image is published by the PR below this one.
+    container:
+      image: ghcr.io/tracemachina/nativelink-ci:nix-rbe
+      env:
+        NIX_CONFIG: experimental-features = nix-command flakes
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -223,6 +228,8 @@ jobs:
         uses: ./.github/actions/prepare-nix
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix_preinstalled: true
+          skip_free_disk: true
 
       - name: Test ${{ matrix.command }} with rbe
         run: |
