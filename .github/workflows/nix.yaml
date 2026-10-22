@@ -20,6 +20,11 @@ on:
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
   workflow_dispatch:
+    inputs:
+      rbe_only:
+        description: Run only the RBE matrix
+        type: boolean
+        default: false
 
 permissions: read-all
 
@@ -29,7 +34,7 @@ concurrency:
 
 jobs:
   nix-bazel:
-    if: ${{ github.event_name != 'schedule' }}
+    if: ${{ github.event_name != 'schedule' && inputs.rbe_only != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +92,7 @@ jobs:
 
   # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.rbe_only != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +129,7 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   installation:
-    if: ${{ github.event_name != 'schedule' }}
+    if: ${{ github.event_name != 'schedule' && inputs.rbe_only != true }}
     strategy:
       fail-fast: false
       matrix:
@@ -155,7 +160,7 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   integration:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.rbe_only != true }}
     name: ${{ matrix.test-name }}
     strategy:
       matrix:
