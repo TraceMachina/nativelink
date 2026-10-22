@@ -37,7 +37,10 @@ def credential(environ):
         "scope": "https://www.googleapis.com/auth/cloud-platform"})["access_token"]
     result = request_json(f"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{account}:generateAccessToken",
                           {"Authorization": "Bearer " + token, "Content-Type": "application/json"},
-                          {"scope": ["https://www.googleapis.com/auth/cloud-platform"], "lifetime": "3600s"})
+                          # GKE resolves the RBAC username from the email scope:
+                          # https://cloud.google.com/kubernetes-engine/docs/how-to/api-server-authentication
+                          {"scope": ["https://www.googleapis.com/auth/cloud-platform",
+                                     "https://www.googleapis.com/auth/userinfo.email"], "lifetime": "3600s"})
     return {"apiVersion": "client.authentication.k8s.io/v1", "kind": "ExecCredential",
             "status": {"token": result["accessToken"], "expirationTimestamp": result["expireTime"]}}
 

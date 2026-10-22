@@ -41,6 +41,8 @@ class BenchmarkTest(unittest.TestCase):
         self.assertEqual(result['status']['token'], 'short-lived-secret')
         self.assertIn('audience=', request.call_args_list[0].args[0])
         self.assertEqual(request.call_args_list[1].args[2]['subjectToken'], 'identity-secret')
+        self.assertIn('https://www.googleapis.com/auth/userinfo.email',
+                      request.call_args_list[2].args[2]['scope'])
         config = json.dumps(cluster_ci.kubeconfig(env))
         for secret in ('request-secret', 'identity-secret', 'sts-secret', 'short-lived-secret'):
             self.assertNotIn(secret, config)
