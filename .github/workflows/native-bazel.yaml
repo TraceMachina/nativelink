@@ -2,7 +2,7 @@
 name: CI / Bazel
 
 on:
-  # Bazel Native (the non-Nix Bazel toolchain, across Bazel 9.1.1 + 8.7.0) is
+  # Bazel Native (the non-Nix Bazel toolchain, across Bazel 9.3.1 + 8.8.2) is
   # deferred off the per-PR path: the per-PR build/test signal is carried by the
   # Nix "Bazel Dev" lane. This runs as a nightly cross-check and on every merge
   # to main, plus on-demand.
@@ -26,15 +26,15 @@ jobs:
         include:
           # Keep stable job display names on the project-pinned Bazel lane.
           - os: ubuntu-24.04
-            bazel_version: 9.1.1
+            bazel_version: 9.3.1
             check_name: ubuntu-24.04
           # Deterministic Bazel compatibility lane. Randomizing Bazel versions
           # makes failures harder to reproduce. Bazel 8 cannot read the
           # Bazel 9 lockfile format, so this lane tests source compatibility
           # without enforcing the committed MODULE.bazel.lock.
           - os: ubuntu-24.04
-            bazel_version: 8.7.0
-            check_name: ubuntu-24.04 / Bazel 8.7.0
+            bazel_version: 8.8.2
+            check_name: ubuntu-24.04 / Bazel 8.8.2
     name: ${{ matrix.check_name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -80,7 +80,7 @@ jobs:
       - name: Run Bazel tests
         run: |
           if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
-            if [ "${{ matrix.bazel_version }}" == "8.7.0" ]; then
+            if [ "${{ matrix.bazel_version }}" == "8.8.2" ]; then
               # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
               ./tools/bazel-retry.sh test //... \
                 --config=nl-quiet \
