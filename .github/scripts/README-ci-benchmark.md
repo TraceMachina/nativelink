@@ -34,6 +34,29 @@ branches to `main` and the exact pre-merge branch `feature/parallel-cluster-ci`.
 Only trusted branches can run this credentialed workflow; there is no PR or
 `pull_request_target` trigger. Remove the pre-merge branch exception after merge.
 
+The repository's Actions approval policy is `all_external_contributors`.
+Fork PR workflows from all outside contributors require approval from someone
+with write access, including contributors with previously merged changes.
+Repository and organization members can run automatically. Use GitHub's
+**Approve and run** control after reviewing the proposed changes.
+
+This is a repository setting, not a YAML condition. Maintainers can configure
+and verify it with:
+
+```sh
+gh api repos/TraceMachina/nativelink/actions/permissions/fork-pr-contributor-approval \
+  --method PUT -f approval_policy=all_external_contributors
+gh api repos/TraceMachina/nativelink/actions/permissions/fork-pr-contributor-approval \
+  -H 'Cache-Control: no-cache' --jq '.approval_policy'
+```
+
+See [GitHub's approval policy documentation](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#controlling-changes-from-forks-to-workflows-in-public-repositories).
+Approval permits the ordinary fork PR workflows; it does not give fork code
+the cluster environment, write key or retained client. Those remain restricted
+to the trusted branch push/manual workflow described above. Existing metadata
+checks using `pull_request_target` run in the base repository context and must
+never check out or execute fork code.
+
 The existing repository secrets `NATIVELINK_STAGING_API_KEY_RO` and
 `NATIVELINK_STAGING_CLAIM_BASE` configure the baseline. Add the environment secret
 `NATIVELINK_CLUSTER_API_KEY`, using a dedicated build key with cache read/write

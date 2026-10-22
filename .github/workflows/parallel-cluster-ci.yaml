@@ -19,6 +19,8 @@ permissions:
 
 # One benchmark at a time, with its two lanes running in parallel. Shared warm
 # state and write credentials are for trusted branches, never fork PR code.
+# Repository policy requires approval for all external contributors' fork PR
+# workflows. Members run automatically; approval does not grant cluster access.
 concurrency:
   group: parallel-cluster-benchmark
   cancel-in-progress: false
