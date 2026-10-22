@@ -213,6 +213,11 @@ jobs:
     strategy:
       matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
     runs-on: ubuntu-24.04
+    # PoC: avoid installing Nix separately in every RBE matrix job.
+    container:
+      image: nixos/nix:2.28.3@sha256:e623d73af9cac82d1b50784c83e0cf2a4b83bfd2cfe8d5b67809a2fc94e043ac
+      env:
+        NIX_CONFIG: experimental-features = nix-command flakes
     timeout-minutes: 45
     steps:
       - name: Checkout
@@ -223,6 +228,8 @@ jobs:
         uses: ./.github/actions/prepare-nix
         with:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nix_preinstalled: true
+          skip_free_disk: true
 
       - name: Test ${{ matrix.command }} with rbe
         run: |
