@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04]
-        sanitizer: [asan]
+        sanitizer: [asan, msan]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -40,6 +40,7 @@ jobs:
         uses: ./.github/actions/free-disk
 
       - name: Setup Bazel
+        if: matrix.sanitizer == 'asan'
         uses: >- # v0.19.0
           bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
         with:
@@ -47,6 +48,7 @@ jobs:
           repository-cache: true
 
       - name: Setup NativeLink Cloud
+        if: matrix.sanitizer == 'asan'
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -62,4 +64,104 @@ jobs:
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
       - name: Run Bazel tests
+        if: matrix.sanitizer == 'asan'
         run: bazel test --config=${{ matrix.sanitizer }} --config=nl-quiet --lockfile_mode=error --verbose_failures //...
+
+      # MemorySanitizer needs an instrumented standard library. The Bazel Rust
+      # toolchain downloads prebuilt std, so use Cargo's build-std here.
+      - name: Set up MemorySanitizer toolchain
+        if: matrix.sanitizer == 'msan'
+        run: rustup toolchain install nightly-2026-08-26 --profile minimal --component rust-src
+
+      - name: Disable AppArmor namespace restrictions
+        if: matrix.sanitizer == 'msan'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up Azurite test runner
+        if: matrix.sanitizer == 'msan'
+        uses: ./.github/actions/setup-azurite-test-runner
+
+      - name: Install native instrumentation tools
+        if: matrix.sanitizer == 'msan'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang cmake llvm
+          # cc-rs selects HOST_* when host and target triples match. Use
+          # Cargo's per-build-script Rust flags to distinguish target builds.
+          cat > "$RUNNER_TEMP/msan-clang" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          compiler=clang
+          if [[ "${0##*/}" == msan-clang++ ]]; then
+            compiler=clang++
+          fi
+          # ring disables assembly-dependent C definitions under MSan by
+          # defining OPENSSL_NO_ASM. Its .S files are already uninstrumented,
+          # so keep its native C and assembly compilation consistent.
+          if [[ "${CARGO_PKG_NAME:-}" == ring ]]; then
+            exec "$compiler" "$@"
+          fi
+          IFS=
+          # ring's .S sources suppress their definitions when Clang reports
+          # memory_sanitizer via -fsanitize=memory (OPENSSL_NO_ASM). Assembly
+          # cannot be MSan-instrumented, so compile it without that flag.
+          for source in "$@"; do
+            case "$source" in
+              *.S|*.s) exec "$compiler" "$@" ;;
+            esac
+          done
+          for flag in "${rustflags[@]}"; do
+            if [[ "$flag" == -Zsanitizer=memory ]]; then
+              exec "$compiler" -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer "$@"
+            fi
+          done
+          exec "$compiler" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/msan-clang"
+          ln -s "$RUNNER_TEMP/msan-clang" "$RUNNER_TEMP/msan-clang++"
+
+      - name: Run MemorySanitizer tests
+        if: matrix.sanitizer == 'msan'
+        env:
+          RUSTFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
+          RUSTDOCFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
+          RUST_TEST_THREADS: 1
+          # The wrappers instrument only builds whose Rust code uses MSan.
+          CC: ${{ runner.temp }}/msan-clang
+          CXX: ${{ runner.temp }}/msan-clang++
+          MSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
+        # Rebuild std with the same instrumentation; keep host tools unsanitized.
+        run: >-
+          cargo +nightly-2026-08-26 test --locked --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
+\x1f' read -r -a rustflags <<< "${CARGO_ENCODED_RUSTFLAGS:-}"
+          # ring's .S sources suppress their definitions when Clang reports
+          # memory_sanitizer via -fsanitize=memory (OPENSSL_NO_ASM). Assembly
+          # cannot be MSan-instrumented, so compile it without that flag.
+          for source in "$@"; do
+            case "$source" in
+              *.S|*.s) exec "$compiler" "$@" ;;
+            esac
+          done
+          for flag in "${rustflags[@]}"; do
+            if [[ "$flag" == -Zsanitizer=memory ]]; then
+              exec "$compiler" -fsanitize=memory -fsanitize-memory-track-origins=2 -fno-omit-frame-pointer "$@"
+            fi
+          done
+          exec "$compiler" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/msan-clang"
+          ln -s "$RUNNER_TEMP/msan-clang" "$RUNNER_TEMP/msan-clang++"
+
+      - name: Run MemorySanitizer tests
+        if: matrix.sanitizer == 'msan'
+        env:
+          RUSTFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
+          RUSTDOCFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
+          RUST_TEST_THREADS: 1
+          # The wrappers instrument only builds whose Rust code uses MSan.
+          CC: ${{ runner.temp }}/msan-clang
+          CXX: ${{ runner.temp }}/msan-clang++
+          MSAN_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer
+        # Rebuild std with the same instrumentation; keep host tools unsanitized.
+        run: >-
+          cargo +nightly-2026-08-26 test --locked --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
