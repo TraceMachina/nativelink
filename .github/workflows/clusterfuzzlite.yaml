@@ -3,12 +3,15 @@ name: CI / Fuzz
 
 on:
   # Fuzzing is expensive and does not gate merge. It runs nightly against
-  # every target, when a release is published, and on demand, instead of
-  # on pull requests.
+  # every target, on a release pull request (head branch `release/vX.Y.Z`,
+  # as in #3028), when a release is published, and on demand. Ordinary
+  # pull requests do not run it.
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
   release:
     types: [published]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions: read-all
@@ -19,6 +22,12 @@ concurrency:
 
 jobs:
   fuzz:
+    # `branches` above filters the base. The head check keeps this off
+    # ordinary pull requests. Other events always run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'release/') ||
+      startsWith(github.event.pull_request.title, 'Release NativeLink')
     name: Fuzz
     runs-on: ubuntu-24.04
     steps:
