@@ -3,10 +3,12 @@ name: CI / Sanitizers
 
 on:
   # AddressSanitizer is expensive and does not gate merge. The per-PR signal
-  # stays with the Nix Bazel lane. This runs nightly against main, and on
-  # demand.
+  # stays with the Nix Bazel lane. This runs nightly against main, when a
+  # release is published, and on demand.
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions: read-all
@@ -46,6 +48,9 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
           bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          # A published release checks out the tag, so its ref is not main
+          # and it keeps the read-only cache key. Only the nightly run of
+          # main writes.
           api-key: >-
             ${{ github.ref == 'refs/heads/main'
                 && secrets.NATIVELINK_STAGING_API_KEY_RW

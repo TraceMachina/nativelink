@@ -3,9 +3,12 @@ name: CI / Fuzz
 
 on:
   # Fuzzing is expensive and does not gate merge. It runs nightly against
-  # every target, and on demand, instead of on pull requests.
+  # every target, when a release is published, and on demand, instead of
+  # on pull requests.
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions: read-all
