@@ -19,8 +19,7 @@ somewhere else.
 
 ## The workspace has no members list [#the-workspace-has-no-members-list]
 
-The root
-<SourceLink file="Cargo.toml" symbol="Cargo.toml" />
+The root `Cargo.toml` (<SourceLink file="Cargo.toml" symbol="Cargo.toml" />)
 declares `[workspace]` with only `exclude` and `resolver`. It has no
 `members` key. Membership is inferred from the path dependencies of the root
 `[package]`, which means **adding a crate to the workspace happens by
@@ -31,11 +30,10 @@ Three directories are explicitly excluded and build on their own:
 `tools/generate-bazel-rc`.
 
 <Callout type="info" title="The root Cargo.toml is a package, not just a workspace">
-  The version at the top of the root manifest is a `[package]` version, not
-  a `[workspace.package]` version. Nothing inherits it; every crate carries
-  its own copy, which is why a release bump edits the version in fourteen
-  files (seventeen once the two lock files and the changelog are counted).
-  See [releases and versioning](/contribute/release-versioning).
+  The root manifest declares both `[workspace.package]` (inherited by every
+  member crate via `version.workspace = true` and `edition.workspace = true`)
+  and `[package]` for the root `nativelink` binary crate. See
+  [releases and versioning](/contribute/release-versioning).
 </Callout>
 
 ## The crates [#the-crates]

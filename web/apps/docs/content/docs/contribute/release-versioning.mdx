@@ -7,7 +7,7 @@ description: How a NativeLink version becomes a signed tag, what the tag trigger
 
 **Who this is for:** maintainers cutting a release, and anyone who needs to
 know what a version number means before pinning one. **What you'll have at
-the end:** the fourteen files a version lives in, the release sequence, what
+the end:** the two manifests a version lives in, the release sequence, what
 each workflow produces, and the compatibility policy, which is mostly the
 absence of one. **Time:** twenty minutes.
 
@@ -16,25 +16,23 @@ a human, and release notes are written by a human, because both are things
 an automated changelog does badly. Everything downstream of the tag is
 automated.
 
-## The version lives in fourteen files [#the-version-lives-in-fourteen-files]
+## The version lives in two manifests [#the-version-lives-in-fourteen-files]
 
-No single source of truth for the version exists, because the root
-`Cargo.toml` declares a `[package]` version rather than a
-`[workspace.package]` version, so nothing inherits it.
+The root `Cargo.toml` declares a `[workspace.package]` version that every
+workspace crate inherits via `version.workspace = true`, plus a `[package]`
+version on the root binary crate (required by `rules_rs` in Bazel).
 
 | File | Count |
 | --- | --- |
-| Root `Cargo.toml` | 1 |
+| Root `Cargo.toml` (`[workspace.package]` and `[package]`) | 1 |
 | `MODULE.bazel` | 1 |
-| Each crate's `Cargo.toml` | 11 |
-| `nativelink-metric/nativelink-metric-macro-derive/Cargo.toml` | 1 |
 
-<Callout type="warn" title="The nested crate is the one that gets missed">
-  The macro-derive crate is nested one level deeper inside
-  `nativelink-metric/` and does not match a `nativelink-*/Cargo.toml` glob.
-  `CONTRIBUTING.md` calls it out by name and gives a sanity check: a standard
-  release commit touches 17 files, the fourteen above plus `Cargo.lock`,
-  `nativelink-test/fuzz/Cargo.lock` and `CHANGELOG.md`.
+<Callout type="info" title="Automated release preparation">
+  Running `nix run .#prepare-release -- v1.x.y` locally (or triggering the
+  `Release / Prepare PR` workflow in GitHub Actions) updates both manifests,
+  both `Cargo.lock` files (`Cargo.lock` and `nativelink-test/fuzz/Cargo.lock`),
+  and prepends the new section to `CHANGELOG.md`. A standard release commit
+  touches 5 files (or 6 when `cliff.toml` is adjusted).
 </Callout>
 
 Several things that contain a version are **generated** and must not be
@@ -50,18 +48,19 @@ The shape of it:
 
 <Steps>
   <li>
-    **Bump the version** in all fourteen files.
-  </li>
-  <li>
-    **Prepend the new changelog section**, after `git fetch upstream --tags`
-    so `--unreleased` means what it should:
+    **Prepare the release branch and changelog** by running
+    `nix run .#prepare-release -- v1.x.y` locally or triggering the
+    `Release / Prepare PR` workflow from the Actions tab. Under the hood this
+    bumps the version in `Cargo.toml`, `MODULE.bazel` and both `Cargo.lock`
+    files, fetches upstream tags, and runs
     `git cliff --unreleased --tag=v1.x.y --prepend CHANGELOG.md`. Do not
-    regenerate the whole file; that rewrites earlier entries and drops manual
-    curation. Adjusting `cliff.toml` is expected when a commit lands in the
-    wrong section.
+    regenerate the whole changelog; that rewrites earlier entries and drops
+    manual curation. Adjusting `cliff.toml` and re-running `prepare-release`
+    is expected when a commit lands in the wrong section.
   </li>
   <li>
-    **Open the release PR**, titled `Release NativeLink v1.x.y`, and merge it.
+    **Open the release PR**, titled `Release NativeLink v1.x.y` (opened
+    automatically if you used the workflow), and merge it.
   </li>
   <li>
     **Create a signed tag on the release commit**: `git tag -s v1.x.y`, with
@@ -96,6 +95,7 @@ The shape of it:
 
 | Workflow | Fires on | Produces |
 | --- | --- | --- |
+| `prepare-release.yaml` | Manual (`workflow_dispatch`) | Version bump + `CHANGELOG.md` PR (`Release NativeLink v1.x.y`) |
 | `tagged_image.yaml` | Any tag push | Four OCI images pushed to GHCR |
 | `image.yaml` | Push to `main` (and pull requests, for the build) | A `YYYY-MM-DD-<sha>` image plus a Trivy scan |
 | `config-reference.yaml` | `v1.*` tags, and weekly | Regenerated config reference, auto-merged |

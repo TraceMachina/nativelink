@@ -470,16 +470,20 @@ repositories, not all steps are automated. Specifically, tags should be signed
 and pushed manually and the release notes should be human readable beyond what
 most automatically generated changelogs provide.
 
-1. Bump the current version in the following files:
+1. Bump the current version in the following files (or run
+   `nix run .#prepare-release -- v1.x.y` to perform steps 1 and 2
+   automatically, or trigger the
+   [`Release / Prepare PR`](.github/workflows/prepare-release.yaml) workflow
+   from the Actions tab to run steps 1–3 in CI):
 
    - `MODULE.bazel`
-   - `Cargo.toml`
-   - The `Cargo.toml` of every `nativelink-*` crate — including nested ones
-     like `nativelink-metric/nativelink-metric-macro-derive/Cargo.toml` —
-     and the regenerated lock files (`Cargo.lock`,
+   - `Cargo.toml` (`[workspace.package]` and `[package]`; workspace crates
+     inherit `version.workspace = true`)
+   - The regenerated lock files (`Cargo.lock`,
      `nativelink-test/fuzz/Cargo.lock`)
 
-   As a sanity check, a standard release touches 17 files.
+   As a sanity check, a standard release touches 5 files (6 if `cliff.toml` is
+   updated).
 
 2. Update the changelog by prepending the new release section to the existing
    `CHANGELOG.md`. Don't regenerate the whole file — that rewrites previous

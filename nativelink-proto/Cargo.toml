@@ -1,8 +1,8 @@
 #:schema ../tools/cargo-with-detailed-deps.json
 [package]
-edition = "2024"
+edition.workspace = true
 name = "nativelink-proto"
-version = "1.8.0"
+version.workspace = true
 
 [lib]
 doctest = false           # because some of the generated protos have things that look like doctests but break

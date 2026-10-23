@@ -2,9 +2,9 @@
 lints.workspace = true
 
 [package]
-edition = "2024"
+edition.workspace = true
 name = "nativelink-metric"
-version = "1.8.0"
+version.workspace = true
 
 [dependencies]
 nativelink-metric-macro-derive = { path = "nativelink-metric-macro-derive" }

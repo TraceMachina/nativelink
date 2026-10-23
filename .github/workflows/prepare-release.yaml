@@ -1,0 +1,151 @@
+---
+# Automates steps 1–3 of the release process in CONTRIBUTING.md: given a target
+# version (e.g. v1.8.1), bumps the version in MODULE.bazel, Cargo.toml, and the
+# workspace lockfiles, prepends the new section to CHANGELOG.md via git-cliff,
+# and opens (or updates) the `Release NativeLink vX.Y.Z` pull request.
+#
+# Works on both `TraceMachina/nativelink` and personal forks.
+name: Release / Prepare PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version to prepare (e.g. v1.8.1 or 1.8.1).'
+        required: true
+        type: string
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Resolve version and tag
+        id: resolve
+        run: |
+          set -euo pipefail
+          RAW="${{ inputs.version }}"
+          if [[ ! "${RAW}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'${RAW}' is not a valid release version (expected vMAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH)."
+            exit 1
+          fi
+          VERSION="${RAW#v}"
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Prepare Worker
+        uses: ./.github/actions/prepare-nix
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+
+      - name: Run prepare-release
+        run: |
+          nix run .#prepare-release -- "${{ steps.resolve.outputs.tag }}" --write-section release-section.md
+
+      - name: Open or update release PR
+        env:
+          GH_TOKEN: ${{ secrets.WORKFLOW_PR_TOKEN || github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          FILES="MODULE.bazel Cargo.toml Cargo.lock nativelink-test/fuzz/Cargo.lock CHANGELOG.md cliff.toml"
+          # shellcheck disable=SC2086
+          if [[ -z "$(git status --porcelain -- ${FILES})" ]]; then
+            echo "Release files already at ${TAG}; nothing to do."
+            exit 0
+          fi
+
+          BRANCH="release/${TAG}"
+          git config user.name "release bot"
+          git config user.email "bot@tracemachina.com"
+          git switch -c "${BRANCH}"
+          # shellcheck disable=SC2086
+          git add ${FILES}
+          git commit -m "Release NativeLink ${TAG}"
+          git push --force origin "${BRANCH}"
+
+          PREV_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD~1 2>/dev/null || true)"
+          if [[ -n "${PREV_TAG}" ]]; then
+            # Ensure the previous tag exists on origin so GitHub's
+            # generate-notes endpoint works on forks that haven't pushed tags.
+            git push origin "refs/tags/${PREV_TAG}:refs/tags/${PREV_TAG}" 2>/dev/null || true
+          fi
+
+          NOTES_ARGS=(-f "tag_name=${TAG}" -f "target_commitish=${BASE_BRANCH}")
+          if [[ -n "${PREV_TAG}" ]]; then
+            NOTES_ARGS+=(-f "previous_tag_name=${PREV_TAG}")
+          fi
+
+          if ! GH_NOTES="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${NOTES_ARGS[@]}" --jq .body 2>/dev/null)"; then
+            GH_NOTES="_Could not auto-generate GitHub contributor notes._"
+          fi
+
+          {
+            echo "## What and why"
+            echo ""
+            echo "Prepares the NativeLink \`${TAG}\` release by bumping the workspace version in \`MODULE.bazel\`, \`Cargo.toml\`, and the Cargo lockfiles, and prepending the \`${TAG}\` section to \`CHANGELOG.md\`."
+            echo ""
+            echo "If any commits below landed under **⚙️ Miscellaneous** and belong in another section, add a rule to \`cliff.toml\` on this branch and re-run \`nix run .#prepare-release -- ${TAG}\`."
+            echo ""
+            echo "### Generated \`CHANGELOG.md\` section"
+            echo ""
+            cat release-section.md
+            echo ""
+            echo "<details>"
+            echo "<summary>GitHub author-attributed release notes draft (for step 9)</summary>"
+            echo ""
+            echo "${GH_NOTES}"
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "## How was this verified?"
+            echo ""
+            echo "Generated via \`nix run .#prepare-release -- ${TAG}\` in the \`${{ github.workflow }}\` workflow and validated by the repository pre-commit, Cargo, and Bazel CI checks on this pull request."
+            echo ""
+            echo "## Risk"
+            echo ""
+            echo "Low. Version metadata, lockfiles, and \`CHANGELOG.md\` only; no functional runtime code is modified."
+            echo ""
+            echo "## AI assistance"
+            echo ""
+            echo "None."
+          } > pr-body.md
+
+          PR_URL="$(gh pr list --head "${BRANCH}" --base "${BASE_BRANCH}" --state open --json url --jq '.[0].url // empty')"
+          if [[ -z "${PR_URL}" ]]; then
+            PR_URL="$(gh pr create \
+              --base "${BASE_BRANCH}" \
+              --head "${BRANCH}" \
+              --title "Release NativeLink ${TAG}" \
+              --body-file pr-body.md)"
+          else
+            gh pr edit "${PR_URL}" --body-file pr-body.md
+          fi
+          echo "PR: ${PR_URL}"
+
+      - name: Teardown Worker
+        uses: ./.github/actions/end-nix
+        if: always()
+        with:
+          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
