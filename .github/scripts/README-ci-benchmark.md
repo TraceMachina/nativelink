@@ -27,11 +27,11 @@ use its own runtime. Other Nix shell commands keep their normal environment.
 
 ## Configuration and trust
 
-The workflow file remains `parallel-cluster-ci.yaml` because the federated
-identity is bound to that exact path. Its environment remains
+The Bazel workflow file remains `parallel-cluster-ci.yaml`. Federation permits
+that path and `nix.yaml`, each at its matching source branch. Their environment remains
 `cluster-ci-benchmark`. Allow repository **branches** with the `**/*` deployment
 branch pattern, not tag policies. The identity provider must require the exact
-repository and owner IDs, this workflow path at the signed branch ref, a
+repository and owner IDs, an allowed workflow path at the signed branch ref, a
 `refs/heads/` ref, a push/manual event and this environment subject.
 
 Only users or integrations allowed to push to the source repository can start
@@ -100,13 +100,41 @@ The timeout test distinguishes a terminated zombie from a live child. That
 expectation issue was discovered during a soak test in our systems; host reaping
 timing must not decide whether the worker terminated the process.
 
+## Shared Nix package
+
+The Nix workflow builds the NativeLink package, installation check, toolchain
+test wrapper and command list in one retained-client job. Nix shares their
+common package dependency. The job exports their complete store closure as a
+workflow artifact; the installation and ten toolchain jobs import it before
+running their existing `nix run` checks. Each test still starts the NativeLink
+binary built from the selected commit locally.
+
+The manifest binds the artifact to an exact source revision, Linux platform,
+output paths and checksum. Consumers evaluate their own output paths and
+reject a mismatched, missing or damaged artifact before running tests. An
+import failure stops the job rather than rebuilding the package on a hosted
+runner. Re-run the producer when its three-day artifact retention expires.
+
+Nix dispatch forwards no NativeLink API key, cache upload token or GitHub
+credential. The hosted consumers use public read-only substitution, without
+the cache upload watcher. Nightly Cargo and integration coverage keeps its
+existing setup. Like Bazel, the shared build runs on reviewed repository
+branch pushes and manual runs; reviewed external commits need promotion to a
+repository branch. The identity provider must permit both workflow paths.
+
+The transfer follows Nix's documented
+[store export/import protocol](https://nix.dev/manual/nix/2.34/command-ref/nix-store/import).
+An artifact from another workflow or an unreviewed source must not be imported
+into a trusted build store.
+
 ## Reading results
 
 The Actions summary reports source, setup plus workload time, each iteration's
 build/test duration, exit status and cache/test counts. The JSON artifact contains
 only constructed aggregate fields. It excludes raw events, credentials and
 arbitrary server messages. Build and test time is combined because `bazel test`
-builds its prerequisites in the same invocation. Queueing is excluded.
+builds its prerequisites in the same invocation. Setup includes waiting for
+the retained client lock; GitHub scheduling before the job starts is excluded.
 
 Local action, disk and remote hits are reconciled as:
 
