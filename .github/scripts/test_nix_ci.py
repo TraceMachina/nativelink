@@ -13,6 +13,25 @@ import nix_ci
 
 
 class NixCITest(unittest.TestCase):
+    def test_coverage_cache_failure_does_not_override_the_coverage_result(self):
+        workflow = (Path(__file__).parents[1] / 'workflows/coverage.yaml').read_text()
+        coverage = workflow.split('  coverage:', 1)[1].split('  deploy:', 1)[0]
+        required, teardown = coverage.split('      - name: Teardown Worker', 1)
+        # Generation and artifact publication must still fail the job normally.
+        self.assertIn('nix build -L .#nativelinkCoverageForHost', required)
+        self.assertIn('actions/upload-pages-artifact@', required)
+        self.assertNotIn('continue-on-error:', required)
+        self.assertEqual(coverage.count('continue-on-error:'), 1)
+        self.assertIn('continue-on-error: true', teardown)
+        self.assertIn('timeout-minutes: 10', teardown)
+        self.assertIn('id: cache-upload', teardown)
+        # Uploads are still attempted, and exhaustion remains visible.
+        self.assertIn('uses: ./.github/actions/end-nix', teardown)
+        self.assertIn('nix_name: .#nativelinkCoverageForHost', teardown)
+        self.assertIn("steps.cache-upload.outcome == 'failure'", teardown)
+        self.assertIn('::warning::Nix cache upload failed', teardown)
+        self.assertIn('needs: coverage', workflow.split('  deploy:', 1)[1])
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
