@@ -51,7 +51,7 @@ use nativelink_util::store_trait::{
     RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio::time::sleep;
 use tracing::{error, info};
 
@@ -74,6 +74,21 @@ const MAX_MULTIPART_SIZE: u64 = 5 * 1024 * 1024 * 1024; // 5GB.
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html
 // Note: Type 'u64' chosen to simplify calculations
 const MAX_UPLOAD_PARTS: u64 = 10_000;
+
+// Default target size for each multipart part. Deliberately far above the 5 MiB
+// floor: sizing parts at the floor turns a multi-GiB blob into thousands of
+// tiny PUTs, which churns the HTTP connection pool (aws-smithy "connection
+// never set" storms) and makes large uploads slow and flaky; on a lossy link
+// the retries exhaust and the write fails outright. 64 MiB keeps a 12 GiB
+// blob at ~192 parts, and with the per-upload concurrency limit it bounds the
+// in-flight memory of one upload to `multipart_max_concurrent_uploads * this`.
+const DEFAULT_MULTIPART_PART_SIZE: u64 = 64 * 1024 * 1024; // 64MiB.
+
+// Store-wide ceiling on multipart uploads in flight at once. The per-upload
+// concurrency limit bounds memory per upload, not per process: N concurrent
+// large writes would otherwise multiply into `N * multipart_max_concurrent_uploads
+// * part_size` of buffered bytes on one node.
+const MAX_CONCURRENT_MULTIPART_UPLOADS: usize = 4;
 
 // Default max buffer size for retrying upload requests.
 // Note: If you change this, adjust the docs in the config.
@@ -98,6 +113,10 @@ pub struct S3Store<NowFn> {
     max_retry_buffer_per_request: usize,
     #[metric(help = "The number of concurrent uploads allowed for multipart uploads")]
     multipart_max_concurrent_uploads: usize,
+    #[metric(help = "The target size in bytes of each part of a multipart upload")]
+    multipart_part_size: u64,
+    /// Whole-upload admission control for multipart uploads, store-wide.
+    multipart_upload_slots: Arc<Semaphore>,
 
     remove_callbacks: Mutex<Vec<RemoveCallback>>,
 }
@@ -212,6 +231,12 @@ where
                 .common
                 .multipart_max_concurrent_uploads
                 .unwrap_or(DEFAULT_MULTIPART_MAX_CONCURRENT_UPLOADS),
+            multipart_part_size: spec
+                .common
+                .multipart_part_size
+                .unwrap_or(DEFAULT_MULTIPART_PART_SIZE)
+                .clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE),
+            multipart_upload_slots: Arc::new(Semaphore::new(MAX_CONCURRENT_MULTIPART_UPLOADS)),
             remove_callbacks: Mutex::new(Vec::new()),
         }))
     }
@@ -422,6 +447,17 @@ where
                 .await;
         }
 
+        // Admission control: cap concurrent multipart uploads store-wide so a
+        // burst of large writes cannot multiply per-upload memory into an OOM.
+        // Held for the whole upload and released on drop when `update`
+        // returns. Acquired here, after the single-part early return, so small
+        // blobs never take a slot; and per upload, never per part, so it
+        // cannot deadlock the part loop below.
+        let _multipart_slot = Arc::clone(&Pin::get_ref(self).multipart_upload_slots)
+            .acquire_owned()
+            .await
+            .map_err(|e| make_err!(Code::Internal, "multipart upload semaphore closed: {e}"))?;
+
         let upload_id = &self
             .retrier
             .retry(unfold((), move |()| async move {
@@ -458,14 +494,18 @@ where
         // S3 requires us to upload in parts if the size is greater than 5GB. The part size must be at least
         // 5MB (except last part) and can have up to 10,000 parts.
 
-        // Calculate of number of chunks if we upload in 5MB chucks (min chunk size), clamping to
-        // 10,000 parts and correcting for lossy integer division. This provides the
-        let chunk_count = (max_size / MIN_MULTIPART_SIZE).clamp(0, MAX_UPLOAD_PARTS - 1) + 1;
+        // Size each part at the configured target, growing it only as needed
+        // to keep the part count under the 10,000-part ceiling for very large
+        // objects. Sizing at the 5 MiB floor maximised the part count and
+        // drowned object stores in tiny concurrent PUTs.
+        let bytes_per_upload_part = cmp::max(
+            self.multipart_part_size,
+            max_size.div_ceil(MAX_UPLOAD_PARTS),
+        )
+        .clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
 
-        // Using clamped first approximation of number of chunks, calculate byte count of each
-        // chunk, excluding last chunk, clamping to min/max upload size 5MB, 5GB.
-        let bytes_per_upload_part =
-            (max_size / chunk_count).clamp(MIN_MULTIPART_SIZE, MAX_MULTIPART_SIZE);
+        // Number of parts this yields; the last part may be short.
+        let chunk_count = max_size.div_ceil(bytes_per_upload_part);
 
         // Sanity check before continuing.
         if !(MIN_MULTIPART_SIZE..MAX_MULTIPART_SIZE).contains(&bytes_per_upload_part) {

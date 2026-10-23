@@ -1398,6 +1398,22 @@ pub struct CommonObjectSpec {
     )]
     pub multipart_max_concurrent_uploads: Option<usize>,
 
+    /// Target size of each part of a multipart upload, in bytes. Parts grow
+    /// past this only when an object would otherwise exceed the 10,000-part
+    /// limit, and the value is clamped to the provider's 5 MiB to 5 GiB
+    /// range. Sizing parts at the 5 MiB floor turns a multi-gigabyte blob
+    /// into thousands of small requests, which exhausts connection pools on
+    /// object stores such as R2; 64 MiB keeps a 12 GiB blob at about 192
+    /// parts. Together with `multipart_max_concurrent_uploads` this bounds
+    /// the memory one upload holds in flight.
+    ///
+    /// Default: 64 MiB.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub multipart_part_size: Option<u64>,
+
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
     /// Default: false
@@ -1502,6 +1518,7 @@ impl Default for CommonObjectSpec {
             consider_expired_after_s: 0,
             max_retry_buffer_per_request: None,
             multipart_max_concurrent_uploads: None,
+            multipart_part_size: None,
             insecure_allow_http: false,
             disable_http2: false,
             throttle_retry_delay_s: default_throttle_retry_delay_s(),
