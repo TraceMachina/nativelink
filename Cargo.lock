@@ -3337,6 +3337,7 @@ dependencies = [
  "hex",
  "libc",
  "nativelink-error",
+ "nativelink-macro",
  "nativelink-nix",
  "nativelink-util",
  "opentelemetry",
@@ -3348,6 +3349,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]

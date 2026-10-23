@@ -346,7 +346,7 @@ fn db_path_for_store(store_dir: &str) -> std::path::PathBuf {
 /// after it opened. For a long-lived `nl-watch-store` daemon that means every
 /// path built after startup is invisible — the watcher fires but the DB lookup
 /// reports the path as not valid. So we prefer a `READ_WRITE` handle (which lets
-/// SQLite maintain the wal-index, so each query sees the latest commit),
+/// `SQLite` maintain the wal-index, so each query sees the latest commit),
 /// immediately clamped with `PRAGMA query_only = ON` so this connection can
 /// never modify nix's database — a safe, ordinary WAL reader. Only if the
 /// read-write open fails (a genuinely read-only DB directory) do we fall back to

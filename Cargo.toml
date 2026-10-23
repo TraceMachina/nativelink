@@ -5,6 +5,9 @@ exclude = [
   "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
+# Crates nothing in the server binary depends on, so Cargo would not discover
+# them through path dependencies.
+members = ["nativelink-nix-client"]
 resolver = "2"
 
 [package]

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! OpenTelemetry metrics, emitted over OTLP exactly as the NativeLink server
+//! OpenTelemetry metrics, emitted over OTLP exactly as the `NativeLink` server
 //! does (via [`nativelink_util::telemetry`] and the global meter provider), so
-//! a collector's ClickHouse exporter reads client/daemon metrics with no extra
+//! a collector's `ClickHouse` exporter reads client/daemon metrics with no extra
 //! wiring. Point `NL_OTEL_ENDPOINT` at the collector.
 
 use opentelemetry::global;
