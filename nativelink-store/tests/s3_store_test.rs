@@ -538,6 +538,11 @@ async fn multipart_update_large_cas() -> Result<(), Error> {
     let store = S3Store::new_with_client_and_jitter(
         &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
+            common: CommonObjectSpec {
+                // Keep the fixture small: parts at the 5 MiB floor.
+                multipart_part_size: Some(MIN_MULTIPART_SIZE as u64),
+                ..Default::default()
+            },
             ..Default::default()
         },
         s3_client,
@@ -759,7 +764,7 @@ async fn has_with_expired_result() -> Result<(), Error> {
 }
 
 // Regression test for multipart upload chunk size calculation.
-// Verifies that chunk_count calculation: (max_size / MIN_MULTIPART_SIZE).clamp(0, MAX_UPLOAD_PARTS - 1) + 1
+// Verifies the part-size calculation when `multipart_part_size` is pinned at the 5 MiB floor:
 // correctly handles files that result in the minimum chunk size being used.
 #[nativelink_test]
 async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
@@ -890,6 +895,11 @@ async fn multipart_chunk_size_clamp_min() -> Result<(), Error> {
     let store = S3Store::new_with_client_and_jitter(
         &ExperimentalAwsSpec {
             bucket: BUCKET_NAME.to_string(),
+            common: CommonObjectSpec {
+                // Keep the fixture small: parts at the 5 MiB floor.
+                multipart_part_size: Some(MIN_MULTIPART_SIZE as u64),
+                ..Default::default()
+            },
             ..Default::default()
         },
         s3_client,
