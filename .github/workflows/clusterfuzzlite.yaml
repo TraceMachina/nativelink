@@ -2,26 +2,11 @@
 name: CI / Fuzz
 
 on:
-  pull_request:
-    branches:
-      - main
-    paths:
-      - ".clusterfuzzlite/**"
-      - "nativelink-test/fuzz/**"
-      - "nativelink-config/**"
-      - "nativelink-error/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-  push:
-    branches:
-      - main
-    paths:
-      - ".clusterfuzzlite/**"
-      - "nativelink-test/fuzz/**"
-      - "nativelink-config/**"
-      - "nativelink-error/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+  # Fuzzing is expensive and does not gate merge. It runs nightly against
+  # every target, and on demand, instead of on pull requests.
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  workflow_dispatch:
 
 permissions: read-all
 
@@ -54,5 +39,5 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 600
-          mode: code-change
+          mode: batch
           sanitizer: address
