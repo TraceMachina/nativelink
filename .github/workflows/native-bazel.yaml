@@ -2,10 +2,9 @@
 name: CI / Bazel
 
 on:
-  # Bazel Native (the non-Nix Bazel toolchain, across Bazel 9.3.1 + 8.8.2) is
-  # deferred off the per-PR path: the per-PR build/test signal is carried by the
-  # Nix "Bazel Dev" lane. This runs as a nightly cross-check and on every merge
-  # to main, plus on-demand.
+  # Keep Bazel 8 compatibility and Redis topology checks as specialized
+  # cross-checks. The project-pinned Bazel suite runs on the warm cluster
+  # through CI / NativeLink, instead of a second hosted build.
   push:
     branches: [main]
   schedule:
@@ -24,10 +23,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Keep stable job display names on the project-pinned Bazel lane.
-          - os: ubuntu-24.04
-            bazel_version: 9.3.1
-            check_name: ubuntu-24.04
           # Deterministic Bazel compatibility lane. Randomizing Bazel versions
           # makes failures harder to reproduce. Bazel 8 cannot read the
           # Bazel 9 lockfile format, so this lane tests source compatibility
@@ -77,35 +72,14 @@ jobs:
       - name: Show Bazel version
         run: bazel --version
 
-      - name: Run Bazel tests
+      - name: Run Bazel compatibility tests
         run: |
-          if [ "$RUNNER_OS" == "Linux" ] || [ "$RUNNER_OS" == "macOS" ]; then
-            if [ "${{ matrix.bazel_version }}" == "8.8.2" ]; then
-              # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
-              ./tools/bazel-retry.sh test //... \
-                --config=nl-quiet \
-                --lockfile_mode=off \
-                --extra_toolchains=@rust_toolchains//:all \
-                --verbose_failures
-            else
-              ./tools/bazel-retry.sh test //... \
-                --config=nl-quiet \
-                --lockfile_mode=error \
-                --extra_toolchains=@rust_toolchains//:all \
-                --verbose_failures
-            fi
-          elif [ "$RUNNER_OS" == "Windows" ]; then
-            bazel \
-              --lockfile_mode=error \
-              --output_user_root=${{ steps.bazel-cache.outputs.mountpoint }} \
-              test \
-              --config=windows \
-              //... \
-              --verbose_failures
-          else
-            echo "Unknown runner OS: $RUNNER_OS"
-            exit 1
-          fi
+          # Bazel 8 cannot parse the Bazel 9 MODULE.bazel.lock format.
+          ./tools/bazel-retry.sh test //... \
+            --config=nl-quiet \
+            --lockfile_mode=off \
+            --extra_toolchains=@rust_toolchains//:all \
+            --verbose_failures
 
   redis-store-tester:
     name: Redis store tester

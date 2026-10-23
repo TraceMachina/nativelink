@@ -14,9 +14,9 @@ on:
       - 'web/**'
   # Two jobs here run only on the nightly schedule and on demand: Cargo Dev
   # (nix-cargo) and the end-to-end integration tests (buildstream, buck2,
-  # mongo). See their per-job `if`. The rest (Bazel Dev, installation and the
-  # RBE toolchain matrix) stay on the per-PR path and skip the nightly run via
-  # `if: != 'schedule'`.
+  # mongo). See their per-job `if`. The installation and
+  # RBE toolchain matrix stay on the per-PR path and skip the nightly run via
+  # `if: != 'schedule'`. The primary Bazel lane is CI / NativeLink.
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
   workflow_dispatch:
@@ -28,63 +28,6 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  nix-bazel:
-    if: ${{ github.event_name != 'schedule' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04]
-    name: Bazel Dev / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
-    steps:
-      - name: Checkout
-        uses: >- # v6.0.2
-          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-
-      - name: Setup NativeLink Cloud
-        uses: ./.github/actions/setup-nativelink-cloud
-        with:
-          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
-          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
-          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
-          api-key: >-
-            ${{ github.event_name == 'push'
-                && secrets.NATIVELINK_STAGING_API_KEY_RW
-                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
-          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
-          # Remote execution only on Linux; the action hard-fails exec on
-          # non-Linux runners, so macOS lanes fall back to cache.
-          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
-
-      - name: Invoke Bazel build in Nix shell
-        run: |
-          # --config=nl-toolchain pins the hermetic LLVM + downloaded Rust
-          # toolchain identity. Without it, compiles inside `nix develop`
-          # resolve the nix-store default toolchain, baking /nix/store/<hash>
-          # paths into every action key — which is why this lane previously got
-          # 0 remote cache hits against a cache warmed off a non-nix toolchain.
-          # Pinning the hermetic identity makes this lane's action digests match
-          # a warm writer that uses the same identity. No remote executor is
-          # added here: this is cache-read keyed by a stable toolchain, not RBE.
-          nix develop --impure --command \
-            bazel-retry test //... \
-              --config=nl-toolchain \
-              --config=nl-quiet \
-              --verbose_failures \
-              --lockfile_mode=error \
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-
   # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
