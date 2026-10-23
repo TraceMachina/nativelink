@@ -8,7 +8,7 @@ name: CI / Integration
 # off PRs for image.yaml and #2877 moved off PRs for the nix integration job.
 # This lane fell in the crack between those two, so defer it the same way:
 # nightly cross-check + on every merge to main, not on every PR. Per-PR
-# build/test signal is carried by the Nix "Bazel Dev" lane.
+# build/test signal is carried by the warm-cluster CI / NativeLink lane.
 on:
   push:
     branches: [ main ]
