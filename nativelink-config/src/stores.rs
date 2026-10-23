@@ -1032,6 +1032,27 @@ pub struct FastSlowSpec {
     /// Default: false (writes are synchronous write-through to both tiers).
     #[serde(default)]
     pub slow_store_write_back: bool,
+
+    /// Answer existence checks from the fast store first, and ask the slow
+    /// store only about the blobs the fast store does not hold. The slow
+    /// probe is bounded by a short deadline and a probe that fails or times
+    /// out reports its blobs as missing, so the client re-uploads them.
+    ///
+    /// By default (`false`) a writable slow store is consulted first and
+    /// the fast store is never counted. That is what a worker needs: its
+    /// fast tier is a local directory, and counting it would stop outputs
+    /// from ever reaching the CAS. Set this only on a store whose fast tier
+    /// is shared by every client that checks existence through it, such as
+    /// a sharded `NVMe` ring in front of an object store. There the default
+    /// turns every `FindMissingBlobs` into one object-store request per
+    /// digest, and a throttled object store stalls the whole build; with
+    /// this on, resident blobs are answered locally and a slow tier that is
+    /// down degrades to re-uploads instead of a stall. Pairs naturally with
+    /// `slow_store_write_back`, where the fast tier is authoritative anyway.
+    ///
+    /// Default: false.
+    #[serde(default)]
+    pub fast_first_existence_check: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
