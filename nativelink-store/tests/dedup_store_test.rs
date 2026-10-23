@@ -12,14 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use nativelink_config::stores::{DedupSpec, MemorySpec, StoreSpec};
-use nativelink_error::{Code, Error, ResultExt};
+use core::pin::Pin;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use nativelink_config::stores::{
+    CacheMetricsSpec, DedupSpec, FastSlowSpec, MemorySpec, StoreDirection, StoreSpec, VerifySpec,
+};
+use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
+use nativelink_store::cache_metrics_store::CacheMetricsStore;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
 use nativelink_store::dedup_store::DedupStore;
+use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::verify_store::VerifyStore;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+use nativelink_util::store_trait::{
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use pretty_assertions::assert_eq;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -443,5 +457,370 @@ async fn empty_cas_upload_does_not_publish_dedup_index() -> Result<(), Error> {
     }
     assert_eq!(index.len_for_test(), 0);
     assert_eq!(content.len_for_test(), 0);
+    Ok(())
+}
+
+/// The last chunk `make_random_data(MEGABYTE_SZ)` splits into under
+/// `make_default_config()`.
+const TAIL_CHUNK_HASH: &str = "f6a29384357a77575b0a8cc79f731a4188d0155c00d5fb9a18becd92f6d1f074";
+const TAIL_CHUNK_SIZE: usize = 10669;
+
+/// An index store that holds entries like a memory store but refuses every
+/// removal.
+#[derive(Debug, MetricsComponent)]
+struct RemoveRefusingStore {
+    inner: Store,
+}
+
+#[async_trait]
+impl StoreDriver for RemoveRefusingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
+        Err(make_err!(
+            Code::Unavailable,
+            "index store refused the removal"
+        ))
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner.has_with_results(keys, results).await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.inner.update(key, reader, size_info).await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        self.inner.get_part(key, writer, offset, length).await
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(RemoveRefusingStore);
+
+/// A size-verifying store over a fast tier that is a dedup store and a slow
+/// tier that holds the durable copy, protected from repair removal as the
+/// docs advise for a tier holding the only copy.
+struct Composition {
+    store: Store,
+    index: Arc<MemoryStore>,
+    content: Arc<MemoryStore>,
+    durable: Arc<MemoryStore>,
+}
+
+fn make_composition() -> Result<Composition, Error> {
+    let index = MemoryStore::new(&MemorySpec::default());
+    let content = MemoryStore::new(&MemorySpec::default());
+    let durable = MemoryStore::new(&MemorySpec::default());
+    let dedup = DedupStore::new(
+        &make_default_config(),
+        Store::new(index.clone()),
+        Store::new(content.clone()),
+    )?;
+    let protected = CacheMetricsStore::new(
+        &CacheMetricsSpec {
+            cache_type: "cas".to_string(),
+            allow_remove: false,
+            backend: StoreSpec::Memory(MemorySpec::default()),
+        },
+        Store::new(durable.clone()),
+    );
+    // The specs are read for their directions only.
+    let fast_slow = FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        Store::new(dedup),
+        Store::new(protected),
+    );
+    let store = Store::new(VerifyStore::new(
+        &VerifySpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            verify_size: true,
+            verify_hash: false,
+        },
+        Store::new(fast_slow),
+    ));
+    Ok(Composition {
+        store,
+        index,
+        content,
+        durable,
+    })
+}
+
+/// Removing a blob drops its index and nothing else: the chunks are keyed by
+/// their own digests, and another blob built from them still reads.
+#[nativelink_test]
+async fn remove_drops_the_index_and_keeps_shared_chunks() -> Result<(), Error> {
+    let index = MemoryStore::new(&MemorySpec::default());
+    let content = MemoryStore::new(&MemorySpec::default());
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(index.clone()),
+        Store::new(content.clone()),
+    )?;
+    let data = make_random_data(MEGABYTE_SZ);
+    // Two blobs made of the same chunks.
+    let first = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ)?;
+    let second = DigestInfo::try_new(VALID_HASH2, MEGABYTE_SZ)?;
+    store.update_oneshot(first, data.clone().into()).await?;
+    store.update_oneshot(second, data.clone().into()).await?;
+    let chunks = content.len_for_test();
+
+    assert!(
+        store
+            .as_store_driver_pin()
+            .remove(StoreKey::from(first))
+            .await?
+    );
+    assert_eq!(index.has(first).await?, None);
+    assert_eq!(store.has(first).await?, None);
+    assert_eq!(
+        store
+            .get_part_unchunked(first, 0, None)
+            .await
+            .unwrap_err()
+            .code,
+        Code::NotFound
+    );
+    // `true` dropped an index, nothing more: every chunk is still held, and
+    // the blob sharing them still reads.
+    assert_eq!(content.len_for_test(), chunks);
+    assert_eq!(store.get_part_unchunked(second, 0, None).await?, data);
+    Ok(())
+}
+
+/// With no index under the key, or for the empty blob, which is never
+/// indexed, nothing is removed.
+#[nativelink_test]
+async fn remove_of_a_missing_index_removes_nothing() -> Result<(), Error> {
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?;
+    let missing = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ)?;
+    assert!(
+        !store
+            .as_store_driver_pin()
+            .remove(StoreKey::from(missing))
+            .await?
+    );
+    for zero in ZERO_BYTE_DIGESTS {
+        assert!(
+            !store
+                .as_store_driver_pin()
+                .remove(StoreKey::from(zero))
+                .await?
+        );
+    }
+    Ok(())
+}
+
+/// The index store's refusal reaches the caller unchanged, and the blob
+/// stays readable.
+#[nativelink_test]
+async fn remove_reports_an_index_store_error() -> Result<(), Error> {
+    let index = Arc::new(RemoveRefusingStore {
+        inner: Store::new(MemoryStore::new(&MemorySpec::default())),
+    });
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(index),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?;
+    let data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ)?;
+    store.update_oneshot(digest, data.clone().into()).await?;
+
+    let err = store
+        .as_store_driver_pin()
+        .remove(StoreKey::from(digest))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::Unavailable, "{err:?}");
+    assert!(
+        err.to_string().contains("index store refused the removal"),
+        "{err:?}"
+    );
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, data);
+    Ok(())
+}
+
+/// An index store behind a `cache_metrics` wrapper keeps its index unless
+/// the wrapper allows removal.
+#[nativelink_test]
+async fn the_index_store_wrapper_decides_whether_its_index_is_removed() -> Result<(), Error> {
+    for allow_remove in [false, true] {
+        let index = CacheMetricsStore::new(
+            &CacheMetricsSpec {
+                cache_type: "cas".to_string(),
+                allow_remove,
+                backend: StoreSpec::Memory(MemorySpec::default()),
+            },
+            Store::new(MemoryStore::new(&MemorySpec::default())),
+        );
+        let store = DedupStore::new(
+            &make_default_config(),
+            Store::new(index),
+            Store::new(MemoryStore::new(&MemorySpec::default())),
+        )?;
+        let data = make_random_data(MEGABYTE_SZ);
+        let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ)?;
+        store.update_oneshot(digest, data.clone().into()).await?;
+
+        assert_eq!(
+            store
+                .as_store_driver_pin()
+                .remove(StoreKey::from(digest))
+                .await?,
+            allow_remove
+        );
+        assert_eq!(
+            store.has(digest).await?.is_some(),
+            !allow_remove,
+            "allow_remove: {allow_remove}"
+        );
+    }
+    Ok(())
+}
+
+/// A cached index that names fewer bytes than its digest fails the read
+/// with `DataLoss`, which drops the index; the next read refills it from the
+/// durable copy, which the repair never touched.
+#[nativelink_test]
+async fn verify_repairs_a_truncated_cached_index_from_the_durable_copy() -> Result<(), Error> {
+    let c = make_composition()?;
+    let data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ)?;
+    c.store.update_oneshot(digest, data.clone().into()).await?;
+
+    // Index the cached copy to the first half of the blob: a well-formed
+    // index that names fewer bytes than the digest.
+    let truncating = DedupStore::new(
+        &make_default_config(),
+        Store::new(c.index.clone()),
+        Store::new(c.content.clone()),
+    )?;
+    truncating
+        .update_oneshot(digest, data[..MEGABYTE_SZ / 2].to_vec().into())
+        .await?;
+
+    let err = c
+        .store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert_eq!(c.index.has(digest).await?, None, "the bad index is dropped");
+    assert_eq!(
+        c.durable.has(digest).await?,
+        Some(MEGABYTE_SZ as u64),
+        "the durable copy is untouched"
+    );
+
+    assert_eq!(c.store.get_part_unchunked(digest, 0, None).await?, data);
+    assert!(
+        c.index.has(digest).await?.is_some(),
+        "the index is refilled"
+    );
+    assert_eq!(c.store.get_part_unchunked(digest, 0, None).await?, data);
+    Ok(())
+}
+
+/// A cached chunk cut short under its own digest is not counted as present,
+/// so the read fills from the durable copy and the fill replaces the chunk
+/// instead of indexing the bad one again. Every read succeeds, and the
+/// dedup tier then serves the blob on its own.
+#[nativelink_test]
+async fn a_corrupt_cached_chunk_is_replaced_by_the_next_fill() -> Result<(), Error> {
+    let c = make_composition()?;
+    let data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ)?;
+    c.store.update_oneshot(digest, data.clone().into()).await?;
+
+    let tail = DigestInfo::try_new(TAIL_CHUNK_HASH, TAIL_CHUNK_SIZE)?;
+    assert_eq!(c.content.has(tail).await?, Some(TAIL_CHUNK_SIZE as u64));
+    c.content
+        .update_oneshot(tail, data[..100].to_vec().into())
+        .await?;
+
+    assert_eq!(c.store.get_part_unchunked(digest, 0, None).await?, data);
+    assert_eq!(
+        c.content.has(tail).await?,
+        Some(TAIL_CHUNK_SIZE as u64),
+        "the fill replaced the bad chunk"
+    );
+    assert_eq!(c.durable.has(digest).await?, Some(MEGABYTE_SZ as u64));
+
+    // With the durable copy gone, the read can only come from the repaired
+    // dedup tier.
+    assert!(c.durable.remove_entry(StoreKey::from(digest)).await);
+    assert_eq!(c.store.get_part_unchunked(digest, 0, None).await?, data);
+    Ok(())
+}
+
+/// Without any store above it, an upload replaces a chunk held at the wrong
+/// size, and until then the blob built from it is reported missing.
+#[nativelink_test]
+async fn update_replaces_a_chunk_stored_at_the_wrong_size() -> Result<(), Error> {
+    let content = MemoryStore::new(&MemorySpec::default());
+    let store = DedupStore::new(
+        &make_default_config(),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(content.clone()),
+    )?;
+    let data = make_random_data(MEGABYTE_SZ);
+    let digest = DigestInfo::try_new(VALID_HASH1, MEGABYTE_SZ)?;
+    store.update_oneshot(digest, data.clone().into()).await?;
+
+    let tail = DigestInfo::try_new(TAIL_CHUNK_HASH, TAIL_CHUNK_SIZE)?;
+    content
+        .update_oneshot(tail, data[..100].to_vec().into())
+        .await?;
+    assert_eq!(store.has(digest).await?, None);
+
+    store.update_oneshot(digest, data.clone().into()).await?;
+    assert_eq!(content.has(tail).await?, Some(TAIL_CHUNK_SIZE as u64));
+    assert_eq!(store.has(digest).await?, Some(MEGABYTE_SZ as u64));
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, data);
     Ok(())
 }
