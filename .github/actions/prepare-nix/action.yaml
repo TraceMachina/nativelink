@@ -7,6 +7,10 @@ inputs:
   skip_free_disk:
     required: false
     default: "false"
+  read_only:
+    description: Use public substitution without an upload token or cache watcher
+    required: false
+    default: "false"
 runs:
   using: "composite"
   steps:
@@ -27,6 +31,16 @@ runs:
           log-lines = 100 # Necessary in CI to get enough failure context
           keep-outputs = true # Don't delete non-root outputs, because might be needed for other builds
 
+    - name: Configure public read-only cache
+      if: ${{ inputs.read_only == 'true' }}
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.config/nix"
+        printf '%s\n' \
+          'extra-substituters = https://attic.uc1.scdev.nativelink.net/nativelink' \
+          'extra-trusted-public-keys = nativelink:rKAGA1YHc6/sjaX4+QLUHl15N0a0o0d2v+Mt0zyz5sg=' \
+          >> "$HOME/.config/nix/nix.conf"
+
     - name: Prefetch flake inputs
       uses: >- # v4
         nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
@@ -38,6 +52,7 @@ runs:
         shell: bash
 
     - name: Setup attic cache
+      if: ${{ inputs.read_only != 'true' }}
       uses: >- # v4
         nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60
       with:
