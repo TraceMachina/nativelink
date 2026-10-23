@@ -814,6 +814,32 @@ async fn conformance_torn_and_invalid_uploads_preserve_existing_data() -> Result
             topo.name
         );
 
+        // 3b-2. Oversized upload to a fresh digest must be rejected and not published.
+        for size_info in [UploadSizeInfo::ExactSize(512), UploadSizeInfo::MaxSize(512)] {
+            let (mut tx_over, rx_over) = make_buf_channel_pair();
+            let oversized_fresh = deterministic_bytes(43, 700);
+            let send_over = async move {
+                tx_over.send(oversized_fresh).await?;
+                tx_over.send_eof()
+            };
+            let (_, over_res) = tokio::join!(
+                send_over,
+                topo.store.update(fresh_digest, rx_over, size_info)
+            );
+            assert!(
+                over_res.is_err(),
+                "Topology '{}' accepted an oversized 700/512 byte upload ({size_info:?})",
+                topo.name
+            );
+            assert_eq!(
+                topo.store.has(fresh_digest).await?,
+                None,
+                "Topology '{}' published an oversized upload under {} ({size_info:?})",
+                topo.name,
+                fresh_digest
+            );
+        }
+
         // 3c. Commit a valid blob, then attempt a torn overwrite and an oversized overwrite;
         // the original valid blob must remain intact and readable.
         let committed_payload = deterministic_bytes(99, 1024);
@@ -839,15 +865,43 @@ async fn conformance_torn_and_invalid_uploads_preserve_existing_data() -> Result
             topo.name
         );
 
-        // Verify the previously committed blob is untouched.
+        // 3c-2. Attempt an oversized overwrite (1500 bytes against a 1024-byte digest).
+        for size_info in [
+            UploadSizeInfo::ExactSize(1024),
+            UploadSizeInfo::MaxSize(1024),
+        ] {
+            let (mut tx_over_commit, rx_over_commit) = make_buf_channel_pair();
+            let oversized_overwrite = deterministic_bytes(101, 1500);
+            let send_over_commit = async move {
+                tx_over_commit.send(oversized_overwrite).await?;
+                tx_over_commit.send_eof()
+            };
+            let (_, over_overwrite_res) = tokio::join!(
+                send_over_commit,
+                topo.store
+                    .update(committed_digest, rx_over_commit, size_info)
+            );
+            assert!(
+                over_overwrite_res.is_err(),
+                "Topology '{}' accepted an oversized 1500/1024 byte overwrite ({size_info:?})",
+                topo.name
+            );
+        }
+
+        // Verify the previously committed blob is untouched after both short and oversized overwrites.
         let surviving = topo
             .store
             .get_part_unchunked(committed_digest, 0, None)
             .await
-            .err_tip(|| format!("Existing blob lost after torn overwrite on {}", topo.name))?;
+            .err_tip(|| {
+                format!(
+                    "Existing blob lost after invalid overwrites on {}",
+                    topo.name
+                )
+            })?;
         assert_eq!(
             surviving, committed_payload,
-            "Topology '{}' corrupted existing blob after failed overwrite",
+            "Topology '{}' corrupted existing blob after failed overwrites",
             topo.name
         );
     }
@@ -948,6 +1002,8 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
         name: &'static str,
         /// The top-level `Verify -> ... -> FastSlow(fast, slow)` store.
         top_store: Store,
+        /// The underlying fast leaf store so we can verify actual eviction and refill.
+        fast_leaf: Store,
         /// Fault injector sitting in the fast tier to simulate a truncated cached copy.
         fast_fault: Arc<FaultInjectingStore>,
         /// The underlying durable slow tier (protected from `remove()`).
@@ -962,13 +1018,14 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
     //                            slow: CacheMetrics(allow_remove=false) -> Memory)
     {
         let fast_leaf = new_memory_store();
-        let fast_fault = FaultInjectingStore::new(fast_leaf);
+        let fast_fault = FaultInjectingStore::new(fast_leaf.clone());
         let fast = wrap_cache_metrics(Store::new(fast_fault.clone()), true);
         let slow_leaf = new_memory_store();
         let slow = wrap_cache_metrics(slow_leaf.clone(), false);
         cases.push(RepairCase {
             name: "cache_metrics(allow_remove=true) fast tier + protected slow tier [#2968]",
             top_store: wrap_verify(wrap_fast_slow(fast, slow), true),
+            fast_leaf,
             fast_fault,
             durable_slow: slow_leaf,
             _store_manager: None,
@@ -978,13 +1035,14 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
     // Case 2: Verify -> FastSlow(fast: SizePartitioning -> Fault -> Filesystem, slow: protected)
     {
         let fast_leaf = new_default_filesystem_store("repair_sp_fast").await?;
-        let fast_fault = FaultInjectingStore::new(fast_leaf);
+        let fast_fault = FaultInjectingStore::new(fast_leaf.clone());
         let fast = wrap_size_partitioning(new_memory_store(), Store::new(fast_fault.clone()), 1024);
         let slow_leaf = new_default_filesystem_store("repair_sp_slow").await?;
         let slow = wrap_cache_metrics(slow_leaf.clone(), false);
         cases.push(RepairCase {
             name: "size_partitioning -> filesystem fast tier + protected slow tier",
             top_store: wrap_verify(wrap_fast_slow(fast, slow), true),
+            fast_leaf,
             fast_fault,
             durable_slow: slow_leaf,
             _store_manager: None,
@@ -996,7 +1054,7 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
     {
         let store_manager = Arc::new(StoreManager::new());
         let fast_leaf = new_memory_store();
-        let fast_fault = FaultInjectingStore::new(fast_leaf);
+        let fast_fault = FaultInjectingStore::new(fast_leaf.clone());
         let fast_metrics = wrap_cache_metrics(Store::new(fast_fault.clone()), true);
         store_manager.add_store("REPAIR_FAST", fast_metrics)?;
         let ref_fast = RefStore::new(
@@ -1012,6 +1070,7 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
         cases.push(RepairCase {
             name: "ref_store -> cache_metrics fast tier + protected slow tier",
             top_store: wrap_verify(wrap_fast_slow(Store::new(ref_fast), slow), true),
+            fast_leaf,
             fast_fault,
             durable_slow: slow_leaf,
             _store_manager: Some(store_manager),
@@ -1029,6 +1088,12 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
             .update_oneshot(digest, payload.clone())
             .await
             .err_tip(|| format!("Initial upload failed for {}", case.name))?;
+        assert_eq!(
+            case.fast_leaf.has(digest).await?,
+            Some(payload.len() as u64),
+            "Fast leaf must hold the blob after initial upload for {}",
+            case.name
+        );
 
         // 2. Corrupt the fast tier by truncating its reads to 10 bytes.
         case.fast_fault.set_mode(FaultMode::TruncateReadAtBytes {
@@ -1043,6 +1108,14 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
             case.name
         );
 
+        // Fast leaf copy MUST be evicted before clearing the fault!
+        assert_eq!(
+            case.fast_leaf.has(digest).await?,
+            None,
+            "Cache repair failed to evict the corrupted entry from fast_leaf in {}",
+            case.name
+        );
+
         // Durable slow tier copy MUST never be deleted by cache repair!
         assert_eq!(
             case.durable_slow.has(digest).await?,
@@ -1052,7 +1125,8 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
         );
 
         // 4. Clear the fault injection (so a subsequent repopulation of fast tier works)
-        // and verify that `remove()` reached the fast tier AND the next read heals!
+        // and verify that `remove()` reached the fast tier AND the next read heals and
+        // repopulates `fast_leaf` from `durable_slow`!
         case.fast_fault.set_mode(FaultMode::PassThrough);
         let remove_count = case.fast_fault.remove_calls.load(Ordering::SeqCst);
         if remove_count == 0 {
@@ -1068,6 +1142,12 @@ async fn conformance_self_healing_cache_repair_across_wrappers() -> Result<(), E
         assert_eq!(
             healed, payload,
             "Second read after repair did not return valid data from slow tier for {}",
+            case.name
+        );
+        assert_eq!(
+            case.fast_leaf.has(digest).await?,
+            Some(payload.len() as u64),
+            "Second read after repair did not repopulate fast_leaf from durable_slow for {}",
             case.name
         );
     }
