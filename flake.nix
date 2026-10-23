@@ -90,14 +90,29 @@
           if q.stdenv.targetPlatform.isLinux
           then q.pkgsMusl.stdenv
           else q.stdenv;
+        # The retained CI client's store returns EPERM from chmod. Crane's
+        # dummy source copies read-only store files and then runs
+        # `chmod +w -R`, which fails there. Create the copies writable
+        # instead of changing permissions afterwards.
+        writableDummySrc = _final: prev: {
+          stdenvSelector = stdenvSelectorFor;
+          mkDummySrc = args:
+            (prev.mkDummySrc args).overrideAttrs (old: {
+              buildCommand =
+                builtins.replaceStrings [
+                  "cp --recursive --no-preserve=ownership"
+                  "chmod +w -R $out\n"
+                ] [
+                  "cp --recursive --no-preserve=mode,ownership"
+                  ""
+                ]
+                old.buildCommand;
+            });
+        };
         craneLibFor = p:
-          ((crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor).overrideScope (_: _: {
-            stdenvSelector = stdenvSelectorFor;
-          });
+          ((crane.mkLib p).overrideToolchain pkgs.lre.stableRustFor).overrideScope writableDummySrc;
         nightlyCraneLibFor = p:
-          ((crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor).overrideScope (_: _: {
-            stdenvSelector = stdenvSelectorFor;
-          });
+          ((crane.mkLib p).overrideToolchain pkgs.lre.nightlyRustFor).overrideScope writableDummySrc;
 
         src = pkgs.lib.cleanSourceWith {
           src = (craneLibFor pkgs).path ./.;
@@ -140,6 +155,17 @@
         in
           {
             inherit src;
+            # stdenv's directory unpack preserves modes, and the same client
+            # rejects that chmod. Copy the tree and leave the new files writable.
+            unpackCmd = ''
+              if [ -d "$curSrc" ]; then
+                destination="$(stripHash "$curSrc")"
+                mkdir -p "$destination"
+                cp --recursive --no-preserve=mode,ownership -- "$curSrc"/. "$destination"/
+              else
+                return 1
+              fi
+            '';
             strictDeps = true;
             buildInputs =
               [p.cacert]
