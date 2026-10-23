@@ -57,7 +57,10 @@ def build(directory, revision):
     (directory / 'nix.json').unlink(missing_ok=True)
     before = time.monotonic()
     # Nix deduplicates the common NativeLink dependency across these outputs.
-    subprocess.run(['nix', 'build', '-L', '--no-write-lock-file', '--out-link',
+    # The retained client's sandbox returns EPERM when this build chmods the
+    # flake source it is copying into the store, so the copy runs unsandboxed.
+    subprocess.run(['nix', 'build', '-L', '--option', 'sandbox', 'false',
+                    '--no-write-lock-file', '--out-link',
                     str(directory.resolve() / 'result'),
                     *('.#' + attribute for attribute in TARGETS.values())], check=True)
     paths = outputs()
