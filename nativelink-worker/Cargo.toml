@@ -37,7 +37,7 @@ serde_json = { version = "1.0.140", default-features = false, features = [
 ] }
 serde_json5 = { version = "0.2.1", default-features = false }
 shlex = { version = "2.0.0", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "fs",
   "io-util",
   "process",
@@ -78,7 +78,7 @@ serial_test = { version = "4.0.0", features = [
   "async",
 ], default-features = false }
 tempfile = { version = "3.15.0", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "test-util",
 ], default-features = false }
 tonic-prost = { version = "0.14.6", default-features = false }
