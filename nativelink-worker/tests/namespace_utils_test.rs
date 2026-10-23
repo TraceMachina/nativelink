@@ -77,6 +77,213 @@ async fn test_namespaces_supported() -> Result<(), Error> {
     // Isolating /tmp is only possible inside a mount namespace, regardless of
     // what the host supports.
     assert!(!namespace_utils::namespaces_supported(false, true));
+    // Likewise a host property; it only has to answer.
+    let _fresh_proc = namespace_utils::fresh_proc_supported();
+    Ok(())
+}
+
+/// Runs the issue #3003 shape inside the namespaces: fork a child, then
+/// look it up under /proc by the PID the fork returned. The script prints
+/// what PID 1 is, the child's command line as /proc reports it, and how
+/// many processes /proc lists. Right after the fork the child may still
+/// be the shell, not yet exec'd into sleep, so the script gives it up to
+/// five seconds to get there before reading the command line it reports.
+const PROC_SCRIPT: &str = "\
+    init=$(cat /proc/1/comm); \
+    sleep 30 & child=$!; \
+    i=0; \
+    until [ \"$(tr '\\0' ' ' < /proc/$child/cmdline)\" = 'sleep 30 ' ] || [ $i -ge 500 ]; do \
+        i=$((i + 1)); sleep 0.01; \
+    done; \
+    cmdline=$(tr '\\0' ' ' < /proc/$child/cmdline); \
+    listed=$(ls -d /proc/[0-9]* | wc -l); \
+    kill $child; \
+    echo \"$init|$cmdline|$listed\"";
+
+/// The `/proc` mounts of this process's mount namespace, one mountinfo
+/// line each. A fresh `/proc` that escaped an action's private namespace
+/// would show up here as an extra one.
+fn host_proc_mounts() -> Result<Vec<String>, Error> {
+    Ok(std::fs::read_to_string("/proc/self/mountinfo")
+        .err_tip(|| "Reading /proc/self/mountinfo")?
+        .lines()
+        .filter(|line| line.split(' ').nth(4) == Some("/proc"))
+        .map(String::from)
+        .collect())
+}
+
+/// Checks the output of [`PROC_SCRIPT`]: /proc belongs to the action's PID
+/// namespace, where the shell is PID 1, the forked child is the sleep, and
+/// the few processes listed are the action's own.
+fn assert_proc_is_the_actions(output: &std::process::Output) {
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "The action could not read its child under /proc: {output:?}",
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let fields: Vec<&str> = stdout.trim().split('|').collect();
+    assert_eq!(3, fields.len(), "Unexpected output: {stdout:?}");
+    assert_eq!("sh", fields[0], "PID 1 under /proc is not the action");
+    assert_eq!(
+        "sleep 30 ", fields[1],
+        "/proc/<pid> of the forked child is not that child"
+    );
+    let listed: usize = fields[2].trim().parse().expect("a process count");
+    assert!(
+        listed < 10,
+        "/proc lists {listed} processes, which is the host's, not the action's"
+    );
+}
+
+/// Without a mount namespace of its own, the action's /proc matches its
+/// PID namespace, and the host's /proc is untouched.
+#[nativelink_test]
+async fn test_configure_namespace_proc_matches_pid_namespace() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(false, false)
+        || !namespace_utils::fresh_proc_supported()
+    {
+        return Ok(());
+    }
+
+    let proc_mounts_before = host_proc_mounts()?;
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    let mut command = Command::new("sh");
+    command.args(["-c", PROC_SCRIPT]);
+    // SAFETY: configure_namespace is async-signal-safe and intended for pre_exec.
+    unsafe {
+        command.pre_exec(move || {
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+        });
+    }
+    let output = command.output()?;
+    assert_proc_is_the_actions(&output);
+
+    // The mount was private to the action: here /proc is what it was.
+    assert_eq!(
+        proc_mounts_before,
+        host_proc_mounts()?,
+        "The action's /proc leaked to the host"
+    );
+    Ok(())
+}
+
+/// Installs a seccomp filter on the calling thread that answers every
+/// `mount` with EPERM, as a hardened container's syscall policy might.
+/// For a pre-exec hook: the filter is inherited by what the hook execs.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn deny_mount_syscall() -> std::io::Result<()> {
+    const fn stmt(code: u32, k: u32) -> libc::sock_filter {
+        libc::sock_filter {
+            code: code as u16,
+            jt: 0,
+            jf: 0,
+            k,
+        }
+    }
+    // Load the syscall number; if it is mount, return EPERM; else allow.
+    let mut filter = [
+        stmt(libc::BPF_LD | libc::BPF_W | libc::BPF_ABS, 0),
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: libc::SYS_mount as u32,
+        },
+        stmt(
+            libc::BPF_RET | libc::BPF_K,
+            libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+        ),
+        stmt(libc::BPF_RET | libc::BPF_K, libc::SECCOMP_RET_ALLOW),
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_mut_ptr(),
+    };
+    // SAFETY: prctl is async-signal-safe; the program points at the stack
+    // array above, which outlives the call.
+    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: As above.
+    if unsafe {
+        libc::prctl(
+            libc::PR_SET_SECCOMP,
+            libc::SECCOMP_MODE_FILTER,
+            &raw const program,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// A syscall policy that denies `mount` leaves `use_namespaces` without
+/// `use_mount_namespace` working as it did before the fresh /proc: the
+/// action still gets its PID namespace, with the host's /proc. With
+/// `use_mount_namespace` the mount is required, so that spawn still fails
+/// with the policy's refusal rather than running unmasked.
+#[nativelink_test]
+async fn test_configure_namespace_without_mount_survives_a_denied_mount_syscall()
+-> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(false, false) {
+        return Ok(());
+    }
+
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    let mut command = Command::new("sh");
+    command.args(["-c", "echo pid=$$"]);
+    // SAFETY: both calls are async-signal-safe and intended for pre_exec.
+    unsafe {
+        command.pre_exec(move || {
+            deny_mount_syscall()?;
+            namespace_utils::configure_namespace(false, None, &root_dir, &action_dir)
+        });
+    }
+    let output = command.output()?;
+    assert_eq!(
+        Some(0),
+        output.status.code(),
+        "The action did not run with mount denied: {output:?}",
+    );
+    assert_eq!("pid=1", String::from_utf8_lossy(&output.stdout).trim());
+
+    let root_dir = CString::new("/tmp").unwrap();
+    let action_dir = CString::new("/tmp/action").unwrap();
+    let mut masked = Command::new("sh");
+    masked.args(["-c", "true"]);
+    // SAFETY: As above.
+    unsafe {
+        masked.pre_exec(move || {
+            deny_mount_syscall()?;
+            namespace_utils::configure_namespace(true, None, &root_dir, &action_dir)
+        });
+    }
+    let err = masked
+        .output()
+        .expect_err("the root mask needs mount, so the spawn fails");
+    assert_eq!(Some(libc::EPERM), err.raw_os_error(), "{err}");
+    Ok(())
+}
+
+/// With the root masked and a private /tmp as well, the fresh /proc is
+/// still in place.
+#[nativelink_test]
+async fn test_configure_namespace_mount_proc_matches_pid_namespace() -> Result<(), Error> {
+    if !namespace_utils::namespaces_supported(true, true)
+        || !namespace_utils::fresh_proc_supported()
+    {
+        return Ok(());
+    }
+
+    let root_path = unique_path(&std::env::temp_dir(), "nativelink_test_root");
+    let action_path = root_path.join("action");
+    std::fs::create_dir_all(&action_path).err_tip(|| "Failed to create action dir")?;
+    let output = namespaced_sh(PROC_SCRIPT, true, &root_path, &action_path).output()?;
+    assert_proc_is_the_actions(&output);
     Ok(())
 }
 

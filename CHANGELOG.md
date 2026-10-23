@@ -3,6 +3,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.1](https://github.com/TraceMachina/nativelink/compare/v1.8.0..v1.8.1) - 2026-10-23
+
+
+
+### ⛰️  Features
+
+- Export telemetry over TLS to an https OTLP collector ([#3023](https://github.com/TraceMachina/nativelink/issues/3023)) - ([6213c10](https://github.com/TraceMachina/nativelink/commit/6213c1065230f139ec1e1e17e633106901644d54))
+
+### 🐛 Bug Fixes
+
+- *(scheduler)* read the memory store's listing whole, never under the lock inside the stream ([#3013](https://github.com/TraceMachina/nativelink/issues/3013)) - ([13939b5](https://github.com/TraceMachina/nativelink/commit/13939b58fc016496372b75b17a53db89b62129f7))
+- Replay a reset buf_channel stream on every retry, not only the first: later upload retries sent an empty body and failed with InvalidArgument ([#3026](https://github.com/TraceMachina/nativelink/issues/3026)) - ([547a151](https://github.com/TraceMachina/nativelink/commit/547a15193e0951ba5a092a8efba52d54493e2923))
+- Read a filter pass's listed records one at a time again: the 64-way reads broke the scheduler's Redis connection under a queue burst ([#3021](https://github.com/TraceMachina/nativelink/issues/3021)) - ([86c2923](https://github.com/TraceMachina/nativelink/commit/86c292348a561ec7bb562ed87e5caebeb1e8e326))
+- Report content length from filesystem store has() ([#3006](https://github.com/TraceMachina/nativelink/issues/3006)) - ([b014176](https://github.com/TraceMachina/nativelink/commit/b01417643e670c215b6855f06b15b8b64358544e))
+- Read the listed records of a filter pass 64 at a time so a deep queue on Redis lists inside the provisioner's timeout ([#3001](https://github.com/TraceMachina/nativelink/issues/3001)) - ([4edf822](https://github.com/TraceMachina/nativelink/commit/4edf8224ea6817c9b07da9e1f3cba59d7f6bf998))
+- Create the scheduler index persistent: RediSearch never garbage collects a temporary index and every query pays for the dead entries ([#3000](https://github.com/TraceMachina/nativelink/issues/3000)) - ([05bb310](https://github.com/TraceMachina/nativelink/commit/05bb3104c48b1f4b2a14f87cfe1a1f8f5dc1874e))
+
+### 🧪 Testing & CI
+
+- Run primary Bazel CI on warm NativeLink workers ([#3016](https://github.com/TraceMachina/nativelink/issues/3016)) - ([e44d020](https://github.com/TraceMachina/nativelink/commit/e44d0202d9f6e90613ad4d35e8b147f86affe5e8))
+- Compare the webpki root store with assert_ne so pedantic Clippy accepts the non-empty guard. ([#3007](https://github.com/TraceMachina/nativelink/issues/3007)) - ([8a93851](https://github.com/TraceMachina/nativelink/commit/8a938518b69ceadd059de8e1e4be9784df2bde0e))
+- Rename GitHub Actions workflows to an Area / Concern scheme. ([#2997](https://github.com/TraceMachina/nativelink/issues/2997)) - ([113fee0](https://github.com/TraceMachina/nativelink/commit/113fee0c781894dea41b0e29c5d27b16ba49684b))
+
+### ⬆️ Bumps & Version Updates
+
+- Fix nine OSV advisories in rustls-webpki, follow-redirects, DOMPurify and Next.js ([#3022](https://github.com/TraceMachina/nativelink/issues/3022)) - ([e51df03](https://github.com/TraceMachina/nativelink/commit/e51df03fbdda7f4957ee5565186006b0b40267e5))
+- Fix rustls-webpki and follow-redirects advisories [SECURITY] ([#3020](https://github.com/TraceMachina/nativelink/issues/3020)) - ([daa028f](https://github.com/TraceMachina/nativelink/commit/daa028fb7609154e7ce82ecb84b5748e74f9e085))
+- Upgrade to Bazel 9.3.1 and 8.8.2 ([#3015](https://github.com/TraceMachina/nativelink/issues/3015)) - ([a7bb376](https://github.com/TraceMachina/nativelink/commit/a7bb376e6f66284eb37a77b22d2f258c03ba9a7f))
+- Update Rust crate webpki-roots to v1.0.10 [SECURITY] ([#2987](https://github.com/TraceMachina/nativelink/issues/2987)) - ([21ae178](https://github.com/TraceMachina/nativelink/commit/21ae17884e9f85bc62914e6085e220fa19a961fe))
+- Refresh ca-certificates apt pin in Compose image ([#2994](https://github.com/TraceMachina/nativelink/issues/2994)) - ([818a71d](https://github.com/TraceMachina/nativelink/commit/818a71d2bc5197cbb4b085740cbfd85c6ae85eca))
+
 ## [1.8.0](https://github.com/TraceMachina/nativelink/compare/v1.7.7..v1.8.0) - 2026-10-21
 
 
