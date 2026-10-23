@@ -221,6 +221,14 @@ tier from the compressed backend using the correct transfer size. String keys
 still report the stored, compressed size; they do not declare an uncompressed
 length, so that combination still needs separate handling.
 
+In development builds, a repair request, sent when `verify` rejects a read,
+passes through `compression` to the encoded copy, under the same key, and the
+wrapped store decides whether to drop it. Protect a wrapped tier that holds
+the only copy the same way as an unwrapped one: put a `cache_metrics` wrapper
+with `allow_remove: false` around it. `removed=true` means the encoded copy was
+dropped, not that a durable copy was repaired. An encoded copy that cannot be
+decoded fails the read with the decoding error and is not removed.
+
 ### `dedup`: store the changed parts only [#dedup--store-the-changed-parts-only]
 
 Splits blobs into content-defined chunks, stores each chunk once, and keeps a
