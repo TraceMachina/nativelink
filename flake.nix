@@ -86,10 +86,47 @@
         ...
       }: let
         # On Linux we build fully static musl binaries, elsewhere the default stdenv.
-        stdenvSelectorFor = q:
-          if q.stdenv.targetPlatform.isLinux
-          then q.pkgsMusl.stdenv
-          else q.stdenv;
+        # Directory copies on the retained CI client cannot chmod (EPERM).
+        # stdenv's unpack uses cp, which still sets directory modes when
+        # asked not to preserve them. Create directories with mkdir and
+        # write file contents with cat, which never calls chmod.
+        copyTreeWithoutChmod = ''
+          if [ -d "$curSrc" ]; then
+            destination="$(stripHash "$curSrc")"
+            mkdir -p "$destination"
+            find "$curSrc" -mindepth 1 -print0 | while IFS= read -r -d "" item; do
+              rel="''${item#"$curSrc"/}"
+              target="$destination/$rel"
+              if [ -L "$item" ]; then
+                mkdir -p "$(dirname "$target")"
+                ln -s "$(readlink "$item")" "$target"
+              elif [ -d "$item" ]; then
+                mkdir -p "$target"
+              else
+                mkdir -p "$(dirname "$target")"
+                cat "$item" > "$target"
+              fi
+            done
+          else
+            return 1
+          fi
+        '';
+        stdenvSelectorFor = q: let
+          base =
+            if q.stdenv.targetPlatform.isLinux
+            then q.pkgsMusl.stdenv
+            else q.stdenv;
+        in
+          base
+          // {
+            mkDerivation = args:
+              base.mkDerivation (
+                args
+                // {
+                  unpackCmd = args.unpackCmd or copyTreeWithoutChmod;
+                }
+              );
+          };
         # The retained CI client's store returns EPERM from chmod. Crane's
         # dummy source copies read-only store files and then runs
         # `chmod +w -R`, which fails there. Create the copies writable
@@ -155,17 +192,6 @@
         in
           {
             inherit src;
-            # stdenv's directory unpack preserves modes, and the same client
-            # rejects that chmod. Copy the tree and leave the new files writable.
-            unpackCmd = ''
-              if [ -d "$curSrc" ]; then
-                destination="$(stripHash "$curSrc")"
-                mkdir -p "$destination"
-                cp --recursive --no-preserve=mode,ownership -- "$curSrc"/. "$destination"/
-              else
-                return 1
-              fi
-            '';
             strictDeps = true;
             buildInputs =
               [p.cacert]
