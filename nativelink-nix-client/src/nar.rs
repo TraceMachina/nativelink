@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Pure-Rust NAR (Nix ARchive) serialization and restoration.
+//! Pure-Rust NAR (Nix archive) serialization and restoration.
 //!
 //! [`dump_path`] streams the exact bytes `nix-store --dump PATH` produces —
 //! `str("nix-archive-1")` followed by a recursively-serialized node, where each
@@ -78,7 +78,7 @@ const MAX_TOKEN_LEN: u64 = 64 * 1024;
 /// [`FILE_CHUNK_SIZE`] pieces.
 pub fn dump_path(path: PathBuf) -> impl Stream<Item = Result<Bytes, Error>> + Send + 'static {
     let (writer, reader) = make_buf_channel_pair();
-    let _producer = spawn!("nar_dump_path", async move {
+    let producer = spawn!("nar_dump_path", async move {
         let mut nar = NarWriter { writer };
         let result = async {
             nar.emit_str(NAR_MAGIC.as_bytes()).await?;
@@ -97,7 +97,10 @@ pub fn dump_path(path: PathBuf) -> impl Stream<Item = Result<Bytes, Error>> + Se
         }
     });
 
-    NarByteStream { reader, _producer }
+    NarByteStream {
+        reader,
+        _producer: producer,
+    }
 }
 
 /// Adapts a [`nativelink_util::buf_channel`] read half (whose `Stream` yields
@@ -616,6 +619,7 @@ mod tests {
     use std::path::Path;
 
     use futures::StreamExt;
+    use nativelink_macro::nativelink_test;
 
     use super::*;
 
@@ -638,7 +642,7 @@ mod tests {
         v
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn golden_magic_prefix() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("f");
@@ -651,7 +655,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn golden_regular_file_exact_bytes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file = dir.path().join("f");
@@ -673,7 +677,7 @@ mod tests {
         assert_eq!(nar, expected, "regular-file NAR framing must be exact");
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn golden_executable_and_symlink_and_empty() {
         // Executable file.
         let dir = tempfile::tempdir().expect("tempdir");
@@ -805,7 +809,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn round_trip_tree() {
         let src = tempfile::tempdir().expect("src tempdir");
         let src_root = src.path().join("root");
@@ -823,7 +827,7 @@ mod tests {
         assert_trees_equal(&src_root, &dst_root);
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn round_trip_single_symlink() {
         let src = tempfile::tempdir().expect("src tempdir");
         let link = src.path().join("l");
@@ -843,7 +847,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn restore_rejects_bad_magic() {
         let bogus = b"not-a-nar-at-all-really".to_vec();
         let dst = tempfile::tempdir().expect("dst tempdir");
@@ -854,7 +858,7 @@ mod tests {
         assert_eq!(err.code, Code::InvalidArgument);
     }
 
-    #[tokio::test]
+    #[nativelink_test]
     async fn restore_rejects_traversal_name() {
         // Build a directory NAR whose single entry is named "..".
         let mut nar = Vec::new();
@@ -887,7 +891,7 @@ mod tests {
     /// Cross-checks `dump_path` against the real `nix-store --dump` when the
     /// binary and a store are available. Skips (with a message) otherwise, so
     /// CI without Nix still passes.
-    #[tokio::test]
+    #[nativelink_test]
     async fn cross_check_against_nix_store() {
         // Locate `nix-store` on PATH.
         let which = std::process::Command::new("sh")
@@ -970,6 +974,10 @@ mod tests {
         // Arbitrary bytes fed to restore_path must never panic — only Ok/Err.
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
         #[test]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "proptest drives a synchronous test body; it needs its own runtime to block on"
+        )]
         fn restore_never_panics(data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..4096)) {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()

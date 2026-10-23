@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! A Nix binary-cache client and watch-store daemon, co-designed with the
-//! NativeLink `nix_cache` service.
+//! `NativeLink` `nix_cache` service.
 //!
 //! Two executables share the core in this crate:
 //!
@@ -28,20 +28,29 @@
 //!   deduplicating against the cache.
 //!
 //! Both emit OpenTelemetry metrics ([`metrics`]) over OTLP, exactly as the
-//! NativeLink server does, so a collector's ClickHouse exporter can read them.
+//! `NativeLink` server does, so a collector's `ClickHouse` exporter can read them.
 //!
 //! The protocol primitives (narinfo parse/render, the signature fingerprint,
 //! nixbase32, canonical `.nar`/`.nar.zst` names) live in [`nativelink_nix`] and
 //! are shared with the server — the client and server are two ends of one wire
 //! format.
 
+// The NAR serializer relies on Unix file modes and symlinks, so the client is
+// a Unix program; the watcher additionally needs Linux's fanotify/inotify.
+// The crate still compiles everywhere so a workspace-wide build on another
+// platform is not broken by it, with the two binaries reduced to a stub that
+// says so.
+#[cfg(unix)]
 pub mod client;
 pub mod config;
 pub mod metrics;
+#[cfg(unix)]
 pub mod nar;
 pub mod store;
+#[cfg(target_os = "linux")]
 pub mod watch;
 
 pub use config::{Auth, CacheConfig};
+#[cfg(unix)]
 pub use nar::{HashingNar, dump_path, restore_path};
 pub use store::{NixStore, PathMeta, StorePath};

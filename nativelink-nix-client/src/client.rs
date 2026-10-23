@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! The Nix binary-cache HTTP client: the same wire protocol as `nix copy`,
-//! co-designed with the NativeLink `nix_cache` server.
+//! co-designed with the `NativeLink` `nix_cache` server.
 //!
 //! A push serializes the store path to a NAR ([`crate::nar::dump_path`]), tees
 //! it through a SHA-256 hasher for the `NarHash`, zstd-compresses it (learning
@@ -37,6 +37,7 @@ use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_nix::path_info::NixPathInfo;
 use nativelink_nix::signing::{NixPublicKey, NixSigningKey};
 use nativelink_nix::{nar_url, narinfo};
+use reqwest::Url;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 use tokio_util::io::ReaderStream;
@@ -61,9 +62,46 @@ pub enum PushOutcome {
 }
 
 /// A cache client bound to one cache URL, its credentials, and its signing keys.
+/// How a pull decides whether to trust the metadata a cache returns.
+///
+/// A `narinfo` is the only thing that tells the client which bytes to expect,
+/// so checking the downloaded NAR against it proves consistency, not
+/// authenticity. Authenticity comes from the `Sig` lines, verified against
+/// keys the operator chose to trust, exactly as `nix` does with
+/// `trusted-public-keys`.
+#[derive(Clone, Debug)]
+pub enum TrustPolicy {
+    /// Accept a `narinfo` only when one of its signatures verifies against one
+    /// of these keys. The list must not be empty.
+    Keys(Vec<NixPublicKey>),
+    /// Skip signature verification. Only for caches reached over a channel
+    /// that is trusted some other way; the caller opts in explicitly.
+    Unverified,
+}
+
+/// Whether a NAR request may carry the cache's credentials.
+///
+/// The `URL` field of a `narinfo` is not covered by its signature, so a cache
+/// (or anyone who can rewrite its responses) can point it at any host. The
+/// credentials belong to the cache's origin alone: same scheme, host and port.
+/// A downgrade from an `https` cache to an `http` NAR host is refused outright,
+/// because it would move the download, and any credentials with it, onto a
+/// cleartext connection the operator never agreed to.
+fn credentials_allowed(cache: &Url, nar: &Url) -> Result<bool, Error> {
+    if cache.scheme() == "https" && nar.scheme() == "http" {
+        return Err(make_input_err!(
+            "refusing to download NAR over cleartext http from '{}' for a cache served over https",
+            nar.host_str().unwrap_or("?")
+        ));
+    }
+    Ok(cache.origin() == nar.origin())
+}
+
 #[derive(Debug)]
 pub struct CacheClient {
     base_url: String,
+    base: Url,
+    store_dir: String,
     auth: Option<Auth>,
     compress: bool,
     compression_level: i32,
@@ -89,8 +127,18 @@ impl CacheClient {
                     .err_tip(|| format!("parsing signing key '{file}'"))?,
             );
         }
+        let base_url = config.base_url.trim_end_matches('/').to_string();
+        let base = Url::parse(&base_url)
+            .map_err(|e| make_input_err!("cache URL '{base_url}' is not a valid URL: {e}"))?;
+        if !matches!(base.scheme(), "http" | "https") {
+            return Err(make_input_err!(
+                "cache URL '{base_url}' must use http or https"
+            ));
+        }
         Ok(Self {
-            base_url: config.base_url.trim_end_matches('/').to_string(),
+            base_url,
+            base,
+            store_dir: config.store_dir.trim_end_matches('/').to_string(),
             auth: config.auth,
             compress: config.compress,
             compression_level: config.compression_level,
@@ -266,7 +314,7 @@ impl CacheClient {
     }
 
     /// Pulls one store path by its 32-char hash: fetch the narinfo, verify its
-    /// signature against `trusted_keys`, download + decompress the NAR, and
+    /// signature under `trust`, download + decompress the NAR, and
     /// restore it into `dest`, checking the bytes against the signed `NarHash`.
     ///
     /// v1 restores the tree but does not register it as a valid store path
@@ -274,10 +322,10 @@ impl CacheClient {
     pub async fn pull_path(
         &self,
         hash: &str,
-        trusted_keys: &[NixPublicKey],
+        trust: &TrustPolicy,
         dest: &std::path::Path,
     ) -> Result<u64, Error> {
-        let result = self.pull_path_inner(hash, trusted_keys, dest).await;
+        let result = self.pull_path_inner(hash, trust, dest).await;
         match &result {
             Ok(nar_size) => self.metrics.pull_ok(*nar_size),
             Err(_) => self.metrics.pull_error(),
@@ -288,9 +336,16 @@ impl CacheClient {
     async fn pull_path_inner(
         &self,
         hash: &str,
-        trusted_keys: &[NixPublicKey],
+        trust: &TrustPolicy,
         dest: &std::path::Path,
     ) -> Result<u64, Error> {
+        if let TrustPolicy::Keys(keys) = trust
+            && keys.is_empty()
+        {
+            return Err(make_input_err!(
+                "pull needs at least one trusted public key, or an explicit choice to skip verification"
+            ));
+        }
         let narinfo_url = format!("{}/{hash}.narinfo", self.base_url);
         let resp = self
             .authed(self.http.get(&narinfo_url))
@@ -307,12 +362,33 @@ impl CacheClient {
         let text = resp.text().await.err_tip(|| "reading narinfo body")?;
         let info = narinfo::parse(&text).err_tip(|| "parsing narinfo")?;
 
-        if !trusted_keys.is_empty() {
+        // Bind the answer to the question. A signature authenticates the path
+        // the narinfo describes, not the request that produced it, so a cache
+        // could otherwise answer a request for A with a perfectly valid B and
+        // have B restored under A's name.
+        let returned_hash = info
+            .store_path_hash()
+            .err_tip(|| format!("narinfo for {hash} names an invalid StorePath"))?;
+        if returned_hash != hash {
+            return Err(make_input_err!(
+                "narinfo for {hash} describes a different store path ({})",
+                info.store_path
+            ));
+        }
+        let returned_dir = info.store_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        if returned_dir != self.store_dir {
+            return Err(make_input_err!(
+                "narinfo for {hash} is for store directory '{returned_dir}', not '{}'",
+                self.store_dir
+            ));
+        }
+
+        if let TrustPolicy::Keys(keys) = trust {
             let fingerprint = info.fingerprint();
             let verified = info
                 .sigs
                 .iter()
-                .any(|sig| trusted_keys.iter().any(|k| k.verify(&fingerprint, sig)));
+                .any(|sig| keys.iter().any(|k| k.verify(&fingerprint, sig)));
             if !verified {
                 return Err(make_input_err!(
                     "narinfo for {hash} has no signature from a trusted key"
@@ -321,15 +397,23 @@ impl CacheClient {
         }
 
         let nar_url = if info.url.starts_with("http://") || info.url.starts_with("https://") {
-            info.url.clone()
+            Url::parse(&info.url)
+                .map_err(|e| make_input_err!("narinfo for {hash} has an invalid URL: {e}"))?
         } else {
-            format!("{}/{}", self.base_url, info.url.trim_start_matches('/'))
+            Url::parse(&format!(
+                "{}/{}",
+                self.base_url,
+                info.url.trim_start_matches('/')
+            ))
+            .map_err(|e| make_input_err!("narinfo for {hash} has an invalid URL: {e}"))?
         };
-        let resp = self
-            .authed(self.http.get(&nar_url))
-            .send()
-            .await
-            .err_tip(|| format!("GET {nar_url}"))?;
+        let request = self.http.get(nar_url.clone());
+        let request = if credentials_allowed(&self.base, &nar_url)? {
+            self.authed(request)
+        } else {
+            request
+        };
+        let resp = request.send().await.err_tip(|| format!("GET {nar_url}"))?;
         if !resp.status().is_success() {
             return Err(make_err!(
                 Code::Unavailable,
@@ -378,29 +462,6 @@ fn narinfo_is_usable(text: &str) -> bool {
         return false;
     };
     NixPathInfo::from_nar_info(&info).encode_record().is_ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::narinfo_is_usable;
-
-    const BASE: &str = concat!(
-        "StorePath: /nix/store/00000000000000000000000000000000-output\n",
-        "URL: nar/output.nar\n",
-        "Compression: none\n",
-        "NarHash: sha256:0000000000000000000000000000000000000000000000000000\n",
-        "NarSize: 1\n",
-    );
-
-    #[test]
-    fn dedup_rejects_poisoned_full_path_deriver() {
-        assert!(!narinfo_is_usable(&format!(
-            "{BASE}Deriver: /nix/store/11111111111111111111111111111111-builder.drv\n"
-        )));
-        assert!(narinfo_is_usable(&format!(
-            "{BASE}Deriver: 11111111111111111111111111111111-builder.drv\n"
-        )));
-    }
 }
 
 /// The result of dumping + compressing a store path to a spool file.
@@ -520,7 +581,7 @@ struct HashingReader<R> {
 }
 
 impl<R> HashingReader<R> {
-    fn new(inner: R, cell: HashCell) -> Self {
+    const fn new(inner: R, cell: HashCell) -> Self {
         Self { inner, cell }
     }
 }
@@ -534,7 +595,7 @@ impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for HashingReader<R> 
         let this = self.get_mut();
         let before = buf.filled().len();
         let res = Pin::new(&mut this.inner).poll_read(cx, buf);
-        if let Poll::Ready(Ok(())) = &res {
+        if matches!(res, Poll::Ready(Ok(()))) {
             let new = &buf.filled()[before..];
             let mut guard = this
                 .cell
@@ -568,5 +629,355 @@ impl SpoolFile {
 impl Drop for SpoolFile {
     fn drop(&mut self) {
         drop(std::fs::remove_file(&self.path));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::narinfo_is_usable;
+
+    const BASE: &str = concat!(
+        "StorePath: /nix/store/00000000000000000000000000000000-output\n",
+        "URL: nar/output.nar\n",
+        "Compression: none\n",
+        "NarHash: sha256:0000000000000000000000000000000000000000000000000000\n",
+        "NarSize: 1\n",
+    );
+
+    #[test]
+    fn dedup_rejects_poisoned_full_path_deriver() {
+        assert!(!narinfo_is_usable(&format!(
+            "{BASE}Deriver: /nix/store/11111111111111111111111111111111-builder.drv\n"
+        )));
+        assert!(narinfo_is_usable(&format!(
+            "{BASE}Deriver: 11111111111111111111111111111111-builder.drv\n"
+        )));
+    }
+}
+
+/// Pull-side behaviour against local HTTP fixtures: credential scoping, the
+/// binding of the returned `StorePath` to the requested hash, and the trust
+/// policy. The fixture is a minimal HTTP/1.1 responder that records every
+/// request's path and headers.
+#[cfg(test)]
+mod pull_tests {
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+    use std::sync::{Arc, Mutex};
+
+    use futures::StreamExt as _;
+    use nativelink_macro::nativelink_test;
+    use nativelink_nix::signing::NixSigningKey;
+    use nativelink_nix::{narinfo, nixbase32};
+    use nativelink_util::spawn;
+    use nativelink_util::task::JoinHandleDropGuard;
+    use sha2::{Digest as _, Sha256};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+
+    use super::{Auth, CacheClient, CacheConfig, Metrics, TrustPolicy, Url, credentials_allowed};
+
+    /// A throwaway ed25519 key (`nix key generate-secret --key-name test-int-1`);
+    /// it protects nothing and is shared with the server's integration suite.
+    const SECRET_KEY: &str = "test-int-1:59Az40GGu2M3sM6rQ6T/+c61OMLw1r+qx9xMe/SzkIkjJupCgoxM63utsPNUImg3vc6stSSfAlXYYgmmUSZ5Ig==";
+    const HASH_A: &str = "00000000000000000000000000000000";
+    const HASH_B: &str = "11111111111111111111111111111111";
+
+    type Routes = HashMap<String, (u16, Vec<u8>)>;
+    type Seen = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+    struct Fixture {
+        base: String,
+        seen: Seen,
+        _server: JoinHandleDropGuard<()>,
+    }
+
+    impl Fixture {
+        fn paths(&self) -> Vec<String> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|(p, _)| p.clone())
+                .collect()
+        }
+
+        fn authorization_for(&self, path: &str) -> Option<String> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .find(|(p, _)| p == path)
+                .and_then(|(_, headers)| {
+                    headers
+                        .iter()
+                        .find(|(k, _)| k == "authorization")
+                        .map(|(_, v)| v.clone())
+                })
+        }
+    }
+
+    async fn serve(routes: Routes) -> Fixture {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let server = spawn!("pull_test_fixture", async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = sock.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                let mut lines = text.split("\r\n");
+                let path = lines
+                    .next()
+                    .and_then(|l| l.split(' ').nth(1))
+                    .unwrap_or("")
+                    .to_string();
+                let headers = lines
+                    .take_while(|l| !l.is_empty())
+                    .filter_map(|l| l.split_once(':'))
+                    .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+                    .collect();
+                recorder
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((path.clone(), headers));
+                let (status, body) = routes
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_else(|| (404, b"not found".to_vec()));
+                let head = format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                drop(sock.write_all(head.as_bytes()).await);
+                drop(sock.write_all(&body).await);
+                drop(sock.shutdown().await);
+            }
+        });
+        Fixture {
+            base,
+            seen,
+            _server: server,
+        }
+    }
+
+    /// A real NAR of a one-file tree, with its hash and size.
+    async fn fixture_nar() -> (Vec<u8>, [u8; 32], u64) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("hello"), b"hello from the fixture\n").expect("write");
+        let mut nar = Vec::new();
+        let mut stream = Box::pin(super::nar::dump_path(dir.path().to_path_buf()));
+        while let Some(chunk) = stream.next().await {
+            nar.extend_from_slice(&chunk.expect("nar chunk"));
+        }
+        let hash = <[u8; 32]>::from(Sha256::digest(&nar));
+        let size = nar.len() as u64;
+        (nar, hash, size)
+    }
+
+    fn narinfo_text(
+        hash: &str,
+        url: &str,
+        nar_hash: &[u8; 32],
+        nar_size: u64,
+        sign: bool,
+    ) -> String {
+        let mut text = format!(
+            "StorePath: /nix/store/{hash}-fixture\nURL: {url}\nCompression: none\nNarHash: sha256:{}\nNarSize: {nar_size}\nReferences: \n",
+            nixbase32::encode(nar_hash)
+        );
+        if sign {
+            let info = narinfo::parse(&text).expect("fixture narinfo parses");
+            let key = NixSigningKey::from_secret_string(SECRET_KEY).expect("test key");
+            let _ = writeln!(text, "Sig: {}", key.sign(&info.fingerprint()));
+        }
+        text
+    }
+
+    fn client_for(base: &str) -> CacheClient {
+        CacheClient::new(
+            CacheConfig {
+                base_url: format!("{base}/nix/main"),
+                auth: Some(Auth::Bearer("cache-token".to_string())),
+                ..CacheConfig::default()
+            },
+            Arc::new(Metrics::new("pull-tests")),
+        )
+        .expect("client")
+    }
+
+    #[test]
+    fn credentials_follow_the_cache_origin_only() {
+        let cache = Url::parse("https://cache.example.org:8443/nix/main").expect("url");
+        let same = Url::parse("https://cache.example.org:8443/nar/x.nar").expect("url");
+        let other_host = Url::parse("https://cdn.example.net/nar/x.nar").expect("url");
+        let other_port = Url::parse("https://cache.example.org/nar/x.nar").expect("url");
+        let downgrade = Url::parse("http://cache.example.org:8443/nar/x.nar").expect("url");
+        assert!(credentials_allowed(&cache, &same).expect("same origin"));
+        assert!(!credentials_allowed(&cache, &other_host).expect("other host"));
+        assert!(!credentials_allowed(&cache, &other_port).expect("other port"));
+        assert!(
+            credentials_allowed(&cache, &downgrade).is_err(),
+            "an https cache must not send its NAR download over cleartext"
+        );
+        let plain = Url::parse("http://cache.example.org/nix/main").expect("url");
+        let upgrade = Url::parse("https://cdn.example.net/nar/x.nar").expect("url");
+        assert!(
+            !credentials_allowed(&plain, &upgrade).expect("upgrade is fine, just unauthenticated")
+        );
+    }
+
+    #[nativelink_test]
+    async fn nar_on_another_origin_is_fetched_without_the_cache_credentials() {
+        let (nar, nar_hash, nar_size) = fixture_nar().await;
+        let nar_host = serve(HashMap::from([("/blob.nar".to_string(), (200, nar))])).await;
+        let nar_url = format!("{}/blob.nar", nar_host.base);
+        let cache = serve(HashMap::from([(
+            format!("/nix/main/{HASH_A}.narinfo"),
+            (
+                200,
+                narinfo_text(HASH_A, &nar_url, &nar_hash, nar_size, false).into_bytes(),
+            ),
+        )]))
+        .await;
+        let dest = tempfile::tempdir().expect("tempdir");
+        let size = client_for(&cache.base)
+            .pull_path(HASH_A, &TrustPolicy::Unverified, &dest.path().join(HASH_A))
+            .await
+            .expect("pull succeeds");
+        assert_eq!(size, nar_size);
+        assert_eq!(
+            cache.authorization_for(&format!("/nix/main/{HASH_A}.narinfo")),
+            Some("Bearer cache-token".to_string()),
+            "the cache itself gets the credentials"
+        );
+        assert_eq!(
+            nar_host.paths(),
+            vec!["/blob.nar".to_string()],
+            "the NAR host was asked for the NAR"
+        );
+        assert_eq!(
+            nar_host.authorization_for("/blob.nar"),
+            None,
+            "a NAR host on another origin must never see the cache token"
+        );
+    }
+
+    #[nativelink_test]
+    async fn narinfo_for_another_store_path_is_rejected_before_any_nar_fetch() {
+        let (nar, nar_hash, nar_size) = fixture_nar().await;
+        let cache = serve(HashMap::from([
+            (
+                format!("/nix/main/{HASH_A}.narinfo"),
+                (
+                    200,
+                    narinfo_text(HASH_B, "nar/b.nar", &nar_hash, nar_size, false).into_bytes(),
+                ),
+            ),
+            ("/nix/main/nar/b.nar".to_string(), (200, nar)),
+        ]))
+        .await;
+        let dest = tempfile::tempdir().expect("tempdir");
+        let err = client_for(&cache.base)
+            .pull_path(HASH_A, &TrustPolicy::Unverified, &dest.path().join(HASH_A))
+            .await
+            .expect_err("a narinfo for B must not satisfy a request for A");
+        assert!(
+            err.to_string().contains("different store path"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            cache.paths(),
+            vec![format!("/nix/main/{HASH_A}.narinfo")],
+            "the NAR must not be fetched for a mismatched narinfo"
+        );
+    }
+
+    #[nativelink_test]
+    async fn unsigned_narinfo_is_rejected_unless_verification_is_waived() {
+        let (nar, nar_hash, nar_size) = fixture_nar().await;
+        let cache = serve(HashMap::from([
+            (
+                format!("/nix/main/{HASH_A}.narinfo"),
+                (
+                    200,
+                    narinfo_text(HASH_A, "nar/a.nar", &nar_hash, nar_size, false).into_bytes(),
+                ),
+            ),
+            ("/nix/main/nar/a.nar".to_string(), (200, nar)),
+        ]))
+        .await;
+        let key = NixSigningKey::from_secret_string(SECRET_KEY).expect("test key");
+        let trusted = TrustPolicy::Keys(vec![
+            super::NixPublicKey::from_string(&key.public_key_string()).expect("public key"),
+        ]);
+        let dest = tempfile::tempdir().expect("tempdir");
+        let client = client_for(&cache.base);
+        let err = client
+            .pull_path(HASH_A, &trusted, &dest.path().join("trusted"))
+            .await
+            .expect_err("an unsigned narinfo must not pass a key policy");
+        assert!(
+            err.to_string().contains("no signature from a trusted key"),
+            "unexpected error: {err}"
+        );
+        let err = client
+            .pull_path(
+                HASH_A,
+                &TrustPolicy::Keys(vec![]),
+                &dest.path().join("empty"),
+            )
+            .await
+            .expect_err("an empty key list is not a policy");
+        assert!(
+            err.to_string().contains("at least one trusted public key"),
+            "unexpected error: {err}"
+        );
+        client
+            .pull_path(
+                HASH_A,
+                &TrustPolicy::Unverified,
+                &dest.path().join("waived"),
+            )
+            .await
+            .expect("an explicit waiver restores the path");
+    }
+
+    #[nativelink_test]
+    async fn signed_narinfo_pulls_under_its_key() {
+        let (nar, nar_hash, nar_size) = fixture_nar().await;
+        let cache = serve(HashMap::from([
+            (
+                format!("/nix/main/{HASH_A}.narinfo"),
+                (
+                    200,
+                    narinfo_text(HASH_A, "nar/a.nar", &nar_hash, nar_size, true).into_bytes(),
+                ),
+            ),
+            ("/nix/main/nar/a.nar".to_string(), (200, nar)),
+        ]))
+        .await;
+        let key = NixSigningKey::from_secret_string(SECRET_KEY).expect("test key");
+        let trusted = TrustPolicy::Keys(vec![
+            super::NixPublicKey::from_string(&key.public_key_string()).expect("public key"),
+        ]);
+        let dest = tempfile::tempdir().expect("tempdir");
+        let size = client_for(&cache.base)
+            .pull_path(HASH_A, &trusted, &dest.path().join(HASH_A))
+            .await
+            .expect("a correctly signed narinfo pulls");
+        assert_eq!(size, nar_size);
+        assert!(dest.path().join(HASH_A).join("hello").is_file());
     }
 }
