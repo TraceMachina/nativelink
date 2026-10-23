@@ -50,6 +50,7 @@ use nativelink_service::cas_server::CasServer;
 use nativelink_service::execution_server::ExecutionServer;
 use nativelink_service::fetch_server::FetchServer;
 use nativelink_service::health_server::{HealthServer, health_paths};
+use nativelink_service::nix_cache_server::NixCacheServer;
 use nativelink_service::push_server::PushServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_service::worker_api_server::WorkerApiServer;
@@ -544,6 +545,30 @@ async fn inner_main(
                     ),
                 ),
             );
+        }
+
+        if let Some(nix_cache_cfgs) = &services.nix_cache {
+            // A plaintext (non-TLS) listener sends Bearer/Basic tokens in the
+            // clear. We do not hard-fail — TLS is often terminated by a proxy
+            // in front — but warn so token auth on a bare HTTP listener is a
+            // deliberate, visible choice rather than a silent leak.
+            if http_config.tls.is_none() {
+                for cfg in nix_cache_cfgs {
+                    if !cfg.read_token_files.is_empty() || !cfg.write_token_files.is_empty() {
+                        warn!(
+                            "nix_cache instance '{}' has auth tokens on a plaintext HTTP \
+                             listener; Bearer/Basic credentials will travel in cleartext — \
+                             terminate TLS on this listener or in front of it",
+                            cfg.instance_name
+                        );
+                    }
+                }
+            }
+            let nix_cache_server = NixCacheServer::new(nix_cache_cfgs, &store_manager)
+                .err_tip(|| "Could not create NixCache service")?;
+            for (prefix, router) in nix_cache_server.routers() {
+                svc = svc.nest_service(&prefix, router);
+            }
         }
 
         // This is the default service that executes if no other endpoint matches.

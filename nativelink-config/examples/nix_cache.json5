@@ -1,0 +1,216 @@
+// Nix binary-cache (substituter) service backed by local storage only.
+//
+// This serves the Nix HTTP binary-cache protocol (nix-cache-info, *.narinfo
+// and nar/* endpoints) from NativeLink stores, so `nix` clients can point
+// their `substituters` at http://localhost:50071/nix/main.
+//
+// Store composition rules for this service:
+//
+//  * NAR store (`cas_store`): digest-keyed; every uncompressed NAR blob is
+//    stored under DigestInfo(sha256(nar), nar_size). Wrapped in `verify`
+//    with both verify_size and verify_hash enabled so corrupt or truncated
+//    NAR uploads are rejected at write time instead of being served back.
+//
+//  * Path-info store (`path_info_store`): string-keyed by the 32-character
+//    nixbase32 store-path hash (the `<hash>` in /nix/store/<hash>-<name>).
+//    Wrapped in `completeness_checking` referencing the NAR store so a
+//    narinfo whose NAR has been evicted 404s instead of advertising a NAR
+//    that can no longer be served — the client then falls back to another
+//    substituter or builds locally.
+//    Do NOT wrap this store in `existence_cache`: it drops overwrites
+//    (re-uploads of the same store path would be silently ignored) and it
+//    rewrites string keys. Do NOT wrap it in `verify` or
+//    `size_partitioning` either — both reject string keys.
+//
+//  * Alias store (`alias_store`): a small string-keyed map from
+//    client-chosen NAR URL names to the (digest, size) of the NAR blob in
+//    the NAR store, so uploads are served back under the exact URL the
+//    client chose. It must NOT sit behind the completeness_checking
+//    wrapper used for the path-info store: alias records are not narinfo
+//    records and would fail its decoding.
+{
+  stores: [
+    {
+      name: "NIX_NAR_STORE",
+      verify: {
+        // NARs are content-addressed by sha256(nar)/nar_size, so both
+        // checks apply cleanly (unlike an AC store).
+        verify_size: true,
+        verify_hash: true,
+        backend: {
+          fast_slow: {
+            fast: {
+              filesystem: {
+                content_path: "/tmp/nativelink/nix-cache/nar-fast/content_path",
+                temp_path: "/tmp/nativelink/nix-cache/nar-fast/temp_path",
+                eviction_policy: {
+                  // 1gb of hot NARs.
+                  max_bytes: 1000000000,
+                },
+              },
+            },
+            slow: {
+              filesystem: {
+                content_path: "/tmp/nativelink/nix-cache/nar-slow/content_path",
+                temp_path: "/tmp/nativelink/nix-cache/nar-slow/temp_path",
+                eviction_policy: {
+                  // 50gb of NARs total.
+                  max_bytes: 50000000000,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "NIX_PATH_INFO_STORE",
+      completeness_checking: {
+        backend: {
+          memory: {
+            eviction_policy: {
+              // narinfo records are tiny; 100mb holds a lot of them.
+              max_bytes: 100000000,
+            },
+          },
+        },
+
+        // Confirm the NAR still exists before handing out its narinfo.
+        cas_store: {
+          ref_store: {
+            name: "NIX_NAR_STORE",
+          },
+        },
+      },
+    },
+    {
+      name: "NIX_ALIAS_STORE",
+      memory: {
+        eviction_policy: {
+          max_bytes: 100000000,
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "nix_cache",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50071",
+        },
+      },
+      services: {
+        nix_cache: [
+          {
+            instance_name: "main",
+            cas_store: "NIX_NAR_STORE",
+            path_info_store: "NIX_PATH_INFO_STORE",
+            alias_store: "NIX_ALIAS_STORE",
+
+            // Mount prefix on this listener; defaults to "/nix/<instance_name>",
+            // so the cache root is http://localhost:50071/nix/main and clients
+            // probe http://localhost:50071/nix/main/nix-cache-info.
+            // path: "/nix/main",
+            // Served as StoreDir in nix-cache-info; must match the clients'
+            // store dir or they will refuse to substitute from this cache.
+            store_dir: "/nix/store",
+
+            // Lower sorts earlier among substituters (cache.nixos.org is 40).
+            priority: 40,
+
+            // Allow clients to batch-query this cache for whole closures.
+            want_mass_query: true,
+
+            // Paths to secret keys generated with:
+            //   nix key generate-secret --key-name nix-cache.example.org-1
+            // Each key adds one Sig line per narinfo; listing multiple keys
+            // enables rotation while clients migrate trusted-public-keys.
+            signing_key_files: [],
+
+            // Staging dir for decompressing compressed NAR uploads; created
+            // if missing and pruned of stale files at startup. Defaults to
+            // <system temp>/nativelink-nix-spool/<instance_name>.
+            // spool_path: "/tmp/nativelink/nix-cache/spool",
+
+            // Set true on public-facing listeners to reject PUT with 405.
+            // A valid write token does NOT override this.
+            read_only: false,
+
+            // Token auth, off by default (anonymous reads, writes gated
+            // only by read_only). Each listed file holds exactly ONE
+            // token (surrounding whitespace is trimmed); listing several
+            // files enables rotation — any listed token is accepted.
+            // Clients send either "Authorization: Bearer <token>" or
+            // Basic auth where the token is the password and the
+            // username is ignored — that is how stock nix authenticates
+            // via netrc. When read_token_files is non-empty EVERY
+            // request (including nix-cache-info) needs a valid read or
+            // write token; failures get 401 with a Basic challenge,
+            // which nix treats as a clean narinfo miss, so private
+            // caches stay hidden. When write_token_files is non-empty,
+            // PUT additionally needs a valid write token.
+            // read_token_files: ["/etc/nativelink/nix-read.token"],
+            // write_token_files: ["/etc/nativelink/nix-write.token"],
+
+            // Serve zstd-compressed NARs: each NAR is transcoded once
+            // when its narinfo is uploaded, the compressed blob is
+            // stored in the NAR store under its own digest, and served
+            // narinfo documents advertise the .nar.zst URL with
+            // Compression: zstd plus real FileHash/FileSize lines. If
+            // the compressed blob is later evicted, serving falls back
+            // to the uncompressed NAR; stored signatures stay valid
+            // either way (the signed fingerprint covers only the
+            // uncompressed NAR). compression_level is the zstd level
+            // (default 3).
+            // serve_compression: "zstd",
+            // compression_level: 3,
+
+            // Round-trip compression fidelity (default true). A compressed
+            // NAR upload (.nar.xz/.nar.zst/.nar.bz2 — xz is nix's default)
+            // keeps its ORIGINAL bytes as a CAS blob served verbatim under
+            // the client's URL, and the served narinfo advertises the
+            // original Compression/FileHash/FileSize, so a client can pull
+            // a just-pushed path straight back within the narinfo TTL
+            // (matching attic/harmonia/nix-serve). Set false to instead
+            // decompress every upload to the canonical uncompressed NAR
+            // and serve Compression: none, saving ~0.3x storage but 404ing
+            // the client's cached compressed URL on a warm pull. With
+            // serve_compression: "zstd" a preserved original wins over
+            // transcoding (the client's codec is served, saving CPU; only
+            // Compression: none pushes are transcoded).
+            // preserve_upload_compression: true,
+
+            // Hardening limits (all optional; defaults shown). They are
+            // deliberately generous so legitimate large-closure pushes and
+            // normal parallel substitution are never affected.
+            //
+            // Cap on the decompressed size of a single ingested NAR. A
+            // compressed upload is stream-decompressed into the spool dir;
+            // without a cap a tiny .nar.zst could expand to tens of GiB and
+            // fill the disk. A declared size over the cap is refused with
+            // 413 before the body is read; a stream that grows past it is
+            // aborted with 413 mid-flight. Size it to the spool filesystem.
+            // max_nar_size_bytes: 34359738368, // 32 GiB
+
+            // Max concurrent NAR GET response bodies streamed at once.
+            // Requests over this get a retryable 503 instead of ballooning
+            // memory with many slow readers.
+            // max_concurrent_nar_streams: 256,
+
+            // Max concurrent zstd transcodes (serve_compression: "zstd").
+            // Concurrent PUTs for the same NAR are additionally coalesced
+            // into a single transcode.
+            // max_concurrent_transcodes: 8,
+
+            // Idle timeout (seconds) on a NAR upload body: a stall past
+            // this is aborted with 408 and its spool file released. Resets
+            // on every received chunk, so slow-but-steady uploads survive.
+            // nar_upload_idle_timeout_s: 60,
+          },
+        ],
+        health: {},
+      },
+    },
+  ],
+}

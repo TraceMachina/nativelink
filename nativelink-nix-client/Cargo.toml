@@ -1,0 +1,76 @@
+#:schema ../tools/cargo-with-detailed-deps.json
+lints.workspace = true
+
+[package]
+description = "Nix binary-cache client + watch-store daemon for NativeLink — streaming NAR, zstd on the wire, OTLP metrics"
+edition = "2024"
+name = "nativelink-nix-client"
+version = "1.5.2"
+
+[dependencies]
+nativelink-error = { path = "../nativelink-error" }
+nativelink-nix = { path = "../nativelink-nix" }
+nativelink-util = { path = "../nativelink-util" }
+
+async-compression = { version = "0.4.25", default-features = false, features = [
+  "bzip2",
+  "gzip",
+  "tokio",
+  "xz",
+  "zstd",
+] }
+bytes = { version = "1.10.1", default-features = false }
+clap = { version = "4.5.35", default-features = false, features = [
+  "derive",
+  "env",
+  "error-context",
+  "help",
+  "std",
+  "usage",
+] }
+futures = { version = "0.3.31", default-features = false }
+hex = { version = "0.4.3", default-features = false, features = ["std"] }
+libc = { version = "0.2.186", default-features = false }
+opentelemetry = { version = "0.32.0", default-features = false, features = [
+  "metrics",
+] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "stream",
+] }
+rusqlite = { version = "0.37.0", default-features = false, features = [
+  "bundled",
+] }
+# `asm` unlocks the aarch64 hardware SHA-2 backend (RustCrypto gates it behind
+# this feature); it then runtime-detects the HWCAP `sha2` bit via cpufeatures,
+# so one binary picks hardware SHA on any core that has it (GB10 X925/A725,
+# Grace Neoverse V2) and falls back to software elsewhere. Turns NAR hashing
+# from the ~100 MB/s software path into on-core hardware SHA-256.
+sha2 = { version = "0.10.8", default-features = false, features = ["asm"] }
+tokio = { version = "1.52.2", default-features = false, features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+] }
+tokio-util = { version = "0.7.14", default-features = false, features = ["io"] }
+tracing = { version = "0.1.41", default-features = false }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = [
+  "bit-set",
+  "std",
+] }
+tempfile = { version = "3.20.0", default-features = false }
+
+[[bin]]
+name = "nl-nix"
+path = "src/bin/nl_nix.rs"
+
+[[bin]]
+name = "nl-watch-store"
+path = "src/bin/nl_watch_store.rs"
