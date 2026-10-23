@@ -225,11 +225,13 @@ pub(crate) async fn fake_redis_internal<H>(
             loop {
                 let mut buf = vec![0; 8192];
                 let res = stream.read(&mut buf).await.unwrap();
-                if res != 0 {
-                    let output = local_handler(&buf[..res]);
-                    if !output.is_empty() {
-                        stream.write_all(output.as_bytes()).await.unwrap();
-                    }
+                if res == 0 {
+                    // EOF is permanent: stop serving this connection after disconnect.
+                    break;
+                }
+                let output = local_handler(&buf[..res]);
+                if !output.is_empty() {
+                    stream.write_all(output.as_bytes()).await.unwrap();
                 }
             }
         });

@@ -519,31 +519,33 @@ async fn compressed_upload_mid_stream_failure_fails_fast() -> Result<(), Box<dyn
 // unverified identity path.
 #[nativelink_test]
 async fn corrupt_compressed_download_is_terminal() -> Result<(), Box<dyn core::error::Error>> {
-    // The decoder must abort MID-STREAM while the feed still has chunks in
-    // flight (the old classification then saw a cascade "receiver
-    // disconnected" feed error and silently fell back to the unverified
-    // identity path). Bit-flips inside a zstd block decode to garbage and
-    // only fail the digest check at EOF, so instead append a second valid
-    // frame: its first decoded block overshoots the expected size, which
-    // the decoder rejects immediately and deterministically.
+    // The decoder must abort MID-STREAM while the feed is still open (the
+    // old classification then saw a cascade "receiver disconnected" feed
+    // error and silently fell back to the unverified identity path).
+    // Encode the correct prefix followed by excess data in ONE zstd frame:
+    // decoding beyond the expected size must fail before wire EOF, without
+    // depending on how concatenated frames are handled by libzstd.
     use nativelink_proto::build::bazel::remote::execution::v2::compressor;
-    let (content, digest) = make_content(0x22, 8 * 1024 * 1024);
-    let valid_frame =
-        nativelink_util::wire_compression::compress(content.clone(), compressor::Value::Zstd)?;
-    let (extra, _) = make_content(0x99, 8 * 1024 * 1024);
-    let overflow_frame =
-        nativelink_util::wire_compression::compress(extra, compressor::Value::Zstd)?;
-    let mut corrupt = valid_frame.to_vec();
-    corrupt.extend_from_slice(&overflow_frame);
+    let (content, digest) = make_mixed_content(0x22, 1024 * 1024);
+    let (extra, _) = make_mixed_content(0x99, 1024 * 1024);
+    let mut oversized = content.to_vec();
+    oversized.extend_from_slice(&extra);
+    let corrupt = nativelink_util::wire_compression::compress(
+        Bytes::from(oversized),
+        compressor::Value::Zstd,
+    )?;
     let corrupt_chunks = corrupt.len().div_ceil(64 * 1024);
+    assert!(
+        corrupt_chunks >= 4,
+        "test payload must span several wire chunks"
+    );
     let identity_reads = Arc::new(AtomicU64::new(0));
     let port = start_fake_bytestream_server(FakeByteStream {
         identity_reads: identity_reads.clone(),
-        // Send the complete corrupt payload, but withhold wire EOF. The
-        // decoder receives enough data to reject the size overshoot while
-        // the feed remains blocked on the open gRPC stream.
+        // Send the oversized frame but withhold wire EOF. The decoder must
+        // reject the size overshoot without waiting for the held stream.
         hold_compressed_read_after_chunks: Some(corrupt_chunks),
-        compressed_read_payload: Some(Bytes::from(corrupt)),
+        compressed_read_payload: Some(corrupt),
         identity_read_payload: Some(content),
         ..Default::default()
     })

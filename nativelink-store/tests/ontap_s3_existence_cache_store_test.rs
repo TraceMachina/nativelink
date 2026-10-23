@@ -20,15 +20,11 @@ use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use bytes::Bytes;
 use http::status::StatusCode;
-use nativelink_config::stores::{
-    CommonObjectSpec, ExperimentalOntapS3Spec, OntapS3ExistenceCacheSpec, Retry, StoreSpec,
-};
+use nativelink_config::stores::ExperimentalOntapS3Spec;
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
-use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::ontap_s3_existence_cache_store::OntapS3ExistenceCache;
 use nativelink_store::ontap_s3_store::OntapS3Store;
-use nativelink_store::store_manager::StoreManager;
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -36,14 +32,17 @@ use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
-use tempfile::tempdir;
+use tempfile::{TempDir, tempdir};
 
 const BUCKET_NAME: &str = "ontap-test-bucket";
 const VALID_HASH1: &str = "0123456789abcdef000000000000000000010000000000000123456789abcdef";
 const VSERVER_NAME: &str = "testvserver";
 
-async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Error> {
-    // Create a temporary directory for the cache file
+async fn create_test_store(
+    mock_client: StaticReplayClient,
+    sync_cache: bool,
+) -> Result<(TempDir, Store), Error> {
+    // Keep the cache directory alive until the caller drops the store.
     let temp_dir = tempdir().expect("Failed to create temporary directory");
     let cache_path = temp_dir
         .path()
@@ -52,42 +51,39 @@ async fn create_test_store(mock_client: StaticReplayClient) -> Result<Store, Err
         .unwrap()
         .to_string();
 
-    let _test_config = Builder::new()
+    let test_config = Builder::new()
+        .credentials_provider(aws_sdk_s3::config::Credentials::new(
+            "test", "test", None, None, "test",
+        ))
         .behavior_version(BehaviorVersion::latest())
         .region(Region::from_static(VSERVER_NAME))
         .http_client(mock_client)
         .build();
-
-    let ontap_s3_spec = ExperimentalOntapS3Spec {
-        endpoint: "https://example.com".to_string(),
-        vserver_name: VSERVER_NAME.to_string(),
-        bucket: BUCKET_NAME.to_string(),
-        root_certificates: None,
-        common: CommonObjectSpec {
-            key_prefix: None,
-            retry: Retry::default(),
-            consider_expired_after_s: 0,
-            max_retry_buffer_per_request: None,
-            multipart_max_concurrent_uploads: None,
-            insecure_allow_http: false,
-            disable_http2: false,
+    let s3_client = aws_sdk_s3::Client::from_conf(test_config);
+    let inner_store = OntapS3Store::new_with_client_and_jitter(
+        &ExperimentalOntapS3Spec {
+            endpoint: "https://example.com".to_string(),
+            vserver_name: VSERVER_NAME.to_string(),
+            bucket: BUCKET_NAME.to_string(),
             ..Default::default()
         },
-    };
-
-    let cache_spec = OntapS3ExistenceCacheSpec {
-        index_path: cache_path,
-        sync_interval_seconds: 10,
-        backend: Box::new(ontap_s3_spec),
-    };
-
-    let store_manager = Arc::new(StoreManager::new());
-    store_factory(
-        &StoreSpec::OntapS3ExistenceCache(Box::new(cache_spec)),
-        &store_manager,
-        None,
-    )
-    .await
+        s3_client.clone(),
+        Arc::new(|_delay| Duration::from_secs(0)),
+        MockInstantWrapped::default,
+    )?;
+    // The testing constructor uses the fixed bucket name "test-bucket".
+    let store = OntapS3ExistenceCache::new_for_testing(
+        Store::new(inner_store),
+        Arc::new(s3_client),
+        cache_path,
+        std::collections::HashSet::new(),
+        10,
+        MockInstantWrapped::default,
+    );
+    if sync_cache {
+        store.run_sync().await?;
+    }
+    Ok((temp_dir, Store::new(store)))
 }
 
 #[nativelink_test]
@@ -95,7 +91,7 @@ async fn test_zero_digest_handling() -> Result<(), Error> {
     // Setup a mock client that doesn't expect any calls (zero digest is handled locally)
     let mock_client = StaticReplayClient::new(vec![]);
 
-    let store = create_test_store(mock_client).await?;
+    let (_temp_dir, store) = create_test_store(mock_client, false).await?;
 
     // Create the empty/zero digest
     let zero_digest = DigestInfo::new(Sha256::new().finalize().into(), 0);
@@ -128,7 +124,7 @@ async fn test_get_part_not_in_cache() -> Result<(), Error> {
         ReplayEvent::new(
             http::Request::builder()
                 .uri(format!(
-                    "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/?list-type=2&max-keys=1000&prefix="
+                    "https://test-bucket.s3.{VSERVER_NAME}.amazonaws.com/?list-type=2&max-keys=1000&prefix="
                 ))
                 .body(SdkBody::empty())
                 .unwrap(),
@@ -163,9 +159,7 @@ async fn test_get_part_not_in_cache() -> Result<(), Error> {
         ),
     ]);
 
-    let store = create_test_store(mock_client).await?;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (_temp_dir, store) = create_test_store(mock_client, true).await?;
 
     let test_digest = DigestInfo::try_new(VALID_HASH1, 10)?;
 
@@ -503,7 +497,7 @@ async fn test_empty_bucket_handling() -> Result<(), Error> {
         ReplayEvent::new(
             http::Request::builder()
                 .uri(format!(
-                    "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/?list-type=2&max-keys=1000&prefix="
+                    "https://test-bucket.s3.{VSERVER_NAME}.amazonaws.com/?list-type=2&max-keys=1000&prefix="
                 ))
                 .body(SdkBody::empty())
                 .unwrap(),
@@ -525,10 +519,7 @@ async fn test_empty_bucket_handling() -> Result<(), Error> {
         ),
     ]);
 
-    let store = create_test_store(mock_client).await?;
-
-    // Wait for cache initialization
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (_temp_dir, store) = create_test_store(mock_client, true).await?;
 
     // Check that no objects exist
     let test_digest = DigestInfo::try_new(VALID_HASH1, 100)?;
