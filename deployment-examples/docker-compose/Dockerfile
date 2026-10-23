@@ -47,11 +47,11 @@ RUN ARCH_SUFFIX=amd64 \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive \
     apt-get install --no-install-recommends -y \
-        git=1:2.43.0-1ubuntu7.3 \
+        git=1:2.43.0-1ubuntu7.4 \
         gcc=4:13.2.0-7ubuntu1 \
         g++=4:13.2.0-7ubuntu1 \
         python3=3.12.3-0ubuntu2.1 \
-        ca-certificates=20240203 \
+        ca-certificates=20260816ubuntu0.24.04.1 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -c 'import hashlib, pathlib, stat, sys, urllib.request; data = urllib.request.urlopen(sys.argv[1], timeout=60).read(); digest = hashlib.sha256(data).hexdigest(); assert digest == sys.argv[2], f"sha256 mismatch: {digest}"; path = pathlib.Path("/usr/local/bin/bazel"); path.write_bytes(data); path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)' "$BAZELISK_URL" "$BAZELISK_SHA256" \

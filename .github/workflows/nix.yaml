@@ -1,89 +1,94 @@
 ---
-name: Nix
+name: CI / Nix
 
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
-  pull_request:
-    branches: [main]
+    branches: ['**']
     paths-ignore:
       - '.github/styles/**'
       - 'web/**'
   # Two jobs here run only on the nightly schedule and on demand: Cargo Dev
   # (nix-cargo) and the end-to-end integration tests (buildstream, buck2,
-  # mongo). See their per-job `if`. The rest (Bazel Dev, installation and the
-  # RBE toolchain matrix) stay on the per-PR path and skip the nightly run via
-  # `if: != 'schedule'`.
+  # mongo). See their per-job `if`. The installation and
+  # RBE toolchain matrix stay on the branch CI path and skip the nightly run via
+  # `if: != 'schedule'`. The primary Bazel lane is CI / NativeLink.
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
-permissions: read-all
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: false
 
 jobs:
-  nix-bazel:
-    if: ${{ github.event_name != 'schedule' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04]
-    name: Bazel Dev / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  # Credentialed work uses reviewed repository branches, like the Bazel lane.
+  # Promote reviewed external commits to a repository branch before running it.
+  nix-build:
+    if: >-
+      github.repository == 'TraceMachina/nativelink' &&
+      startsWith(github.ref, 'refs/heads/') &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    name: Build shared Nix package
+    environment: cluster-ci-benchmark
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
+    outputs:
+      matrix: ${{ steps.manifest.outputs.matrix }}
     steps:
-      - name: Checkout
-        uses: >- # v6.0.2
-          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          persist-credentials: false
 
-      - name: Setup NativeLink Cloud
-        uses: ./.github/actions/setup-nativelink-cloud
-        with:
-          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
-          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
-          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
-          api-key: >-
-            ${{ github.event_name == 'push'
-                && secrets.NATIVELINK_STAGING_API_KEY_RW
-                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
-          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
-          # Remote execution only on Linux; the action hard-fails exec on
-          # non-Linux runners, so macOS lanes fall back to cache.
-          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+      - name: Test Nix package sharing
+        run: python3 -m unittest discover -s .github/scripts -p 'test_nix_ci.py' -v
 
-      - name: Invoke Bazel build in Nix shell
+      - name: Install pinned cluster client
         run: |
-          # --config=nl-toolchain pins the hermetic LLVM + downloaded Rust
-          # toolchain identity. Without it, compiles inside `nix develop`
-          # resolve the nix-store default toolchain, baking /nix/store/<hash>
-          # paths into every action key — which is why this lane previously got
-          # 0 remote cache hits against a cache warmed off a non-nix toolchain.
-          # Pinning the hermetic identity makes this lane's action digests match
-          # a warm writer that uses the same identity. No remote executor is
-          # added here: this is cache-read keyed by a stable toolchain, not RBE.
-          nix develop --impure --command \
-            bazel-retry test //... \
-              --config=nl-toolchain \
-              --config=nl-quiet \
-              --verbose_failures \
-              --lockfile_mode=error \
+          curl --fail --location --retry 3 \
+            https://dl.k8s.io/release/v1.36.3/bin/linux/amd64/kubectl \
+            -o "$RUNNER_TEMP/kubectl"
+          echo "ebbd080e7c2e275093b55915722043257eb24004363e20acb3c4d71919f88336  $RUNNER_TEMP/kubectl" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/kubectl"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
+      - name: Build and export once on the retained client
+        env:
+          NL_GCP_PROVIDER: ${{ vars.NL_GCP_PROVIDER }}
+          NL_GCP_SERVICE_ACCOUNT: ${{ vars.NL_GCP_SERVICE_ACCOUNT }}
+          NL_GKE_SERVER: ${{ vars.NL_GKE_SERVER }}
+          NL_GKE_CA_DATA: ${{ vars.NL_GKE_CA_DATA }}
+          NL_GKE_NAMESPACE: ${{ vars.NL_GKE_NAMESPACE }}
+          NL_GKE_POD: ${{ vars.NL_GKE_POD }}
+        run: |
+          export BENCHMARK_STARTED="$(date +%s)"
+          python3 .github/scripts/cluster_ci.py --task nix \
+            --output "$RUNNER_TEMP/nix-ci"
+
+      - name: Read verified command matrix
+        id: manifest
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'nix-ci/nix.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps(report['matrix'], separators=(',', ':')) + '\n')
+          PY
+
+      - name: Publish the shared Nix store closure
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          name: nix-ci-package
+          path: ${{ runner.temp }}/nix-ci/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
   # Cargo Dev (Linux-only) moved off the per-PR critical path: nightly / on-demand only.
   nix-cargo:
@@ -125,6 +130,7 @@ jobs:
 
   installation:
     if: ${{ github.event_name != 'schedule' }}
+    needs: [nix-build]
     strategy:
       fail-fast: false
       matrix:
@@ -141,18 +147,22 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
         with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nativelink_attic_token: ''
+          read_only: 'true'
+          skip_free_disk: 'true'
+
+      - name: Download the shared Nix store closure
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nix-ci-package
+          path: ${{ runner.temp }}/nix-ci
+
+      - name: Import the exact package for this source
+        run: python3 .github/scripts/nix_ci.py import --directory "$RUNNER_TEMP/nix-ci"
 
       - name: Test nix run
         run: |
           nix run -L .#nativelink-is-executable-test
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
-        with:
-          nix_name: .#nativelink-is-executable-test
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
   integration:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -183,35 +193,12 @@ jobs:
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
           nix_name: .#${{ matrix.test-name }}-with-nativelink-test
 
-  # rbe-toolchain is slow because it has many subcommands, so split it out
-  generate-rbe-commands:
-    if: ${{ github.event_name != 'schedule' }}
-    runs-on: ubuntu-24.04
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-      - name: Checkout
-        uses: >- # v6.0.2
-          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      - name: Prepare Worker
-        uses: ./.github/actions/prepare-nix
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-          skip_free_disk: true # because we don't need much for this action
-
-      - name: Get commands list
-        run: |
-          COMMANDS=$(nix run .#rbe-toolchain-list)
-          echo "matrix={\"command\":${COMMANDS}}" >> $GITHUB_OUTPUT
-        id: set-matrix
-
   rbe-toolchain:
     if: ${{ github.event_name != 'schedule' }}
     name: rbe ${{ matrix.command}}
-    needs: [generate-rbe-commands]
+    needs: [nix-build]
     strategy:
-      matrix: ${{fromJson(needs.generate-rbe-commands.outputs.matrix)}}
+      matrix: ${{fromJson(needs.nix-build.outputs.matrix)}}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -222,15 +209,19 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
         with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
+          nativelink_attic_token: ''
+          read_only: 'true'
+          skip_free_disk: 'true'
+
+      - name: Download the shared Nix store closure
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: nix-ci-package
+          path: ${{ runner.temp }}/nix-ci
+
+      - name: Import the exact package for this source
+        run: python3 .github/scripts/nix_ci.py import --directory "$RUNNER_TEMP/nix-ci"
 
       - name: Test ${{ matrix.command }} with rbe
         run: |
           nix run -L .#rbe-toolchain-with-nativelink-test ${{ matrix.command }}
-
-      - name: Teardown Worker
-        uses: ./.github/actions/end-nix
-        if: always()
-        with:
-          nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
-          nix_name: .#rbe-toolchain-with-nativelink-test

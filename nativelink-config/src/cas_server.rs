@@ -1321,9 +1321,17 @@ pub struct LocalWorkerConfig {
     /// CAS or the object store, so this bounds what one worker asks of
     /// them at a time: several cold actions share this many fetches
     /// instead of each opening its own. Blobs already in the store are
-    /// linked without one.
+    /// linked without one. 0 shares no pool; each action fetches on its
+    /// own.
     ///
-    /// Default: 64
+    /// Without a pool, an action fetches up to 64 inputs at a time per
+    /// directory of its input tree. Set this when several cold actions on
+    /// one worker overload the CAS or the object store behind it; 64 is a
+    /// good start. A worker without it logs a warning suggesting it, at
+    /// most every 10 minutes, when an input fetch times out or fails with
+    /// a transient error other than `DataLoss`.
+    ///
+    /// Default: 0 (no shared pool)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_input_downloads: usize,
 
@@ -1578,6 +1586,15 @@ pub struct LocalWorkerConfig {
     /// on Linux. It is highly recommended as it avoids a number of issues with
     /// zombie processes and also provides additional hermeticity. If explicitly set
     /// to true and it is not supported the worker will exit with an error.
+    ///
+    /// The action runs as PID 1 of its own PID namespace, and `/proc` is
+    /// remounted inside it, so the processes listed there are the action's
+    /// own, each under the PID the action knows it by: a process reading
+    /// `/proc/<pid>` for a child it forked finds that child, not whichever
+    /// host process has the number. If the worker's environment refuses that
+    /// mount (an unprivileged container that masks paths under `/proc` does)
+    /// the worker logs a warning at startup and actions see the host's
+    /// `/proc` instead.
     ///
     /// Note: this will fail for non-privileged Dockerised workers, as workers in
     /// Docker don't have permissions to make a new user namespace. Privileged

@@ -423,13 +423,15 @@ async fn rejects_incomplete_azure_cache_fill() -> Result<(), Error> {
     );
     let digest = DigestInfo::try_new(TEST_HASH, 78)?;
     assert_eq!(fast.has(digest).await?, None);
+    // The empty object is reported missing rather than read as a short blob,
+    // and either way nothing lands in the fast tier.
     assert_eq!(
         store
             .get_part_unchunked(digest, 0, None)
             .await
             .unwrap_err()
             .code,
-        Code::DataLoss
+        Code::NotFound
     );
     assert_eq!(fast.has(digest).await?, None);
     Ok(())
@@ -458,6 +460,35 @@ async fn test_has_object_not_found() -> Result<(), Error> {
 
     assert_eq!(result, None);
     assert_eq!(mock.request_count(), 1);
+    Ok(())
+}
+
+/// An empty object under a digest that names bytes is what a failed upload
+/// published; the store reports it missing so the client uploads it again
+/// instead of reading it as `DataLoss` forever.
+#[nativelink_test]
+async fn has_treats_an_empty_object_as_missing() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_properties(properties_ok(0));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+    assert_eq!(store.has(create_test_digest()?).await?, None);
+    assert_eq!(mock.request_count(), 1);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_part_treats_an_empty_object_as_missing() -> Result<(), Error> {
+    let mock = MockTransport::new();
+    mock.push_download(download_ok(StatusCode::Ok, Vec::new()));
+    let store = create_test_store(Arc::clone(&mock), None, None)?;
+
+    let result = store
+        .get_part_unchunked(create_test_digest()?, 0, None)
+        .await;
+    let err = result.unwrap_err();
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    assert!(err.to_string().contains("empty object"), "{err:?}");
     Ok(())
 }
 
@@ -1036,31 +1067,31 @@ async fn test_multipart_upload_large_file() -> Result<(), Error> {
 
 /// Azure answers a download with the block it read, so for a blob whose
 /// length is not a multiple of the block size the last block runs past the
-/// end. The store must hand the caller the digest's bytes and no more: the
-/// surplus used to travel on to `verify_store`, which rejected the whole
-/// stream, so a readable blob failed every read and with it every action
-/// that wanted it.
+/// end. The store hands the caller everything it was given; a raw surplus
+/// is the verify store's to judge. A compression store above reads the
+/// object it wrote under this key, and an lz4 frame of data that does not
+/// compress is longer than the digest it is stored under, so a read cut at
+/// the digest's size is a torn frame and the blob is unreadable.
 #[nativelink_test]
-async fn a_body_longer_than_the_digest_is_trimmed_to_it() -> Result<(), Error> {
+async fn a_body_longer_than_the_digest_is_handed_on_whole() -> Result<(), Error> {
     const CONTENT: u64 = 100;
     const BLOCK: u64 = 64;
     let content: Vec<u8> = (0..CONTENT)
         .map(|i| u8::try_from(i % 251).unwrap())
         .collect();
-    // What Azure returns: the content padded out to the next whole block.
-    let mut padded = content.clone();
-    padded.resize(usize::try_from(BLOCK * 2).unwrap(), 0xAA);
+    // What Azure holds: more than the digest names, as a compressed frame is.
+    let mut stored = content.clone();
+    stored.resize(usize::try_from(BLOCK * 2).unwrap(), 0xAA);
 
     let mock = MockTransport::new();
-    mock.push_download(download_ok(StatusCode::Ok, padded));
+    mock.push_download(download_ok(StatusCode::Ok, stored.clone()));
 
     let store = create_test_store(Arc::clone(&mock), None, None)?;
     let result = store
         .get_part_unchunked(DigestInfo::try_new(TEST_HASH, CONTENT)?, 0, None)
         .await?;
 
-    assert_eq!(result.len(), usize::try_from(CONTENT).unwrap());
-    assert_eq!(result, content);
+    assert_eq!(result, stored);
     Ok(())
 }
 
@@ -1465,4 +1496,88 @@ async fn dropped_staged_upload_discards_its_blocks() -> Result<(), Error> {
     );
     assert!(mock.committed_block_list().is_none());
     Ok(())
+}
+
+#[test]
+fn tls_roots_exclude_distrusted_emsign_ecc_root() {
+    // RUSTSEC-2026-0381: webpki-roots before 1.0.10 still trusts this root,
+    // which lets certificate paths through distrusted emSign intermediates.
+    // The Azure transport builds its root store from this list.
+    const DISTRUSTED_CN: &[u8] = b"emSign ECC Root CA - G3";
+    let trusted = webpki_roots::TLS_SERVER_ROOTS.iter().find(|anchor| {
+        anchor
+            .subject
+            .windows(DISTRUSTED_CN.len())
+            .any(|window| window == DISTRUSTED_CN)
+    });
+    assert!(trusted.is_none(), "distrusted root is still trusted");
+    // An empty store would make the check above pass without proving the
+    // distrusted root was removed.
+    assert_ne!(webpki_roots::TLS_SERVER_ROOTS, []);
+}
+
+#[test]
+fn tls_verifier_rejects_distrusted_emsign_intermediate_key() {
+    use rcgen::{
+        BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, PKCS_ECDSA_P384_SHA384,
+        PublicKeyData, SignatureAlgorithm,
+    };
+    use rustls::client::danger::ServerCertVerifier;
+    use rustls::pki_types::{ServerName, UnixTime};
+
+    // The public key of eMudhra's OV TLS CA - G3 (an uncompressed P-384
+    // point), one of the intermediates rustls-webpki distrusts.
+    struct DistrustedKey(Vec<u8>);
+    impl PublicKeyData for DistrustedKey {
+        fn der_bytes(&self) -> &[u8] {
+            &self.0
+        }
+        fn algorithm(&self) -> &'static SignatureAlgorithm {
+            &PKCS_ECDSA_P384_SHA384
+        }
+    }
+    let point = [
+        "0473897aa0eb3cfdca8b12402ffaf0abc4e1212baf8dee778ac9ee2d6db83fac",
+        "280c5e05638ae7a2acd71c322a8e361cdeb9f69c4302b9dd8d73d1cc6caab2cc",
+        "0aee4e216ce979dd518a4af4b626e5684cdd658037ed0c854e4cc12f4cf8646d",
+        "0d",
+    ]
+    .concat();
+    let distrusted_key = DistrustedKey(hex::decode(point).unwrap());
+
+    // RUSTSEC-2026-0382: rustls-webpki before 0.103.16 accepts paths through
+    // emSign intermediates whose private keys are public. A test root issues
+    // one leaf for the distrusted key and a control leaf for a fresh key.
+    let root_key = KeyPair::generate().unwrap();
+    let mut root_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let root = root_params.self_signed(&root_key).unwrap();
+    let issuer = Issuer::new(root_params, root_key);
+    let leaf_params = CertificateParams::new(vec!["distrusted.test".to_string()]).unwrap();
+    let distrusted = leaf_params.signed_by(&distrusted_key, &issuer).unwrap();
+    let control = leaf_params
+        .signed_by(&KeyPair::generate().unwrap(), &issuer)
+        .unwrap();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(root.der().clone()).unwrap();
+    let verifier = rustls::client::WebPkiServerVerifier::builder_with_provider(
+        Arc::new(roots),
+        Arc::new(rustls::crypto::ring::default_provider()),
+    )
+    .build()
+    .unwrap();
+    let verify = |leaf: &rcgen::Certificate| {
+        verifier.verify_server_cert(
+            leaf.der(),
+            &[],
+            &ServerName::try_from("distrusted.test").unwrap(),
+            &[],
+            UnixTime::now(),
+        )
+    };
+
+    verify(&control).unwrap();
+    let err = verify(&distrusted).unwrap_err();
+    assert!(format!("{err:?}").contains("CertDistrusted"), "{err:?}");
 }

@@ -969,7 +969,20 @@ where
                     }
                 };
 
-                *result = if exists { Some(blob_len) } else { None };
+                // An empty value cannot be a blob whose digest names bytes: a
+                // failed upload left it. Reported present it is read as
+                // DataLoss forever and never uploaded again.
+                *result = match (exists, blob_len) {
+                    (false, _) => None,
+                    (true, 0) if matches!(key.borrow(), StoreKey::Digest(digest) if digest.size_bytes() > 0) => {
+                        warn!(
+                            ?key,
+                            "Redis holds an empty value for a digest that names bytes; reporting it missing"
+                        );
+                        None
+                    }
+                    (true, len) => Some(len),
+                };
 
                 Ok::<_, Error>(())
             })
@@ -1499,6 +1512,19 @@ where
                     "Data not found in Redis store for digest: {key:?}"
                 ));
             }
+            // The key exists and holds nothing, yet the digest names bytes
+            // from this offset on: that is the empty value a failed upload
+            // left, not the blob. NotFound sends the client back to upload it.
+            if let StoreKey::Digest(digest) = key.borrow()
+                && digest.size_bytes() > u64::try_from(data_start).unwrap_or(u64::MAX)
+                && length.is_none_or(|len| len > 0)
+            {
+                return Err(make_err!(
+                    Code::NotFound,
+                    "Redis holds an empty value for {key:?}, which names {} bytes; treating it as missing so the client uploads it again",
+                    digest.size_bytes()
+                ));
+            }
         }
 
         writer
@@ -1700,8 +1726,6 @@ const CURSOR_IDLE_MS: u64 = 30_000;
 const DATA_FIELD_NAME: &str = "data";
 /// The name of the field in the Redis hash that stores the version.
 const VERSION_FIELD_NAME: &str = "version";
-/// The time to live of indexes in seconds. After this time redis may delete the index.
-const INDEX_TTL_S: u64 = 60 * 60 * 24; // 24 hours.
 
 #[allow(rustdoc::broken_intra_doc_links)]
 /// Lua script to set a key if the version matches.
@@ -2391,7 +2415,17 @@ where
                 nofields: true,
                 nofreqs: true,
                 nooffsets: true,
-                temporary: Some(INDEX_TTL_S),
+                // Never TEMPORARY. RediSearch 2.10 does not garbage collect a
+                // temporary index (forcing its collector segfaults the server),
+                // so every update of an indexed hash leaves a dead entry
+                // behind for good, and the cost of every query over the index
+                // grows with them: a scheduler Redis that had run for days
+                // answered a count of an empty queue in 100 to 200 ms, and its
+                // own listings and the provisioner's reads then saturated the
+                // one Redis thread. A persistent index is collected. An index
+                // created temporary by an older release stays so until it is
+                // dropped (`FT.DROPINDEX`, without DD); this code recreates it.
+                temporary: None,
             };
             let index = format!(
                 "{}",

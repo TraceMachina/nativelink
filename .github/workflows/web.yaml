@@ -1,5 +1,5 @@
 ---
-name: Build NativeLink Web
+name: CI / Web
 on:
   push:
     branches: [main]
@@ -29,7 +29,7 @@ jobs:
       matrix:
         os:
           - ubuntu-24.04
-    name: Web Build / ${{ matrix.os }}
+    name: Build / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
     permissions:

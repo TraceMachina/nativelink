@@ -4361,13 +4361,14 @@ exit 0
         Ok(())
     }
 
-    /// `max_concurrent_input_downloads` of 0 takes the default pool of 64;
-    /// any other value is the pool's size.
+    /// `max_concurrent_input_downloads` of 0, the default, shares no pool:
+    /// each action fetches on its own, as before the setting existed. Any
+    /// other value is the size of the pool every action shares.
     #[nativelink_test]
-    async fn input_download_pool_defaults_to_sixty_four() -> Result<(), Box<dyn core::error::Error>>
-    {
+    async fn input_download_pool_is_unbounded_unless_configured()
+    -> Result<(), Box<dyn core::error::Error>> {
         let (_, _, cas_store, _) = setup_stores().await?;
-        for (configured, expected) in [(0, 64), (7, 7)] {
+        for (configured, expected) in [(0, Semaphore::MAX_PERMITS), (7, 7)] {
             let manager = RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: make_temp_path("root_action_directory"),
                 execution_configuration: ExecutionConfiguration {
@@ -4765,7 +4766,14 @@ exit 0
         make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
     ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
     {
-        fetch_setup_tree(max_download_timeout, None, false, make_slow).await
+        fetch_setup_tree(
+            max_download_timeout,
+            None,
+            false,
+            ExecutionConfiguration::default(),
+            make_slow,
+        )
+        .await
     }
 
     /// The second file of a nested `fetch_setup_tree`, at the root.
@@ -4780,6 +4788,7 @@ exit 0
         max_download_timeout: Duration,
         action_timeout: Option<Duration>,
         nested: bool,
+        execution_configuration: ExecutionConfiguration,
         make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
     ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
     {
@@ -4880,7 +4889,7 @@ exit 0
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory,
-                execution_configuration: ExecutionConfiguration::default(),
+                execution_configuration,
                 cas_store: cas_store.clone(),
                 ac_store: None,
                 historical_store: Store::new(cas_store.clone()),
@@ -4944,6 +4953,8 @@ exit 0
             "took {:?}",
             started.elapsed()
         );
+        // A stall is a sign of an overloaded store too.
+        assert!(logs_contain(INPUT_POOL_HINT));
         action.cleanup().await?;
         assert!(
             !Path::new(&action_directory).exists(),
@@ -5042,6 +5053,119 @@ exit 0
         Ok(())
     }
 
+    /// The advice `max_concurrent_input_downloads` logs, in part.
+    #[cfg(target_family = "unix")]
+    const INPUT_POOL_HINT: &str = "Consider setting max_concurrent_input_downloads to 64";
+
+    /// How many log lines carry the advice.
+    #[cfg(target_family = "unix")]
+    fn input_pool_hints(lines: &[&str]) -> usize {
+        lines
+            .iter()
+            .filter(|line| line.contains(INPUT_POOL_HINT))
+            .count()
+    }
+
+    /// A worker without a shared input pool whose fetches fail the way an
+    /// overloaded store fails them suggests `max_concurrent_input_downloads`,
+    /// once for the two failures rather than once per failure.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_suggests_a_shared_input_pool_once()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            1 => Ok(()),
+            n => Err(format!("{n} pool suggestions for two failed fetches")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A read that fails with `DataLoss` is retried like any transient
+    /// failure, but it means a bad stored copy rather than an overloaded
+    /// store, so a worker without a pool is not told to set one.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_with_data_loss_suggests_nothing()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::DataLoss)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two corrupt reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} pool suggestions for corrupt reads")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A worker that already shares a pool is not told to set one.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_with_a_shared_input_pool_suggests_nothing()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            None,
+            false,
+            ExecutionConfiguration {
+                max_concurrent_input_downloads: 64,
+                ..Default::default()
+            },
+            |inner, digest| FlakyStore::new(inner, digest, 2, Code::Unavailable),
+        )
+        .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} pool suggestions with a pool configured")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
     /// A first attempt that fails after part of the tree is built (the
     /// subdirectory exists, the file in it does not) is cleared before the
     /// next, which stages the whole tree.
@@ -5049,11 +5173,14 @@ exit 0
     #[nativelink_test(start_paused = true)]
     async fn prepare_action_restages_a_partly_built_tree() -> Result<(), Box<dyn core::error::Error>>
     {
-        let (running_actions_manager, action_digest, store) =
-            fetch_setup_tree(Duration::from_mins(10), None, true, |inner, digest| {
-                FlakyStore::new(inner, digest, 1, Code::Unavailable)
-            })
-            .await?;
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            None,
+            true,
+            ExecutionConfiguration::default(),
+            |inner, digest| FlakyStore::new(inner, digest, 1, Code::Unavailable),
+        )
+        .await?;
         let operation_id = OperationId::default();
         let action = running_actions_manager
             .create_and_add_action(
@@ -5236,6 +5363,7 @@ exit 0
             Duration::from_mins(10),
             Some(Duration::from_secs(4)),
             false,
+            ExecutionConfiguration::default(),
             |inner, digest| FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable),
         )
         .await?;

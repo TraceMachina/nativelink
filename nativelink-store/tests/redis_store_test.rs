@@ -713,6 +713,44 @@ async fn zero_len_items_exist_check() -> Result<(), Error> {
     Ok(())
 }
 
+// An existing key holding nothing under a digest that names bytes is what a
+// failed upload left: the store reports it missing on both paths so the
+// client uploads it again instead of reading it as DataLoss forever.
+#[nativelink_test]
+async fn an_empty_value_under_a_digest_is_missing() -> Result<(), Error> {
+    let digest = DigestInfo::try_new(VALID_HASH1, 1024)?;
+    let real_key = format!("{digest}");
+
+    let commands = vec![
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(real_key.clone())
+                .cmd("EXISTS")
+                .arg(real_key.clone()),
+            Ok(vec![Value::Int(0), Value::Boolean(true)]),
+        ),
+        MockCmd::new(
+            redis::cmd("GETRANGE")
+                .arg(real_key.clone())
+                .arg(0)
+                .arg(DEFAULT_READ_CHUNK_SIZE.try_into().unwrap_or(i64::MAX) - 1),
+            Ok(Value::BulkString(vec![])),
+        ),
+        MockCmd::new(redis::cmd("EXISTS").arg(real_key), Ok(Value::Int(1))),
+    ];
+    let store = make_mock_store(commands).await;
+
+    assert_eq!(store.has(digest).await?, None);
+    let result = store.get_part_unchunked(digest, 0, None).await;
+    assert_eq!(
+        result.as_ref().unwrap_err().code,
+        Code::NotFound,
+        "{result:?}"
+    );
+    Ok(())
+}
+
 // The key was evicted between two GETRANGEs: the second comes back empty,
 // which is also what the end of a value on a chunk boundary looks like. The
 // store asks STRLEN, sees the key is gone, and fails the read instead of
@@ -1413,8 +1451,6 @@ fn test_search_by_index() -> Result<(), Error> {
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1694,8 +1730,6 @@ fn test_search_by_index_skips_docs_that_expired_mid_query() -> Result<(), Error>
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1798,8 +1832,6 @@ fn test_search_by_index_swallows_already_exists_from_ft_create() -> Result<(), E
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1884,8 +1916,6 @@ fn test_search_by_index_preserves_other_ft_create_errors() -> Result<(), Error> 
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -1978,8 +2008,6 @@ fn test_search_by_index_with_sort_key() -> Result<(), Error> {
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")
@@ -2086,8 +2114,6 @@ fn test_search_by_index_resp3() -> Result<(), Error> {
                 .arg("NOFIELDS")
                 .arg("NOFREQS")
                 .arg("NOOFFSETS")
-                .arg("TEMPORARY")
-                .arg(86400)
                 .arg("PREFIX")
                 .arg(1)
                 .arg("test:")

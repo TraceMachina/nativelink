@@ -48,7 +48,7 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
-    OperationStageFlags, UpdateOperationType, WorkerStateManager,
+    OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::{Notify, mpsc};
@@ -1548,6 +1548,69 @@ async fn executing_sweep_lost_result_counts_against_max_job_retries() -> Result<
             .iter()
             .any(|m| m.contains("never reached the scheduler")),
         "the failure names the lost result: {err:?}"
+    );
+    Ok(())
+}
+
+/// Queues actions with priorities `0..n` and returns their client listeners.
+async fn add_prioritised_actions(
+    state_mgr: &impl ClientStateManager,
+    n: i32,
+) -> Result<Vec<Box<dyn ActionStateResult>>, Error> {
+    let mut clients = Vec::new();
+    for priority in 0..n {
+        let mut info = action_info(make_system_time(0));
+        info.priority = priority;
+        clients.push(
+            state_mgr
+                .add_action(OperationId::default(), Arc::new(info))
+                .await?,
+        );
+    }
+    Ok(clients)
+}
+
+/// The memory store's listing is read whole, under one hold of the store's
+/// lock taken when the listing is requested, and the stream then only hands
+/// out what was read. The lock must not be taken inside the stream: the
+/// filter pass reads rows 64 at a time, so while it hands rows on it keeps
+/// asking the listing for more, and a lock wait that asking starts is
+/// parked inside the stream, polled again only when the next row is asked
+/// for. Once that wait has been starved past async-lock's fairness
+/// threshold the lock is reserved for it, and when the matcher then writes
+/// for a row it was handed, on the same task, it waits for the same lock:
+/// nothing polls the parked wait, and the scheduler stops for good. Reading
+/// lazily was how that wait got into the stream; a row added after the
+/// listing was requested is therefore not in it.
+#[nativelink_test]
+async fn the_listing_is_read_whole_when_it_is_requested() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    // Kept so the clients count as waiting.
+    let _clients = add_prioritised_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        },
+    )
+    .await?;
+    // Added after the listing was requested, before any of it was read.
+    let _late = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+
+    let listed: Vec<_> = listed.collect().await;
+    assert_eq!(
+        listed.len(),
+        3,
+        "the listing holds what was there when it was requested"
     );
     Ok(())
 }

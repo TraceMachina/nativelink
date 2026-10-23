@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.7.7"
+version = "1.8.1"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -34,6 +34,7 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
   "grpc-tonic",
   "logs",
   "metrics",
+  "tls-ring",
   "trace",
   "zstd-tonic",
 ] }

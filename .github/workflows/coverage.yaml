@@ -1,5 +1,5 @@
 ---
-name: Coverage
+name: CI / Coverage
 
 on:
   # Coverage is expensive (xlarge runner, 180-min cap) and non-gating (no
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   coverage:
-    name: Coverage
+    name: Generate
     runs-on: xlarge-ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -52,15 +52,24 @@ jobs:
           path: result/html
 
       - name: Teardown Worker
+        id: cache-upload
+        # Coverage and its artifact are already complete. A cache outage must
+        # remain visible without preventing publication of that report.
+        continue-on-error: true
+        timeout-minutes: 10
         uses: ./.github/actions/end-nix
         if: always()
         with:
           nix_name: .#nativelinkCoverageForHost
           nativelink_attic_token: ${{ secrets.NATIVELINK_ATTIC_TOKEN }}
 
+      - name: Report cache upload failure
+        if: ${{ always() && steps.cache-upload.outcome == 'failure' }}
+        run: echo '::warning::Nix cache upload failed; see Teardown Worker for details.'
+
   deploy:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    name: Deploy Coverage
+    name: Deploy
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -1,5 +1,5 @@
 ---
-name: Check pre-commit hooks
+name: CI / Pre-commit
 on:
   pull_request:
     branches:
