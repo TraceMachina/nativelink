@@ -2,6 +2,7 @@
 """Dispatch trusted CI to one retained client using narrowly scoped pod exec."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,11 @@ git -c safe.directory=/workspace/nativelink diff --quiet HEAD --
 git -c safe.directory=/workspace/nativelink fetch --depth=1 https://github.com/TraceMachina/nativelink.git "$GITHUB_SHA"
 git -c safe.directory=/workspace/nativelink checkout --detach "$GITHUB_SHA"
 mkdir -p "$NL_SUMMARY_DIRECTORY"
-exec python3 .github/scripts/ci_benchmark.py run --lane cluster --repetitions "$NL_REPETITIONS" --output "$NL_SUMMARY_DIRECTORY"
+case "$NL_TASK" in
+  bazel) exec python3 .github/scripts/ci_benchmark.py run --lane cluster --repetitions "$NL_REPETITIONS" --output "$NL_SUMMARY_DIRECTORY" ;;
+  nix) exec python3 .github/scripts/nix_ci.py build --directory "$NL_SUMMARY_DIRECTORY" ;;
+  *) exit 2 ;;
+esac
 `;
 const env = {...process.env, ...payload};
 // The deadline includes waiting for the retained checkout's lock.
@@ -53,7 +58,7 @@ def kubeconfig(environ):
                 "args": [str(Path(__file__).with_name("cluster_credentials.py").resolve())]}}}]}
 
 
-def payload(environ, repetitions):
+def payload(environ, repetitions, task='bazel'):
     if (environ.get('GITHUB_REPOSITORY') != 'TraceMachina/nativelink'
             or environ.get('GITHUB_EVENT_NAME') not in ('push', 'workflow_dispatch')
             or not environ.get('GITHUB_REF', '').startswith('refs/heads/')):
@@ -61,17 +66,22 @@ def payload(environ, repetitions):
     if not re.fullmatch(r"[0-9a-f]{40}", environ["GITHUB_SHA"]):
         raise ValueError("Expected an exact source revision")
     run = environ["GITHUB_RUN_ID"] + "-" + environ["GITHUB_RUN_ATTEMPT"]
-    if not re.fullmatch(r"\d+-\d+", run) or not environ.get("NL_API_KEY"):
+    if task not in ('bazel', 'nix'):
+        raise ValueError('Unsupported retained client task')
+    if not re.fullmatch(r"\d+-\d+", run) or (task == 'bazel' and not environ.get("NL_API_KEY")):
         raise ValueError("Expected a run identity and CI key")
     names = ("NL_API_KEY", "NL_CLUSTER_ENDPOINT", "NL_CLUSTER_BEP_ENDPOINT", "NL_INSTANCE",
              "NL_RESULTS_URL", "NL_WORKER_IMAGE", "GITHUB_SHA", "BENCHMARK_STARTED")
+    if task == 'nix':
+        names = ('GITHUB_SHA', 'BENCHMARK_STARTED')
     return {**{name: environ[name] for name in names}, "NL_PERSISTENT_CACHE": "/workspace",
-            "NL_REPETITIONS": str(repetitions), "NL_SUMMARY_DIRECTORY": "/workspace/ci-results/" + run}
+            "NL_REPETITIONS": str(repetitions), 'NL_TASK': task,
+            "NL_SUMMARY_DIRECTORY": "/workspace/ci-results/" + run}
 
 
 def main(args):
     environ = os.environ.copy()
-    build = payload(environ, args.repetitions)
+    build = payload(environ, args.repetitions, args.task)
     with tempfile.TemporaryDirectory(prefix="cluster-ci-") as temporary:
         config = Path(temporary) / "kubeconfig.json"
         # Public API address, CA and exec plugin path only. Tokens are obtained
@@ -82,20 +92,37 @@ def main(args):
                 "exec", environ["NL_GKE_POD"]]
         result = subprocess.run([*base, "-i", "--", "node", "--input-type=module", "-e", BOOTSTRAP],
                                 input=json.dumps(build), text=True, env=environ)
-        summary = subprocess.run([*base, "--", "cat", build["NL_SUMMARY_DIRECTORY"] + "/cluster.json"],
+        if args.task == 'nix' and result.returncode:
+            return result.returncode
+        filename = 'nix.json' if args.task == 'nix' else 'cluster.json'
+        summary = subprocess.run([*base, "--", "cat", build["NL_SUMMARY_DIRECTORY"] + '/' + filename],
                                  text=True, capture_output=True, env=environ)
         if summary.returncode:
             sys.exit("The retained client did not produce benchmark evidence")
         report = json.loads(summary.stdout)
-        if report["revision"] != environ["GITHUB_SHA"] or report["lane"] != "cluster":
+        if args.task == 'nix':
+            import nix_ci
+            report = nix_ci.validate(report, environ['GITHUB_SHA'])
+        elif report["revision"] != environ["GITHUB_SHA"] or report["lane"] != "cluster":
             sys.exit("The retained client returned evidence for another source revision")
         args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / "cluster.json").write_text(json.dumps(report, indent=2) + "\n")
+        if args.task == 'nix':
+            archive = args.output / 'closure.nar.gz'
+            with archive.open('wb') as destination:
+                subprocess.run([*base, '--', 'cat', build['NL_SUMMARY_DIRECTORY'] + '/closure.nar.gz'],
+                               stdout=destination, env=environ, check=True)
+            with archive.open('rb') as stream:
+                checksum = hashlib.file_digest(stream, 'sha256').hexdigest()
+            if archive.stat().st_size != report['bytes'] or checksum != report['sha256']:
+                archive.unlink()
+                raise ValueError('The transferred Nix closure failed checksum verification')
+        (args.output / filename).write_text(json.dumps(report, indent=2) + "\n")
         return result.returncode or report["exit_code"]
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--task', choices=('bazel', 'nix'), default='bazel')
     parser.add_argument("--repetitions", type=int, choices=range(1, 21), default=3)
     parser.add_argument("--output", type=Path, required=True)
     raise SystemExit(main(parser.parse_args()))
