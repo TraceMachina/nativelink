@@ -52,6 +52,11 @@ parts of the shipped example will mislead you.
 listeners, mutual TLS as the access control, keeping the worker API off the
 public interface, and what NativeLink does not authenticate.
 
+**I build with Nix too.**
+[Serve a Nix binary cache](/how-to/nix-binary-cache) adds a `nix_cache`
+service to a listener so `nix` substitutes from the same stores Bazel uses,
+with signing, tokens and read-through to `cache.nixos.org`.
+
 **I need to move to a newer version.**
 [Upgrade to a newer version](/how-to/upgrade-versions) is the upgrade path:
 what actually breaks between releases, the order to move the processes in, and
