@@ -1,0 +1,319 @@
+// basic_cas.json5 + a Nix binary-cache (substituter) service on the SAME
+// public listener. This shows how to add a Nix cache to an existing
+// NativeLink remote-execution/cache deployment: the gRPC services
+// (cas/ac/execution/capabilities/bytestream), scheduler, and worker are
+// unchanged from basic_cas.json5; the only additions are three stores and
+// one `nix_cache` service entry (both marked "NIX CACHE ADDITION" below).
+//
+// The Nix cache's NAR store reuses the SAME content-addressed store as the
+// gRPC CAS (WORKER_FAST_SLOW_STORE), so Nix NARs and Bazel/REv2 blobs live
+// in one store — sha256 (Nix) and blake3 (Bazel) digests coexist safely
+// because a digest is an algorithm-blind 32 bytes keyed by (hash, size).
+// The path-info and alias stores are string-keyed and MUST be separate
+// stores (they cannot be the digest-keyed CAS).
+//
+// After booting, the cache root is http://<host>:50051/nix/main; point a
+// client at it with `--substituters http://<host>:50051/nix/main`.
+{
+  stores: [
+    {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data-worker-test/content_path-ac",
+        temp_path: "/tmp/nativelink/data-worker-test/tmp_path-ac",
+        eviction_policy: {
+          // 1gb.
+          max_bytes: 1000000000,
+        },
+      },
+    },
+    {
+      name: "WORKER_FAST_SLOW_STORE",
+      fast_slow: {
+        // "fast" must be a "filesystem" store because the worker uses it to make
+        // hardlinks on disk to a directory where the jobs are running.
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data-worker-test/content_path-cas",
+            temp_path: "/tmp/nativelink/data-worker-test/tmp_path-cas",
+            eviction_policy: {
+              // 10gb.
+              max_bytes: 10000000000,
+            },
+          },
+        },
+        slow: {
+          /// Discard data.
+          /// This example usage has the CAS and the Worker live in the same place,
+          /// so they share the same underlying CAS. Since workers require a fast_slow
+          /// store, we use the fast store as our primary data store, and the slow store
+          /// is just a noop, since there's no shared storage in this config.
+          noop: {},
+        },
+      },
+    },
+
+    // ---- NIX CACHE ADDITION: three stores ----
+    {
+      // The NAR store. It reuses the RBE CAS (WORKER_FAST_SLOW_STORE) via a
+      // ref_store, wrapped in `verify` so a corrupt/truncated NAR upload is
+      // rejected at write time. NARs are digest-keyed by
+      // DigestInfo(sha256(nar), nar_size), so sharing the RBE CAS is safe.
+      // (The worker still references the RAW WORKER_FAST_SLOW_STORE, not this
+      // verify wrapper — a worker's cas_fast_slow_store must be a FastSlowStore.)
+      name: "NIX_NAR_STORE",
+      verify: {
+        verify_size: true,
+        verify_hash: true,
+        backend: {
+          ref_store: {
+            name: "WORKER_FAST_SLOW_STORE",
+          },
+        },
+      },
+    },
+    {
+      // Per-store-path metadata (narinfo records), string-keyed by the
+      // 32-char nixbase32 store-path hash. Must be `completeness_checking`
+      // referencing the NAR store so an evicted NAR reads as a 404 miss
+      // instead of a dangling narinfo. Do NOT wrap this in existence_cache
+      // (drops overwrites + rewrites string keys) or verify/size_partitioning
+      // (reject string keys).
+      name: "NIX_PATH_INFO_STORE",
+      completeness_checking: {
+        backend: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data-worker-test/content_path-nix-pi",
+            temp_path: "/tmp/nativelink/data-worker-test/tmp_path-nix-pi",
+            eviction_policy: {
+              max_bytes: 1000000000,
+            },
+          },
+        },
+        cas_store: {
+          ref_store: {
+            name: "NIX_NAR_STORE",
+          },
+        },
+      },
+    },
+    {
+      // Maps a client-chosen NAR URL name to its (digest, size). String-keyed,
+      // and must NOT sit behind completeness_checking (alias records are not
+      // narinfo and would fail its decode).
+      name: "NIX_ALIAS_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data-worker-test/content_path-nix-alias",
+        temp_path: "/tmp/nativelink/data-worker-test/tmp_path-nix-alias",
+        eviction_policy: {
+          max_bytes: 1000000000,
+        },
+      },
+    },
+  ],
+  schedulers: [
+    {
+      name: "MAIN_SCHEDULER",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          network_kbps: "minimum",
+          disk_read_iops: "minimum",
+          disk_read_bps: "minimum",
+          disk_write_iops: "minimum",
+          disk_write_bps: "minimum",
+          shm_size: "minimum",
+          gpu_count: "minimum",
+          gpu_model: "exact",
+          cpu_vendor: "exact",
+          cpu_arch: "exact",
+          cpu_model: "exact",
+          kernel_version: "exact",
+          OSFamily: "priority",
+          "container-image": "priority",
+          "lre-rs": "priority",
+          ISA: "exact",
+          InputRootAbsolutePath: "ignore", // used by chromium builds, but we can drop it
+        },
+      },
+    },
+  ],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
+        additional_environment: {
+          foo: "from_environment",
+          bar: {
+            value: "something",
+          },
+          baz: "timeout_millis",
+          channel: "side_channel_file",
+          action: "action_directory",
+        },
+        platform_properties: {
+          cpu_count: {
+            values: [
+              "16",
+            ],
+          },
+          memory_kb: {
+            values: [
+              "500000",
+            ],
+          },
+          network_kbps: {
+            values: [
+              "100000",
+            ],
+          },
+          cpu_arch: {
+            values: [
+              "x86_64",
+            ],
+          },
+          OSFamily: {
+            values: [
+              "",
+            ],
+          },
+          "container-image": {
+            values: [
+              "",
+            ],
+          },
+          "lre-rs": {
+            values: [
+              "",
+            ],
+          },
+          ISA: {
+            values: [
+              "x86-64",
+            ],
+          },
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "",
+            ac_store: "AC_MAIN_STORE",
+          },
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+
+        // ---- NIX CACHE ADDITION: one service entry on the same listener ----
+        // Serves the Nix binary-cache protocol at http://<host>:50051/nix/main
+        // alongside the gRPC services above.
+        nix_cache: [
+          {
+            instance_name: "main",
+            cas_store: "NIX_NAR_STORE",
+            path_info_store: "NIX_PATH_INFO_STORE",
+            alias_store: "NIX_ALIAS_STORE",
+            store_dir: "/nix/store",
+            priority: 40,
+            want_mass_query: true,
+
+            // Sign served narinfos with keys generated by
+            //   nix key generate-secret --key-name my-cache-1 > /etc/nativelink/nix-cache.key
+            // and distribute the matching public key to clients'
+            // trusted-public-keys. An empty list serves unsigned narinfos
+            // (clients then need require-sigs = false or another trust path).
+            signing_key_files: [],
+          },
+        ],
+      },
+    },
+    {
+      name: "private_workers_servers",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        // Note: This should be served on a different port, because it has
+        // a different permission set than the other services.
+        // In other words, this service is a backend api. The ones above
+        // are a frontend api.
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        admin: {},
+        health: {},
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+  },
+}

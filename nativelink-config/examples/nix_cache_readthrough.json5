@@ -1,0 +1,145 @@
+// Nix binary-cache (substituter) with UPSTREAM READ-THROUGH.
+//
+// This is the plain `nix_cache` service (see nix_cache.json5 for the store
+// composition rules, token auth, and compression options) plus the
+// `upstream_caches` list: on a local miss, the configured upstream caches
+// are queried in order, and the first one that HAS the path — and whose
+// narinfo verifies against one of its `trusted_public_keys` — is fetched
+// (narinfo AND NAR), verified, and ingested into this instance's own
+// stores. The path is then served locally from then on, so one fetch makes
+// this deployment a durable mirror of exactly the closure your builds pull.
+//
+// Because verification happens before anything is stored, read-through can
+// never be a cache-poisoning vector: an unsigned or untrusted narinfo is
+// treated as an upstream miss. The re-served narinfo is re-signed with this
+// instance's own key(s) in addition to the preserved upstream signatures,
+// so downstream clients can trust it with this cache's public key alone.
+//
+// The NAR is fetched eagerly during the narinfo GET, so a record satisfies
+// a `completeness_checking` path_info store immediately (the recommended
+// composition below). Read-through populates the stores regardless of
+// `read_only`, which only gates client PUTs — so a public, read-only front
+// still fills itself from upstream.
+{
+  stores: [
+    {
+      name: "NIX_NAR_STORE",
+      verify: {
+        verify_size: true,
+        verify_hash: true,
+        backend: {
+          fast_slow: {
+            fast: {
+              filesystem: {
+                content_path: "/tmp/nativelink/nix-cache/nar-fast/content_path",
+                temp_path: "/tmp/nativelink/nix-cache/nar-fast/temp_path",
+                eviction_policy: {
+                  // 5gb of hot NARs.
+                  max_bytes: 5000000000,
+                },
+              },
+            },
+            slow: {
+              filesystem: {
+                content_path: "/tmp/nativelink/nix-cache/nar-slow/content_path",
+                temp_path: "/tmp/nativelink/nix-cache/nar-slow/temp_path",
+                eviction_policy: {
+                  // 200gb of mirrored NARs total.
+                  max_bytes: 200000000000,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "NIX_PATH_INFO_STORE",
+      completeness_checking: {
+        backend: {
+          memory: {
+            eviction_policy: {
+              max_bytes: 200000000,
+            },
+          },
+        },
+
+        // Confirm the NAR still exists before handing out its narinfo. A
+        // read-through record is written only after its NAR is ingested, so
+        // this passes immediately; if the NAR is later evicted, the next
+        // request read-throughs again and re-populates it.
+        cas_store: {
+          ref_store: {
+            name: "NIX_NAR_STORE",
+          },
+        },
+      },
+    },
+    {
+      name: "NIX_ALIAS_STORE",
+      memory: {
+        eviction_policy: {
+          max_bytes: 100000000,
+        },
+      },
+    },
+  ],
+  servers: [
+    {
+      name: "nix_cache",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50071",
+        },
+      },
+      services: {
+        nix_cache: [
+          {
+            instance_name: "main",
+            cas_store: "NIX_NAR_STORE",
+            path_info_store: "NIX_PATH_INFO_STORE",
+            alias_store: "NIX_ALIAS_STORE",
+            store_dir: "/nix/store",
+            priority: 30, // sorts ahead of cache.nixos.org (40)
+            want_mass_query: true,
+
+            // Sign the mirrored narinfo with this cache's own key so
+            // downstream clients trust it with a single key. Generate with:
+            //   nix key generate-secret --key-name my-cache-1
+            signing_key_files: [],
+
+            // Upstream caches to read through, in priority order. Each MUST
+            // list at least one trusted public key: a fetched narinfo is
+            // cached only if it verifies against one of these keys.
+            upstream_caches: [
+              {
+                url: "https://cache.nixos.org",
+                trusted_public_keys: [
+                  "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+                ],
+              },
+              {
+                url: "https://nix-community.cachix.org",
+                trusted_public_keys: [
+                  "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=",
+                ],
+              },
+            ],
+
+            // Remember a "not in any upstream" result this many seconds so
+            // Nix's many narinfo probes while computing a closure don't
+            // re-query every upstream each time. 0 disables negative
+            // caching. Successful fetches are durable in the stores.
+            upstream_negative_ttl_s: 60,
+
+            // Timeout for a single upstream narinfo probe (seconds). The
+            // subsequent NAR download is bounded by max_nar_size_bytes, not
+            // this timeout.
+            upstream_timeout_s: 30,
+          },
+        ],
+        health: {},
+      },
+    },
+  ],
+}
