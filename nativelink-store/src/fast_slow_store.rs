@@ -50,6 +50,13 @@ use crate::filesystem_store::FilesystemStore;
 type Loader = Arc<OnceCell<()>>;
 type MaybeSize = Option<u64>;
 
+/// How long a fast-first existence check waits on the slow store before it
+/// reports the fast misses as absent. Short on purpose: a cold build issues
+/// tens of thousands of these probes, and a slow tier whose own RPC timeout
+/// is a minute would otherwise stall each one for that long.
+/// See [`FastSlowSpec::fast_first_existence_check`].
+const FAST_FIRST_SLOW_PROBE_DEADLINE: Duration = Duration::from_secs(3);
+
 // TODO(palfrey) We should consider copying the data in the background to allow the
 // client to hang up while the data is buffered. An alternative is to possibly make a
 // "BufferedStore" that could be placed on the "slow" store that would hang up early
@@ -68,6 +75,8 @@ pub struct FastSlowStore {
     /// once the fast store has the data and the slow store is populated from a
     /// background task, decoupling the client write from the slow tier.
     slow_store_write_back: bool,
+    /// See [`FastSlowSpec::fast_first_existence_check`].
+    fast_first_existence_check: bool,
     weak_self: Weak<Self>,
     #[metric]
     metrics: FastSlowStoreMetrics,
@@ -171,6 +180,7 @@ impl FastSlowStore {
             // 0 (default) disables the bypass entirely (always dedup).
             bypass_dedup_threshold_bytes: spec.bypass_dedup_threshold_bytes,
             slow_store_write_back: spec.slow_store_write_back,
+            fast_first_existence_check: spec.fast_first_existence_check,
             weak_self: weak_self.clone(),
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
@@ -531,6 +541,9 @@ impl StoreDriver for FastSlowStore {
             return self.fast_store.has_with_results(key, results).await;
         }
 
+        // Two cases consult the fast store first and ask the slow store only
+        // about the fast store's misses.
+        //
         // A read-only slow store receives no uploads: the fast store is
         // where writes land and the only place a new blob can be, so it
         // counts toward presence, and the slow store answers for whatever
@@ -542,13 +555,21 @@ impl StoreDriver for FastSlowStore {
         // such as memory or a local filesystem only answers for what that
         // instance stored.
         //
+        // `fast_first_existence_check` opts a writable slow store into the
+        // same order for deployments whose fast tier is shared by every
+        // client, and additionally bounds the slow probe: a slow tier that
+        // errors or exceeds the deadline reports its blobs as missing, so
+        // a throttled object store costs re-uploads rather than a stall.
+        // See [`FastSlowSpec::fast_first_existence_check`].
+        //
         // The two lookups stay sequential on purpose: the slow store is
         // asked only about the fast store's misses, so the second round
         // trip is paid on a shrinking share of keys instead of every key.
-        if matches!(
+        let slow_takes_no_uploads = matches!(
             self.slow_direction,
             StoreDirection::ReadOnly | StoreDirection::Get
-        ) {
+        );
+        if self.fast_first_existence_check || slow_takes_no_uploads {
             self.fast_store.has_with_results(key, results).await?;
             let missing: Vec<usize> = results
                 .iter()
@@ -560,17 +581,42 @@ impl StoreDriver for FastSlowStore {
             }
             let keys: Vec<StoreKey<'_>> = missing.iter().map(|&i| key[i].borrow()).collect();
             let mut slow_results = vec![None; keys.len()];
-            self.slow_store
-                .has_with_results(&keys, &mut slow_results)
-                .await?;
+            if self.fast_first_existence_check {
+                let probe = self.slow_store.has_with_results(&keys, &mut slow_results);
+                match tokio::time::timeout(FAST_FIRST_SLOW_PROBE_DEADLINE, probe).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        warn!(
+                            ?err,
+                            fast_misses = keys.len(),
+                            "Slow store existence probe failed; reporting the fast misses as absent"
+                        );
+                    }
+                    Err(_elapsed) => {
+                        warn!(
+                            deadline_s = FAST_FIRST_SLOW_PROBE_DEADLINE.as_secs(),
+                            fast_misses = keys.len(),
+                            "Slow store existence probe exceeded its deadline; reporting the fast misses as absent"
+                        );
+                    }
+                }
+            } else {
+                self.slow_store
+                    .has_with_results(&keys, &mut slow_results)
+                    .await?;
+            }
             for (i, r) in missing.into_iter().zip(slow_results) {
                 results[i] = r;
             }
-            return Ok(());
+            if slow_takes_no_uploads {
+                return Ok(());
+            }
+            // Fast-first over a writable slow store: an upload the slow
+            // tier has not finished may still be in flight; fall through.
+        } else {
+            // Check with the slow store first.
+            self.slow_store.has_with_results(key, results).await?;
         }
-
-        // Check with the slow store first.
-        self.slow_store.has_with_results(key, results).await?;
 
         // Check for any in-flight requests to the slow store next.
         let mut in_flight_futs = FuturesUnordered::new();
@@ -593,11 +639,12 @@ impl StoreDriver for FastSlowStore {
         }
 
         // NOTE: With a writable slow store we intentionally *NEVER* check
-        // the fast store, this is to ensure that we re-upload data to the
-        // slow store if it only exists in the fast store. Workers depend on
-        // this: `upload_file` asks `has` before uploading an output and
-        // skips the upload when the digest is present, so consulting a
-        // worker's local fast tier here would stop outputs reaching the CAS.
+        // the fast store unless `fast_first_existence_check` says so. This
+        // ensures that we re-upload data to the slow store if it only
+        // exists in the fast store. Workers depend on this: `upload_file`
+        // asks `has` before uploading an output and skips the upload when
+        // the digest is present, so consulting a worker's local fast tier
+        // here would stop outputs reaching the CAS.
 
         Ok(())
     }

@@ -448,6 +448,8 @@ async fn rejects_incomplete_azure_cache_fill() -> Result<(), Error> {
             fast_direction: nativelink_config::stores::StoreDirection::default(),
             slow_direction: nativelink_config::stores::StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            slow_store_write_back: false,
+            fast_first_existence_check: false,
         },
         fast.clone(),
         Store::new(nativelink_store::verify_store::VerifyStore::new(
