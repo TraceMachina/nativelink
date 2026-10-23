@@ -1,0 +1,183 @@
+---
+title: Serve a Nix binary cache
+description: Add a nix_cache service to an existing NativeLink listener so nix clients push and pull store paths from the CAS, with signing, tokens and read-through to cache.nixos.org.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone running NativeLink who also builds with Nix and
+wants one cache for both. **What you'll have at the end:** a substituter that
+stock `nix` talks to with nothing but a `substituters` entry, serving NARs
+out of the same stores as the gRPC CAS. **Time:** twenty minutes, plus key
+generation.
+
+<Prerequisites>
+  A config file with named stores you can edit. See [Configuration](/configuration).
+  A `nix` client (2.18 or newer) on a machine that can reach the listener.
+</Prerequisites>
+
+The `nix_cache` service speaks the Nix HTTP binary-cache protocol. It is the
+one service on a listener that is plain HTTP rather than gRPC: it mounts a
+router at `/nix/<instance_name>` and answers `nix-cache-info`, `.narinfo`
+lookups and `nar/` downloads from three stores you name. Each NAR is an
+ordinary CAS blob keyed by `sha256(nar)`, so `verify`, `fast_slow`,
+`completeness_checking` and eviction compose with it exactly as they do for
+Bazel traffic, and a NAR store may be the same store your gRPC CAS uses.
+
+<SourceLink file="nativelink-service/src/nix_cache_server.rs" symbol="NixCacheServer" />
+
+## What a store path is inside the CAS [#representation]
+
+Be precise about the boundary, because it decides what this feature can and
+cannot do. A Nix store path is stored as **one blob, the NAR**, keyed by
+`sha256(nar)`, plus a small record in the path-info store that holds the
+`.narinfo` metadata (references, the deriving derivation, signatures) inside an `ActionResult`
+whose single output file is that NAR. It is not an REAPI directory tree: the
+files inside the store path are not individually addressable, Nix references
+are carried as metadata rather than translated into remote-action inputs, and
+nothing here evaluates Nix expressions. What is shared with Bazel and Buck2 is
+the storage, its fast and slow tiers, verification and eviction, and the listener. A
+fixture that round-trips an REAPI output into a Nix substitution with
+references preserved, and a Nix closure into a remote action's input tree, is
+the acceptance test for going further than that, and is deliberately not part
+of this service.
+
+## The configuration [#the-configuration]
+
+A standalone cache on its own listener. The three stores are the decision
+this page is about; the service entry below them is mostly defaults.
+
+```json5
+{
+  stores: [
+    {
+      name: "NIX_NAR_STORE",
+      verify: {
+        verify_size: true,
+        verify_hash: true,
+        backend: {
+          fast_slow: {
+            fast: {
+              filesystem: {
+                content_path: "/var/lib/nativelink/nix/nar-fast/content",
+                temp_path: "/var/lib/nativelink/nix/nar-fast/temp",
+                eviction_policy: { max_bytes: 1000000000 },
+              },
+            },
+            slow: {
+              filesystem: {
+                content_path: "/var/lib/nativelink/nix/nar-slow/content",
+                temp_path: "/var/lib/nativelink/nix/nar-slow/temp",
+                eviction_policy: { max_bytes: 50000000000 },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "NIX_PATH_INFO_STORE",
+      completeness_checking: {
+        backend: {
+          memory: { eviction_policy: { max_bytes: 100000000 } },
+        },
+        cas_store: { ref_store: { name: "NIX_NAR_STORE" } },
+      },
+    },
+    {
+      name: "NIX_ALIAS_STORE",
+      memory: { eviction_policy: { max_bytes: 100000000 } },
+    },
+  ],
+  servers: [
+    {
+      name: "nix_cache",
+      listener: { http: { socket_address: "0.0.0.0:50071" } },
+      services: {
+        nix_cache: [
+          {
+            instance_name: "main",
+            cas_store: "NIX_NAR_STORE",
+            path_info_store: "NIX_PATH_INFO_STORE",
+            alias_store: "NIX_ALIAS_STORE",
+            signing_key_files: ["/etc/nativelink/nix-cache.key"],
+          },
+        ],
+        health: {},
+      },
+    },
+  ],
+}
+```
+
+Generate the signing key once, and publish its public half to clients:
+
+```bash
+nix key generate-secret --key-name nix-cache.example.org-1 > /etc/nativelink/nix-cache.key
+nix key convert-secret-to-public < /etc/nativelink/nix-cache.key
+```
+
+The same three store roles, added to a full remote-execution stack on one
+listener, are in
+[`basic_cas_with_nix.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas_with_nix.json5).
+
+## What to change [#what-to-change]
+
+The stores carry the decisions. The service fields carry the policy.
+
+| Field | What it decides | Reference |
+|---|---|---|
+| `cas_store` | Where NAR bytes live. Digest keyed, so it can be the gRPC CAS store itself. Wrap it in `verify` with both checks on: the service hashes every upload, and the wrapper is the second line. | [reference](/reference/nativelink-config) |
+| `path_info_store` | One record per store path, keyed by the 32 character store-path hash. Wrap it in `completeness_checking` pointing at the NAR store, so a `.narinfo` whose NAR was evicted answers 404 rather than advertising bytes you cannot serve. Never wrap it in `existence_cache` (drops overwrites), `verify` or `size_partitioning` (reject string keys). | [reference](/reference/nativelink-config) |
+| `alias_store` | Client-chosen NAR URLs mapped to digests, so a path a client pushed can be pulled back under the URL it wrote. Keep it outside the `completeness_checking` wrapper. | [reference](/reference/nativelink-config) |
+| `signing_key_files` | Every served `.narinfo` gets one `Sig` line per key. List two keys during a rotation. Empty means unsigned, and clients then need `require-sigs = false`. | [reference](/reference/nativelink-config) |
+| `read_only`, `read_token_files`, `write_token_files` | Public listeners set `read_only` so every `PUT` is a 405. Private caches gate reads on a bearer token, which stock `nix` sends as the password from a `netrc` entry. Tokens travel in the clear unless the listener, or a proxy in front of it, terminates TLS. | [TLS and authentication](/how-to/tls-and-auth) |
+| `serve_compression`, `preserve_upload_compression` | By default a push is served back in the compression the client used. Set `serve_compression` to `"zstd"` to transcode uncompressed uploads once at ingest. | [reference](/reference/nativelink-config) |
+| `upstream_caches` | Turns a local miss into a read-through: fetch from `cache.nixos.org`, verify the upstream signature against the keys you list, ingest, and serve locally from then on. An upstream with no trusted keys is refused at startup. | [reference](/reference/nativelink-config) |
+| `spool_path` | Where compressed uploads are decompressed before they reach the NAR store. Defaults under the system temp directory. Set it explicitly on a shared host; a leftover directory owned by another user fails startup. | [reference](/reference/nativelink-config) |
+
+Point a client at it:
+
+```ini
+substituters = http://cache.example.org:50071/nix/main https://cache.nixos.org
+trusted-public-keys = nix-cache.example.org-1:<base64> cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+```
+
+Push a closure and pull it back:
+
+```bash
+nix copy --to 'http://cache.example.org:50071/nix/main' ./result
+nix copy --from 'http://cache.example.org:50071/nix/main' /nix/store/<hash>-<name>
+```
+
+The repository also ships `nl-nix` and `nl-watch-store` in the
+`nativelink-nix-client` crate: a push and pull client that streams zstd end
+to end, and a daemon (Linux only) that watches `/nix/store` and pushes every
+newly built path as it lands. Both take the same base URL, mount prefix
+included. `nl-nix pull` verifies signatures against the keys you pass with
+`--trusted-public-key`, in the same `name:base64` form as `trusted-public-keys`,
+and refuses unsigned metadata unless you say `--no-check-sigs`.
+
+<VerifyBlock>
+  `curl http://cache.example.org:50071/nix/main/nix-cache-info` answers 200
+  with `StoreDir: /nix/store` and `Priority: 40`. After a `nix copy --to`,
+  `curl http://cache.example.org:50071/nix/main/<hash>.narinfo` returns a
+  record with a `Sig:` line naming your key, and `nix copy --from` on a
+  second machine substitutes the path without building it.
+</VerifyBlock>
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `nix` ignores the cache after one failed lookup | A `.narinfo` request returned a 5xx. Nix disables a substituter for a minute on anything other than 404. | Check the server log for the failing store; a slow tier that errors on `has` is the usual cause. |
+| `Permission denied` creating the spool directory at startup | The default spool parent under the temp directory already exists and belongs to another user. | Set `spool_path` to a directory the service owns. |
+| Client refuses the cache: store dir mismatch | `store_dir` does not match the client's store. | Leave it at `/nix/store` unless every client uses a relocated store. |
+| Pushes succeed but `.narinfo` reads 404 | The `path_info_store` is wrapped in `existence_cache`, or the NAR store evicted the blob and `completeness_checking` is doing its job. | Remove the `existence_cache` wrapper; raise the NAR store's eviction limit. |
+| `401` on `nix-cache-info` | `read_token_files` is set and the client sent no token. | Add a `netrc` entry with the token as the password. |
+
+## What's next [#whats-next]
+
+<NextStep href="/how-to/stores/compose-stores" title="Compose stores">
+  The wrapper stack this page leans on, and why each layer sits where it does.
+</NextStep>

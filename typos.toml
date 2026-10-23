@@ -9,6 +9,10 @@ intoto = "intoto"
 extend-ignore-re = [
   "alias = \"Cachable\"",
   "old_unique_qualifier_cachable_works",
+  # Long base64 tokens (ed25519 keys and signatures in Nix test fixtures)
+  "[A-Za-z0-9+/]{24,}={0,2}",
+  # nixbase32-encoded hashes (Nix store path hashes and NAR hashes)
+  "[0-9a-df-np-sv-z]{32,}",
 ]
 
 [files]

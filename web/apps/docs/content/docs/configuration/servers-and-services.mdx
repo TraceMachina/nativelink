@@ -1,13 +1,13 @@
 ---
 title: Servers and services
-description: Listeners, the eleven services, instance names, and the port split that keeps the worker API off your public interface.
+description: Listeners, the twelve services, instance names, and the port split that keeps the worker API off your public interface.
 ---
 
 {/* archetype: explanation, see /web/apps/docs/templates/explanation.mdx */}
 
 **Who this is for:** anyone deciding what a NativeLink process should expose,
 and on which port. **What you'll know at the end:** what a listener is, what
-each of the eleven services does, how `instance_name` partitions a cache, and
+each of the twelve services does, how `instance_name` partitions a cache, and
 why the worker API must not share a port with anything else. **Time:** thirty
 minutes.
 
@@ -65,7 +65,7 @@ from the `stores` or `schedulers` array. This is where the wiring described in
 
 <SourceLink file="nativelink-config/src/cas_server.rs" symbol="ServerConfig" />
 
-## The eleven services [#the-eleven-services]
+## The twelve services [#the-eleven-services]
 
 | Service | What it serves | Wants |
 | --- | --- | --- |
@@ -80,6 +80,7 @@ from the `stores` or `schedulers` array. This is where the wiring described in
 | `experimental_bep` | Build Event Protocol consumption | `store` |
 | `admin` | REST endpoint for administrative tasks | nothing (path defaults to `/admin`) |
 | `health` | Health check endpoint | nothing (path defaults to `/status`) |
+| `nix_cache` | The Nix HTTP binary-cache protocol, served from the CAS | `cas_store`, `path_info_store` and `alias_store`; see [Serve a Nix binary cache](/how-to/nix-binary-cache) |
 
 In development builds, ByteStream rejects a completed upload whose byte count
 differs from the size in its CAS resource name, even without a `verify` store.
