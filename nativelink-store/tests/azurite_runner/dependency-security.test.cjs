@@ -102,3 +102,95 @@ test("follow-redirects strips declared sensitive headers containing regex metach
 	assert.equal(headers["x-api|key"], undefined);
 	assert.equal(headers["x-trace"], "kept");
 });
+
+// GHSA-27r3-jxmh-p828: a compressed body followed by trailing bytes was read
+// and answered normally, and the trailing bytes then reached the decompression
+// stream body-parser had left piped with no error listener, which took the
+// process down. The fix unpipes and destroys that stream once the body is read,
+// and drains the rest of the request. Azurite reaches body-parser through
+// Express, so the patched version arrives through the override in package.json.
+const azuriteRequire = createRequire(require.resolve("azurite/package.json"));
+
+test("Express resolves a body-parser that survives trailing compressed bytes", () => {
+	const { version } = azuriteRequire("body-parser/package.json");
+	const [major, minor] = version.split(".").map(Number);
+	assert.ok(
+		major > 2 || (major === 2 && minor >= 4),
+		`body-parser ${version} predates the GHSA-27r3-jxmh-p828 fix in 2.4.0`,
+	);
+});
+
+test("a request whose trailing bytes land after the body is read still finishes", async () => {
+	const http = require("node:http");
+	const zlib = require("node:zlib");
+	const { once } = require("node:events");
+	const parse = azuriteRequire("body-parser").json();
+
+	// One complete frame, then bytes the decompressor only sees once it has
+	// finished: the server sends them from inside the parser's callback.
+	const frame = Buffer.concat([
+		zlib.deflateSync(Buffer.from('{"blob":"nativelink"}')),
+		Buffer.from([0x00]),
+	]);
+	const trailing = Buffer.alloc(1024);
+	let client;
+
+	const escaped = [];
+	const collect = (error) => escaped.push(error);
+	process.on("uncaughtException", collect);
+
+	const server = http.createServer((req, res) => {
+		parse(req, res, (err) => {
+			if (err) {
+				res.writeHead(400).end();
+				return;
+			}
+			// Answer only once the whole request has finished, so a decompression
+			// stream still holding the connection open fails the test.
+			req.on("end", () => res.writeHead(200).end(JSON.stringify(req.body)));
+			client.end(trailing);
+		});
+	});
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+
+	try {
+		const { status, body } = await new Promise((resolve, reject) => {
+			client = http.request(
+				{
+					host: "127.0.0.1",
+					port: server.address().port,
+					method: "POST",
+					agent: false,
+					headers: {
+						"content-type": "application/json",
+						"content-encoding": "deflate",
+						"content-length": frame.length + trailing.length,
+					},
+				},
+				(res) => {
+					let body = "";
+					res.setEncoding("utf8");
+					res.on("data", (chunk) => {
+						body += chunk;
+					});
+					res.on("error", reject);
+					res.on("end", () => resolve({ status: res.statusCode, body }));
+				},
+			);
+			client.on("error", reject);
+			client.setTimeout(5000, () =>
+				client.destroy(new Error("the HTTP request never finished")),
+			);
+			client.write(frame);
+		});
+
+		assert.equal(status, 200);
+		assert.deepEqual(JSON.parse(body), { blob: "nativelink" });
+		assert.deepEqual(escaped, []);
+	} finally {
+		process.off("uncaughtException", collect);
+		if (client) client.destroy();
+		await new Promise((resolve) => server.close(resolve));
+	}
+});
