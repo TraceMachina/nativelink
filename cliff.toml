@@ -78,6 +78,14 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.8.2: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Declare macOS rustc dylibs and rust-objcopy as lre-rs toolchain inputs", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Forward binary headers in forward_headers", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Give a namespaced action a /proc that matches its PID namespace", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Keep coverage publication independent of cache uploads", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Update five dependencies with OSV advisories", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "run AddressSanitizer and fuzzing nightly", group = "<!-- 4 -->🧪 Testing & CI" },
+
   # v1.8.1: pinned by subject, since their bodies trip the generic word rules.
   { message = "Compare the webpki root store with assert_ne", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "Create the scheduler index persistent", group = "<!-- 2 -->🐛 Bug Fixes" },

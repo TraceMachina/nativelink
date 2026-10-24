@@ -3,6 +3,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.2](https://github.com/TraceMachina/nativelink/compare/v1.8.1..v1.8.2) - 2026-10-24
+
+
+
+### 🐛 Bug Fixes
+
+- Forward binary headers in forward_headers ([#3017](https://github.com/TraceMachina/nativelink/issues/3017)) - ([e76fd95](https://github.com/TraceMachina/nativelink/commit/e76fd959a761d333d7a2e04d0bac8e35015ab063))
+- Declare macOS rustc dylibs and rust-objcopy as lre-rs toolchain inputs ([#3036](https://github.com/TraceMachina/nativelink/issues/3036)) - ([f01785c](https://github.com/TraceMachina/nativelink/commit/f01785c51acbdae72c86672f4ce92439e98c82d0))
+- Give a namespaced action a /proc that matches its PID namespace ([#3024](https://github.com/TraceMachina/nativelink/issues/3024)) - ([db200db](https://github.com/TraceMachina/nativelink/commit/db200dbdf1a25fca35fa458cccbcbf692edfc60b))
+
+### 🧪 Testing & CI
+
+- run AddressSanitizer and fuzzing nightly ([#3029](https://github.com/TraceMachina/nativelink/issues/3029)) - ([e4b5314](https://github.com/TraceMachina/nativelink/commit/e4b5314e6c970db371d077db8f9b1faf68aed8d7))
+- Keep coverage publication independent of cache uploads ([#3033](https://github.com/TraceMachina/nativelink/issues/3033)) - ([0c4a6cf](https://github.com/TraceMachina/nativelink/commit/0c4a6cfd20270d80b040bf6b9be77c63adff8fc2))
+
+### ⬆️ Bumps & Version Updates
+
+- Update five dependencies with OSV advisories ([#3035](https://github.com/TraceMachina/nativelink/issues/3035)) - ([42b4b4d](https://github.com/TraceMachina/nativelink/commit/42b4b4d48c41231d1570509701b11f353411a23e))
+
 ## [1.8.1](https://github.com/TraceMachina/nativelink/compare/v1.8.0..v1.8.1) - 2026-10-23
 
 
