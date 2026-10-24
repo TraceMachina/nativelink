@@ -16,6 +16,16 @@ bazel_dep(name = "rules_shell", version = "0.8.0")
 # these hermetic toolchains replace the host autodetect path.
 bazel_dep(name = "llvm", version = "0.8.18")
 
+# Pin the LLVM release the hermetic toolchain compiles with. The module's own
+# default (22.1.8 at 0.8.18) is overridden by the root module's tag. Keep this
+# on a version that hermetic-llvm ships a prebuilt compiler for (see
+# extensions/llvm_toolchain_minimal_index.json in the module); any other
+# version forces --@llvm//toolchain:bootstrap_stage=stage1_from_source, i.e. a
+# from-source clang build.
+llvm = use_extension("@llvm//extensions:llvm.bzl", "llvm")
+llvm.version(llvm_version = "21.1.8")
+use_repo(llvm, "llvm-project")
+
 register_toolchains("@llvm//toolchain:all")
 
 # We use the Nix Python install, as per https://rules-python.readthedocs.io/en/latest/toolchains.html#local-toolchain
