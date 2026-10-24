@@ -190,6 +190,35 @@ fn cgroup_dir() -> PathBuf {
     })
 }
 
+/// The `avg10` of the `full` line of a cgroup v2 `memory.pressure` file:
+/// the share of the last ten seconds (0 to 100) during which every task in the
+/// cgroup was stalled on memory. `None` when the text has no such line.
+pub fn parse_pressure_full_avg10(text: &str) -> Option<f64> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix("full")?;
+        rest.split_whitespace()
+            .find_map(|field| field.strip_prefix("avg10="))
+            .and_then(|value| value.parse().ok())
+    })
+}
+
+/// The `memory.pressure` file that describes this worker: the one in the
+/// nearest limited cgroup (the limit the kernel enforces, see
+/// [`find_limit`]), else the one in the worker's own cgroup directory.
+/// `None` where neither exists: cgroup v1, a kernel without PSI, or a
+/// cgroup root, which has no `memory.pressure`.
+#[cfg(target_os = "linux")]
+pub fn memory_pressure_file() -> Option<PathBuf> {
+    let mount_root = Path::new("/sys/fs/cgroup");
+    let own = cgroup_dir();
+    let limited = find_limit(&own, mount_root, "memory.max", read_file).map(|(dir, _)| dir);
+    [limited, Some(own)]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join("memory.pressure"))
+        .find(|path| path.is_file())
+}
+
 /// Whether a `cpu.max` or `memory.max` value is "no limit": `max`, or for
 /// `cpu.max` `max <period>`.
 fn is_unlimited(value: &str) -> bool {

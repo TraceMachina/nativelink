@@ -3534,6 +3534,8 @@ exit 0
             memory_property_name: "memory_kb".to_string(),
             memory_headroom_percent: 20,
             disk_headroom_percent: 20,
+            memory_pressure_kill_percent: 0,
+            memory_pressure_kill_after_s: 30,
         };
         assert!(
             ResourceEnforcement::from_config(&config(
@@ -3686,6 +3688,7 @@ exit 0
                     disk_property_name: Some("disk_kb".to_string()),
                     disk_soft: false,
                     disk_headroom_percent: 20,
+                    pressure_kill: None,
                 }),
                 ..Default::default()
             },
@@ -3780,6 +3783,7 @@ exit 0
                 disk_property_name: Some("disk_kb".to_string()),
                 disk_soft: false,
                 disk_headroom_percent: 20,
+                pressure_kill: None,
             }),
             None,
         ] {
@@ -3833,6 +3837,7 @@ exit 0
                         disk_property_name: Some("disk_kb".to_string()),
                         disk_soft: false,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -5622,6 +5627,7 @@ exit 0
                         disk_property_name: Some("disk_kb".to_string()),
                         disk_soft: true,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -6709,6 +6715,7 @@ exit 0
                         disk_property_name: None,
                         disk_soft: false,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -10386,6 +10393,279 @@ done
             "expected one output directory"
         );
         assert_eq!(action_result.output_folders[0].path, "out");
+        Ok(())
+    }
+
+    /// The members of an action are reached by two links, each needed
+    /// where the other fails: process group, which survives an intermediate
+    /// shell exiting and reparenting the work to the worker, and parent
+    /// pid, which reaches a Bazel test that `set -m` put in a group of its
+    /// own. Nothing in the worker's own group is ever counted.
+    #[test]
+    fn action_member_pids_follow_parent_and_group_links() {
+        use nativelink_worker::running_actions_manager::{ProcEntry, action_member_pids};
+        let entry = |pid, ppid, pgrp| ProcEntry { pid, ppid, pgrp };
+        let worker_pgid = 1;
+        let table = [
+            entry(1, 0, 1),       // the worker, pid 1 in its pod
+            entry(100, 1, 100),   // the action: test-setup.sh, group leader
+            entry(102, 1, 100),   // a helper the shell forked and lost; kept its group
+            entry(200, 100, 200), // the test binary, in its own group under set -m
+            entry(201, 200, 200), // the test's child
+            entry(202, 1, 200),   // the test's grandchild, reparented, still in its group
+            entry(300, 1, 300),   // another action
+            entry(301, 300, 300), // that action's child
+            entry(400, 100, 1),   // impossible, but a member's child in the worker's group
+        ];
+        let members = action_member_pids(100, worker_pgid, &table);
+        let mut got: Vec<u32> = members.into_iter().collect();
+        got.sort_unstable();
+        assert_eq!(got, vec![100, 102, 200, 201, 202]);
+        // Nothing left of the action: an empty set, not the worker.
+        assert!(action_member_pids(100, worker_pgid, &table[..1]).is_empty());
+    }
+
+    /// Live version of the above: a shell under `set -m` puts its
+    /// background job in a new process group, as Bazel's test-setup.sh
+    /// does with the test binary, and the sampler's membership still
+    /// reaches it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn action_member_pids_live_reach_a_job_control_child() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+
+        use nativelink_worker::running_actions_manager::{
+            action_member_pids_live, parse_pgid_from_stat,
+        };
+        let mut child = std::process::Command::new("bash")
+            .args(["-c", "set -m; sleep 30 & echo $!; wait"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("bash spawns");
+        let shell_pid = child.id();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().expect("stdout is piped"))
+            .read_line(&mut line)
+            .expect("the shell prints the job's pid");
+        let sleep_pid: u32 = line.trim().parse().expect("a pid");
+        let sleep_stat =
+            std::fs::read_to_string(format!("/proc/{sleep_pid}/stat")).expect("the job is alive");
+        let sleep_pgrp = parse_pgid_from_stat(&sleep_stat).expect("a stat line");
+        let members = action_member_pids_live(shell_pid);
+        // SAFETY: killing the two processes this test started.
+        unsafe {
+            libc::kill(sleep_pid.cast_signed(), libc::SIGKILL);
+            libc::kill(shell_pid.cast_signed(), libc::SIGKILL);
+        }
+        drop(child.wait());
+        assert_ne!(
+            sleep_pgrp, shell_pid,
+            "set -m must have moved the job to its own process group for this test to mean anything"
+        );
+        assert!(members.contains(&shell_pid), "{members:?}");
+        assert!(
+            members.contains(&sleep_pid),
+            "the job in its own process group must be a member: {members:?}"
+        );
+    }
+
+    /// A kill needs the pressure to hold for the whole window; a dip starts
+    /// over, and so does a kill, so the next one waits a full window.
+    #[test]
+    fn pressure_window_kills_only_after_sustained_pressure() {
+        use nativelink_worker::running_actions_manager::PressureWindow;
+        use tokio::time::Instant;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let mut window = PressureWindow::new(40, Duration::from_secs(30));
+        assert!(!window.observe(55.0, at(0)));
+        assert!(!window.observe(55.0, at(29)));
+        assert!(
+            window.observe(40.0, at(30)),
+            "at the threshold, for the window: kill"
+        );
+        assert!(
+            !window.observe(55.0, at(31)),
+            "a kill starts the window over"
+        );
+        assert!(!window.observe(55.0, at(60)));
+        assert!(!window.observe(10.0, at(61)), "a dip starts over");
+        assert!(!window.observe(55.0, at(62)));
+        assert!(!window.observe(55.0, at(91)));
+        assert!(window.observe(55.0, at(92)));
+    }
+
+    /// The kill lands on the action holding the most memory, never on one
+    /// without a sample or one already asked to die; nothing qualifying
+    /// means no kill.
+    #[test]
+    fn pressure_victim_is_the_largest_sampled_action_not_yet_asked() {
+        use nativelink_worker::running_actions_manager::pick_pressure_victim;
+        assert_eq!(
+            pick_pressure_victim([
+                ("a", 500, false),
+                ("b", 9_000, true),
+                ("c", 7_000, false),
+                ("d", 0, false)
+            ]),
+            Some("c")
+        );
+        assert_eq!(
+            pick_pressure_victim([("a", 0, false), ("b", 9_000, true)]),
+            None
+        );
+        assert_eq!(pick_pressure_victim(Vec::<(&str, u64, bool)>::new()), None);
+    }
+
+    /// A pressure kill goes through the same path as a ceiling breach: the
+    /// process group dies at once, the result says the worker killed it for
+    /// memory, so the scheduler requeues it with a larger reservation, and
+    /// the error names the pressure.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn action_killed_under_memory_pressure_is_a_memory_kill()
+    -> Result<(), Box<dyn core::error::Error>> {
+        use nativelink_worker::running_actions_manager::{MemoryLimit, PressureKill};
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    resource_enforcement: Some(ResourceEnforcement {
+                        memory: Some(MemoryLimit {
+                            property_name: "memory_kb".to_string(),
+                            headroom_percent: 20,
+                        }),
+                        disk_property_name: None,
+                        disk_soft: false,
+                        disk_headroom_percent: 20,
+                        // Armed, but a threshold the host never reaches: the
+                        // test asks for the kill itself.
+                        pressure_kill: Some(PressureKill {
+                            full_avg10_percent: 100,
+                            after: Duration::from_hours(1),
+                        }),
+                    }),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments: vec!["sleep".to_string(), "30".to_string()],
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    // A reservation the sleep stays well under: nothing but
+                    // the pressure kill can end it early.
+                    platform: Some(Platform {
+                        properties: vec![Property {
+                            name: "memory_kb".into(),
+                            value: "1048576".into(),
+                        }],
+                    }),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+
+        let started = std::time::Instant::now();
+        let run = tokio::spawn(run_action(running_action_impl.clone()));
+        // The monitor would do this once the sampler has a figure; the test
+        // stands in for it.
+        while running_action_impl.last_memory_kb() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the sampler never reported the sleeping action's memory"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        running_action_impl.request_memory_pressure_kill(55);
+        let result = run.await??;
+        let err = result
+            .error
+            .expect("a pressure-killed action must fail with an error");
+        assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+        assert!(
+            err.to_string().contains("memory pressure") && err.to_string().contains("55%"),
+            "error should name the pressure: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the kill should land long before the 30s sleep ends"
+        );
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledMemory as i32,
+            "{usage:?}"
+        );
+        assert!(usage.enforced, "the worker ended it: {usage:?}");
         Ok(())
     }
 }

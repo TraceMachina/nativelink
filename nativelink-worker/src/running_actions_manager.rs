@@ -16,7 +16,7 @@ use core::cmp::min;
 use core::convert::Into;
 use core::fmt::Debug;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
@@ -269,6 +269,95 @@ struct ActionResourceUsageSampler {
 enum OverLimit {
     Memory(u64),
     Disk(u64),
+    /// The worker's cgroup stayed under memory pressure and this action
+    /// held the most memory of those running; the figures are its last
+    /// sample and the pressure that chose it.
+    MemoryPressure {
+        observed_kb: u64,
+        full_avg10_percent: u64,
+    },
+}
+
+/// What one running action publishes for the worker-wide memory pressure
+/// monitor, and the kill it can ask of the action's sampler: the sampler
+/// writes `last_memory_kb` every sample; the monitor sets
+/// `kill_requested_percent` (the pressure it saw, never 0) and the sampler
+/// ends the action on its next pass through the same channel a ceiling
+/// breach uses.
+#[derive(Debug, Default)]
+pub struct ActionMemoryWatch {
+    last_memory_kb: AtomicU64,
+    kill_requested_percent: AtomicU64,
+}
+
+impl ActionMemoryWatch {
+    pub fn last_memory_kb(&self) -> u64 {
+        self.last_memory_kb.load(Ordering::Relaxed)
+    }
+
+    pub fn kill_requested(&self) -> bool {
+        self.kill_requested_percent.load(Ordering::Relaxed) > 0
+    }
+}
+
+/// Picks the action a memory pressure kill lands on: the one whose last
+/// sample is largest, among those with a sample and no kill already asked.
+/// `None` when nothing qualifies, so a worker under pressure from something
+/// other than its actions kills nothing.
+pub fn pick_pressure_victim<T>(candidates: impl IntoIterator<Item = (T, u64, bool)>) -> Option<T> {
+    candidates
+        .into_iter()
+        .filter(|(_, last_kb, requested)| *last_kb > 0 && !requested)
+        .max_by_key(|(_, last_kb, _)| *last_kb)
+        .map(|(item, _, _)| item)
+}
+
+/// Decides when sustained memory pressure becomes a kill: `observe` is
+/// handed each `memory.pressure` `full avg10` reading and answers true
+/// once the reading has stayed at or above the threshold for `after`.
+/// A reading under the threshold starts over, and so does a kill, so the
+/// next one waits a whole window again while the freed memory takes
+/// effect.
+#[derive(Debug, Clone, Copy)]
+pub struct PressureWindow {
+    threshold_percent: f64,
+    after: Duration,
+    over_since: Option<Instant>,
+}
+
+impl PressureWindow {
+    pub const fn new(threshold_percent: u64, after: Duration) -> Self {
+        Self {
+            threshold_percent: threshold_percent as f64,
+            after,
+            over_since: None,
+        }
+    }
+
+    pub fn observe(&mut self, full_avg10_percent: f64, now: Instant) -> bool {
+        if full_avg10_percent < self.threshold_percent {
+            self.over_since = None;
+            return false;
+        }
+        let since = *self.over_since.get_or_insert(now);
+        if now.saturating_duration_since(since) >= self.after {
+            self.over_since = None;
+            return true;
+        }
+        false
+    }
+}
+
+/// How often the worker reads its cgroup's `memory.pressure`.
+#[cfg(target_os = "linux")]
+const MEMORY_PRESSURE_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// A PSI percentage as a whole number for the kill's message: clamped to
+/// 0 to 100 first, so the cast cannot truncate or lose a sign.
+#[cfg(target_os = "linux")]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+const fn whole_percent(value: f64) -> u64 {
+    value.clamp(0.0, 100.0).round() as u64
 }
 
 /// The ceilings the sampler enforces. Memory: two consecutive samples over
@@ -282,6 +371,8 @@ struct Ceilings {
     memory_limit_kb: Option<u64>,
     disk_limit_kb: Option<u64>,
     over_limit_tx: Option<oneshot::Sender<OverLimit>>,
+    /// Where each sample is published and where a pressure kill arrives.
+    watch: Arc<ActionMemoryWatch>,
 }
 
 /// One disk sample every this many memory samples: a walk of the action
@@ -451,6 +542,10 @@ async fn sample_action_resource_usage(
         }
         if let Some(memory_kb) = observed {
             last_memory_kb = memory_kb;
+            ceilings
+                .watch
+                .last_memory_kb
+                .store(memory_kb, Ordering::Relaxed);
         }
         if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
             // The group leader has been reaped and no member process remains,
@@ -476,6 +571,26 @@ async fn sample_action_resource_usage(
                 // The receiver is gone only when the action already ended.
                 debug!(observed_kb, "Memory ceiling breached, action already ended");
             }
+        }
+        // The worker-wide monitor chose this action under sustained memory
+        // pressure; the kill goes the way a ceiling breach does.
+        let full_avg10_percent = ceilings
+            .watch
+            .kill_requested_percent
+            .load(Ordering::Relaxed);
+        if full_avg10_percent > 0
+            && let Some(over_limit_tx) = ceilings.over_limit_tx.take()
+            && over_limit_tx
+                .send(OverLimit::MemoryPressure {
+                    observed_kb: last_memory_kb,
+                    full_avg10_percent,
+                })
+                .is_err()
+        {
+            debug!(
+                last_memory_kb,
+                "Memory pressure kill asked, action already ended"
+            );
         }
 
         // A walk that finished since the last sample; the memory samples
@@ -558,47 +673,116 @@ fn ticks_to_millis(ticks: u64) -> u64 {
     ticks.saturating_mul(1_000) / hz
 }
 
-/// Sums the resident memory of every process in the action's process group.
+/// One process as `/proc/<pid>/stat` describes it: its parent and its
+/// process group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcEntry {
+    pub pid: u32,
+    pub ppid: u32,
+    pub pgrp: u32,
+}
+
+/// The pids that belong to the action, to a fixpoint: every process in the
+/// action's process group, every child of a member, and every process in a
+/// member's process group. The action is spawned as its own group leader
+/// (`process_group(0)` in `inner_execute`), so `action_pgid` is the spawned
+/// child's pid and its direct descendants inherit the group.
 ///
-/// The action is spawned as its own process-group leader (see
-/// `command_builder.process_group(0)` in `inner_execute`), so `pgid` equals
-/// the spawned child's pid and every descendant inherits it. Sampling by
-/// process group — rather than walking the parent/child tree from the spawned
-/// pid — is required because an intermediate shell frequently exits and
-/// reparents the real workload to the worker (PID 1); the tree walk then sees
-/// only a childless zombie and reports zero. Process-group membership is
-/// inherited and survives reparenting, and excludes the worker's own group.
-/// Returns `None` when no member process can be read (the group is empty).
+/// Neither link alone is enough. An intermediate shell often exits and
+/// reparents the real workload to the worker (pid 1 in a pod), so a walk by
+/// parent from the spawned pid sees a childless zombie; the group survives
+/// that. Bazel's `test-setup.sh` runs under `set -m`, which puts the test
+/// binary in a process group of its own, so the group alone sees the few MB
+/// of the wrapper shell and never the test; the parent link reaches it, and
+/// its group then covers whatever it reparents. Nothing in the worker's own
+/// group is ever a member.
+pub fn action_member_pids(action_pgid: u32, worker_pgid: u32, procs: &[ProcEntry]) -> HashSet<u32> {
+    let mut members = HashSet::new();
+    let mut groups = HashSet::from([action_pgid]);
+    loop {
+        let mut grew = false;
+        for proc_entry in procs {
+            if proc_entry.pgrp == worker_pgid || members.contains(&proc_entry.pid) {
+                continue;
+            }
+            if groups.contains(&proc_entry.pgrp) || members.contains(&proc_entry.ppid) {
+                members.insert(proc_entry.pid);
+                groups.insert(proc_entry.pgrp);
+                grew = true;
+            }
+        }
+        if !grew {
+            return members;
+        }
+    }
+}
+
+/// Every process `/proc` lists, with the CPU ticks each has used so far.
+#[cfg(target_os = "linux")]
+fn live_process_table() -> Vec<(ProcEntry, Option<u64>)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let (parent, group) = parse_links_from_stat(&stat)?;
+            Some((
+                ProcEntry {
+                    pid,
+                    ppid: parent,
+                    pgrp: group,
+                },
+                parse_cpu_ticks_from_stat(&stat),
+            ))
+        })
+        .collect()
+}
+
+/// The action's member pids on the live system; see [`action_member_pids`].
+#[cfg(target_os = "linux")]
+pub fn action_member_pids_live(action_pgid: u32) -> HashSet<u32> {
+    let table: Vec<ProcEntry> = live_process_table()
+        .into_iter()
+        .map(|(entry, _)| entry)
+        .collect();
+    action_member_pids(action_pgid, worker_pgid(), &table)
+}
+
+/// The worker's own process group, excluded from every action's members.
+#[cfg(target_os = "linux")]
+fn worker_pgid() -> u32 {
+    // SAFETY: `getpgrp` takes no arguments and cannot fail.
+    u32::try_from(unsafe { libc::getpgrp() }).unwrap_or(0)
+}
+
+/// Sums the resident memory of every process that belongs to the action
+/// (see [`action_member_pids`]) and records their CPU ticks. Returns `None`
+/// when no member process can be read (the action has no processes left).
 #[cfg(target_os = "linux")]
 fn sample_process_group(pgid: u32, cpu_ticks_by_pid: &mut HashMap<u32, u64>) -> Option<u64> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return None;
-    };
-
+    let table = live_process_table();
+    let entries: Vec<ProcEntry> = table.iter().map(|(entry, _)| *entry).collect();
+    let members = action_member_pids(pgid, worker_pgid(), &entries);
     let mut total_kb = 0;
     let mut found_any_process = false;
-    for entry in entries.flatten() {
-        let Ok(member_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{member_pid}/stat")) else {
-            continue;
-        };
-        if parse_pgid_from_stat(&stat) != Some(pgid) {
+    for (entry, ticks) in table {
+        if !members.contains(&entry.pid) {
             continue;
         }
-        if let Some(ticks) = parse_cpu_ticks_from_stat(&stat) {
+        if let Some(ticks) = ticks {
             // Monotonic per process, but a pid could in principle be reused
             // within one action, so never let the figure go backwards.
-            let entry = cpu_ticks_by_pid.entry(member_pid).or_insert(0);
-            *entry = (*entry).max(ticks);
+            let slot = cpu_ticks_by_pid.entry(entry.pid).or_insert(0);
+            *slot = (*slot).max(ticks);
         }
-        if let Some(memory_kb) = read_process_memory_kb(member_pid) {
+        if let Some(memory_kb) = read_process_memory_kb(entry.pid) {
             total_kb += memory_kb;
             found_any_process = true;
         }
     }
-
     found_any_process.then_some(total_kb)
 }
 
@@ -635,9 +819,19 @@ pub fn parse_kb_field(text: &str, field: &str) -> Option<u64> {
 /// line is malformed.
 #[cfg(target_os = "linux")]
 pub fn parse_pgid_from_stat(stat: &str) -> Option<u32> {
+    parse_links_from_stat(stat).map(|(_, pgrp)| pgrp)
+}
+
+/// Parses the parent pid (`ppid`, field 4) and the process group id
+/// (`pgrp`, field 5) from the contents of a `/proc/<pid>/stat` line, located
+/// relative to the final `)` as [`parse_pgid_from_stat`] does.
+pub fn parse_links_from_stat(stat: &str) -> Option<(u32, u32)> {
     let after_comm = stat.rsplit_once(')')?.1;
     // Fields after the final ')': state(0) ppid(1) pgrp(2) ...
-    after_comm.split_whitespace().nth(2)?.parse().ok()
+    let mut fields = after_comm.split_whitespace().skip(1);
+    let ppid = fields.next()?.parse().ok()?;
+    let pgrp = fields.next()?.parse().ok()?;
+    Some((ppid, pgrp))
 }
 
 /// Sums user and system CPU ticks (`utime` + `stime`, fields 14 and 15) from
@@ -2485,9 +2679,26 @@ pub struct RunningActionImpl {
     state: Mutex<RunningActionImplState>,
     has_manager_entry: AtomicBool,
     did_cleanup: AtomicBool,
+    /// The sampler's latest memory figure and the pressure monitor's kill
+    /// request; see [`ActionMemoryWatch`].
+    memory_watch: Arc<ActionMemoryWatch>,
 }
 
 impl RunningActionImpl {
+    /// The memory the sampler last saw this action hold, 0 before a sample.
+    pub fn last_memory_kb(&self) -> u64 {
+        self.memory_watch.last_memory_kb()
+    }
+
+    /// Asks the action's sampler to end it for worker memory pressure,
+    /// naming the `full avg10` percent that chose it (never 0). Takes
+    /// effect on the sampler's next pass; a second request changes nothing.
+    pub fn request_memory_pressure_kill(&self, full_avg10_percent: u64) {
+        self.memory_watch
+            .kill_requested_percent
+            .store(full_avg10_percent.max(1), Ordering::Relaxed);
+    }
+
     pub fn new(
         execution_metadata: ExecutionMetadata,
         operation_id: OperationId,
@@ -2532,6 +2743,7 @@ impl RunningActionImpl {
             has_manager_entry: AtomicBool::new(false),
             // Only needs to be cleaned up after a prepare_action call, set there.
             did_cleanup: AtomicBool::new(true),
+            memory_watch: Arc::new(ActionMemoryWatch::default()),
         }
     }
 
@@ -3154,6 +3366,11 @@ impl RunningActionImpl {
                                         memory_limit_kb: None,
                                         disk_limit_kb: None,
                                         over_limit_tx: None,
+                                        // A detached watch: the process
+                                        // outlives this action and serves
+                                        // others, so it is never a pressure
+                                        // kill's victim.
+                                        watch: Arc::new(ActionMemoryWatch::default()),
                                     },
                                     None,
                                 )
@@ -3444,9 +3661,16 @@ impl RunningActionImpl {
         let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
             let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
             let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
-            let over_limit_tx = (memory_limit_kb.is_some() || disk_limit_kb.is_some())
-                .then(|| over_limit_keepalive.take())
-                .flatten();
+            let pressure_kill_armed = self
+                .running_actions_manager
+                .execution_configuration
+                .resource_enforcement
+                .as_ref()
+                .is_some_and(|enforcement| enforcement.pressure_kill.is_some());
+            let over_limit_tx =
+                (memory_limit_kb.is_some() || disk_limit_kb.is_some() || pressure_kill_armed)
+                    .then(|| over_limit_keepalive.take())
+                    .flatten();
             let disk_directory = disk_enforcement.map(|_| {
                 let directory = PathBuf::from(&self.action_directory);
                 let since = directory_stamp(&directory).unwrap_or_else(|err| {
@@ -3461,6 +3685,7 @@ impl RunningActionImpl {
                     memory_limit_kb,
                     disk_limit_kb,
                     over_limit_tx,
+                    watch: self.memory_watch.clone(),
                 },
                 disk_directory,
             )
@@ -3632,6 +3857,37 @@ impl RunningActionImpl {
                             ),
                         )));
 
+                    }
+                    OverLimit::MemoryPressure { observed_kb, full_avg10_percent } => {
+                        self.running_actions_manager.metrics.memory_pressure_kills.inc();
+                        kill_reason = Some(KillReason::Memory);
+                        // The worker is thrashing; no grace here either.
+                        hard_kill(&mut child_process_guard, "memory pressure").await;
+                        let reserved_kb = memory_reservation.map_or(0, |(reserved_kb, _)| reserved_kb);
+                        let after_s = self
+                            .running_actions_manager
+                            .execution_configuration
+                            .resource_enforcement
+                            .as_ref()
+                            .and_then(|e| e.pressure_kill.as_ref())
+                            .map_or(0, |p| p.after.as_secs());
+                        warn!(
+                            operation_id = ?self.operation_id,
+                            reserved_kb,
+                            observed_kb,
+                            full_avg10_percent,
+                            "Action killed under sustained worker memory pressure"
+                        );
+                        let mut state = self.state.lock();
+                        state.error = Error::merge_option(state.error.take(), Some(Error::new(
+                            Code::FailedPrecondition,
+                            format!(
+                                "Action was killed under worker memory pressure: the worker's cgroup spent \
+                                 {full_avg10_percent}% of the last 10 s with every task stalled on memory for {after_s} s, \
+                                 and this action held the most of what was running, {observed_kb} KiB against a \
+                                 reservation of {reserved_kb} KiB. The reservation is too small for it."
+                            ),
+                        )));
                     }
                 },
                 maybe_exit_status = child_process_guard.wait() => {
@@ -4550,6 +4806,18 @@ pub struct ResourceEnforcement {
     /// `disk_headroom_percent`.
     pub disk_soft: bool,
     pub disk_headroom_percent: u64,
+    /// Kill the action holding the most memory when the worker's cgroup
+    /// stays under memory pressure; `None` leaves a thrashing worker alone.
+    pub pressure_kill: Option<PressureKill>,
+}
+
+/// When sustained memory pressure on the worker's cgroup kills an action.
+#[derive(Debug, Clone, Copy)]
+pub struct PressureKill {
+    /// `memory.pressure` `full avg10` at or above this value (0 to 100) counts.
+    pub full_avg10_percent: u64,
+    /// For this long without a break.
+    pub after: Duration,
 }
 
 /// The reservation a memory ceiling is built from.
@@ -4574,11 +4842,22 @@ impl ResourceEnforcement {
         };
         let disk_property_name =
             (config.disk != DiskEnforcement::None).then(|| config.disk_property_name.clone());
+        let pressure_kill = (config.memory_pressure_kill_percent > 0).then(|| PressureKill {
+            full_avg10_percent: config.memory_pressure_kill_percent.min(100),
+            after: Duration::from_secs(config.memory_pressure_kill_after_s.max(1)),
+        });
+        if pressure_kill.is_some() && memory.is_none() {
+            warn!(
+                "memory_pressure_kill_percent is set with memory: none; the pressure kill needs memory: soft and stays off"
+            );
+        }
+        let pressure_kill = pressure_kill.filter(|_| memory.is_some());
         (memory.is_some() || disk_property_name.is_some()).then_some(Self {
             memory,
             disk_property_name,
             disk_soft: config.disk == DiskEnforcement::Soft,
             disk_headroom_percent: config.disk_headroom_percent,
+            pressure_kill,
         })
     }
 }
@@ -4977,6 +5256,10 @@ pub struct RunningActionsManagerImpl {
     #[cfg(target_os = "linux")]
     use_namespaces: UseNamespaces,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
+    /// Set once the memory pressure monitor has been started; it starts
+    /// with the first action, so a manager that never runs one never
+    /// reads the cgroup.
+    pressure_monitor_started: AtomicBool,
     // Note: We don't use Notify because we need to support a .wait_for()-like function, which
     // Notify does not support.
     action_done_tx: watch::Sender<()>,
@@ -5096,6 +5379,7 @@ impl RunningActionsManagerImpl {
             max_download_timeout: args.max_download_timeout,
             timeout_handled_externally: args.timeout_handled_externally,
             running_actions: Mutex::new(HashMap::new()),
+            pressure_monitor_started: AtomicBool::new(false),
             action_done_tx,
             callbacks,
             metrics: Arc::new(Metrics {
@@ -5471,6 +5755,111 @@ impl RunningActionsManagerImpl {
     }
 }
 
+impl RunningActionsManagerImpl {
+    /// Starts the memory pressure monitor once, when a pressure kill is
+    /// configured. It holds a weak reference, so it ends with the manager.
+    fn ensure_memory_pressure_monitor(self: &Arc<Self>) {
+        let Some(policy) = self
+            .execution_configuration
+            .resource_enforcement
+            .as_ref()
+            .and_then(|enforcement| enforcement.pressure_kill)
+        else {
+            return;
+        };
+        if self
+            .pressure_monitor_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let manager = Arc::downgrade(self);
+            background_spawn!(
+                "memory_pressure_monitor",
+                memory_pressure_monitor(manager, policy)
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = policy;
+            warn!(
+                "memory_pressure_kill_percent is set, but memory.pressure is a Linux cgroup v2 file; the pressure kill stays off"
+            );
+        }
+    }
+}
+
+/// Reads the worker cgroup's `memory.pressure` every few seconds and, once
+/// its `full avg10` has stayed at or above the policy's percent for the
+/// policy's duration, asks the running action with the largest last sample
+/// to end (see [`PressureWindow`] and [`pick_pressure_victim`]). The kill
+/// reaches the scheduler as a memory kill, so the action comes back with a
+/// larger reservation instead of thrashing this worker until it is evicted.
+/// Ends when the manager is dropped, or at once when no `memory.pressure`
+/// is readable.
+#[cfg(target_os = "linux")]
+async fn memory_pressure_monitor(manager: Weak<RunningActionsManagerImpl>, policy: PressureKill) {
+    let Some(path) = crate::capacity::memory_pressure_file() else {
+        warn!(
+            "no readable memory.pressure for this worker's cgroup (cgroup v2 only); the memory pressure kill stays off"
+        );
+        return;
+    };
+    info!(
+        path = %path.display(),
+        full_avg10_percent = policy.full_avg10_percent,
+        after_s = policy.after.as_secs(),
+        "Memory pressure kill armed"
+    );
+    let mut window = PressureWindow::new(policy.full_avg10_percent, policy.after);
+    loop {
+        tokio::time::sleep(MEMORY_PRESSURE_SAMPLE_INTERVAL).await;
+        let Some(manager) = manager.upgrade() else {
+            return;
+        };
+        let Some(full_avg10) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| crate::capacity::parse_pressure_full_avg10(&text))
+        else {
+            continue;
+        };
+        if !window.observe(full_avg10, Instant::now()) {
+            continue;
+        }
+        let running: Vec<Arc<RunningActionImpl>> = manager
+            .running_actions
+            .lock()
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        let Some(victim) = pick_pressure_victim(running.iter().map(|action| {
+            (
+                action,
+                action.memory_watch.last_memory_kb(),
+                action.memory_watch.kill_requested(),
+            )
+        })) else {
+            warn!(
+                full_avg10,
+                running = running.len(),
+                "Worker under sustained memory pressure with no sampled action to kill"
+            );
+            continue;
+        };
+        warn!(
+            operation_id = ?victim.operation_id,
+            full_avg10,
+            observed_kb = victim.memory_watch.last_memory_kb(),
+            running = running.len(),
+            "Worker under sustained memory pressure; killing the action holding the most memory"
+        );
+        victim.request_memory_pressure_kill(whole_percent(full_avg10));
+    }
+}
+
 impl RunningActionsManager for RunningActionsManagerImpl {
     type RunningAction = RunningActionImpl;
 
@@ -5479,6 +5868,7 @@ impl RunningActionsManager for RunningActionsManagerImpl {
         worker_id: String,
         start_execute: StartExecute,
     ) -> Result<Arc<RunningActionImpl>, Error> {
+        self.ensure_memory_pressure_monitor();
         self.metrics
             .create_and_add_action
             .wrap(async move {
@@ -5705,6 +6095,8 @@ pub struct Metrics {
     task_timeouts: CounterWithTime,
     #[metric(help = "Actions killed for exceeding their memory reservation.")]
     memory_reservation_kills: CounterWithTime,
+    #[metric(help = "Actions killed because the worker's cgroup stayed under memory pressure.")]
+    memory_pressure_kills: CounterWithTime,
     #[metric(help = "Actions refused because their disk reservation exceeded the free space.")]
     disk_guard_refusals: CounterWithTime,
     #[metric(help = "Actions killed for writing past their disk reservation.")]

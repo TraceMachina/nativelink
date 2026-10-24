@@ -242,6 +242,26 @@ worker reads an action's properties from the scheduler's dispatch rather than
 the client's request, so a reservation the scheduler placed the action by is
 the one enforced and exported to the environment.
 
+The sample covers every process that belongs to the action: its process
+group, the children of any member, and the process groups those belong to.
+Both links are needed. A shell that exits and leaves its work with the
+worker as parent is still covered by its group, and a Bazel test, which
+`test-setup.sh` runs under `set -m` in a process group of its own, is
+reached through its parent; before this the test's own memory was never
+seen, so a 20 GB test was hinted and held at the few MB of its wrapper.
+
+An action that fits under the pod's limit only by thrashing never reaches
+the OOM killer; the worker slows until the scheduler evicts it, and the
+action moves to the next worker with the same reservation.
+`memory_pressure_kill_percent` ends that on the worker: when the cgroup's
+`memory.pressure` `full avg10` (the share of the last ten seconds every
+task spent stalled on memory) stays at or above that value for
+`memory_pressure_kill_after_s` (default 30), the worker kills the running
+action with the largest sample, as a memory kill, so the scheduler requeues
+it with a larger reservation. It needs `memory: soft` for the samples, reads
+the nearest limited cgroup v2 directory (so a privileged pod reads its own
+container scope under the host tree), and is off at 0.
+
 `disk: guard` adds a check before any input is fetched: an action whose
 `disk_kb` reservation exceeds the free space under the work directory, less
 what the actions already admitted reserved, is refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
@@ -264,6 +284,8 @@ comes with the size ladder.
   "memory": "soft",
   "memory_property_name": "memory_kb",
   "memory_headroom_percent": 20,
+  "memory_pressure_kill_percent": 40,
+  "memory_pressure_kill_after_s": 30,
   "disk": "soft",
   "disk_property_name": "disk_kb",
   "disk_headroom_percent": 20

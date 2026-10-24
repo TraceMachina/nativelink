@@ -53,6 +53,8 @@ fn enforcement(memory: MemoryEnforcement, headroom: u64) -> ResourceEnforcementC
         memory_property_name: "memory_kb".to_string(),
         memory_headroom_percent: headroom,
         disk_headroom_percent: 20,
+        memory_pressure_kill_percent: 0,
+        memory_pressure_kill_after_s: 30,
     }
 }
 
@@ -508,4 +510,22 @@ fn only_an_own_limit_with_readable_usage_counts_as_limited() {
         dir,
         files(Some("25769803776\n"), None)
     ));
+}
+
+/// `memory.pressure` has a `some` line and a `full` line; the kill reads
+/// the `full` average over ten seconds, the share of time every task in
+/// the cgroup was stalled.
+#[test]
+fn pressure_full_avg10_is_read_from_the_full_line() {
+    use nativelink_worker::capacity::parse_pressure_full_avg10;
+    let text = "some avg10=48.20 avg60=20.00 avg300=5.00 total=1234567\n\
+                full avg10=12.50 avg60=3.00 avg300=1.00 total=123456\n";
+    assert_eq!(parse_pressure_full_avg10(text), Some(12.5));
+    assert_eq!(
+        parse_pressure_full_avg10("some avg10=48.20 avg60=20.00 avg300=5.00 total=1\n"),
+        None,
+        "no full line, no figure"
+    );
+    assert_eq!(parse_pressure_full_avg10("full avg10=x\n"), None);
+    assert_eq!(parse_pressure_full_avg10(""), None);
 }
