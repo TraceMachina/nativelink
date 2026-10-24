@@ -57,7 +57,7 @@ use tracing::{Level, debug, error, event, info, info_span, instrument, trace, wa
 use crate::running_actions_manager::{
     ExecutionConfiguration, MISSING_INPUT_ERROR_TIP, Metrics as RunningActionManagerMetrics,
     ResourceEnforcement, RunningAction, RunningActionsManager, RunningActionsManagerArgs,
-    RunningActionsManagerImpl,
+    RunningActionsManagerImpl, with_phases,
 };
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_connect_worker_request;
@@ -738,12 +738,13 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                         "Error saving action in store",
                                                     );
                                                 }
-                                            let action_stage = ActionStage::Completed(action_result);
                                             let resource_usage = resource_usage.map(|mut resource_usage| {
                                                 resource_usage.operation_id.clone_from(&operation_id);
                                                 resource_usage.worker_id.clone_from(&worker_id);
+                                                with_phases(&mut resource_usage, &action_result);
                                                 resource_usage
                                             });
+                                            let action_stage = ActionStage::Completed(action_result);
                                             grpc_client.execution_response(
                                                 ExecuteResult{
                                                     instance_name,

@@ -37,7 +37,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, ResponseEvent, event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ResourceOutcome, WorkerLoad,
+    ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ResourceOutcome, WorkerLoad,
 };
 use nativelink_util::action_messages::{ActionStage, ActionUniqueQualifier, OperationId, WorkerId};
 use nativelink_util::metrics::{
@@ -55,6 +55,81 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
 use tracing::{debug, error, info, trace, warn};
+
+/// Why an update ends the attempt it is about, and the error behind it;
+/// `None` for an update that keeps or completes the attempt.
+fn attempt_end_reason(update: &UpdateOperationType) -> Option<(AttemptEndReason, String)> {
+    match update {
+        UpdateOperationType::UpdateWithDisconnect => {
+            Some((AttemptEndReason::WorkerLost, String::new()))
+        }
+        UpdateOperationType::UpdateWithEscalation(escalation) => Some((
+            AttemptEndReason::OutOfMemory,
+            escalation.reason.message_string(),
+        )),
+        UpdateOperationType::UpdateWithDecline(_) => {
+            Some((AttemptEndReason::Declined, String::new()))
+        }
+        UpdateOperationType::UpdateWithError(err) => {
+            let reason = match err.code {
+                Code::ResourceExhausted => AttemptEndReason::Backpressure,
+                Code::DeadlineExceeded => AttemptEndReason::Timeout,
+                Code::NotFound => AttemptEndReason::MissingInput,
+                _ => AttemptEndReason::WorkerError,
+            };
+            Some((reason, err.message_string()))
+        }
+        UpdateOperationType::UpdateWithActionStage(_)
+        | UpdateOperationType::KeepAlive
+        | UpdateOperationType::ExecutionComplete => None,
+    }
+}
+
+/// Publishes that an attempt ended, as a child of its start event, so the
+/// telemetry can say why an action ran more than once. `try_send`: this runs
+/// under the scheduler's lock, and a full queue must not stall scheduling
+/// for a report; a dropped one is logged.
+fn publish_attempt_ended(
+    tx: Option<&mpsc::Sender<OriginEvent>>,
+    pending: &PendingActionInfoData,
+    worker_id: &WorkerId,
+    operation_id: &OperationId,
+    reason: AttemptEndReason,
+    detail: String,
+) {
+    let Some(tx) = tx else {
+        return;
+    };
+    let event = Event {
+        event: Some(event::Event::Response(ResponseEvent {
+            event: Some(response_event::Event::ActionAttemptEnded(
+                ActionAttemptEnded {
+                    operation_id: operation_id.to_string(),
+                    worker_id: worker_id.to_string(),
+                    reason: reason.into(),
+                    detail,
+                },
+            )),
+        })),
+    };
+    let origin_event = OriginEvent {
+        version: 0,
+        event_id: Uuid::now_v6(&get_node_id(Some(&event)))
+            .hyphenated()
+            .to_string(),
+        parent_event_id: pending
+            .action_info
+            .scheduler_start_execute_event_id
+            .clone()
+            .unwrap_or_default(),
+        bazel_request_metadata: pending.action_info.origin_metadata.bazel_metadata.clone(),
+        identity: pending.action_info.origin_metadata.identity.clone(),
+        event: Some(event),
+    };
+    if let Err(err) = tx.try_send(origin_event) {
+        warn!(%operation_id, ?reason, ?err, "Dropped an attempt-ended origin event");
+    }
+}
 
 /// How many state-manager lookups `kill_revoked_operations` has in flight
 /// at once while checking which running operations were revoked.
@@ -144,7 +219,9 @@ use crate::match_outcome::{
     MatchOutcome, PropertyShape, UnsatisfiableReason, explain_unsatisfiable,
 };
 use crate::platform_property_manager::PlatformPropertyManager;
-use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
+use crate::worker::{
+    ActionInfoWithProps, PendingActionInfoData, Worker, WorkerTimestamp, WorkerUpdate,
+};
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
 use crate::worker_scheduler::{WorkerScheduler, WorkerSummary};
@@ -293,6 +370,8 @@ struct ApiWorkerSchedulerImpl {
     /// How a queued action that keeps finding no room gets a worker held
     /// for it; unset means never.
     reservation_hold: Option<ReservationHoldSpec>,
+    /// Where attempt-ended origin events go; unset publishes none.
+    attempt_events: Option<mpsc::Sender<OriginEvent>>,
     /// Workers held for one queued action each, by worker, and the same
     /// holds by action. A held worker is offered nothing but its action.
     holds: HashMap<WorkerId, Hold>,
@@ -1584,6 +1663,20 @@ impl ApiWorkerSchedulerImpl {
             }
         };
 
+        if !worker.is_kill_requested(operation_id)
+            && let Some((reason, detail)) = attempt_end_reason(&update)
+            && let Some(pending) = worker.running_action_infos.get(operation_id)
+        {
+            publish_attempt_ended(
+                self.attempt_events.as_ref(),
+                pending,
+                worker_id,
+                operation_id,
+                reason,
+                detail,
+            );
+        }
+
         // Update the operation in the worker state manager.
         let update_operation_res = if worker.is_kill_requested(operation_id) {
             debug!(
@@ -2024,7 +2117,15 @@ impl ApiWorkerSchedulerImpl {
             // action running on it did nothing wrong: it is a worker loss
             // with its own budget, not an attempt the action spent.
             let update = UpdateOperationType::UpdateWithDisconnect;
-            for (operation_id, _) in worker.running_action_infos.drain() {
+            for (operation_id, pending) in worker.running_action_infos.drain() {
+                publish_attempt_ended(
+                    self.attempt_events.as_ref(),
+                    &pending,
+                    worker_id,
+                    &operation_id,
+                    AttemptEndReason::WorkerLost,
+                    err.message_string(),
+                );
                 result = result.merge(
                     self.worker_state_manager
                         .update_operation(&operation_id, worker_id, update.clone())
@@ -2128,6 +2229,7 @@ impl ApiWorkerScheduler {
                 live_memory_veto,
                 memory_escalation,
                 reservation_hold,
+                attempt_events: maybe_origin_event_tx.clone(),
                 holds: HashMap::new(),
                 holds_by_action: HashMap::new(),
                 hold_cooldowns: HashMap::new(),

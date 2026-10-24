@@ -16,7 +16,7 @@ use core::cmp::min;
 use core::convert::Into;
 use core::fmt::Debug;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::borrow::Cow;
 use std::collections::vec_deque::VecDeque;
@@ -865,6 +865,95 @@ async fn release_filesystem_stores(
     .await;
 }
 
+/// Input bytes an action's fetch hardlinked, and how many of them the local
+/// store already held. Counted per fetch attempt: [`INPUT_FETCH_STATS`] is
+/// scoped around one attempt's download, so a retried attempt starts again
+/// from zero instead of counting the tree twice.
+#[derive(Debug, Default)]
+pub struct InputFetchStats {
+    total_bytes: AtomicU64,
+    cached_bytes: AtomicU64,
+}
+
+impl InputFetchStats {
+    fn record(&self, digest: &DigestInfo, cached: bool) {
+        let bytes = digest.size_bytes();
+        self.total_bytes.fetch_add(bytes, Ordering::Relaxed);
+        if cached {
+            self.cached_bytes.fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
+
+    /// Total input bytes and the cached part of them.
+    pub fn bytes(&self) -> (u64, u64) {
+        (
+            self.total_bytes.load(Ordering::Relaxed),
+            self.cached_bytes.load(Ordering::Relaxed),
+        )
+    }
+}
+
+tokio::task_local! {
+    /// The counters of the fetch attempt running on this task, if any. A
+    /// task local rather than a parameter: the download functions are
+    /// public and recursive, and the counts are a report, not an input.
+    static INPUT_FETCH_STATS: Arc<InputFetchStats>;
+}
+
+/// Runs `fut`, one input fetch attempt, with fresh counters in scope and
+/// returns them with its output.
+pub async fn with_input_fetch_stats<F: Future>(fut: F) -> (F::Output, Arc<InputFetchStats>) {
+    let stats = Arc::new(InputFetchStats::default());
+    let out = INPUT_FETCH_STATS.scope(stats.clone(), fut).await;
+    (out, stats)
+}
+
+/// Counts one resolved input file against the attempt in scope; a no-op
+/// outside one, as in the download functions' own tests.
+fn record_input_file(digest: &DigestInfo, cached: bool) {
+    let _ = INPUT_FETCH_STATS.try_with(|stats| stats.record(digest, cached));
+}
+
+/// Milliseconds from `start` to `end`; zero when either was never set or
+/// the clock ran backwards between them.
+fn phase_ms(start: SystemTime, end: SystemTime) -> u64 {
+    if start == SystemTime::UNIX_EPOCH || end == SystemTime::UNIX_EPOCH {
+        return 0;
+    }
+    end.duration_since(start)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Fills the parts of an action's usage report that are known only once its
+/// result is uploaded: how long the input fetch and the output upload took,
+/// from the result's execution metadata, and how many bytes it produced.
+pub fn with_phases(usage: &mut ActionResourceUsage, result: &ActionResult) {
+    let m = &result.execution_metadata;
+    usage.input_fetch_ms = phase_ms(
+        m.input_fetch_start_timestamp,
+        m.input_fetch_completed_timestamp,
+    );
+    usage.output_upload_ms = phase_ms(
+        m.output_upload_start_timestamp,
+        m.output_upload_completed_timestamp,
+    );
+    usage.output_bytes = result
+        .output_files
+        .iter()
+        .map(|file| file.digest.size_bytes())
+        .chain(
+            result
+                .output_folders
+                .iter()
+                .map(|dir| dir.tree_digest.size_bytes()),
+        )
+        .chain([
+            result.stdout_digest.size_bytes(),
+            result.stderr_digest.size_bytes(),
+        ])
+        .sum();
+}
+
 /// Aggressively download the digests of files and make a local folder from it. This function
 /// gates each directory level to at most `DOWNLOAD_TO_DIRECTORY_CONCURRENCY`
 /// concurrent in-flight materialization futures.
@@ -1303,16 +1392,19 @@ async fn resolve_plain_files(
                 .get_file_entry_for_digest(&file.digest)
                 .await
             {
+                record_input_file(&file.digest, true);
                 entry
             } else {
                 let _permit = acquire_download_permit(downloads).await?;
-                fetch_and_resolve(
+                let entry = fetch_and_resolve(
                     file.digest,
                     || cas_store.populate_fast_store(file.digest.into()),
                     || filesystem_store.get_file_entry_for_digest(&file.digest),
                 )
                 .await
-                .err_tip(|| "During hard link")?
+                .err_tip(|| "During hard link")?;
+                record_input_file(&file.digest, false);
+                entry
             };
             // TODO: add a test for #2051: deadlock with large number of files
             let src_path = file_entry
@@ -1365,16 +1457,19 @@ async fn resolve_exec_files(
     for (file, source) in files.into_iter().zip(sources) {
         tasks.push(async move {
             let src_path = if let Ok(src_path) = source {
+                record_input_file(&file.digest, true);
                 src_path
             } else {
                 let _permit = acquire_download_permit(downloads).await?;
-                fetch_and_resolve(
+                let src_path = fetch_and_resolve(
                     file.digest,
                     || cas_store.populate_fast_store(file.digest.into()),
                     || filesystem_store.get_executable_hardlink_source(&file.digest),
                 )
                 .await
-                .err_tip(|| format!("Resolving executable variant for {}", file.digest))?
+                .err_tip(|| format!("Resolving executable variant for {}", file.digest))?;
+                record_input_file(&file.digest, false);
+                src_path
             };
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
@@ -2458,6 +2553,8 @@ struct RunningActionImplState {
     execution_result: Option<RunningActionImplExecutionResult>,
     action_result: Option<ActionResult>,
     resource_usage: Option<ActionResourceUsage>,
+    /// Input bytes of the fetch attempt that succeeded, and the cached part.
+    input_bytes: (u64, u64),
     execution_metadata: ExecutionMetadata,
     // If there was an internal error, this will be set.
     // This should NOT be set if everything was fine, but the process had a
@@ -2522,6 +2619,7 @@ impl RunningActionImpl {
                 execution_result: None,
                 action_result: None,
                 resource_usage: None,
+                input_bytes: (0, 0),
                 execution_metadata,
                 error: None,
                 input_mounts: None,
@@ -2576,12 +2674,18 @@ impl RunningActionImpl {
                     None => self.fetch_command().await,
                 }
             };
-            let inputs_fut = self
-                .metrics()
-                .download_to_directory
-                .wrap(self.download_inputs(filesystem_store));
+            let inputs_fut = async {
+                let (result, stats) = with_input_fetch_stats(
+                    self.metrics()
+                        .download_to_directory
+                        .wrap(self.download_inputs(filesystem_store)),
+                )
+                .await;
+                result.map(|()| stats.bytes())
+            };
             let err = match try_join(command_fut, inputs_fut).await {
-                Ok((command, ())) => {
+                Ok((command, input_bytes)) => {
+                    self.state.lock().input_bytes = input_bytes;
                     if attempt > 1 {
                         info!(
                             operation_id = %self.operation_id,
@@ -3219,6 +3323,7 @@ impl RunningActionImpl {
                                 });
                             let (outcome, enforced) =
                                 classify_outcome(None, None, sampled_usage.last_memory_kb, None);
+                            let fetched_input = self.state.lock().input_bytes;
                             let resource_usage = Some(ActionResourceUsage {
                                 peak_memory_kb: sampled_usage.peak_memory_kb,
                                 cpu_time_ms: sampled_usage.cpu_time_ms,
@@ -3238,6 +3343,9 @@ impl RunningActionImpl {
                                     memory_property,
                                     disk_property,
                                 ),
+                                input_bytes: fetched_input.0,
+                                input_cached_bytes: fetched_input.1,
+                                ..Default::default()
                             });
                             {
                                 let mut state = self.state.lock();
@@ -3761,6 +3869,7 @@ impl RunningActionImpl {
                                 e.disk_property_name.as_deref(),
                             )
                         });
+                    let fetched_input = self.state.lock().input_bytes;
                     let resource_usage = Some(ActionResourceUsage {
                         peak_memory_kb: sampled_usage.peak_memory_kb,
                         cpu_time_ms: sampled_usage.cpu_time_ms,
@@ -3780,6 +3889,11 @@ impl RunningActionImpl {
                             memory_property,
                             disk_property,
                         ),
+                        input_bytes: fetched_input.0,
+                        input_cached_bytes: fetched_input.1,
+                        // Phases and outputs are known only once the
+                        // result is uploaded; `with_phases` fills them.
+                        ..Default::default()
                     });
 
                     // log something useful instead of repeating same ?arg

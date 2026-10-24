@@ -62,7 +62,7 @@ mod tests {
         digest_function::Value as ProtoDigestFunction, platform::Property,
     };
     use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-        HistoricalExecuteResponse, ResourceOutcome, StartExecute,
+        ActionResourceUsage, HistoricalExecuteResponse, ResourceOutcome, StartExecute,
     };
     use nativelink_proto::google::rpc::Status;
     #[cfg(target_family = "unix")]
@@ -100,7 +100,7 @@ mod tests {
         Callbacks, ExecutionConfiguration, KillReason, PersistentWorkersSettings,
         ResourceEnforcement, RunningAction, RunningActionImpl, RunningActionsManager,
         RunningActionsManagerArgs, RunningActionsManagerImpl, classify_outcome,
-        download_to_directory, log_excerpt, parse_kb_field,
+        download_to_directory, log_excerpt, parse_kb_field, with_input_fetch_stats, with_phases,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
@@ -593,6 +593,94 @@ mod tests {
                 FILE2_MTIME
             );
         }
+        Ok(())
+    }
+
+    // The first fetch of a tree pulls every file from the CAS; a second one
+    // finds them all in the worker's local store. Executable files count too.
+    #[nativelink_test]
+    async fn download_to_directory_counts_fetched_and_cached_input_bytes()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let plain = DigestInfo::new([12u8; 32], 10);
+        let exec = DigestInfo::new([13u8; 32], 7);
+        slow_store
+            .as_ref()
+            .update_oneshot(plain, "0123456789".into())
+            .await?;
+        slow_store
+            .as_ref()
+            .update_oneshot(exec, "#!/bin/".into())
+            .await?;
+        let root = DigestInfo::new([11u8; 32], 32);
+        let directory = Directory {
+            files: vec![
+                FileNode {
+                    name: "plain.txt".to_string(),
+                    digest: Some(plain.into()),
+                    is_executable: false,
+                    node_properties: None,
+                },
+                FileNode {
+                    name: "tool.sh".to_string(),
+                    digest: Some(exec.into()),
+                    is_executable: true,
+                    node_properties: None,
+                },
+            ],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root, directory.encode_to_vec().into())
+            .await?;
+
+        for (round, expected_cached) in [(0, 0u64), (1, 17)] {
+            let dir = make_temp_path(&format!("stats_dir_{round}"));
+            fs::create_dir_all(&dir).await?;
+            let (result, stats) = with_input_fetch_stats(download_to_directory(
+                cas_store.as_ref(),
+                fast_store.as_pin(),
+                &root,
+                &dir,
+            ))
+            .await;
+            result?;
+            assert_eq!(stats.bytes(), (17, expected_cached), "round {round}");
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn with_phases_reads_the_result_metadata() -> Result<(), Box<dyn core::error::Error>> {
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 + secs);
+        let result = ActionResult {
+            output_files: vec![FileInfo {
+                name_or_path: NameOrPath::Path("out".to_string()),
+                digest: DigestInfo::new([1u8; 32], 300),
+                is_executable: false,
+            }],
+            stdout_digest: DigestInfo::new([2u8; 32], 20),
+            stderr_digest: DigestInfo::new([3u8; 32], 5),
+            execution_metadata: ExecutionMetadata {
+                input_fetch_start_timestamp: at(0),
+                input_fetch_completed_timestamp: at(2),
+                output_upload_start_timestamp: at(10),
+                output_upload_completed_timestamp: at(13),
+                ..ActionResult::default().execution_metadata
+            },
+            ..ActionResult::default()
+        };
+        let mut usage = ActionResourceUsage::default();
+        with_phases(&mut usage, &result);
+        assert_eq!(usage.input_fetch_ms, 2_000);
+        assert_eq!(usage.output_upload_ms, 3_000);
+        assert_eq!(usage.output_bytes, 325);
+
+        // A phase that never started reads as zero, not as decades.
+        let mut unset = ActionResourceUsage::default();
+        with_phases(&mut unset, &ActionResult::default());
+        assert_eq!((unset.input_fetch_ms, unset.output_upload_ms), (0, 0));
         Ok(())
     }
 

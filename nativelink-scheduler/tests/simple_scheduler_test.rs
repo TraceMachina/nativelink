@@ -33,11 +33,11 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ExecuteRequest, Platform, RequestMetadata, digest_function, platform,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    event, request_event, response_event,
+    OriginEvent, event, request_event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
-    WorkerLoad, update_for_worker,
+    ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
+    KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -346,6 +346,117 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
     assert_eq!(resource_usage.peak_memory_kb, 12_345);
     assert!(resource_usage.sampled);
 
+    Ok(())
+}
+
+/// Starts one action on a fresh worker with origin events on, and returns
+/// the worker scheduler, the operation the worker was told to run, the
+/// start event's id, and the event receiver.
+async fn start_one_action_with_origin_events() -> Result<
+    (
+        Arc<SimpleScheduler>,
+        Arc<dyn WorkerScheduler>,
+        WorkerId,
+        OperationId,
+        String,
+        mpsc::Receiver<OriginEvent>,
+        mpsc::Receiver<UpdateForWorker>,
+    ),
+    Error,
+> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(8);
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        Some(origin_event_tx),
+    );
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let action_info = make_base_action_info(make_system_time(2), DigestInfo::new([43u8; 32], 512));
+    let _listener = scheduler
+        .add_action(OperationId::from("client-op"), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+    scheduler.do_try_match_for_test().await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update.unwrap() {
+        update_for_worker::Update::StartAction(start) => {
+            OperationId::from(start.operation_id.as_str())
+        }
+        update => panic!("Unexpected worker update: {update:?}"),
+    };
+    let start_event_id = origin_event_rx.recv().await.unwrap().event_id;
+    Ok((
+        scheduler,
+        worker_scheduler,
+        worker_id,
+        operation_id,
+        start_event_id,
+        origin_event_rx,
+        rx_from_worker,
+    ))
+}
+
+fn attempt_ended(event: OriginEvent) -> ActionAttemptEnded {
+    match event.event.unwrap().event.unwrap() {
+        event::Event::Response(response) => match response.event.unwrap() {
+            response_event::Event::ActionAttemptEnded(ended) => ended,
+            other => panic!("Unexpected response event: {other:?}"),
+        },
+        other => panic!("Unexpected origin event: {other:?}"),
+    }
+}
+
+// An attempt the worker reports as timed out is published as ended for a
+// timeout, as a child of its start event, before the action is requeued.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_timeout() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(
+                Code::DeadlineExceeded,
+                "ran past its deadline"
+            )),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    let ended = attempt_ended(event);
+    assert_eq!(ended.reason, i32::from(AttemptEndReason::Timeout));
+    assert_eq!(ended.operation_id, operation_id.to_string());
+    assert_eq!(ended.worker_id, "worker_id");
+    assert!(
+        ended.detail.contains("ran past its deadline"),
+        "{}",
+        ended.detail
+    );
+    Ok(())
+}
+
+// A worker that goes away ends the attempts it held as worker lost.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_lost_worker() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, _operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler.remove_worker(&worker_id).await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::WorkerLost)
+    );
     Ok(())
 }
 

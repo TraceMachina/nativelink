@@ -180,6 +180,46 @@ pub struct ActionResourceUsage {
     /// / What the action was admitted with, from its platform properties.
     #[prost(message, optional, tag = "10")]
     pub reserved: ::core::option::Option<Reservation>,
+    /// / Time from the start of the input fetch to its end, in milliseconds:
+    /// / `input_fetch_completed_timestamp - input_fetch_start_timestamp` of
+    /// / the action result's `ExecutedActionMetadata`.
+    #[prost(uint64, tag = "11")]
+    pub input_fetch_ms: u64,
+    /// / Time spent uploading outputs, in milliseconds, from the same
+    /// / metadata. Zero when the action failed before uploading.
+    #[prost(uint64, tag = "12")]
+    pub output_upload_ms: u64,
+    /// / Bytes of the input files hardlinked into the action's directory.
+    /// / Subtrees served whole by the worker's directory cache are not
+    /// / walked, so they are not counted.
+    #[prost(uint64, tag = "13")]
+    pub input_bytes: u64,
+    /// / Of `input_bytes`, the bytes the worker's local store already held;
+    /// / the rest were fetched from the CAS for this action.
+    #[prost(uint64, tag = "14")]
+    pub input_cached_bytes: u64,
+    /// / Bytes of the output files, stdout and stderr in the action result.
+    /// / An output directory counts its tree digest, not its contents.
+    #[prost(uint64, tag = "15")]
+    pub output_bytes: u64,
+}
+/// / One attempt at an action ended without a result the scheduler kept.
+/// / Published as an origin event whose parent is the attempt's
+/// / `scheduler_start_execute` event.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ActionAttemptEnded {
+    /// / The operation the attempt belonged to.
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+    /// / The worker the attempt ran on.
+    #[prost(string, tag = "2")]
+    pub worker_id: ::prost::alloc::string::String,
+    /// / Why it ended.
+    #[prost(enumeration = "AttemptEndReason", tag = "3")]
+    pub reason: i32,
+    /// / The error the scheduler acted on, when there was one.
+    #[prost(string, tag = "4")]
+    pub detail: ::prost::alloc::string::String,
 }
 /// / Result sent back from the server when a node connects.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -452,6 +492,61 @@ impl ResourceOutcome {
             "KILLED_DISK" => Some(Self::KilledDisk),
             "KILLED_TIMEOUT" => Some(Self::KilledTimeout),
             "KILLED_EXTERNAL" => Some(Self::KilledExternal),
+            _ => None,
+        }
+    }
+}
+/// / Why the scheduler ended one attempt at an action without keeping a
+/// / result from it. The action was requeued, or failed for having been
+/// / tried too often; either way the attempt cost time a build waited for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum AttemptEndReason {
+    Unknown = 0,
+    /// / The worker running it went away: disconnected, evicted, OOM-killed
+    /// / as a whole, or stopped answering keepalives.
+    WorkerLost = 1,
+    /// / The attempt ran past its deadline.
+    Timeout = 2,
+    /// / Killed for memory and requeued with a larger reservation.
+    OutOfMemory = 3,
+    /// / An input it needed was missing from the CAS.
+    MissingInput = 4,
+    /// / The worker had no room for it; not counted as an attempt.
+    Backpressure = 5,
+    /// / The worker declined it before starting.
+    Declined = 6,
+    /// / Any other error the worker reported for it.
+    WorkerError = 7,
+}
+impl AttemptEndReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unknown => "ATTEMPT_END_REASON_UNKNOWN",
+            Self::WorkerLost => "WORKER_LOST",
+            Self::Timeout => "TIMEOUT",
+            Self::OutOfMemory => "OUT_OF_MEMORY",
+            Self::MissingInput => "MISSING_INPUT",
+            Self::Backpressure => "BACKPRESSURE",
+            Self::Declined => "DECLINED",
+            Self::WorkerError => "WORKER_ERROR",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ATTEMPT_END_REASON_UNKNOWN" => Some(Self::Unknown),
+            "WORKER_LOST" => Some(Self::WorkerLost),
+            "TIMEOUT" => Some(Self::Timeout),
+            "OUT_OF_MEMORY" => Some(Self::OutOfMemory),
+            "MISSING_INPUT" => Some(Self::MissingInput),
+            "BACKPRESSURE" => Some(Self::Backpressure),
+            "DECLINED" => Some(Self::Declined),
+            "WORKER_ERROR" => Some(Self::WorkerError),
             _ => None,
         }
     }
