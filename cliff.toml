@@ -78,6 +78,17 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.8.1: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Compare the webpki root store with assert_ne", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Create the scheduler index persistent", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Export telemetry over TLS to an https OTLP collector", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Read a filter pass's listed records one at a time again", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Read the listed records of a filter pass 64 at a time", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Refresh ca-certificates apt pin in Compose image", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Replay a reset buf_channel stream on every retry", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Report content length from filesystem store", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "read the memory store's listing whole", group = "<!-- 2 -->🐛 Bug Fixes" },
+
   # v1.8.0: pinned by subject, since their bodies trip the generic word rules.
   { message = "Bound a worker's input fetches with one pool across the actions it stages", group = "<!-- 1 -->⛰️  Features" },
   { message = "Bound object store reads with an adaptive permit pool", group = "<!-- 1 -->⛰️  Features" },

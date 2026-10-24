@@ -3921,6 +3921,47 @@ exit 0
     }
 
     #[cfg(target_os = "linux")]
+    fn process_has_terminated(pid: u32) -> Result<bool, std::io::Error> {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => Ok(nativelink_worker::reaper::parse_zombie_ppid(&stat).is_some()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(err) => Err(err),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn process_termination_does_not_require_reaping()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()?;
+        let pid = child.id().expect("just spawned");
+        let _owned = nativelink_worker::reaper::OwnedChild::new(Some(pid));
+        assert!(
+            !process_has_terminated(pid)?,
+            "a live child is not terminated"
+        );
+
+        child.start_kill()?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !process_has_terminated(pid)? {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await??;
+        // Keep the child's exit status owned by this handle: it must still be
+        // present as a zombie, which a signal-0 existence check would reject.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+        assert!(nativelink_worker::reaper::parse_zombie_ppid(&stat).is_some());
+        child.wait().await?;
+        assert!(process_has_terminated(pid)?, "a reaped child is terminated");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     #[nativelink_test]
     async fn timed_out_action_takes_its_children_with_it() -> Result<(), Box<dyn core::error::Error>>
     {
@@ -4023,17 +4064,19 @@ exit 0
             .expect("a timed-out action must carry an error");
         assert_eq!(err.code, Code::DeadlineExceeded, "{err}");
 
-        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)?
+        let pids: Vec<u32> = std::fs::read_to_string(&pid_file)?
             .lines()
             .filter_map(|line| line.trim().parse().ok())
             .collect();
         assert_eq!(pids.len(), 2, "both children should have written their pid");
-        // A moment for the kernel to reap; then neither pid may exist.
+        // Check termination, not reaping: a dead orphan can retain its pid
+        // until its parent's next reaper sweep.
         tokio::time::sleep(Duration::from_millis(200)).await;
         for pid in pids {
-            // SAFETY: signal 0 checks for existence and sends nothing.
-            let alive = unsafe { libc::kill(pid, 0) } == 0;
-            assert!(!alive, "child {pid} outlived the timed-out action");
+            assert!(
+                process_has_terminated(pid)?,
+                "child {pid} outlived the timed-out action"
+            );
         }
         Ok(())
     }

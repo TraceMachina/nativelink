@@ -342,3 +342,61 @@ async fn set_max_recent_data_size_no_eof_then_retry_test() -> Result<(), Error> 
     }
     Ok(())
 }
+
+#[nativelink_test]
+async fn try_reset_stream_replays_after_every_reset_test() -> Result<(), Error> {
+    let (mut tx, mut rx) = make_buf_channel_pair();
+    rx.set_max_recent_data_size(1024);
+    tx.send(DATA1.into()).await?;
+    tx.send(DATA2.into()).await?;
+    tx.send_eof()?;
+    for attempt in 1..=4 {
+        assert_eq!(
+            rx.consume(None).await?,
+            Bytes::from(format!("{DATA1}{DATA2}")),
+            "attempt {attempt}"
+        );
+        assert_eq!(rx.get_bytes_received(), 6, "attempt {attempt}");
+        rx.try_reset_stream()?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn try_reset_stream_after_peek_does_not_duplicate_test() -> Result<(), Error> {
+    let (mut tx, mut rx) = make_buf_channel_pair();
+    rx.set_max_recent_data_size(1024);
+    tx.send(DATA1.into()).await?;
+    tx.send(DATA2.into()).await?;
+    tx.send_eof()?;
+    assert_eq!(rx.recv().await?, Bytes::from(DATA1));
+    assert_eq!(rx.peek().await?, &Bytes::from(DATA2));
+    rx.try_reset_stream()?;
+    assert_eq!(
+        rx.consume(None).await?,
+        Bytes::from(format!("{DATA1}{DATA2}"))
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn try_reset_stream_mid_replay_test() -> Result<(), Error> {
+    let (mut tx, mut rx) = make_buf_channel_pair();
+    rx.set_max_recent_data_size(1024);
+    tx.send(DATA1.into()).await?;
+    tx.send(DATA2.into()).await?;
+    tx.send_eof()?;
+    assert_eq!(
+        rx.consume(None).await?,
+        Bytes::from(format!("{DATA1}{DATA2}"))
+    );
+    rx.try_reset_stream()?;
+    assert_eq!(rx.recv().await?, Bytes::from(DATA1));
+    rx.try_reset_stream()?;
+    assert_eq!(
+        rx.consume(None).await?,
+        Bytes::from(format!("{DATA1}{DATA2}"))
+    );
+    assert_eq!(rx.get_bytes_received(), 6);
+    Ok(())
+}
