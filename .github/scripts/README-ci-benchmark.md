@@ -93,21 +93,21 @@ encrypted stdin; GitHub and OIDC credentials are not forwarded to the client.
 The checkout rejects tracked edits before changing to the exact source commit.
 A pod-side supervisor owns each command and serializes checkout changes. Deploy
 that supervisor before this dispatcher: `/opt/ci/ci_supervisor.py bridge` is a
-versioned protocol, not code loaded from the mutable checkout. There is no
-fallback to unmanaged exec if the supervisor is unavailable.
+versioned protocol installed outside the mutable checkout. An unavailable
+supervisor stops dispatch before a command can start.
 
 The GitHub dispatcher sends heartbeats every 10 seconds. A 60-second heartbeat
 gap, disconnect, explicit cancellation or 150-minute execution deadline triggers
 pod-side cleanup before the next checkout can begin. Queue admission has a
 separate five-minute limit and reports `busy` (exit 75), so an overloaded slot
-fails clearly instead of waiting for hours. Re-run a busy job after the active
+returns a distinct failure after the admission limit. Re-run a busy job after the active
 job finishes; a new workflow attempt has its own identity.
 
 The stable `/workspace/bazel-ci` root and healthy JVM are reused. Bazel clients
 use `--noblock_for_lock`, including the supervisor's idle probe. After cancellation,
 cleanup first interrupts the command; only an unresponsive owned server is
 restarted. Disk, repository and Nix caches remain intact. A supervisor failure
-causes container recovery, which loses in-memory analysis but preserves PVCs.
+causes container recovery, which loses in-memory analysis but preserves persistent volumes.
 GitHub concurrency remains per branch so one PR cannot cancel another branch.
 
 The timeout test distinguishes a terminated zombie from a live child. That
