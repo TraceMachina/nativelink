@@ -235,6 +235,19 @@ class BenchmarkTest(unittest.TestCase):
 
 
 class DispatchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_old_pod_reports_missing_supervisor_without_dumping_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            python = Path(directory) / 'python3'
+            python.write_text('#!/bin/sh\necho "private diagnostic" >&2\nexit 2\n')
+            python.chmod(0o755)
+            env = {**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH']}
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                result = await cluster_ci.dispatch(
+                    ['bash', '-c', cluster_ci.BRIDGE],
+                    {'GITHUB_SHA': 'a' * 40, 'NL_TASK': 'bazel'}, env, deadline=2)
+            self.assertEqual(result, {'reason': 'supervisor_unavailable', 'exit_code': 69})
+            self.assertNotIn('private diagnostic', output.getvalue())
+
     async def test_heartbeats_originate_at_dispatcher_and_logs_hide_key(self):
         script = '''import json,sys
 request=json.loads(sys.stdin.readline())

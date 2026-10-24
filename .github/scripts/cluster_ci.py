@@ -20,6 +20,13 @@ import time
 # heartbeats travel only over encrypted stdin; the pod bridge cannot renew a
 # lease after the GitHub dispatcher disappears.
 SUPERVISOR = '/opt/ci/ci_supervisor.py'
+BRIDGE = '''
+if ! python3 /opt/ci/ci_supervisor.py health >/dev/null 2>&1; then
+  printf '%s\\n' '{"result":{"exit_code":69,"reason":"supervisor_unavailable"}}'
+  exit 69
+fi
+exec python3 /opt/ci/ci_supervisor.py bridge
+'''
 
 
 async def dispatch(command, build, environ, heartbeat=10, deadline=9600):
@@ -58,7 +65,7 @@ async def dispatch(command, build, environ, heartbeat=10, deadline=9600):
                 value = message['result']
                 reasons = {'completed', 'cancelled', 'lease_expired', 'deadline_exceeded',
                            'transport_lost', 'busy', 'duplicate_run', 'invalid_request',
-                           'pod_stopping', 'recovery_failed'}
+                           'pod_stopping', 'recovery_failed', 'supervisor_unavailable'}
                 if (value.get('reason') not in reasons
                         or type(value.get('exit_code')) is not int
                         or value.get('revision', build['GITHUB_SHA']) != build['GITHUB_SHA']
@@ -165,10 +172,12 @@ def main(args):
         (args.output / 'dispatch.json').write_text(json.dumps({
             'revision': build['GITHUB_SHA'], 'task': args.task, **interrupted}, indent=2) + '\n')
         result = asyncio.run(dispatch(
-            [*base, '-i', '--', 'python3', SUPERVISOR, 'bridge'], build, environ))
+            [*base, '-i', '--', 'bash', '-c', BRIDGE], build, environ))
         (args.output / 'dispatch.json').write_text(json.dumps({
             'revision': build['GITHUB_SHA'], 'task': args.task, **result}, indent=2) + '\n')
         print('Retained CI outcome: ' + result['reason'], flush=True)
+        if result['reason'] == 'supervisor_unavailable':
+            print('The retained client supervisor is not ready; deploy it before rerunning CI.', flush=True)
         if args.task == 'nix' and result['exit_code']:
             return result['exit_code']
         filename = 'nix.json' if args.task == 'nix' else 'cluster.json'
