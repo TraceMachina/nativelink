@@ -54,9 +54,15 @@
       ${" "}       "@local-remote-execution//rust/triple:${target}": glob([
       ${" "}           "bin/*.so",
       ${" "}           "lib/*.so",
+      ${" "}           "lib/*.dylib",
       ${" "}           "lib/rustlib/${target}/codegen-backends/*.so",
+      ${" "}           "lib/rustlib/${target}/codegen-backends/*.dylib",
       ${" "}           "lib/rustlib/${target}/lib/*.so",
-      ${" "}       ] + ["lib/rustlib/${target}/bin/rust-lld"],
+      ${" "}           "lib/rustlib/${target}/lib/*.dylib",
+      ${" "}       ] + [
+      ${" "}           "lib/rustlib/${target}/bin/rust-lld",
+      ${" "}           "lib/rustlib/${target}/bin/rust-objcopy",
+      ${" "}       ],
       ${" "}       allow_empty = True),'';
 
     # Generate stdlib select entry for a target
@@ -66,6 +72,7 @@
         ${" "}           "lib/rustlib/${target}/lib/*.rlib",
         ${" "}           "lib/rustlib/${target}/lib/*.rmeta",  # See https://github.com/bazelbuild/rules_rust/issues/3859
         ${" "}           "lib/rustlib/${target}/lib/*.so",
+        ${" "}           "lib/rustlib/${target}/lib/*.dylib",
         ${" "}           "lib/rustlib/${target}/lib/*.a",''
       + (lib.optionalString (builtins.match ".*-musl" target != null)
         ''${"\n "}           "lib/rustlib/${target}/lib/self-contained/**",'')

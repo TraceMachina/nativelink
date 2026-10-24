@@ -43,36 +43,60 @@ filegroup(
             [
                 "bin/*.so",
                 "lib/*.so",
+                "lib/*.dylib",
                 "lib/rustlib/aarch64-unknown-linux-gnu/codegen-backends/*.so",
+                "lib/rustlib/aarch64-unknown-linux-gnu/codegen-backends/*.dylib",
                 "lib/rustlib/aarch64-unknown-linux-gnu/lib/*.so",
-            ] + ["lib/rustlib/aarch64-unknown-linux-gnu/bin/rust-lld"],
+                "lib/rustlib/aarch64-unknown-linux-gnu/lib/*.dylib",
+            ] + [
+                "lib/rustlib/aarch64-unknown-linux-gnu/bin/rust-lld",
+                "lib/rustlib/aarch64-unknown-linux-gnu/bin/rust-objcopy",
+            ],
             allow_empty = True,
         ),
         "@local-remote-execution//rust/triple:aarch64-unknown-linux-musl": glob(
             [
                 "bin/*.so",
                 "lib/*.so",
+                "lib/*.dylib",
                 "lib/rustlib/aarch64-unknown-linux-musl/codegen-backends/*.so",
+                "lib/rustlib/aarch64-unknown-linux-musl/codegen-backends/*.dylib",
                 "lib/rustlib/aarch64-unknown-linux-musl/lib/*.so",
-            ] + ["lib/rustlib/aarch64-unknown-linux-musl/bin/rust-lld"],
+                "lib/rustlib/aarch64-unknown-linux-musl/lib/*.dylib",
+            ] + [
+                "lib/rustlib/aarch64-unknown-linux-musl/bin/rust-lld",
+                "lib/rustlib/aarch64-unknown-linux-musl/bin/rust-objcopy",
+            ],
             allow_empty = True,
         ),
         "@local-remote-execution//rust/triple:x86_64-unknown-linux-gnu": glob(
             [
                 "bin/*.so",
                 "lib/*.so",
+                "lib/*.dylib",
                 "lib/rustlib/x86_64-unknown-linux-gnu/codegen-backends/*.so",
+                "lib/rustlib/x86_64-unknown-linux-gnu/codegen-backends/*.dylib",
                 "lib/rustlib/x86_64-unknown-linux-gnu/lib/*.so",
-            ] + ["lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld"],
+                "lib/rustlib/x86_64-unknown-linux-gnu/lib/*.dylib",
+            ] + [
+                "lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld",
+                "lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-objcopy",
+            ],
             allow_empty = True,
         ),
         "@local-remote-execution//rust/triple:x86_64-unknown-linux-musl": glob(
             [
                 "bin/*.so",
                 "lib/*.so",
+                "lib/*.dylib",
                 "lib/rustlib/x86_64-unknown-linux-musl/codegen-backends/*.so",
+                "lib/rustlib/x86_64-unknown-linux-musl/codegen-backends/*.dylib",
                 "lib/rustlib/x86_64-unknown-linux-musl/lib/*.so",
-            ] + ["lib/rustlib/x86_64-unknown-linux-musl/bin/rust-lld"],
+                "lib/rustlib/x86_64-unknown-linux-musl/lib/*.dylib",
+            ] + [
+                "lib/rustlib/x86_64-unknown-linux-musl/bin/rust-lld",
+                "lib/rustlib/x86_64-unknown-linux-musl/bin/rust-objcopy",
+            ],
             allow_empty = True,
         ),
     }),
@@ -87,6 +111,7 @@ rust_stdlib_filegroup(
                 "lib/rustlib/aarch64-unknown-linux-gnu/lib/*.rlib",
                 "lib/rustlib/aarch64-unknown-linux-gnu/lib/*.rmeta",  # See https://github.com/bazelbuild/rules_rust/issues/3859
                 "lib/rustlib/aarch64-unknown-linux-gnu/lib/*.so",
+                "lib/rustlib/aarch64-unknown-linux-gnu/lib/*.dylib",
                 "lib/rustlib/aarch64-unknown-linux-gnu/lib/*.a",
             ],
             allow_empty = True,
@@ -96,6 +121,7 @@ rust_stdlib_filegroup(
                 "lib/rustlib/aarch64-unknown-linux-musl/lib/*.rlib",
                 "lib/rustlib/aarch64-unknown-linux-musl/lib/*.rmeta",  # See https://github.com/bazelbuild/rules_rust/issues/3859
                 "lib/rustlib/aarch64-unknown-linux-musl/lib/*.so",
+                "lib/rustlib/aarch64-unknown-linux-musl/lib/*.dylib",
                 "lib/rustlib/aarch64-unknown-linux-musl/lib/*.a",
                 "lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained/**",
             ],
@@ -106,6 +132,7 @@ rust_stdlib_filegroup(
                 "lib/rustlib/x86_64-unknown-linux-gnu/lib/*.rlib",
                 "lib/rustlib/x86_64-unknown-linux-gnu/lib/*.rmeta",  # See https://github.com/bazelbuild/rules_rust/issues/3859
                 "lib/rustlib/x86_64-unknown-linux-gnu/lib/*.so",
+                "lib/rustlib/x86_64-unknown-linux-gnu/lib/*.dylib",
                 "lib/rustlib/x86_64-unknown-linux-gnu/lib/*.a",
             ],
             allow_empty = True,
@@ -115,6 +142,7 @@ rust_stdlib_filegroup(
                 "lib/rustlib/x86_64-unknown-linux-musl/lib/*.rlib",
                 "lib/rustlib/x86_64-unknown-linux-musl/lib/*.rmeta",  # See https://github.com/bazelbuild/rules_rust/issues/3859
                 "lib/rustlib/x86_64-unknown-linux-musl/lib/*.so",
+                "lib/rustlib/x86_64-unknown-linux-musl/lib/*.dylib",
                 "lib/rustlib/x86_64-unknown-linux-musl/lib/*.a",
                 "lib/rustlib/x86_64-unknown-linux-musl/lib/self-contained/**",
             ],
