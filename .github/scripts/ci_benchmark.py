@@ -117,7 +117,8 @@ def run(args):
             startup = []
             if environ.get("NL_PERSISTENT_CACHE"):
                 startup = [f"--output_user_root={environ['NL_PERSISTENT_CACHE']}/bazel-ci",
-                           "--max_idle_secs=0", "--host_jvm_args=-Xmx4g"]
+                           "--max_idle_secs=0", "--host_jvm_args=-Xmx4g",
+                           "--noblock_for_lock"]
             # The shell's C++ library path supports native Node addons. Host
             # Bazel must use its own runtime, particularly on older glibc.
             command = ["nix", "develop", "--impure", "--command", "env", "-u", "LD_LIBRARY_PATH",
@@ -146,6 +147,8 @@ def summarize(path):
     result = json.loads(path.read_text())
     print("## NativeLink cluster CI\n")
     print(f"Source: `{result['revision']}`\n")
+    if result.get("reason"):
+        print(f"Dispatch outcome: {result['reason']} (exit {result['exit_code']})\n")
     print(f"Setup plus all iterations: {result['total_seconds']:.2f}s\n")
     print("| Iteration | Build/test (s) | Total reuse | Local hits | Disk hits | Remote hits | Cached test targets | Result |")
     print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")

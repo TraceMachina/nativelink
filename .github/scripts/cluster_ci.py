@@ -2,45 +2,111 @@
 """Dispatch trusted CI to one retained client using narrowly scoped pod exec."""
 
 import argparse
+import asyncio
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
-# The input travels over the encrypted exec stream, never through argv or a
-# credential file. Only the selected build environment is sent to the pod.
-BOOTSTRAP = r"""
-import {spawnSync} from 'node:child_process';
-let input = ''; for await (const chunk of process.stdin) input += chunk;
-let payload;
-try { payload = JSON.parse(input); }
-catch { process.stderr.write('Invalid dispatch payload\n'); process.exit(1); }
-const script = `
-set -euo pipefail
-exec 9>/workspace/ci.lock
-flock 9
-cd /workspace/nativelink
-git -c safe.directory=/workspace/nativelink diff --quiet HEAD --
-git -c safe.directory=/workspace/nativelink fetch --depth=1 https://github.com/TraceMachina/nativelink.git "$GITHUB_SHA"
-git -c safe.directory=/workspace/nativelink checkout --detach "$GITHUB_SHA"
-mkdir -p "$NL_SUMMARY_DIRECTORY"
-case "$NL_TASK" in
-  bazel) exec python3 .github/scripts/ci_benchmark.py run --lane cluster --repetitions "$NL_REPETITIONS" --output "$NL_SUMMARY_DIRECTORY" ;;
-  nix) exec python3 .github/scripts/nix_ci.py build --directory "$NL_SUMMARY_DIRECTORY" ;;
-  *) exit 2 ;;
-esac
-`;
-const env = {...process.env, ...payload};
-// The deadline includes waiting for the retained checkout's lock.
-const result = spawnSync('timeout', ['--signal=TERM', '--kill-after=60', '9000', 'bash', '-euc', script],
-                         {env, stdio: ['ignore','inherit','inherit']});
-process.exit(result.status ?? 1);
-"""
+# The supervisor is installed independently of the checkout. Credentials and
+# heartbeats travel only over encrypted stdin; the pod bridge cannot renew a
+# lease after the GitHub dispatcher disappears.
+SUPERVISOR = '/opt/ci/ci_supervisor.py'
+
+
+async def dispatch(command, build, environ, heartbeat=10, deadline=9600):
+    process = await asyncio.create_subprocess_exec(
+        *command, env=environ, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        limit=1024 * 1024)
+    cancelled = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    previous_signals = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, cancelled.set)
+    result = {'exit_code': 74, 'reason': 'transport_lost'}
+
+    async def send(message):
+        process.stdin.write(json.dumps(message).encode() + b'\n')
+        await asyncio.wait_for(process.stdin.drain(), 5)
+
+    async def renew():
+        while True:
+            await asyncio.sleep(heartbeat)
+            await send({'heartbeat': 1})
+
+    async def receive():
+        while line := await process.stdout.readline():
+            message = json.loads(line)
+            if 'log' in message:
+                text = message['log']
+                if build.get('NL_API_KEY'):
+                    text = text.replace(build['NL_API_KEY'], '[REDACTED]')
+                print(text, end='', flush=True)
+            elif 'state' in message:
+                if message['state'] in ('queued', 'running'):
+                    print('Retained CI: ' + message['state'], flush=True)
+            elif 'result' in message:
+                value = message['result']
+                reasons = {'completed', 'cancelled', 'lease_expired', 'deadline_exceeded',
+                           'transport_lost', 'busy', 'duplicate_run', 'invalid_request',
+                           'pod_stopping', 'recovery_failed'}
+                if (value.get('reason') not in reasons
+                        or type(value.get('exit_code')) is not int
+                        or value.get('revision', build['GITHUB_SHA']) != build['GITHUB_SHA']
+                        or value.get('task', build['NL_TASK']) != build['NL_TASK']):
+                    raise ValueError('Invalid supervisor outcome')
+                return {'exit_code': value['exit_code'], 'reason': value['reason']}
+        return {'exit_code': 74, 'reason': 'transport_lost'}
+
+    tasks = []
+    try:
+        await send({'protocol': 1, 'build': build})
+        renewer = asyncio.create_task(renew())
+        receiver = asyncio.create_task(receive())
+        cancellation = asyncio.create_task(cancelled.wait())
+        tasks = [renewer, receiver, cancellation]
+        done, _ = await asyncio.wait(tasks, timeout=deadline,
+                                     return_when=asyncio.FIRST_COMPLETED)
+        if receiver in done:
+            result = receiver.result()
+        else:
+            result = {'exit_code': 130 if cancellation in done else 124,
+                      'reason': 'cancelled' if cancellation in done else 'transport_lost'}
+            with contextlib.suppress(ConnectionError, asyncio.TimeoutError):
+                await send({'cancel': 1})
+    except (OSError, ValueError, asyncio.TimeoutError):
+        result = {'exit_code': 74, 'reason': 'transport_lost'}
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        process.stdin.close()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(process.wait(), 5)
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
+            signal.signal(sig, previous_signals[sig])
+    return result
+
+
+def failure_report(build, result, started):
+    elapsed = time.monotonic() - started
+    return {'schema': 1, 'lane': 'cluster', 'revision': build['GITHUB_SHA'],
+            'workload': 'bazel test //...', 'setup_seconds': None,
+            'build_test_seconds': None, 'total_seconds': elapsed,
+            'runs': [], **result}
 
 
 def kubeconfig(environ):
@@ -90,15 +156,36 @@ def main(args):
         environ["KUBECONFIG"] = str(config)
         base = ["kubectl", "--request-timeout=0", "-n", environ["NL_GKE_NAMESPACE"],
                 "exec", environ["NL_GKE_POD"]]
-        result = subprocess.run([*base, "-i", "--", "node", "--input-type=module", "-e", BOOTSTRAP],
-                                input=json.dumps(build), text=True, env=environ)
-        if args.task == 'nix' and result.returncode:
-            return result.returncode
+        started = time.monotonic()
+        args.output.mkdir(parents=True, exist_ok=True)
+        interrupted = {'exit_code': 74, 'reason': 'dispatch_interrupted'}
+        if args.task == 'bazel':
+            (args.output / 'cluster.json').write_text(json.dumps(
+                failure_report(build, interrupted, started), indent=2) + '\n')
+        (args.output / 'dispatch.json').write_text(json.dumps({
+            'revision': build['GITHUB_SHA'], 'task': args.task, **interrupted}, indent=2) + '\n')
+        result = asyncio.run(dispatch(
+            [*base, '-i', '--', 'python3', SUPERVISOR, 'bridge'], build, environ))
+        (args.output / 'dispatch.json').write_text(json.dumps({
+            'revision': build['GITHUB_SHA'], 'task': args.task, **result}, indent=2) + '\n')
+        print('Retained CI outcome: ' + result['reason'], flush=True)
+        if args.task == 'nix' and result['exit_code']:
+            return result['exit_code']
         filename = 'nix.json' if args.task == 'nix' else 'cluster.json'
-        summary = subprocess.run([*base, "--", "cat", build["NL_SUMMARY_DIRECTORY"] + '/' + filename],
-                                 text=True, capture_output=True, env=environ)
-        if summary.returncode:
-            sys.exit("The retained client did not produce benchmark evidence")
+        summary = None
+        if result['reason'] == 'completed':
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                summary = subprocess.run([
+                    *base, "--", "cat", build["NL_SUMMARY_DIRECTORY"] + '/' + filename],
+                    text=True, capture_output=True, env=environ, timeout=30)
+        if summary is None or summary.returncode:
+            # Cancellation, queue timeout and connection loss still produce
+            # evidence. Never turn a missing JSON file into the primary error.
+            result['exit_code'] = result['exit_code'] or 74
+            if args.task == 'bazel':
+                (args.output / filename).write_text(json.dumps(
+                    failure_report(build, result, started), indent=2) + '\n')
+            return result['exit_code']
         report = json.loads(summary.stdout)
         if args.task == 'nix':
             import nix_ci
@@ -117,7 +204,7 @@ def main(args):
                 archive.unlink()
                 raise ValueError('The transferred Nix closure failed checksum verification')
         (args.output / filename).write_text(json.dumps(report, indent=2) + "\n")
-        return result.returncode or report["exit_code"]
+        return result["exit_code"] or report["exit_code"]
 
 
 if __name__ == "__main__":

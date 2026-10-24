@@ -90,11 +90,25 @@ exec access to database/worker pods. No service-account key or developer
 cluster credentials are distributed. A temporary cluster configuration contains only connection
 settings and the exec-plugin path. Selected build variables travel over
 encrypted stdin; GitHub and OIDC credentials are not forwarded to the client.
-The checkout rejects tracked edits before changing to the exact source commit;
-a file lock serializes writers and a bounded timeout includes lock waiting.
-GitHub concurrency is per branch so a different PR cannot cancel another
-branch's pending job. Dispatches wait for the retained checkout instead of
-failing immediately when another build holds its lock.
+The checkout rejects tracked edits before changing to the exact source commit.
+A pod-side supervisor owns each command and serializes checkout changes. Deploy
+that supervisor before this dispatcher: `/opt/ci/ci_supervisor.py bridge` is a
+versioned protocol, not code loaded from the mutable checkout. There is no
+fallback to unmanaged exec if the supervisor is unavailable.
+
+The GitHub dispatcher sends heartbeats every 10 seconds. A 60-second heartbeat
+gap, disconnect, explicit cancellation or 150-minute execution deadline triggers
+pod-side cleanup before the next checkout can begin. Queue admission has a
+separate five-minute limit and reports `busy` (exit 75), so an overloaded slot
+fails clearly instead of waiting for hours. Re-run a busy job after the active
+job finishes; a new workflow attempt has its own identity.
+
+The stable `/workspace/bazel-ci` root and healthy JVM are reused. Bazel clients
+use `--noblock_for_lock`, including the supervisor's idle probe. After cancellation,
+cleanup first interrupts the command; only an unresponsive owned server is
+restarted. Disk, repository and Nix caches remain intact. A supervisor failure
+causes container recovery, which loses in-memory analysis but preserves PVCs.
+GitHub concurrency remains per branch so one PR cannot cancel another branch.
 
 The timeout test distinguishes a terminated zombie from a live child. That
 expectation issue was discovered during a soak test in our systems; host reaping
@@ -144,3 +158,9 @@ Process outcomes exclude `total`, `internal` and duplicated `action cache hit`
 runner counters. Missing local coverage yields an unknown total. Cached test
 results overlap action reuse and remain separate. These definitions follow
 [Bazel's SpawnStats](https://github.com/bazelbuild/bazel/blob/9.1.1/src/main/java/com/google/devtools/build/lib/runtime/SpawnStats.java).
+
+The dispatcher creates a sanitized outcome artifact before connecting and
+updates it on completion. Queue rejection, transport loss and cancellation
+produce explicit failure evidence with no invented cache results. A runner
+killed before it can update the file leaves `dispatch_interrupted`; the
+supervisor independently expires its lease and records the remote outcome.

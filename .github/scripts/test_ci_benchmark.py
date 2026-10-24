@@ -1,6 +1,7 @@
 """Regression coverage for cache reconciliation and credential boundaries."""
 
 import contextlib
+import asyncio
 import io
 import json
 import os
@@ -9,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import benchmark_credentials
 import ci_benchmark
@@ -25,8 +26,7 @@ class BenchmarkTest(unittest.TestCase):
         self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
         self.assertIn("inputs.repetitions || '1'", workflow)
         self.assertIn('group: cluster-ci-${{ github.ref }}', workflow)
-        self.assertNotIn('flock -n', cluster_ci.BOOTSTRAP)
-        self.assertIn("spawnSync('timeout'", cluster_ci.BOOTSTRAP)
+        self.assertEqual(cluster_ci.SUPERVISOR, '/opt/ci/ci_supervisor.py')
         self.assertNotIn('  nix-bazel:', Path('.github/workflows/nix.yaml').read_text())
         pinned_version = Path('.bazelversion').read_text().strip()
         self.assertNotIn(f'bazel_version: {pinned_version}',
@@ -188,6 +188,39 @@ class BenchmarkTest(unittest.TestCase):
                     patch.object(ci_benchmark, 'configuration', return_value=([], '')):
                 self.assertEqual(ci_benchmark.run(args), 0)
 
+    def test_persistent_build_fails_fast_on_bazel_lock_and_keeps_stable_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = type('Args', (), {'lane': 'cluster', 'repetitions': 1, 'output': Path(directory)})()
+            with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40, 'BENCHMARK_STARTED': '0',
+                                         'NL_PERSISTENT_CACHE': '/workspace'}), \
+                    patch.object(ci_benchmark, 'configuration', return_value=([], '')), \
+                    patch.object(ci_benchmark, 'execute', return_value=9) as execute:
+                self.assertEqual(ci_benchmark.run(args), 9)
+            command = execute.call_args.args[0]
+            self.assertIn('--output_user_root=/workspace/bazel-ci', command)
+            self.assertLess(command.index('--noblock_for_lock'), command.index('test'))
+
+    def test_busy_dispatch_produces_failure_evidence_without_fetching_stale_results(self):
+        env = {name: 'value' for name in ('NL_API_KEY', 'NL_CLUSTER_ENDPOINT', 'NL_CLUSTER_BEP_ENDPOINT',
+               'NL_INSTANCE', 'NL_RESULTS_URL', 'NL_WORKER_IMAGE', 'BENCHMARK_STARTED')}
+        env.update(GITHUB_SHA='a' * 40, GITHUB_RUN_ID='123', GITHUB_RUN_ATTEMPT='1',
+                   GITHUB_REPOSITORY='TraceMachina/nativelink', GITHUB_EVENT_NAME='push',
+                   GITHUB_REF='refs/heads/example', NL_GKE_SERVER='https://cluster.example',
+                   NL_GKE_CA_DATA='public', NL_GKE_NAMESPACE='example', NL_GKE_POD='client-0')
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, env), \
+                patch.object(cluster_ci, 'dispatch', new_callable=AsyncMock) as dispatch, \
+                patch.object(cluster_ci.subprocess, 'run') as fetch:
+            dispatch.return_value = {'reason': 'busy', 'exit_code': 75}
+            args = type('Args', (), {'task': 'bazel', 'repetitions': 1, 'output': Path(directory)})()
+            self.assertEqual(cluster_ci.main(args), 75)
+            fetch.assert_not_called()
+            report = json.loads((args.output / 'cluster.json').read_text())
+            self.assertEqual(report['exit_code'], 75)
+            self.assertEqual(report['runs'], [])
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                ci_benchmark.summarize(args.output / 'cluster.json')
+            self.assertIn('busy (exit 75)', output.getvalue())
+
     def test_comparison_requires_both_lanes_and_matching_revisions(self):
         with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(ValueError):
@@ -199,6 +232,31 @@ class BenchmarkTest(unittest.TestCase):
                     **base, "lane": lane, "revision": lane * 10}))
             with self.assertRaises(ValueError):
                 ci_benchmark.compare(Path(directory))
+
+
+class DispatchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_heartbeats_originate_at_dispatcher_and_logs_hide_key(self):
+        script = '''import json,sys
+request=json.loads(sys.stdin.readline())
+assert request['protocol']==1
+for _ in range(2):
+ assert json.loads(sys.stdin.readline())=={'heartbeat':1}
+print(json.dumps({'log':request['build']['NL_API_KEY']}), flush=True)
+print(json.dumps({'result':{'exit_code':0,'reason':'completed'}}), flush=True)
+'''
+        build = {'GITHUB_SHA': 'a' * 40, 'NL_TASK': 'bazel', 'NL_API_KEY': 'test-only-key'}
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            result = await cluster_ci.dispatch([sys.executable, '-c', script], build,
+                                                os.environ.copy(), heartbeat=0.05, deadline=2)
+        self.assertEqual(result, {'reason': 'completed', 'exit_code': 0})
+        self.assertNotIn('test-only-key', output.getvalue())
+        self.assertIn('[REDACTED]', output.getvalue())
+
+    async def test_lost_exec_stream_is_a_distinct_failure(self):
+        result = await cluster_ci.dispatch([sys.executable, '-c', 'pass'],
+                                           {'GITHUB_SHA': 'a' * 40, 'NL_TASK': 'bazel'},
+                                           os.environ.copy(), heartbeat=0.05, deadline=2)
+        self.assertEqual(result, {'reason': 'transport_lost', 'exit_code': 74})
 
 
 if __name__ == "__main__":
