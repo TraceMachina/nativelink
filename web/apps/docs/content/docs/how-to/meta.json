@@ -3,6 +3,7 @@
     "stores",
     "run-multiple-workers",
     "tls-and-auth",
+    "nix-binary-cache",
     "upgrade-versions",
     "migrate-an-existing-cache"
   ],

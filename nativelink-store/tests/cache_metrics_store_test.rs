@@ -131,6 +131,8 @@ fn fast_slow(fast: StoreSpec, slow: StoreSpec) -> StoreSpec {
         fast_direction: StoreDirection::Both,
         slow_direction: StoreDirection::Both,
         bypass_dedup_threshold_bytes: 0,
+        slow_store_write_back: false,
+        fast_first_existence_check: false,
     }))
 }
 

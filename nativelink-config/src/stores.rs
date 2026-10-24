@@ -1012,6 +1012,47 @@ pub struct FastSlowSpec {
     /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
+
+    /// When enabled, an update returns to the client as soon as the `fast`
+    /// store holds the data; the `slow` store is then populated by a background
+    /// task that reads the blob back out of the fast store. This decouples
+    /// client write latency — and liveness — from the slow tier, so a slow or
+    /// briefly stalled slow store (e.g. a remote object store) can no longer
+    /// backpressure or freeze the client upload. Existence checks (`has`)
+    /// remain correct while the copy is in flight via in-flight slow-write
+    /// tracking.
+    ///
+    /// Trade-off: there is a window after the update completes during which the
+    /// blob exists only in the fast store and is not yet durable in the slow
+    /// store; if the process or node is lost in that window the blob must be
+    /// re-uploaded. This suits a rebuildable cache whose fast tier is
+    /// authoritative for reads (e.g. a sharded CAS whose reads route to the
+    /// writing node). Only takes effect when both tiers are written on update
+    /// (`fast_direction` and `slow_direction` are `Both` or `Update`).
+    /// Default: false (writes are synchronous write-through to both tiers).
+    #[serde(default)]
+    pub slow_store_write_back: bool,
+
+    /// Answer existence checks from the fast store first, and ask the slow
+    /// store only about the blobs the fast store does not hold. The slow
+    /// probe is bounded by a short deadline and a probe that fails or times
+    /// out reports its blobs as missing, so the client re-uploads them.
+    ///
+    /// By default (`false`) a writable slow store is consulted first and
+    /// the fast store is never counted. That is what a worker needs: its
+    /// fast tier is a local directory, and counting it would stop outputs
+    /// from ever reaching the CAS. Set this only on a store whose fast tier
+    /// is shared by every client that checks existence through it, such as
+    /// a sharded `NVMe` ring in front of an object store. There the default
+    /// turns every `FindMissingBlobs` into one object-store request per
+    /// digest, and a throttled object store stalls the whole build; with
+    /// this on, resident blobs are answered locally and a slow tier that is
+    /// down degrades to re-uploads instead of a stall. Pairs naturally with
+    /// `slow_store_write_back`, where the fast tier is authoritative anyway.
+    ///
+    /// Default: false.
+    #[serde(default)]
+    pub fast_first_existence_check: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
@@ -1398,6 +1439,22 @@ pub struct CommonObjectSpec {
     )]
     pub multipart_max_concurrent_uploads: Option<usize>,
 
+    /// Target size of each part of a multipart upload, in bytes. Parts grow
+    /// past this only when an object would otherwise exceed the 10,000-part
+    /// limit, and the value is clamped to the provider's 5 MiB to 5 GiB
+    /// range. Sizing parts at the 5 MiB floor turns a multi-gigabyte blob
+    /// into thousands of small requests, which exhausts connection pools on
+    /// object stores such as R2; 64 MiB keeps a 12 GiB blob at about 192
+    /// parts. Together with `multipart_max_concurrent_uploads` this bounds
+    /// the memory one upload holds in flight.
+    ///
+    /// Default: 64 MiB.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_data_size_with_shellexpand"
+    )]
+    pub multipart_part_size: Option<u64>,
+
     /// Allow unencrypted HTTP connections. Only use this for local testing.
     ///
     /// Default: false
@@ -1502,6 +1559,7 @@ impl Default for CommonObjectSpec {
             consider_expired_after_s: 0,
             max_retry_buffer_per_request: None,
             multipart_max_concurrent_uploads: None,
+            multipart_part_size: None,
             insecure_allow_http: false,
             disable_http2: false,
             throttle_retry_delay_s: default_throttle_retry_delay_s(),

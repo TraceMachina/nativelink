@@ -949,6 +949,8 @@ async fn compressed_slow_tier_refills_filesystem_with_the_uncompressed_size() ->
                 fast_direction: StoreDirection::Both,
                 slow_direction: StoreDirection::Both,
                 bypass_dedup_threshold_bytes: 0,
+                slow_store_write_back: false,
+                fast_first_existence_check: false,
             },
             fast.clone(),
             slow.clone(),
