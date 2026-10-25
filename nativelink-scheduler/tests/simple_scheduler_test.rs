@@ -3763,6 +3763,30 @@ async fn evicting_a_worker_reports_no_attempt_for_an_operation_it_was_told_to_ki
     Ok(())
 }
 
+// The worker can still hold an operation that ended elsewhere before the
+// kill goes out; evicting it then reports no lost attempt either.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_that_ended_elsewhere()
+-> Result<(), Error> {
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, _rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 1_000).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());

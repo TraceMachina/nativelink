@@ -638,7 +638,8 @@ where
 
             if let Some(cause) = self.timeout_cause(&awaited_action).await {
                 match self.timeout_operation_id(&operation_id).await {
-                    Ok(()) => {
+                    Ok(false) => {}
+                    Ok(true) => {
                         report.retired += 1;
                         if let Some(worker_id) = awaited_action.worker_id() {
                             report.ended.push(SweptAttempt {
@@ -1132,7 +1133,9 @@ where
 
     /// Let the scheduler know that an operation has timed out from
     /// the client side (ie: worker has not updated in a while).
-    async fn timeout_operation_id(&self, operation_id: &OperationId) -> Result<(), Error> {
+    /// Returns whether the operation was timed out; false when the check
+    /// under the lock finds it no longer needs to be.
+    async fn timeout_operation_id(&self, operation_id: &OperationId) -> Result<bool, Error> {
         // Ensure that only one timeout operation is running at a time.
         // Failing to do this could result in the same operation being
         // timed out multiple times at the same time.
@@ -1162,7 +1165,7 @@ where
                 worker_id = ?awaited_action.worker_id(),
                 "Operation no longer needs timing out, skipping"
             );
-            return Ok(());
+            return Ok(false);
         };
 
         warn!(
@@ -1177,6 +1180,7 @@ where
             Err(make_err!(Code::DeadlineExceeded, "Operation {cause}")),
         )
         .await
+        .map(|()| true)
     }
 
     async fn inner_update_operation(
@@ -1291,6 +1295,14 @@ where
                         ));
                     }
                 }
+            }
+
+            // A disconnect for an operation no worker holds any more (the
+            // executing sweep requeued it) must not spend a worker loss.
+            if matches!(update, UpdateOperationType::UpdateWithDisconnect)
+                && awaited_action.worker_id().is_none()
+            {
+                return Ok(());
             }
 
             let mut is_retry = false;

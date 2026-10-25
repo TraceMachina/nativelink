@@ -2195,6 +2195,17 @@ impl ApiWorkerSchedulerImpl {
             // with its own budget, not an attempt the action spent.
             let update = UpdateOperationType::UpdateWithDisconnect;
             for (operation_id, pending) in worker.running_action_infos.drain() {
+                // The worker can still hold an operation the executing sweep
+                // already timed out or that finished; that attempt was
+                // reported where it ended.
+                if matches!(
+                    self.worker_state_manager
+                        .is_executing_on_worker(&operation_id, worker_id)
+                        .await,
+                    Ok(false)
+                ) {
+                    continue;
+                }
                 let update_res = self
                     .worker_state_manager
                     .update_operation(&operation_id, worker_id, update.clone())
