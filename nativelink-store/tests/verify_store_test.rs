@@ -795,3 +795,184 @@ async fn verify_size_true_drops_a_copy_that_fails_verification() -> Result<(), E
     assert_eq!(err.code, Code::NotFound, "{err:?}");
     Ok(())
 }
+
+fn filesystem_spec(directory: &std::path::Path, name: &str) -> StoreSpec {
+    StoreSpec::Filesystem(nativelink_config::stores::FilesystemSpec {
+        content_path: directory.join(name).to_string_lossy().into_owned(),
+        temp_path: directory
+            .join(format!("{name}-tmp"))
+            .to_string_lossy()
+            .into_owned(),
+        block_size: 1,
+        ..Default::default()
+    })
+}
+
+fn fast_slow(fast: StoreSpec, slow: StoreSpec) -> StoreSpec {
+    StoreSpec::FastSlow(Box::new(nativelink_config::stores::FastSlowSpec {
+        fast,
+        slow,
+        fast_direction: nativelink_config::stores::StoreDirection::Both,
+        slow_direction: nativelink_config::stores::StoreDirection::Both,
+        bypass_dedup_threshold_bytes: 0,
+    }))
+}
+
+// No wrapper protects the durable filesystem tier.
+#[nativelink_test]
+async fn verify_repair_keeps_the_durable_copy_under_a_bad_cache() -> Result<(), Error> {
+    use std::sync::Arc;
+
+    use nativelink_config::stores::RefSpec;
+    use nativelink_store::default_store_factory::store_factory;
+    use nativelink_store::store_manager::StoreManager;
+
+    let payload = "v".repeat(78);
+    let digest = DigestInfo::try_new(VALID_HASH1, payload.len())?;
+    for (nested, corrupt) in [(false, "cache"), (true, "memory"), (true, "cache")] {
+        let directory = tempfile::tempdir()?;
+        let manager = Arc::new(StoreManager::new());
+        let memory =
+            store_factory(&StoreSpec::Memory(MemorySpec::default()), &manager, None).await?;
+        let cache =
+            store_factory(&filesystem_spec(directory.path(), "cache"), &manager, None).await?;
+        let durable = store_factory(
+            &filesystem_spec(directory.path(), "durable"),
+            &manager,
+            None,
+        )
+        .await?;
+        for (name, store) in [
+            ("memory", &memory),
+            ("cache", &cache),
+            ("durable", &durable),
+        ] {
+            manager.add_store(name, store.clone())?;
+        }
+        let tier = |name: &str| StoreSpec::RefStore(RefSpec { name: name.into() });
+        let disk = fast_slow(tier("cache"), tier("durable"));
+        let backend = if nested {
+            fast_slow(tier("memory"), disk)
+        } else {
+            disk
+        };
+        let store = store_factory(
+            &StoreSpec::Verify(Box::new(VerifySpec {
+                verify_size: true,
+                verify_hash: false,
+                backend,
+            })),
+            &manager,
+            None,
+        )
+        .await?;
+        store.clone().into_inner().post_init().await?;
+        durable
+            .update_oneshot(digest, payload.clone().into())
+            .await?;
+        manager
+            .get_store(corrupt)
+            .unwrap()
+            .update_oneshot(digest, "short".into())
+            .await?;
+
+        let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+        assert_eq!(err.code, Code::DataLoss, "{nested} {corrupt}: {err:?}");
+        assert_eq!(
+            manager
+                .get_store(corrupt)
+                .unwrap()
+                .get_part_unchunked(digest, 0, None)
+                .await?,
+            payload.as_bytes(),
+            "{nested} {corrupt}: the bad cache copy is replaced by the durable one"
+        );
+        assert_eq!(
+            durable.get_part_unchunked(digest, 0, None).await?,
+            payload.as_bytes(),
+            "{nested} {corrupt}: the durable copy is kept"
+        );
+        assert_eq!(
+            store.get_part_unchunked(digest, 0, None).await?,
+            payload.as_bytes(),
+            "{nested} {corrupt}: the next read refills from the durable copy"
+        );
+    }
+    Ok(())
+}
+
+// Either uploaded short, or truncated on disk after a good write, where the
+// filesystem store still indexes the full size.
+#[nativelink_test]
+async fn verify_repair_drops_a_bad_durable_copy_no_cache_holds() -> Result<(), Error> {
+    use std::sync::Arc;
+
+    use nativelink_config::stores::RefSpec;
+    use nativelink_store::default_store_factory::store_factory;
+    use nativelink_store::store_manager::StoreManager;
+
+    let payload = "v".repeat(78);
+    let digest = DigestInfo::try_new(VALID_HASH1, payload.len())?;
+    for truncated_on_disk in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let manager = Arc::new(StoreManager::new());
+        let durable = store_factory(
+            &filesystem_spec(directory.path(), "durable"),
+            &manager,
+            None,
+        )
+        .await?;
+        manager.add_store("durable", durable.clone())?;
+        let store = store_factory(
+            &StoreSpec::Verify(Box::new(VerifySpec {
+                verify_size: true,
+                verify_hash: false,
+                backend: fast_slow(
+                    StoreSpec::Memory(MemorySpec::default()),
+                    StoreSpec::RefStore(RefSpec {
+                        name: "durable".into(),
+                    }),
+                ),
+            })),
+            &manager,
+            None,
+        )
+        .await?;
+        store.clone().into_inner().post_init().await?;
+        if truncated_on_disk {
+            durable
+                .update_oneshot(digest, payload.clone().into())
+                .await?;
+            truncate_files(&directory.path().join("durable"), 5)?;
+            assert_eq!(durable.has(digest).await?, Some(78));
+        } else {
+            durable.update_oneshot(digest, "short".into()).await?;
+        }
+
+        let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+        assert_eq!(err.code, Code::DataLoss, "{truncated_on_disk}: {err:?}");
+        assert_eq!(durable.has(digest).await?, None, "{truncated_on_disk}");
+        let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+        assert_eq!(err.code, Code::NotFound, "{truncated_on_disk}: {err:?}");
+    }
+    Ok(())
+}
+
+fn truncate_files(directory: &std::path::Path, len: u64) -> Result<(), Error> {
+    for entry in std::fs::read_dir(directory)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            truncate_files(&path, len)?;
+            continue;
+        }
+        let mut permissions = std::fs::metadata(&path)?.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(len)?;
+    }
+    Ok(())
+}

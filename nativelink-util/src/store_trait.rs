@@ -649,10 +649,16 @@ pub trait StoreDriver:
     /// keeps the copy and returns `false`.
     ///
     /// Memory and filesystem implementations always evict when asked; they
-    /// cannot infer whether they hold the durable copy. A composition must
-    /// protect such a tier from repair removal, for example with a
-    /// `cache_metrics` wrapper whose `allow_remove` is false.
+    /// cannot infer whether they hold the durable copy. Repair calls
+    /// [`StoreDriver::remove_cached`] instead, which only reaches tiers a
+    /// composition marks as caches.
     async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(false)
+    }
+
+    /// Like [`StoreDriver::remove`], but only for copies in cache tiers
+    /// inside this store; the copy reads fall back to is kept.
+    async fn remove_cached(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
         Ok(false)
     }
 
