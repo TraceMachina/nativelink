@@ -2186,12 +2186,14 @@ async fn resume_while_previous_stream_still_active() -> Result<(), Box<dyn core:
 }
 
 /// A store that takes the whole upload and then holds the commit until the
-/// test lets it go, the way a filesystem store waits for a write permit.
+/// test lets it go, the way a filesystem store waits for a write permit, or
+/// with `fail_after_eof` refuses it at once, the way a commit-time check does.
 #[derive(Debug, MetricsComponent)]
 struct GatedStore {
     inner: Store,
     gate: Arc<tokio::sync::Notify>,
     eof_received: Arc<AtomicBool>,
+    fail_after_eof: bool,
 }
 
 #[async_trait]
@@ -2216,6 +2218,9 @@ impl StoreDriver for GatedStore {
     ) -> Result<u64, Error> {
         let data = reader.consume(None).await?;
         self.eof_received.store(true, Ordering::Release);
+        if self.fail_after_eof {
+            return Err(make_err!(Code::InvalidArgument, "commit refused"));
+        }
         self.gate.notified().await;
         let len = data.len() as u64;
         self.inner.update_oneshot(key.into_owned(), data).await?;
@@ -2272,6 +2277,7 @@ async fn upload_abandoned_after_its_last_byte_still_commits()
         inner: inner.clone(),
         gate: gate.clone(),
         eof_received: eof_received.clone(),
+        fail_after_eof: false,
     }));
     let store_manager = Arc::new(StoreManager::new());
     store_manager.add_store("main_cas", store)?;
@@ -2320,5 +2326,131 @@ async fn upload_abandoned_after_its_last_byte_still_commits()
         Some(WRITE_DATA.len() as u64),
         "the abandoned upload must still commit once the queue moves"
     );
+    Ok(())
+}
+
+async fn make_gated_server(
+    fail_after_eof: bool,
+) -> Result<
+    (
+        Arc<ByteStreamServer>,
+        Store,
+        Arc<tokio::sync::Notify>,
+        Arc<AtomicBool>,
+    ),
+    Box<dyn core::error::Error>,
+> {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let eof_received = Arc::new(AtomicBool::new(false));
+    let inner = store_factory(
+        &StoreSpec::Memory(MemorySpec::default()),
+        &Arc::new(StoreManager::new()),
+        None,
+    )
+    .await?;
+    let store = Store::new(Arc::new(GatedStore {
+        inner: inner.clone(),
+        gate: gate.clone(),
+        eof_received: eof_received.clone(),
+        fail_after_eof,
+    }));
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", store)?;
+    let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref(), None)?);
+    Ok((bs_server, inner, gate, eof_received))
+}
+
+/// A store that refuses the upload after reading all of it fails the
+/// write with its own error, and so does a retry: the finished update is
+/// not parked for a resume, where polling it again would panic.
+#[nativelink_test]
+async fn store_failing_after_eof_reports_its_error_on_every_attempt()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let (bs_server, _inner, _gate, _eof_received) = make_gated_server(true).await?;
+    for attempt in 0..2 {
+        let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+        tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_resource_name(WRITE_DATA.len()),
+            write_offset: 0,
+            finish_write: true,
+            data: WRITE_DATA.into(),
+        })?))
+        .await?;
+        let status = join_handle
+            .await
+            .expect("task panicked")
+            .expect_err("the store refused the upload");
+        assert_eq!(
+            status.code(),
+            Code::InvalidArgument,
+            "attempt {attempt}: {status:?}"
+        );
+        assert!(
+            status.message().contains("commit refused"),
+            "attempt {attempt}: {status:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A client that resumes after its abandoned upload committed in the
+/// background, at the full size with `finish_write`, gets the committed
+/// size back.
+#[nativelink_test]
+async fn resume_after_a_background_commit_reports_the_full_size()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let (bs_server, inner, gate, eof_received) = make_gated_server(false).await?;
+    let resource_name = make_resource_name(WRITE_DATA.len());
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+    for _ in 0..200 {
+        if eof_received.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        eof_received.load(Ordering::Acquire),
+        "the store never saw EOF"
+    );
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    gate.notify_one();
+    let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+    let mut committed = None;
+    for _ in 0..200 {
+        committed = inner.has(digest).await?;
+        if committed.is_some() {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(committed, Some(WRITE_DATA.len() as u64));
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: i64::try_from(WRITE_DATA.len())?,
+        finish_write: true,
+        data: Bytes::new(),
+    })?))
+    .await?;
+    let response = tokio::time::timeout(core::time::Duration::from_secs(5), join_handle)
+        .await
+        .expect("resume hung")
+        .expect("task panicked")?
+        .into_inner();
+    assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
     Ok(())
 }

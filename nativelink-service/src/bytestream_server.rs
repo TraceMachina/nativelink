@@ -67,6 +67,12 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mi
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
 
+/// How long an upload abandoned after its last byte gets to commit on its
+/// own task. Generous, since a large blob can take minutes to reach a slow
+/// store; the bound only keeps a stuck store from collecting one task per
+/// abandoned upload with no end.
+const BACKGROUND_COMMIT_TIMEOUT: Duration = Duration::from_mins(15);
+
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
 #[derive(Debug, Default)]
@@ -480,7 +486,22 @@ impl Drop for ActiveStreamGuard {
                 digest_function,
                 eof_sent,
             } = stream_state;
-            let commit = background_spawn!("bytestream_finish_upload", store_update_fut);
+            let commit = background_spawn!("bytestream_finish_upload", async move {
+                tokio::time::timeout(BACKGROUND_COMMIT_TIMEOUT, store_update_fut)
+                    .await
+                    .unwrap_or_else(|_| {
+                        warn!(
+                            uuid = format!("{uuid:032x}"),
+                            timeout_s = BACKGROUND_COMMIT_TIMEOUT.as_secs(),
+                            "Abandoned upload did not commit in time; dropping it"
+                        );
+                        Err(make_err!(
+                            Code::DeadlineExceeded,
+                            "Upload commit did not finish within {} s",
+                            BACKGROUND_COMMIT_TIMEOUT.as_secs()
+                        ))
+                    })
+            });
             StreamState {
                 uuid,
                 tx,
@@ -1014,9 +1035,12 @@ impl ByteStreamServer {
                     // Validate before EOF, which authorizes the store to commit.
                     UploadSizeInfo::ExactSize(expected_size)
                         .validate_size(tx.get_bytes_written())?;
-                    tx.send_eof()
-                        .err_tip(|| "Failed to send EOF in ByteStream::write")?;
-                    eof_sent.store(true, Ordering::Release);
+                    // A resume after the last byte has nothing to send.
+                    if !eof_sent.load(Ordering::Acquire) {
+                        tx.send_eof()
+                            .err_tip(|| "Failed to send EOF in ByteStream::write")?;
+                        eof_sent.store(true, Ordering::Release);
+                    }
                     return Ok(());
                 }
                 // Continue.
@@ -1041,7 +1065,8 @@ impl ByteStreamServer {
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
         let eof_sent = active_stream.eof_sent.clone();
-        try_join!(
+        let store_failed = AtomicBool::new(false);
+        let result = try_join!(
             process_client_stream(
                 stream,
                 &mut active_stream.tx,
@@ -1049,9 +1074,19 @@ impl ByteStreamServer {
                 &eof_sent,
                 expected_size
             ),
-            (&mut active_stream.store_update_fut)
-                .map_err(|err| { err.append("Error updating inner store") })
-        )?;
+            (&mut active_stream.store_update_fut).map_err(|err| {
+                store_failed.store(true, Ordering::Relaxed);
+                err.append("Error updating inner store")
+            })
+        );
+        if let Err(err) = result {
+            // A store update that already returned cannot be resumed or
+            // polled again, so the stream is not parked.
+            if store_failed.load(Ordering::Relaxed) {
+                active_stream_guard.graceful_finish();
+            }
+            return Err(err);
+        }
 
         // Close our guard and consider the stream no longer active.
         active_stream_guard.graceful_finish();
