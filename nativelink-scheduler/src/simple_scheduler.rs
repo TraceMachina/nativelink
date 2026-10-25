@@ -1381,6 +1381,16 @@ impl SimpleScheduler {
                     {
                         Ok(report) => {
                             record_executing_ages(&report.ages);
+                            for ended in &report.ended {
+                                worker_scheduler
+                                    .report_swept_attempt(
+                                        &ended.worker_id,
+                                        &ended.operation_id,
+                                        ended.reason,
+                                        ended.detail.clone(),
+                                    )
+                                    .await;
+                            }
                             if report.retired + report.requeued + report.failed > 0 {
                                 info!(
                                     retired = report.retired,

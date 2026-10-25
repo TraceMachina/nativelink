@@ -25,6 +25,7 @@ use futures::future::BoxFuture;
 use futures::{StreamExt, TryStreamExt, stream};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::AttemptEndReason;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
     OperationId, WorkerId,
@@ -49,8 +50,17 @@ use super::awaited_action_db::{
 };
 use crate::worker_registry::{ORPHANED_ACTION_TIMEOUT, SharedWorkerRegistry, WorkerLiveness};
 
+/// An attempt the executing sweep ended, for the scheduler to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweptAttempt {
+    pub operation_id: OperationId,
+    pub worker_id: WorkerId,
+    pub reason: AttemptEndReason,
+    pub detail: String,
+}
+
 /// What one executing sweep did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ExecutingSweepReport {
     /// Retired as overdue, through `timeout_operation_id`.
     pub retired: u64,
@@ -61,6 +71,8 @@ pub struct ExecutingSweepReport {
     /// How long each executing action the sweep read had been executing,
     /// counted before any was retired or requeued.
     pub ages: AgeBuckets,
+    /// The attempts it retired or requeued.
+    pub ended: Vec<SweptAttempt>,
 }
 
 /// Why the scheduler times out an executing action.
@@ -624,9 +636,19 @@ where
                 .observe_since(awaited_action.state().last_transition_timestamp, now);
             let operation_id = awaited_action.operation_id().clone();
 
-            if self.timeout_cause(&awaited_action).await.is_some() {
+            if let Some(cause) = self.timeout_cause(&awaited_action).await {
                 match self.timeout_operation_id(&operation_id).await {
-                    Ok(()) => report.retired += 1,
+                    Ok(()) => {
+                        report.retired += 1;
+                        if let Some(worker_id) = awaited_action.worker_id() {
+                            report.ended.push(SweptAttempt {
+                                operation_id: operation_id.clone(),
+                                worker_id: worker_id.clone(),
+                                reason: AttemptEndReason::Timeout,
+                                detail: format!("Operation {cause}"),
+                            });
+                        }
+                    }
                     // A conflicting write means someone else moved it, which
                     // is what we wanted; anything else is logged and the
                     // sweep goes on to the rest.
@@ -679,6 +701,12 @@ where
                         Ok(()) => {
                             record_dispatch_requeue("lost_result");
                             report.requeued += 1;
+                            report.ended.push(SweptAttempt {
+                                operation_id: operation_id.clone(),
+                                worker_id: worker_id.clone(),
+                                reason: AttemptEndReason::LostResult,
+                                detail: String::new(),
+                            });
                         }
                         Err(err) if err.code == Code::Aborted => {}
                         Err(err) => {

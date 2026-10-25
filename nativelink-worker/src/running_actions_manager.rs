@@ -141,11 +141,7 @@ pub enum KillReason {
 
 const SIGKILL_NUMBER: i32 = 9;
 
-/// Appended to a `NotFound` raised while fetching something the client
-/// referenced by digest (the action, its command, its inputs), so the
-/// worker loop can tell a missing input from any other missing thing
-/// without reading a store's wording.
-pub const MISSING_INPUT_ERROR_TIP: &str = "action input missing from CAS";
+pub use nativelink_util::action_messages::MISSING_INPUT_ERROR_TIP;
 
 fn tag_missing_input(err: Error) -> Error {
     if err.code == Code::NotFound {
@@ -868,7 +864,8 @@ async fn release_filesystem_stores(
 /// Input bytes an action's fetch hardlinked, and how many of them the local
 /// store already held. Counted per fetch attempt: [`INPUT_FETCH_STATS`] is
 /// scoped around one attempt's download, so a retried attempt starts again
-/// from zero instead of counting the tree twice.
+/// from zero instead of counting the tree twice. What a failed attempt
+/// fetched is carried over by `fetch_with_retry`.
 #[derive(Debug, Default)]
 pub struct InputFetchStats {
     total_bytes: AtomicU64,
@@ -2667,6 +2664,9 @@ impl RunningActionImpl {
         let started = Instant::now();
         let mut attempt: u32 = 1;
         let mut retries = PrepareRetries::new(record_prepare_outcome);
+        // Bytes earlier attempts fetched from the CAS. The next attempt finds
+        // them in the local store, so they are taken back off its cached part.
+        let mut fetched_earlier: u64 = 0;
         loop {
             let command_fut = async {
                 match &prefetched_command {
@@ -2674,18 +2674,18 @@ impl RunningActionImpl {
                     None => self.fetch_command().await,
                 }
             };
-            let inputs_fut = async {
-                let (result, stats) = with_input_fetch_stats(
-                    self.metrics()
-                        .download_to_directory
-                        .wrap(self.download_inputs(filesystem_store)),
-                )
-                .await;
-                result.map(|()| stats.bytes())
-            };
-            let err = match try_join(command_fut, inputs_fut).await {
-                Ok((command, input_bytes)) => {
-                    self.state.lock().input_bytes = input_bytes;
+            let stats = Arc::new(InputFetchStats::default());
+            let inputs_fut = INPUT_FETCH_STATS.scope(
+                stats.clone(),
+                self.metrics()
+                    .download_to_directory
+                    .wrap(self.download_inputs(filesystem_store)),
+            );
+            let result = try_join(command_fut, inputs_fut).await;
+            let (total, cached) = stats.bytes();
+            let err = match result {
+                Ok((command, ())) => {
+                    self.state.lock().input_bytes = (total, cached.saturating_sub(fetched_earlier));
                     if attempt > 1 {
                         info!(
                             operation_id = %self.operation_id,
@@ -2703,6 +2703,7 @@ impl RunningActionImpl {
                     return Err(err);
                 }
             };
+            fetched_earlier = fetched_earlier.saturating_add(total - cached);
             self.running_actions_manager
                 .suggest_input_download_pool(&self.operation_id, &err);
             let pause = prepare_retry_pause(attempt, &self.action_info.input_root_digest);

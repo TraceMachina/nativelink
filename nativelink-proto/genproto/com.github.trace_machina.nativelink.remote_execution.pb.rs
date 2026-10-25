@@ -195,7 +195,8 @@ pub struct ActionResourceUsage {
     #[prost(uint64, tag = "13")]
     pub input_bytes: u64,
     /// / Of `input_bytes`, the bytes the worker's local store already held;
-    /// / the rest were fetched from the CAS for this action.
+    /// / the rest were fetched from the CAS for this action. Files a failed
+    /// / fetch attempt downloaded count as fetched, not cached, on the retry.
     #[prost(uint64, tag = "14")]
     pub input_cached_bytes: u64,
     /// / Bytes of the output files, stdout and stderr in the action result.
@@ -203,9 +204,12 @@ pub struct ActionResourceUsage {
     #[prost(uint64, tag = "15")]
     pub output_bytes: u64,
 }
-/// / One attempt at an action ended without a result the scheduler kept.
+/// / One attempt at an action ended without the result it was run for.
 /// / Published as an origin event whose parent is the attempt's
-/// / `scheduler_start_execute` event.
+/// / `scheduler_start_execute` event, once the scheduler has recorded the
+/// / end; an update it rejects publishes nothing. The event does not say
+/// / whether the action was requeued: a later `scheduler_start_execute` for
+/// / the same operation is the retry, and an action with none failed.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ActionAttemptEnded {
     /// / The operation the attempt belonged to.
@@ -496,9 +500,10 @@ impl ResourceOutcome {
         }
     }
 }
-/// / Why the scheduler ended one attempt at an action without keeping a
-/// / result from it. The action was requeued, or failed for having been
-/// / tried too often; either way the attempt cost time a build waited for.
+/// / Why one attempt at an action ended without the result it was run for.
+/// / The action was requeued, failed for having been tried too often, or, for
+/// / a missing input, handed back to the client to upload and ask again;
+/// / either way the attempt cost time a build waited for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum AttemptEndReason {
@@ -506,11 +511,16 @@ pub enum AttemptEndReason {
     /// / The worker running it went away: disconnected, evicted, OOM-killed
     /// / as a whole, or stopped answering keepalives.
     WorkerLost = 1,
-    /// / The attempt ran past its deadline.
+    /// / The scheduler's executing sweep timed it out: past `Action.timeout`
+    /// / plus the grace a live worker has to report, or no update from the
+    /// / worker for too long. A command past its timeout on a live worker
+    /// / comes back as a result and is not an ended attempt.
     Timeout = 2,
     /// / Killed for memory and requeued with a larger reservation.
     OutOfMemory = 3,
-    /// / An input it needed was missing from the CAS.
+    /// / An input it needed was missing from the CAS. The worker returns this
+    /// / as a `FAILED_PRECONDITION` result, so the client uploads the input
+    /// / and runs the action again.
     MissingInput = 4,
     /// / The worker had no room for it; not counted as an attempt.
     Backpressure = 5,
@@ -518,6 +528,11 @@ pub enum AttemptEndReason {
     Declined = 6,
     /// / Any other error the worker reported for it.
     WorkerError = 7,
+    /// / The input fetch ran past the worker's `max_download_timeout`.
+    InputFetchTimeout = 8,
+    /// / The worker finished it but the scheduler could not store the result,
+    /// / so the executing sweep requeued it.
+    LostResult = 9,
 }
 impl AttemptEndReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -534,6 +549,8 @@ impl AttemptEndReason {
             Self::Backpressure => "BACKPRESSURE",
             Self::Declined => "DECLINED",
             Self::WorkerError => "WORKER_ERROR",
+            Self::InputFetchTimeout => "INPUT_FETCH_TIMEOUT",
+            Self::LostResult => "LOST_RESULT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -547,6 +564,8 @@ impl AttemptEndReason {
             "BACKPRESSURE" => Some(Self::Backpressure),
             "DECLINED" => Some(Self::Declined),
             "WORKER_ERROR" => Some(Self::WorkerError),
+            "INPUT_FETCH_TIMEOUT" => Some(Self::InputFetchTimeout),
+            "LOST_RESULT" => Some(Self::LostResult),
             _ => None,
         }
     }

@@ -49,7 +49,8 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
+    INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId, SymlinkInfo,
+    WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -415,10 +416,10 @@ fn attempt_ended(event: OriginEvent) -> ActionAttemptEnded {
     }
 }
 
-// An attempt the worker reports as timed out is published as ended for a
-// timeout, as a child of its start event, before the action is requeued.
+// An input fetch the worker reports as past its deadline is published as
+// ended for that, as a child of its start event, once the requeue is stored.
 #[nativelink_test]
-async fn attempt_ended_event_names_a_timeout() -> Result<(), Error> {
+async fn attempt_ended_event_names_an_input_fetch_timeout() -> Result<(), Error> {
     let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
         start_one_action_with_origin_events().await?;
     worker_scheduler
@@ -434,13 +435,60 @@ async fn attempt_ended_event_names_a_timeout() -> Result<(), Error> {
     let event = rx.recv().await.unwrap();
     assert_eq!(event.parent_event_id, start_event_id);
     let ended = attempt_ended(event);
-    assert_eq!(ended.reason, i32::from(AttemptEndReason::Timeout));
+    assert_eq!(ended.reason, i32::from(AttemptEndReason::InputFetchTimeout));
     assert_eq!(ended.operation_id, operation_id.to_string());
     assert_eq!(ended.worker_id, "worker_id");
     assert!(
         ended.detail.contains("ran past its deadline"),
         "{}",
         ended.detail
+    );
+    Ok(())
+}
+
+// The worker hands a missing CAS input back as a FAILED_PRECONDITION result,
+// not an error; that result is what names the attempt as missing an input.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_missing_input() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(ActionResult {
+                error: Some(make_err!(
+                    Code::FailedPrecondition,
+                    "Object not found : {MISSING_INPUT_ERROR_TIP}"
+                )),
+                ..ActionResult::default()
+            })),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::MissingInput)
+    );
+    Ok(())
+}
+
+// Any other NotFound the worker reports is its own error, not a missing input.
+#[nativelink_test]
+async fn attempt_ended_event_names_other_not_found_a_worker_error() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, _start, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "no such directory")),
+        )
+        .await?;
+    assert_eq!(
+        attempt_ended(rx.recv().await.unwrap()).reason,
+        i32::from(AttemptEndReason::WorkerError)
     );
     Ok(())
 }
@@ -3504,7 +3552,9 @@ async fn failed_final_update_does_not_leak_worker_capacity() -> Result<(), Error
 /// which a client-timeout sweep then finishes server-side while the worker
 /// still holds it. Returns the scheduler, the worker's channel and the
 /// operation id the worker was given.
-async fn setup_worker_holding_a_finished_operation() -> Result<
+async fn setup_worker_holding_a_finished_operation(
+    origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+) -> Result<
     (
         Arc<SimpleScheduler>,
         mpsc::Receiver<UpdateForWorker>,
@@ -3534,7 +3584,7 @@ async fn setup_worker_holding_a_finished_operation() -> Result<
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
+        origin_event_tx,
     );
 
     let mut rx_from_worker = setup_new_worker(
@@ -3590,7 +3640,7 @@ async fn setup_worker_holding_a_finished_operation() -> Result<
 async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
     let (scheduler, mut rx_from_worker, operation_id, action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
     assert!(logs_contain(
         "Operation timed out having no more clients listening"
     ));
@@ -3666,7 +3716,7 @@ async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Res
 #[nativelink_test]
 async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), Error> {
     let (scheduler, rx_from_worker, _operation_id, _action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
 
     // The worker's connection is gone, so the kill cannot be delivered.
     drop(rx_from_worker);
@@ -3680,11 +3730,44 @@ async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), 
     Ok(())
 }
 
+// An operation the worker was told to kill was already given up on: evicting
+// the worker for not acknowledging the kill reports no lost attempt.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_it_was_told_to_kill()
+-> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    scheduler.kill_revoked_operations().await?;
+    match rx_from_worker.try_recv().unwrap().update {
+        Some(update_for_worker::Update::KillOperationRequest(_)) => {}
+        v => panic!("Expected KillOperationRequest, got : {v:?}"),
+    }
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
+        .await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
     let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
 
     // The kill is delivered, but the worker is wedged (nativelink#2672): it
     // keeps its keepalives up and never reports the operation.
