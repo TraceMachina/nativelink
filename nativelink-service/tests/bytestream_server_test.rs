@@ -2454,3 +2454,81 @@ async fn resume_after_a_background_commit_reports_the_full_size()
     assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
     Ok(())
 }
+
+/// A retry that arrives while an abandoned upload commits in the background,
+/// sees that commit finish, and then loses its own client, leaves nothing to
+/// park: the finished update is not polled again, and the next resume gets
+/// the committed size instead of an `Internal` error from a panicked task.
+#[nativelink_test]
+async fn retry_that_sees_the_commit_finish_and_then_disconnects_is_not_parked()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let (bs_server, inner, gate, eof_received) = make_gated_server(false).await?;
+    let resource_name = make_resource_name(WRITE_DATA.len());
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+    for _ in 0..200 {
+        if eof_received.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        eof_received.load(Ordering::Acquire),
+        "the store never saw EOF"
+    );
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // A retry resends a prefix and waits, so it is mid-stream when the
+    // commit finishes.
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: WRITE_DATA[..5].into(),
+    })?))
+    .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    gate.notify_one();
+    let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+    let mut committed = None;
+    for _ in 0..200 {
+        committed = inner.has(digest).await?;
+        if committed.is_some() {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(committed, Some(WRITE_DATA.len() as u64));
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    // Then that client goes away too.
+    drop(tx);
+    drop(join_handle.await.expect("task panicked"));
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: i64::try_from(WRITE_DATA.len())?,
+        finish_write: true,
+        data: Bytes::new(),
+    })?))
+    .await?;
+    let response = tokio::time::timeout(core::time::Duration::from_secs(5), join_handle)
+        .await
+        .expect("resume hung")
+        .expect("task panicked")?
+        .into_inner();
+    assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
+    Ok(())
+}

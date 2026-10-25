@@ -25,7 +25,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use bytes::BytesMut;
 use futures::future::pending;
 use futures::stream::unfold;
-use futures::{Future, Stream, TryFutureExt, try_join};
+use futures::{Future, Stream, try_join};
 use nativelink_config::cas_server::{ByteStreamConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
@@ -1065,7 +1065,8 @@ impl ByteStreamServer {
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
         let eof_sent = active_stream.eof_sent.clone();
-        let store_failed = AtomicBool::new(false);
+        let store_done = AtomicBool::new(false);
+        let store_committed = AtomicBool::new(false);
         let result = try_join!(
             process_client_stream(
                 stream,
@@ -1074,16 +1075,23 @@ impl ByteStreamServer {
                 &eof_sent,
                 expected_size
             ),
-            (&mut active_stream.store_update_fut).map_err(|err| {
-                store_failed.store(true, Ordering::Relaxed);
-                err.append("Error updating inner store")
-            })
+            async {
+                let result = (&mut active_stream.store_update_fut).await;
+                store_done.store(true, Ordering::Relaxed);
+                store_committed.store(result.is_ok(), Ordering::Relaxed);
+                result.map_err(|err| err.append("Error updating inner store"))
+            }
         );
         if let Err(err) = result {
-            // A store update that already returned cannot be resumed or
-            // polled again, so the stream is not parked.
-            if store_failed.load(Ordering::Relaxed) {
-                active_stream_guard.graceful_finish();
+            // A store update that already returned cannot be polled again.
+            // A commit stays parked as its result, so a resume collects the
+            // committed size; anything else is dropped, so a retry starts over.
+            if store_done.load(Ordering::Relaxed) {
+                if store_committed.load(Ordering::Relaxed) && eof_sent.load(Ordering::Acquire) {
+                    active_stream.store_update_fut = Box::pin(core::future::ready(Ok(())));
+                } else {
+                    active_stream_guard.graceful_finish();
+                }
             }
             return Err(err);
         }
