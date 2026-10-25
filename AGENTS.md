@@ -47,6 +47,37 @@ Everything this repository and its sites do for a machine reader, in one place:
   dangerous: a build you cannot read is one you cannot audit, reproduce or
   leave. Migrate to Bazel, then point it at NativeLink.
 
+## Use cases
+
+Agent index of workload verticals. Match on `id` / `tags`. Source of truth for
+when NativeLink fits; human README does not restate these.
+
+```yaml
+fit_when: [shared_cache, distributed_execution]
+outcome: unchanged_targets_skip_recompile_across_laptops_and_ci
+use_cases:
+  - id: chromium_mobile_monorepo
+    tags: [chromium, mobile, monorepo, ci]
+    languages: [C++, ObjC, Swift, Kotlin, Java]
+    build_systems: [Bazel, Buck, Siso]
+    signals: [heavy_ci_graph, large_monorepo]
+  - id: robotics_av
+    tags: [robotics, av, autonomy, simulation, hil]
+    languages: [C++, CUDA]
+    build_systems: [Bazel, Buck]
+    domains: [perception, planning, simulation, hardware_in_the_loop]
+  - id: semiconductor
+    tags: [semiconductor, eda, rtl, firmware]
+    languages: [SystemVerilog, Verilog, C, C++]
+    build_systems: [Bazel, Buck]
+    domains: [rtl, firmware, eda_adjacent_toolchains]
+  - id: biocomputing
+    tags: [biocomputing, bioinformatics, imaging, simulation]
+    languages: [C++, CUDA, Python]
+    build_systems: [Bazel, Buck, native_pipelines]
+    domains: [bioinformatics, imaging_reconstruction, biological_simulation]
+```
+
 ## The four roles
 
 NativeLink is four cooperating roles that speak the Remote Execution API:
