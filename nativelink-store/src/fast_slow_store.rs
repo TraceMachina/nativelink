@@ -299,15 +299,7 @@ impl FastSlowStore {
                 store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
                 "Skipping .has() check due to LazyExistenceOnSync optimization"
             );
-            // A digest names its own size, so the fast store can be told the
-            // exact size even without asking the slow store. Without it a
-            // fast tier that sizes buffers from the upload size (the
-            // compression store's block index) is told u64::MAX and asks the
-            // allocator for a petabyte, which aborts the process.
-            match &key {
-                StoreKey::Digest(digest) => UploadSizeInfo::ExactSize(digest.size_bytes()),
-                StoreKey::Str(_) => UploadSizeInfo::MaxSize(u64::MAX),
-            }
+            UploadSizeInfo::MaxSize(u64::MAX)
         } else {
             UploadSizeInfo::ExactSize(self
                     .slow_store
