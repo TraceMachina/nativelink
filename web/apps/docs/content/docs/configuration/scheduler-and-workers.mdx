@@ -257,10 +257,14 @@ action moves to the next worker with the same reservation.
 `memory.pressure` `full avg10` (the share of the last ten seconds every
 task spent stalled on memory) stays at or above that value for
 `memory_pressure_kill_after_s` (default 30), the worker kills the running
-action with the largest sample, as a memory kill, so the scheduler requeues
-it with a larger reservation. It needs `memory: soft` for the samples, reads
-the nearest limited cgroup v2 directory (so a privileged pod reads its own
-container scope under the host tree), and is off at 0.
+action furthest over its reservation, or the one with the largest sample
+when none is over, as a memory kill, so the scheduler requeues it with a
+larger reservation. An action that reserves the whole worker is never
+picked. The kill does not check that the actions caused the pressure:
+pressure from the worker itself (page cache from the filesystem store, a
+large upload) still kills an action. It needs `memory: soft` for the
+samples, reads the nearest limited cgroup v2 directory (so a privileged pod
+reads its own container scope under the host tree), and is off at 0.
 
 `disk: guard` adds a check before any input is fetched: an action whose
 `disk_kb` reservation exceeds the free space under the work directory, less

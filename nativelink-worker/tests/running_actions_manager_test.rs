@@ -10425,6 +10425,34 @@ done
         assert!(action_member_pids(100, worker_pgid, &table[..1]).is_empty());
     }
 
+    /// Once the wrapper is gone, a `set -m` test has no parent or group
+    /// link to the action; the group an earlier sample found still reaches
+    /// it. A remembered group with nothing left in it is dropped, so a
+    /// reused group id is never signalled, and the worker's group is never
+    /// a seed.
+    #[test]
+    fn action_membership_keeps_a_remembered_group() {
+        use std::collections::HashSet;
+
+        use nativelink_worker::running_actions_manager::{ProcEntry, action_membership};
+        let entry = |pid, ppid, pgrp| ProcEntry { pid, ppid, pgrp };
+        let worker_pgid = 1;
+        let table = [
+            entry(1, 0, 1),     // the worker
+            entry(200, 1, 200), // the test, reparented after its wrapper exited
+            entry(201, 200, 200),
+            entry(300, 1, 300), // another action
+        ];
+        assert!(
+            action_membership(&[100], worker_pgid, &table)
+                .pids
+                .is_empty()
+        );
+        let members = action_membership(&[100, 200, 250, worker_pgid], worker_pgid, &table);
+        assert_eq!(members.pids, HashSet::from([200, 201]));
+        assert_eq!(members.groups, HashSet::from([200]));
+    }
+
     /// Live version of the above: a shell under `set -m` puts its
     /// background job in a new process group, as Bazel's test-setup.sh
     /// does with the test binary, and the sampler's membership still
@@ -10436,7 +10464,7 @@ done
         use std::os::unix::process::CommandExt;
 
         use nativelink_worker::running_actions_manager::{
-            action_member_pids_live, parse_pgid_from_stat,
+            action_membership_live, parse_pgid_from_stat,
         };
         let mut child = std::process::Command::new("bash")
             .args(["-c", "set -m; sleep 30 & echo $!; wait"])
@@ -10453,7 +10481,7 @@ done
         let sleep_stat =
             std::fs::read_to_string(format!("/proc/{sleep_pid}/stat")).expect("the job is alive");
         let sleep_pgrp = parse_pgid_from_stat(&sleep_stat).expect("a stat line");
-        let members = action_member_pids_live(shell_pid);
+        let members = action_membership_live(&[shell_pid]).pids;
         // SAFETY: killing the two processes this test started.
         unsafe {
             libc::kill(sleep_pid.cast_signed(), libc::SIGKILL);
@@ -10497,36 +10525,76 @@ done
         assert!(window.observe(55.0, at(92)));
     }
 
-    /// The kill lands on the action holding the most memory, never on one
-    /// without a sample or one already asked to die; nothing qualifying
-    /// means no kill.
+    /// The kill lands on the action furthest over its reservation, or the
+    /// largest when none is over, never on one without a sample, one
+    /// already asked to die, or one that reserves the whole worker;
+    /// nothing qualifying means no kill.
     #[test]
-    fn pressure_victim_is_the_largest_sampled_action_not_yet_asked() {
-        use nativelink_worker::running_actions_manager::pick_pressure_victim;
+    fn pressure_victim_is_the_furthest_over_its_reservation() {
+        use nativelink_worker::running_actions_manager::{PressureCandidate, pick_pressure_victim};
+        const GIB: u64 = 1024 * 1024;
+        let c = |item, last_kb, reserved_kb, kill_requested| PressureCandidate {
+            item,
+            last_kb,
+            reserved_kb,
+            kill_requested,
+        };
+        // A uses more but is within its reservation; B is 4 GiB over.
         assert_eq!(
-            pick_pressure_victim([
-                ("a", 500, false),
-                ("b", 9_000, true),
-                ("c", 7_000, false),
-                ("d", 0, false)
-            ]),
+            pick_pressure_victim(
+                [
+                    c("a", 15 * GIB, 16 * GIB, false),
+                    c("b", 6 * GIB, 2 * GIB, false)
+                ],
+                None
+            ),
+            Some("b")
+        );
+        // Nobody over: the largest.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 500, 1_000, false),
+                    c("c", 7_000, 8_000, false),
+                    c("d", 0, 0, false)
+                ],
+                None
+            ),
             Some("c")
         );
+        // Already asked, or unsampled: never.
         assert_eq!(
-            pick_pressure_victim([("a", 0, false), ("b", 9_000, true)]),
+            pick_pressure_victim([c("a", 0, 0, false), c("b", 9_000, 0, true)], None),
             None
         );
-        assert_eq!(pick_pressure_victim(Vec::<(&str, u64, bool)>::new()), None);
+        // Reserving the whole worker: never, even when furthest over.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 40 * GIB, 32 * GIB, false),
+                    c("b", 3 * GIB, 2 * GIB, false)
+                ],
+                Some(32 * GIB)
+            ),
+            Some("b")
+        );
+        assert_eq!(
+            pick_pressure_victim([c("a", 40 * GIB, 32 * GIB, false)], Some(32 * GIB)),
+            None
+        );
+        assert_eq!(
+            pick_pressure_victim(Vec::<PressureCandidate<&str>>::new(), None),
+            None
+        );
     }
 
-    /// A pressure kill goes through the same path as a ceiling breach: the
-    /// process group dies at once, the result says the worker killed it for
-    /// memory, so the scheduler requeues it with a larger reservation, and
-    /// the error names the pressure.
+    /// An action running `arguments` on a manager with `memory: soft` and
+    /// the pressure kill armed at a threshold the host never reaches, so
+    /// only the test asks for a kill, under a 1 GiB reservation.
     #[cfg(target_os = "linux")]
-    #[nativelink_test]
-    async fn action_killed_under_memory_pressure_is_a_memory_kill()
-    -> Result<(), Box<dyn core::error::Error>> {
+    async fn pressure_armed_action(
+        arguments: Vec<String>,
+    ) -> Result<Arc<RunningActionImpl>, Box<dyn core::error::Error>> {
         use nativelink_worker::running_actions_manager::{MemoryLimit, PressureKill};
         const WORKER_ID: &str = "foo_worker_id";
         let (_, _, cas_store, _ac_store) = setup_stores().await?;
@@ -10575,7 +10643,7 @@ done
                 use_namespaces: use_namespaces(),
             })?);
         let command = Command {
-            arguments: vec!["sleep".to_string(), "30".to_string()],
+            arguments,
             working_directory: ".".to_string(),
             environment_variables: vec![EnvironmentVariable {
                 name: "PATH".to_string(),
@@ -10631,6 +10699,19 @@ done
                 },
             )
             .await?;
+        Ok(running_action_impl)
+    }
+
+    /// A pressure kill goes through the same path as a ceiling breach: the
+    /// process group dies at once, the result says the worker killed it for
+    /// memory, so the scheduler requeues it with a larger reservation, and
+    /// the error names the pressure.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn action_killed_under_memory_pressure_is_a_memory_kill()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let running_action_impl =
+            pressure_armed_action(vec!["sleep".to_string(), "30".to_string()]).await?;
 
         let started = std::time::Instant::now();
         let run = tokio::spawn(run_action(running_action_impl.clone()));
@@ -10666,6 +10747,105 @@ done
             "{usage:?}"
         );
         assert!(usage.enforced, "the worker ended it: {usage:?}");
+        Ok(())
+    }
+
+    /// Whether a pid is still a running process; a zombie waiting for a
+    /// reaper that is not the test counts as gone.
+    #[cfg(target_os = "linux")]
+    fn process_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']))
+        })
+    }
+
+    /// A `set -m` job in its own process group, as Bazel's test-setup.sh
+    /// starts a test, under a wrapper that keeps running (`wait`) or exits
+    /// after a second (`sleep 1`). Returns the action and where the job's
+    /// pid lands.
+    #[cfg(target_os = "linux")]
+    async fn job_control_action(
+        wrapper_tail: &str,
+    ) -> Result<(Arc<RunningActionImpl>, PathBuf), Box<dyn core::error::Error>> {
+        let pid_file = PathBuf::from(make_temp_path("job_control_pid"));
+        fs::create_dir_all(pid_file.parent().expect("a temp path has a parent")).await?;
+        let script = format!(
+            "set -m; sleep 30 & echo $! > {}; {wrapper_tail}",
+            pid_file.display()
+        );
+        let action =
+            pressure_armed_action(vec!["bash".to_string(), "-c".to_string(), script]).await?;
+        Ok((action, pid_file))
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn read_job_pid(pid_file: &Path) -> u32 {
+        let started = std::time::Instant::now();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(pid_file)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                return pid;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the job never wrote its pid"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A kill reaches a job that `set -m` moved out of the action's group:
+    /// before, the kill went to the action's group alone, the job lived on
+    /// with its memory, and the requeued action ran twice.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn pressure_kill_reaches_a_job_control_group() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (running_action_impl, pid_file) = job_control_action("wait").await?;
+        let run = tokio::spawn(run_action(running_action_impl.clone()));
+        let job_pid = read_job_pid(&pid_file).await;
+        while running_action_impl.last_memory_kb() == 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        running_action_impl.request_memory_pressure_kill(55);
+        let result = run.await??;
+        assert!(result.error.is_some(), "the action must fail: {result:?}");
+        let started = std::time::Instant::now();
+        while process_running(job_pid) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let survived = process_running(job_pid);
+        if survived {
+            // SAFETY: the job this test started.
+            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+        }
+        assert!(!survived, "the set -m job survived the kill");
+        Ok(())
+    }
+
+    /// The same job after its wrapper has exited: nothing links it to the
+    /// action any more but the group an earlier sample found, and the
+    /// straggler sweep still ends it.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn straggler_sweep_reaches_an_orphaned_job_control_group()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_action_impl, pid_file) = job_control_action("sleep 1").await?;
+        let started = std::time::Instant::now();
+        drop(run_action(running_action_impl).await?);
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the action should end soon after its wrapper"
+        );
+        let job_pid = read_job_pid(&pid_file).await;
+        let survived = process_running(job_pid);
+        if survived {
+            // SAFETY: the job this test started.
+            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+        }
+        assert!(!survived, "the orphaned set -m job survived the sweep");
         Ok(())
     }
 }
