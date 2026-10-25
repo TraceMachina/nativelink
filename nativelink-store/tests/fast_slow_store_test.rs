@@ -836,6 +836,112 @@ async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
     Ok(())
 }
 
+/// A fast store that records the size each update was announced with.
+#[derive(MetricsComponent)]
+struct SizeRecordingStore {
+    inner: Arc<MemoryStore>,
+    sizes: Mutex<Vec<UploadSizeInfo>>,
+}
+
+#[async_trait]
+impl StoreDriver for SizeRecordingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(keys, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.sizes.lock().unwrap().push(size_info);
+        Pin::new(self.inner.as_ref())
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SizeRecordingStore);
+
+/// Filling the fast store from a slow store that skips the existence check
+/// (Azure, S3, GCS) must still announce a digest's real size. Announced as
+/// `u64::MAX`, a compression fast tier sizes its block index for a petabyte
+/// and the allocation aborts the CAS: observed on the bed, exit 139, on
+/// every cache-fill read.
+#[nativelink_test]
+async fn lazy_slow_store_fill_announces_the_digest_size() -> Result<(), Error> {
+    let (_, _, slow_store) = make_stores_with_lazy_slow();
+    let recording = Arc::new(SizeRecordingStore {
+        inner: MemoryStore::new(&MemorySpec::default()),
+        sizes: Mutex::new(Vec::new()),
+    });
+    let fast_store = Store::new(recording.clone());
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast_store,
+        slow_store.clone(),
+    ));
+    let data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+    slow_store
+        .update_oneshot(digest, data.clone().into())
+        .await?;
+
+    let read = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(read.as_ref(), data.as_slice());
+    assert_eq!(
+        recording.sizes.lock().unwrap().as_slice(),
+        &[UploadSizeInfo::ExactSize(100)],
+        "the fill must announce the digest's size, not u64::MAX"
+    );
+    Ok(())
+}
+
 #[derive(MetricsComponent)]
 struct InstrumentedSlowStore {
     digest: DigestInfo,
