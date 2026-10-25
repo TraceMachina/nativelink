@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -27,6 +29,7 @@ use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstance
 use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
 use nativelink_proto::google::bytestream::{
@@ -36,12 +39,16 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::{DigestInfo, encode_stream_proto};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::health_utils::HealthStatusIndicator;
+use nativelink_util::store_trait::{
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_util::{background_spawn, spawn};
+use nativelink_util::{background_spawn, default_health_status_indicator, spawn};
 use pretty_assertions::assert_eq;
 use sha2::{Digest as ShaDigest, Sha256};
 use tokio::io::DuplexStream;
@@ -52,7 +59,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::codec::{Codec, CompressionEncoding};
 use tonic::transport::{Channel, Endpoint};
-use tonic::{Request, Response, Streaming};
+use tonic::{Request, Response, Streaming, async_trait};
 use tonic_prost::ProstCodec;
 use tower::service_fn;
 
@@ -2175,5 +2182,143 @@ async fn resume_while_previous_stream_still_active() -> Result<(), Box<dyn core:
     let store = store_manager.get_store("main_cas").unwrap();
     let digest = DigestInfo::try_new(HASH1, DATA.len())?;
     assert_eq!(store.get_part_unchunked(digest, 0, None).await?, DATA);
+    Ok(())
+}
+
+/// A store that takes the whole upload and then holds the commit until the
+/// test lets it go, the way a filesystem store waits for a write permit.
+#[derive(Debug, MetricsComponent)]
+struct GatedStore {
+    inner: Store,
+    gate: Arc<tokio::sync::Notify>,
+    eof_received: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl StoreDriver for GatedStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner.has_with_results(keys, results).await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        let data = reader.consume(None).await?;
+        self.eof_received.store(true, Ordering::Release);
+        self.gate.notified().await;
+        let len = data.len() as u64;
+        self.inner.update_oneshot(key.into_owned(), data).await?;
+        Ok(len)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        self.inner.get_part(key, writer, offset, length).await
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(GatedStore);
+
+/// A client that sends its last byte and gives up before the commit
+/// answers leaves nothing to resume. The commit must still finish, on its
+/// own, instead of sitting unpolled in the parked stream: unpolled, it
+/// would keep its place in the store's commit queue, and take a permit
+/// when its turn came, until the idle-stream sweeper dropped it.
+#[nativelink_test]
+async fn upload_abandoned_after_its_last_byte_still_commits()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let eof_received = Arc::new(AtomicBool::new(false));
+    let inner = store_factory(
+        &StoreSpec::Memory(MemorySpec::default()),
+        &Arc::new(StoreManager::new()),
+        None,
+    )
+    .await?;
+    let store = Store::new(Arc::new(GatedStore {
+        inner: inner.clone(),
+        gate: gate.clone(),
+        eof_received: eof_received.clone(),
+    }));
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", store)?;
+    let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref(), None)?);
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_resource_name(WRITE_DATA.len()),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+    // The store has every byte and is waiting at the gate.
+    for _ in 0..200 {
+        if eof_received.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        eof_received.load(Ordering::Acquire),
+        "the store never saw EOF"
+    );
+
+    // The client gives up: its deadline fires and the handler is dropped
+    // mid-commit, which parks the stream.
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // The queue moves on. Before the fix the parked future was never
+    // polled again, so the store never got past the gate.
+    gate.notify_one();
+    let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+    let mut committed = None;
+    for _ in 0..200 {
+        committed = inner.has(digest).await?;
+        if committed.is_some() {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        committed,
+        Some(WRITE_DATA.len() as u64),
+        "the abandoned upload must still commit once the queue moves"
+    );
     Ok(())
 }

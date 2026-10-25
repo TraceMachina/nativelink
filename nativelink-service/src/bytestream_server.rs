@@ -15,7 +15,7 @@
 use core::convert::Into;
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -50,9 +50,9 @@ use nativelink_util::digest_hasher::{
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
-use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{background_spawn, spawn};
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -101,6 +101,9 @@ pub struct ByteStreamMetrics {
     pub resumed_uploads: AtomicU64,
     /// Number of idle streams that timed out
     pub idle_stream_timeouts: AtomicU64,
+    /// Uploads whose client went away after the last byte; their commit
+    /// finished on a task of its own.
+    pub uploads_finished_in_background: AtomicU64,
 }
 
 impl MetricsComponent for ByteStreamMetrics {
@@ -200,6 +203,12 @@ impl MetricsComponent for ByteStreamMetrics {
             &self.idle_stream_timeouts,
             MetricKind::Counter,
             "Number of idle streams that timed out"
+        );
+        publish!(
+            "uploads_finished_in_background",
+            &self.uploads_finished_in_background,
+            MetricKind::Counter,
+            "Uploads whose client went away after the last byte and whose commit finished on its own task"
         );
 
         Ok(MetricPublishKnownKindData::Component)
@@ -399,6 +408,10 @@ struct StreamState {
     tx: DropCloserWriteHalf,
     store_update_fut: StoreUpdateFuture,
     digest_function: DigestHasherFunc,
+    /// Set once the client's final chunk has been handed to the store with
+    /// EOF: from then on the store's update needs nothing more from the
+    /// client, only time to commit.
+    eof_sent: Arc<AtomicBool>,
 }
 
 impl Debug for StreamState {
@@ -447,6 +460,41 @@ impl Drop for ActiveStreamGuard {
         // Mark stream as idle with current timestamp.
         // The global sweeper will clean it up after idle_stream_timeout.
         // This avoids spawning a task per stream, reducing overhead from O(n) to O(1).
+        //
+        // A stream that already handed the store its last byte is parked
+        // only so a resumed client can collect the result: nothing is left
+        // to resume. Its commit must finish regardless, so drive it on a
+        // task of its own and park a future that waits for that task. Left
+        // unpolled, the commit would sit in whatever queue it was in (a
+        // filesystem store's write permits, say) holding its place, and
+        // taking a permit when its turn came, until the sweeper dropped it:
+        // enough of those and no upload on the instance commits at all.
+        let stream_state = if stream_state.eof_sent.load(Ordering::Acquire) {
+            self.metrics
+                .uploads_finished_in_background
+                .fetch_add(1, Ordering::Relaxed);
+            let StreamState {
+                uuid,
+                tx,
+                store_update_fut,
+                digest_function,
+                eof_sent,
+            } = stream_state;
+            let commit = background_spawn!("bytestream_finish_upload", store_update_fut);
+            StreamState {
+                uuid,
+                tx,
+                store_update_fut: Box::pin(async move {
+                    commit.await.map_err(|err| {
+                        make_err!(Code::Internal, "Upload commit task failed: {err:?}")
+                    })?
+                }),
+                digest_function,
+                eof_sent,
+            }
+        } else {
+            stream_state
+        };
         active_uploads_slot.1 = Some(IdleStream {
             stream_state,
             idle_since: Instant::now(),
@@ -742,6 +790,7 @@ impl ByteStreamServer {
                 tx,
                 store_update_fut,
                 digest_function,
+                eof_sent: Arc::new(AtomicBool::new(false)),
             }),
             bytes_received,
             active_uploads: instance.active_uploads.clone(),
@@ -887,6 +936,7 @@ impl ByteStreamServer {
             >,
             tx: &mut DropCloserWriteHalf,
             outer_bytes_received: &Arc<AtomicU64>,
+            eof_sent: &Arc<AtomicBool>,
             expected_size: u64,
         ) -> Result<(), Error> {
             loop {
@@ -966,6 +1016,7 @@ impl ByteStreamServer {
                         .validate_size(tx.get_bytes_written())?;
                     tx.send_eof()
                         .err_tip(|| "Failed to send EOF in ByteStream::write")?;
+                    eof_sent.store(true, Ordering::Release);
                     return Ok(());
                 }
                 // Continue.
@@ -989,11 +1040,13 @@ impl ByteStreamServer {
         let expected_size = stream.resource_info.expected_size as u64;
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
+        let eof_sent = active_stream.eof_sent.clone();
         try_join!(
             process_client_stream(
                 stream,
                 &mut active_stream.tx,
                 &active_stream_guard.bytes_received,
+                &eof_sent,
                 expected_size
             ),
             (&mut active_stream.store_update_fut)
