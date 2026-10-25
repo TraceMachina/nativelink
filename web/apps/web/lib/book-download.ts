@@ -1,6 +1,7 @@
 export const BOOK_DOWNLOAD_URL = "https://endflakytests.com/OReilly_Extending_Bazel_Nativelink.pdf";
 
-export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Domain labels exclude "." so the match is linear; the old form backtracked on "a@b.b.b...".
+export const EMAIL_REGEX = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
 
 /** Consumer domains rejected for the gated book download. */
 export const PERSONAL_EMAIL_DOMAINS = new Set([

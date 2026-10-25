@@ -18,7 +18,7 @@ export async function POST(request: NextRequest) {
       ? (body as { email: string }).email.trim()
       : "";
 
-  if (!EMAIL_REGEX.test(email)) {
+  if (email.length > 254 || !EMAIL_REGEX.test(email)) {
     return NextResponse.json({ error: "Please enter a valid email address" }, { status: 400 });
   }
 
