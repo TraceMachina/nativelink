@@ -1,7 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { EMAIL_REGEX, PERSONAL_EMAIL_DOMAINS } from "../../../lib/book-download";
 import { sendBookDownloadMails } from "../../../lib/mail";
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export async function POST(request: NextRequest) {
   let body: unknown;
@@ -21,6 +20,11 @@ export async function POST(request: NextRequest) {
 
   if (!EMAIL_REGEX.test(email)) {
     return NextResponse.json({ error: "Please enter a valid email address" }, { status: 400 });
+  }
+
+  const domain = email.split("@")[1]?.toLowerCase();
+  if (domain && PERSONAL_EMAIL_DOMAINS.has(domain)) {
+    return NextResponse.json({ error: "Please use your work email address" }, { status: 400 });
   }
 
   try {

@@ -2,22 +2,7 @@
 
 import { Button } from "@nativelink/ui";
 import { type FormEvent, useState } from "react";
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const PERSONAL_EMAIL_DOMAINS = new Set([
-  "gmail.com",
-  "yahoo.com",
-  "hotmail.com",
-  "outlook.com",
-  "aol.com",
-  "icloud.com",
-  "mail.com",
-  "protonmail.com",
-  "yandex.com",
-  "zoho.com",
-]);
-
-export const BOOK_DOWNLOAD_URL = "https://endflakytests.com/OReilly_Extending_Bazel_Nativelink.pdf";
+import { BOOK_DOWNLOAD_URL, EMAIL_REGEX, PERSONAL_EMAIL_DOMAINS } from "../lib/book-download";
 
 export function BookDownloadForm() {
   const [email, setEmail] = useState("");
