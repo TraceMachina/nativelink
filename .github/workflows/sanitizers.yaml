@@ -32,7 +32,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04]
-        sanitizer: [asan]
+        sanitizer: [asan, safestack]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -45,6 +45,7 @@ jobs:
         uses: ./.github/actions/free-disk
 
       - name: Setup Bazel
+        if: matrix.sanitizer == 'asan'
         uses: >- # v0.19.0
           bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
         with:
@@ -52,6 +53,7 @@ jobs:
           repository-cache: true
 
       - name: Setup NativeLink Cloud
+        if: matrix.sanitizer == 'asan'
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -69,4 +71,29 @@ jobs:
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
       - name: Run Bazel tests
+        if: matrix.sanitizer == 'asan'
         run: bazel test --config=${{ matrix.sanitizer }} --config=nl-quiet --lockfile_mode=error --verbose_failures //...
+
+      # SafeStack needs an instrumented standard library. The Bazel Rust
+      # toolchain downloads prebuilt std, so use Cargo's build-std here.
+      - name: Set up SafeStack toolchain
+        if: matrix.sanitizer == 'safestack'
+        run: rustup toolchain install nightly-2026-08-26 --profile minimal --component rust-src
+
+      - name: Disable AppArmor namespace restrictions
+        if: matrix.sanitizer == 'safestack'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up Azurite test runner
+        if: matrix.sanitizer == 'safestack'
+        uses: ./.github/actions/setup-azurite-test-runner
+
+      - name: Run SafeStack tests
+        if: matrix.sanitizer == 'safestack'
+        env:
+          RUSTFLAGS: -Zsanitizer=safestack
+          RUSTDOCFLAGS: -Zsanitizer=safestack
+          RUST_TEST_THREADS: 1
+        # Rebuild std with the same instrumentation; keep host tools unsanitized.
+        run: >-
+          cargo +nightly-2026-08-26 test --locked --workspace -Zbuild-std --target x86_64-unknown-linux-gnu
