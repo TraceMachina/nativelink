@@ -13,12 +13,31 @@ interface ContributorsResult {
 }
 
 const FALLBACK: Contributor[] = [
-  { login: "aaronmondal", avatar_url: "https://github.com/aaronmondal.png?size=80", html_url: "https://github.com/aaronmondal", contributions: 0 },
-  { login: "allada", avatar_url: "https://github.com/allada.png?size=80", html_url: "https://github.com/allada", contributions: 0 },
-  { login: "blaise-d", avatar_url: "https://github.com/blaise-d.png?size=80", html_url: "https://github.com/blaise-d", contributions: 0 },
+  {
+    login: "aaronmondal",
+    avatar_url: "https://github.com/aaronmondal.png?size=80",
+    html_url: "https://github.com/aaronmondal",
+    contributions: 0,
+  },
+  {
+    login: "blaise-d",
+    avatar_url: "https://github.com/blaise-d.png?size=80",
+    html_url: "https://github.com/blaise-d",
+    contributions: 0,
+  },
 ];
 
-export async function getContributors(repo = "TraceMachina/nativelink"): Promise<ContributorsResult> {
+/** Accounts not shown on the community page. */
+const HIDDEN_LOGINS = new Set(["allada"]);
+
+/** Drops bots and hidden accounts from a GitHub contributors listing. */
+export function visibleContributors(contributors: Contributor[]): Contributor[] {
+  return contributors.filter((c) => c.type !== "Bot" && !HIDDEN_LOGINS.has(c.login));
+}
+
+export async function getContributors(
+  repo = "TraceMachina/nativelink",
+): Promise<ContributorsResult> {
   const url = `https://api.github.com/repos/${repo}/contributors?per_page=30`;
   try {
     const res = await fetch(url, {
@@ -36,7 +55,7 @@ export async function getContributors(repo = "TraceMachina/nativelink"): Promise
     }
 
     const json = (await res.json()) as Contributor[];
-    const filtered = json.filter((c) => c.type !== "Bot");
+    const filtered = visibleContributors(json);
     return {
       contributors: filtered,
       total: filtered.length,
@@ -55,9 +74,9 @@ export interface RepoStats {
 }
 
 const FALLBACK_STATS: RepoStats = {
-  stars: 4200,
-  forks: 280,
-  openIssues: 92,
+  stars: 1624,
+  forks: 254,
+  openIssues: 174,
   fromCache: true,
 };
 
