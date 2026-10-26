@@ -58,6 +58,8 @@ in {
       "web/apps/web/public/assets/re-api-fellow-fig1-action-lifecycle.jpg"
       "web/apps/web/public/assets/re-api-fellow-fig2-protocol-never-says-compiler.jpg"
       "web/apps/web/public/assets/re-api-fellow-fig3-overlap-hiring.jpg"
+      # O'Reilly Bazel book cover on the marketing site.
+      "web/apps/web/public/assets/oreilly-bazel-book-cover.png"
     ];
     name = "forbid-binary-files";
     types = ["binary"];
