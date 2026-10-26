@@ -1533,6 +1533,27 @@ pub struct CommonObjectSpec {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub min_concurrent_reads: usize,
+
+    /// Most requests of any kind this store keeps in flight against the
+    /// object store at once: existence checks (`HEAD`), downloads, uploads,
+    /// block staging and commits, and the cleanup after a failed upload.
+    /// Each request holds a connection of its own for its whole length
+    /// (Azure Blob Storage speaks HTTP/1.1), so this bounds the connections
+    /// the store opens and the local ports they take toward the account.
+    /// At the limit, further requests wait in the process, first come first
+    /// served, for one in flight to finish: nothing is sent or refused, so
+    /// the cost shows up as latency against callers' deadlines. A download
+    /// holds its permit while its body streams to the reader, so the store
+    /// refuses to start unless `max_concurrent_reads` is above 0 and below
+    /// this: downloads then never hold more than `max_concurrent_reads`
+    /// permits, and existence checks and uploads always keep the rest.
+    /// Every store in a `shard` has a limit of its own, so N shards hold up
+    /// to N times this. 0 (the default) leaves requests unbounded, as
+    /// before.
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_requests: usize,
 }
 
 const fn default_min_concurrent_reads() -> usize {
@@ -1568,6 +1589,7 @@ impl Default for CommonObjectSpec {
             max_concurrent_reads: 0,
             adaptive_read_concurrency: false,
             min_concurrent_reads: default_min_concurrent_reads(),
+            max_concurrent_requests: 0,
         }
     }
 }

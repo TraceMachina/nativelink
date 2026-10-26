@@ -21,11 +21,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::join_all;
 use nativelink_config::stores::{
-    FastSlowSpec, FilesystemSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec,
+    CompressionAlgorithm, CompressionSpec, FastSlowSpec, FilesystemSpec, Lz4Config, MemorySpec,
+    NoopSpec, StoreDirection, StoreSpec,
 };
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
+use nativelink_store::compression_store::CompressionStore;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
@@ -709,6 +711,10 @@ async fn fast_readonly_only_not_updated_on_get() -> Result<(), Error> {
 }
 
 fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
+    make_stores_with_lazy_slow_over(Store::new(MemoryStore::new(&MemorySpec::default())))
+}
+
+fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
     #[derive(MetricsComponent)]
     struct LazyStore {
         inner: Arc<MemoryStore>,
@@ -785,7 +791,6 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
 
     default_health_status_indicator!(LazyStore);
 
-    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(Arc::new(LazyStore {
         inner: MemoryStore::new(&MemorySpec::default()),
     }));
@@ -803,6 +808,56 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
         slow_store.clone(),
     ));
     (fast_slow_store, fast_store, slow_store)
+}
+
+fn make_compression_store() -> Result<Store, Error> {
+    Ok(Store::new(CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: CompressionAlgorithm::Lz4(Lz4Config {
+                block_size: 10,
+                ..Default::default()
+            }),
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?))
+}
+
+#[nativelink_test]
+async fn lazy_slow_read_fills_a_compression_fast_tier() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(make_compression_store()?);
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    let from_fast = fast_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(from_fast.as_ref(), original_data.as_slice());
+    Ok(())
+}
+
+// An action cache entry's stored length differs from the size in its key.
+#[nativelink_test]
+async fn lazy_slow_read_fills_a_compression_fast_tier_with_an_ac_entry() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(make_compression_store()?);
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, 10).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    let from_fast = fast_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(from_fast.as_ref(), original_data.as_slice());
+    Ok(())
 }
 
 #[nativelink_test]

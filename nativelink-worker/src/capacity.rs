@@ -122,6 +122,28 @@ pub const fn advertised(
     (cpu, memory)
 }
 
+/// The largest memory reservation the scheduler can match to this worker:
+/// what it advertises under `property`, from the cgroup when the capacity
+/// block sets that property and the cgroup was read, else from the static
+/// platform properties. `None` when the worker advertises no such figure.
+pub fn advertised_memory_kb<S: BuildHasher>(
+    capacity: Option<&CapacityConfig>,
+    memory_headroom_percent: u64,
+    observed: Option<ObservedCapacity>,
+    properties: &HashMap<String, WorkerProperty, S>,
+    property: &str,
+) -> Option<u64> {
+    if let (Some(config), Some(observed)) = (capacity, observed)
+        && config.memory_property_name == property
+    {
+        return Some(advertised(observed, config, memory_headroom_percent).1);
+    }
+    match properties.get(property)? {
+        WorkerProperty::Values(values) => values.iter().filter_map(|v| v.parse().ok()).max(),
+        WorkerProperty::QueryCmd(_) => None,
+    }
+}
+
 /// What to do when the cgroup cannot be read: the configured properties
 /// stand if they carry both numbers, since an operator who kept them has a
 /// worker that still takes work; a worker with neither would register and
@@ -188,6 +210,35 @@ fn cgroup_dir() -> PathBuf {
     resolve_cgroup_dir(Path::new("/sys/fs/cgroup"), self_cgroup.as_deref(), |dir| {
         dir.join("memory.max").is_file()
     })
+}
+
+/// The `avg10` of the `full` line of a cgroup v2 `memory.pressure` file:
+/// the share of the last ten seconds (0 to 100) during which every task in the
+/// cgroup was stalled on memory. `None` when the text has no such line.
+pub fn parse_pressure_full_avg10(text: &str) -> Option<f64> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix("full")?;
+        rest.split_whitespace()
+            .find_map(|field| field.strip_prefix("avg10="))
+            .and_then(|value| value.parse().ok())
+    })
+}
+
+/// The `memory.pressure` file that describes this worker: the one in the
+/// nearest limited cgroup (the limit the kernel enforces, see
+/// [`find_limit`]), else the one in the worker's own cgroup directory.
+/// `None` where neither exists: cgroup v1, a kernel without PSI, or a
+/// cgroup root, which has no `memory.pressure`.
+#[cfg(target_os = "linux")]
+pub fn memory_pressure_file() -> Option<PathBuf> {
+    let mount_root = Path::new("/sys/fs/cgroup");
+    let own = cgroup_dir();
+    let limited = find_limit(&own, mount_root, "memory.max", read_file).map(|(dir, _)| dir);
+    [limited, Some(own)]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join("memory.pressure"))
+        .find(|path| path.is_file())
 }
 
 /// Whether a `cpu.max` or `memory.max` value is "no limit": `max`, or for

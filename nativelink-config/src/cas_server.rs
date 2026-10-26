@@ -1382,6 +1382,38 @@ pub struct ResourceEnforcementConfig {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub disk_headroom_percent: u64,
+
+    /// Kill one running action once the worker's cgroup has spent at least
+    /// this share of the last ten seconds, as a whole number from 0 to 100,
+    /// with every task stalled on memory (`full avg10` in cgroup v2
+    /// `memory.pressure`) for `memory_pressure_kill_after_s` without a
+    /// break. A worker whose actions fit under its limit only by thrashing
+    /// never reaches the OOM killer and stops answering the scheduler; this
+    /// ends the action instead, as a memory kill, so the scheduler requeues
+    /// it with a larger reservation. The kill lands on the action furthest
+    /// over its reservation, or the largest when none is over, and never
+    /// on one that reserves the whole worker. It does not check that the
+    /// actions caused the pressure: pressure from the worker itself (page
+    /// cache from the filesystem store, a large upload) still kills an
+    /// action. Needs `memory: soft`, which supplies the per-action samples
+    /// the choice is made from. Values over 100 are read as 100. 0 disables.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_pressure_kill_percent: u64,
+
+    /// How long `memory.pressure` must stay at or above
+    /// `memory_pressure_kill_percent` before an action is killed, in
+    /// seconds. Another kill waits this long again. 0 is read as 1.
+    /// Default: 30
+    #[serde(
+        default = "default_memory_pressure_kill_after_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub memory_pressure_kill_after_s: u64,
+}
+
+const fn default_memory_pressure_kill_after_s() -> u64 {
+    30
 }
 
 fn default_memory_property_name() -> String {

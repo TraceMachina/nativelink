@@ -235,15 +235,16 @@ async fn repair_truncated_cache(corrupt_tier: &str, truncated: &'static str) -> 
     .expect("the corrupt read must finish")
     .unwrap_err();
     assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    // The repair reads the durable copy back, which refills both caches.
     assert_eq!(
-        memory.has(digest).await?,
-        None,
-        "bad memory copy must be removed"
+        memory.get_part_unchunked(digest, 0, None).await?,
+        payload.as_bytes(),
+        "bad memory copy must be replaced"
     );
     assert_eq!(
-        filesystem.has(digest).await?,
-        None,
-        "bad filesystem copy must be removed"
+        filesystem.get_part_unchunked(digest, 0, None).await?,
+        payload.as_bytes(),
+        "bad filesystem copy must be replaced"
     );
     assert_eq!(
         durable.get_part_unchunked(digest, 0, None).await?,

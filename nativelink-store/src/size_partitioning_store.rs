@@ -70,6 +70,25 @@ impl StoreDriver for SizePartitioningStore {
         }
     }
 
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let StoreKey::Digest(digest) = key.borrow() else {
+            return Err(make_input_err!(
+                "SizePartitioningStore only supports Digest keys, got {key:?}"
+            ));
+        };
+        if digest.size_bytes() < self.partition_size {
+            self.lower_store
+                .as_store_driver_pin()
+                .remove_cached(key)
+                .await
+        } else {
+            self.upper_store
+                .as_store_driver_pin()
+                .remove_cached(key)
+                .await
+        }
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

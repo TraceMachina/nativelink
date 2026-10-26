@@ -109,9 +109,11 @@ message ResponseEvent {
         build.bazel.remote.asset.v1.PushBlobResponse push_blob_response = 11;
 
         com.github.trace_machina.nativelink.remote_execution.ActionResourceUsage action_resource_usage = 12;
+
+        com.github.trace_machina.nativelink.remote_execution.ActionAttemptEnded action_attempt_ended = 13;
     }
 
-    reserved 13; // NextId.
+    reserved 14; // NextId.
 }
 
 message StreamEvent {
