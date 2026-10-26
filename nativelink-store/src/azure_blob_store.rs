@@ -80,7 +80,7 @@ const READ_LIMIT_GROW_AFTER: usize = 16;
 
 /// Shortest time between two warnings from one store that the host ran out
 /// of local ports.
-const PORT_HINT_INTERVAL: Duration = Duration::from_secs(60);
+const PORT_HINT_INTERVAL: Duration = Duration::from_mins(1);
 
 #[derive(MetricsComponent)]
 pub struct AzureBlobStore<NowFn> {
