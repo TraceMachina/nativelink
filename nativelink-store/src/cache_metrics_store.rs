@@ -133,6 +133,15 @@ impl StoreDriver for CacheMetricsStore {
         result
     }
 
+    /// Not counted as a delete: this tier's own copy is never dropped.
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        if self.allow_remove {
+            self.backend.as_store_driver_pin().remove_cached(key).await
+        } else {
+            Ok(false)
+        }
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

@@ -26,7 +26,9 @@ use nativelink_macro::nativelink_test;
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::UpdateForWorker;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    AttemptEndReason, UpdateForWorker,
+};
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
     SortedAwaitedActionState,
@@ -48,7 +50,7 @@ use nativelink_util::digest_hasher::DigestHasherFunc;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
     ActionStateResult, ClientStateManager, MatchingEngineStateManager, OperationFilter,
-    OperationStageFlags, UpdateOperationType, WorkerStateManager,
+    OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::platform_properties::PlatformProperties;
 use tokio::sync::{Notify, mpsc};
@@ -1413,6 +1415,7 @@ async fn executing_sweep_retires_a_silent_action_without_a_client() -> Result<()
         .await?;
     assert_eq!(report.retired, 0);
     assert_eq!(report.requeued, 0);
+    assert!(report.ended.is_empty());
     // Five minutes executing: counted in the 5m to 15m bucket.
     assert_eq!(report.ages.counts(), [0, 0, 1, 0, 0, 0]);
     assert_eq!(report.ages.oldest(), Duration::from_mins(5));
@@ -1429,6 +1432,12 @@ async fn executing_sweep_retires_a_silent_action_without_a_client() -> Result<()
         .sweep_executing_actions(&still_running, &mut lost_since, Duration::from_mins(1))
         .await?;
     assert_eq!(report.retired, 1);
+    let [ended] = report.ended.as_slice() else {
+        panic!("one ended attempt, got {:?}", report.ended);
+    };
+    assert_eq!(ended.worker_id, worker_id);
+    assert_eq!(ended.reason, AttemptEndReason::Timeout);
+    assert!(ended.detail.starts_with("Operation "), "{}", ended.detail);
     // Back in the queue, where the abandoned-client rule then completes it:
     // nobody has been listening for twenty minutes, and this db keeps no
     // completed records. Either way it is no longer executing.
@@ -1486,6 +1495,14 @@ async fn executing_sweep_requeues_an_action_its_worker_no_longer_runs() -> Resul
         .sweep_executing_actions(&not_running, &mut lost_since, grace)
         .await?;
     assert_eq!(report.requeued, 1);
+    assert_eq!(
+        report
+            .ended
+            .iter()
+            .map(|ended| (&ended.worker_id, ended.reason))
+            .collect::<Vec<_>>(),
+        [(&worker_id, AttemptEndReason::LostResult)]
+    );
     assert!(lost_since.is_empty());
     assert_eq!(
         count_in_stage(&state_mgr, OperationStageFlags::Queued).await?,
@@ -1548,6 +1565,69 @@ async fn executing_sweep_lost_result_counts_against_max_job_retries() -> Result<
             .iter()
             .any(|m| m.contains("never reached the scheduler")),
         "the failure names the lost result: {err:?}"
+    );
+    Ok(())
+}
+
+/// Queues actions with priorities `0..n` and returns their client listeners.
+async fn add_prioritised_actions(
+    state_mgr: &impl ClientStateManager,
+    n: i32,
+) -> Result<Vec<Box<dyn ActionStateResult>>, Error> {
+    let mut clients = Vec::new();
+    for priority in 0..n {
+        let mut info = action_info(make_system_time(0));
+        info.priority = priority;
+        clients.push(
+            state_mgr
+                .add_action(OperationId::default(), Arc::new(info))
+                .await?,
+        );
+    }
+    Ok(clients)
+}
+
+/// The memory store's listing is read whole, under one hold of the store's
+/// lock taken when the listing is requested, and the stream then only hands
+/// out what was read. The lock must not be taken inside the stream: the
+/// filter pass reads rows 64 at a time, so while it hands rows on it keeps
+/// asking the listing for more, and a lock wait that asking starts is
+/// parked inside the stream, polled again only when the next row is asked
+/// for. Once that wait has been starved past async-lock's fairness
+/// threshold the lock is reserved for it, and when the matcher then writes
+/// for a row it was handed, on the same task, it waits for the same lock:
+/// nothing polls the parked wait, and the scheduler stops for good. Reading
+/// lazily was how that wait got into the stream; a row added after the
+/// listing was requested is therefore not in it.
+#[nativelink_test]
+async fn the_listing_is_read_whole_when_it_is_requested() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let state_mgr = state_manager(Arc::new(WorkerRegistry::new()));
+    // Kept so the clients count as waiting.
+    let _clients = add_prioritised_actions(state_mgr.as_ref(), 3).await?;
+
+    let listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        },
+    )
+    .await?;
+    // Added after the listing was requested, before any of it was read.
+    let _late = state_mgr
+        .add_action(
+            OperationId::default(),
+            Arc::new(action_info(make_system_time(0))),
+        )
+        .await?;
+
+    let listed: Vec<_> = listed.collect().await;
+    assert_eq!(
+        listed.len(),
+        3,
+        "the listing holds what was there when it was requested"
     );
     Ok(())
 }

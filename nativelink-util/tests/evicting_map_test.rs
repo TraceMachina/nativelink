@@ -167,6 +167,55 @@ async fn insert_purges_at_max_bytes() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn size_queries_report_content_len_while_eviction_charges_len() -> Result<(), Error> {
+    #[derive(Clone, Debug)]
+    struct BlockEntry {
+        content: u64,
+        on_disk: u64,
+    }
+    impl LenEntry for BlockEntry {
+        fn len(&self) -> u64 {
+            self.on_disk
+        }
+        fn content_len(&self) -> u64 {
+            self.content
+        }
+        fn is_empty(&self) -> bool {
+            self.content == 0
+        }
+    }
+    let block = |content| BlockEntry {
+        content,
+        on_disk: 4096,
+    };
+
+    let evicting_map = EvictingMap::<String, String, BlockEntry, MockInstantWrapped>::new(
+        &EvictionPolicy {
+            max_count: 0,
+            max_seconds: 0,
+            max_bytes: 3 * 4096,
+            evict_bytes: 0,
+        },
+        MockInstantWrapped::default(),
+    );
+    evicting_map.insert("a".to_string(), block(100)).await;
+    evicting_map.insert("b".to_string(), block(200)).await;
+    assert_eq!(evicting_map.size_for_key(&"a".to_string()).await, Some(100));
+    assert_eq!(evicting_map.size_for_key(&"b".to_string()).await, Some(200));
+
+    // Three blocks reach max_bytes, so the least recently used entry goes;
+    // charged by content (600 bytes) nothing would be evicted.
+    evicting_map.insert("c".to_string(), block(300)).await;
+    let keys = ["a".to_string(), "b".to_string(), "c".to_string()];
+    let mut results = [None, None, None];
+    evicting_map
+        .sizes_for_keys(keys.iter(), &mut results[..], true /* peek */)
+        .await;
+    assert_eq!(results, [None, Some(200), Some(300)]);
+    Ok(())
+}
+
+#[nativelink_test]
 async fn leased_key_survives_fast_tier_pressure_until_released() -> Result<(), Error> {
     const DATA: &str = "12345678";
     let evicting_map = EvictingMap::<DigestInfo, DigestInfo, BytesWrapper, MockInstantWrapped>::new(

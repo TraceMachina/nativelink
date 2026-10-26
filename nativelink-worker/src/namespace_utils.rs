@@ -14,7 +14,7 @@
 
 use std::io::Error;
 
-use tracing::error;
+use tracing::{error, warn};
 
 /// A wrapper around a Child that may be the stub of a PID namespace. A
 /// SIGTERM to the stub is passed on to the action; a SIGKILL to the stub
@@ -97,6 +97,127 @@ enum NamespaceErrorType {
 const NS_ERROR_TYPE_BITS: u8 = 2; // This is 2 because the highest value (NamespaceErrorType::Mount) is 3 and so we can store all of this in two bits
 const NS_ERROR_TYPE_MASK: i32 = 0x3; // 11 - i.e. NS_ERROR_TYPE_BITS lowest bits
 
+/// The exit code a probe child could not be forked with: no step of the
+/// probe ran, so there is no errno to carry.
+const PROBE_FORK_FAILED: i32 = 255;
+
+/// The namespaces an action is run in. The mount namespace is among them,
+/// private to the action: the fresh `/proc` needs one, and without
+/// `use_mount_namespace` nothing else in it changes, so there it is
+/// optional (see [`unshare_action_namespaces`]).
+const ACTION_NAMESPACES: libc::c_int = libc::CLONE_NEWPID
+    | libc::CLONE_NEWUSER
+    | libc::CLONE_NEWIPC
+    | libc::CLONE_NEWUTS
+    | libc::CLONE_NEWNS;
+
+/// Whether an errno is a refusal by policy, which a seccomp filter or a
+/// capability check answers with, rather than a failure.
+const fn is_denial(errno: i32) -> bool {
+    errno == libc::EPERM || errno == libc::EACCES
+}
+
+/// Enters the namespaces an action runs in and says whether the mount
+/// namespace is among them. With `mount` it has to be. Without it, the
+/// mount namespace only carries the fresh `/proc`, so a policy that
+/// refuses it gets the namespaces an action had before the fresh `/proc`
+/// existed, and the action keeps the host's `/proc`. On failure the error
+/// is the errno. Async-signal-safe.
+fn unshare_action_namespaces(mount: bool) -> Result<bool, i32> {
+    // SAFETY: Unshare does not have any unsafe effects and modifies no
+    // memory, it is also async-signal-safe.
+    if unsafe { libc::unshare(ACTION_NAMESPACES) } == 0 {
+        return Ok(true);
+    }
+    // SAFETY: We just called a libc function that failed (-1).
+    let errno = unsafe { *libc::__errno_location() };
+    if mount {
+        return Err(errno);
+    }
+    // SAFETY: As above; a failed unshare has no effect to undo.
+    if unsafe { libc::unshare(ACTION_NAMESPACES & !libc::CLONE_NEWNS) } == 0 {
+        return Ok(false);
+    }
+    // SAFETY: We just called a libc function that failed (-1).
+    Err(unsafe { *libc::__errno_location() })
+}
+
+/// Makes the mounts of the new mount namespace private, so nothing
+/// mounted in it reaches the host, and says whether it did. With `mount`
+/// it has to. Without it, a refusal by policy is tolerated, as the mount
+/// namespace is then only there for the fresh `/proc`, which is not
+/// mounted either. Async-signal-safe.
+fn privatize_mounts(mount: bool) -> Result<bool, Error> {
+    match make_mounts_private() {
+        Ok(()) => Ok(true),
+        Err(err) if !mount && err.raw_os_error().is_some_and(is_denial) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+/// Encodes which step of a probe failed, and with what errno, as the exit
+/// code its child reports.
+const fn probe_exit_code(step: NamespaceErrorType, errno: i32) -> i32 {
+    (step as i32) | (errno << NS_ERROR_TYPE_BITS)
+}
+
+/// The child side of a probe: enters the namespaces an action is given,
+/// writes the id maps `configure_namespace` writes, in its order and with
+/// its tolerance, and makes the new mount namespace private, the last two
+/// with the tolerance `mount` decides. The gid has to be mapped too: an
+/// inode created on a filesystem mounted inside the namespace, as the
+/// probe's mkdir does, needs the creator's group to map, or the kernel
+/// refuses it with EOVERFLOW. On failure the error is the exit code to
+/// report it with. Async-signal-safe.
+fn enter_probe_namespaces(mount: bool, uid_map: &[u8], gid_map: &[u8]) -> Result<(), i32> {
+    let has_mount_namespace = unshare_action_namespaces(mount)
+        .map_err(|errno| probe_exit_code(NamespaceErrorType::Unshare, errno))?;
+    if let Err(err) = write_signal_safe(c"/proc/self/setgroups", b"deny")
+        && err != libc::EPERM
+        && err != libc::EACCES
+        && err != libc::ENOENT
+    {
+        return Err(probe_exit_code(NamespaceErrorType::WriteSignalSafe, err));
+    }
+    if let Err(err) = write_signal_safe(c"/proc/self/uid_map", uid_map) {
+        return Err(probe_exit_code(NamespaceErrorType::WriteSignalSafe, err));
+    }
+    if let Err(err) = write_signal_safe(c"/proc/self/gid_map", gid_map)
+        && err != libc::EPERM
+        && err != libc::EACCES
+    {
+        return Err(probe_exit_code(NamespaceErrorType::WriteSignalSafe, err));
+    }
+    if has_mount_namespace && let Err(err) = privatize_mounts(mount) {
+        let errno = err.raw_os_error().unwrap_or(libc::EIO);
+        return Err(probe_exit_code(NamespaceErrorType::Mount, errno));
+    }
+    Ok(())
+}
+
+/// Waits for a probe child and returns its exit code, or `None` when it did
+/// not exit on its own; that failure is logged here.
+fn wait_probe(pid: libc::pid_t) -> Option<i32> {
+    let mut status = 0;
+    // SAFETY: The pid is valid and created by us and the status is our own stack.
+    while unsafe { libc::waitpid(pid, &raw mut status, 0) } == -1 {
+        // SAFETY: We just called a libc function that failed (-1).
+        let errno = unsafe { *libc::__errno_location() };
+        if errno != libc::EINTR {
+            error!(errno = errno, "Namespaces: Failure in waitpid");
+            return None;
+        }
+    }
+    if libc::WIFEXITED(status) {
+        return Some(libc::WEXITSTATUS(status));
+    }
+    error!(
+        exit_code = status,
+        "Namespaces: waitpid exit with non-exit code"
+    );
+    None
+}
+
 /// Determines whether the namespaces provided by this module are supported
 /// on the currently running system by forking a process and trying to enter
 /// it into the new namespaces. When `mount` is set the mount namespace is
@@ -123,143 +244,135 @@ pub fn namespaces_supported(mount: bool, isolate_tmp: bool) -> bool {
     let pid = unsafe { libc::fork() };
     match pid {
         0 => {
-            let mut flags =
-                libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
-            if mount {
-                flags |= libc::CLONE_NEWNS;
+            if let Err(code) = enter_probe_namespaces(mount, uid_map.as_bytes(), gid_map.as_bytes())
+            {
+                exit(code);
             }
-            // SAFETY: Unshare does not have any unsafe effects and modifies no
-            // memory, it is also async-signal-safe.
-            if unsafe { libc::unshare(flags) } == 0 {
-                // The maps `configure_namespace` writes for an action, in
-                // its order and with its tolerance. The gid has to be mapped
-                // too: an inode created on a filesystem mounted inside the
-                // namespace, as the mkdir below does, needs the creator's
-                // group to map, or the kernel refuses it with EOVERFLOW.
-                if let Err(err) = write_signal_safe(c"/proc/self/setgroups", b"deny")
-                    && err != libc::EPERM
-                    && err != libc::EACCES
-                    && err != libc::ENOENT
-                {
-                    exit(
-                        (NamespaceErrorType::WriteSignalSafe as i32) | (err << NS_ERROR_TYPE_BITS),
-                    );
-                }
-                match write_signal_safe(c"/proc/self/uid_map", uid_map.as_bytes()) {
-                    Ok(()) => {
-                        if let Err(err) =
-                            write_signal_safe(c"/proc/self/gid_map", gid_map.as_bytes())
-                            && err != libc::EPERM
-                            && err != libc::EACCES
-                        {
-                            exit(
-                                (NamespaceErrorType::WriteSignalSafe as i32)
-                                    | (err << NS_ERROR_TYPE_BITS),
-                            );
-                        }
-                        if !mount {
-                            exit(0);
-                        }
-                        // SAFETY: Mount uses no memory and is async-signal-safe.
-                        if unsafe {
-                            libc::mount(
-                                core::ptr::null(),
-                                c"/".as_ptr(),
-                                core::ptr::null(),
-                                libc::MS_REC | libc::MS_PRIVATE,
-                                core::ptr::null(),
-                            )
-                        } != 0
-                        {
-                            // SAFETY: We just called a libc function that failed (-1).
-                            let errno = unsafe { *libc::__errno_location() };
-                            exit(
-                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
-                            );
-                        }
-                        // The same sequence `perform_remount` runs for an
-                        // action, so a policy that allows a bind to self but
-                        // refuses a sized tmpfs, or a mkdir under it, fails
-                        // here and not in every action's pre_exec. All of it
-                        // is inside this child's private mount namespace.
-                        if isolate_tmp
-                            && let Err(err) = bind_mount(c"/tmp", c"/tmp")
-                                .and_then(|()| mount_tmpfs(c"/tmp", Some(ROOT_MASK_TMPFS_OPTIONS)))
-                                .and_then(|()| {
-                                    mkdir_p_signal_safe(c"/tmp/nativelink-namespace-probe/action")
-                                })
-                        {
-                            let errno = err.raw_os_error().unwrap_or(libc::EIO);
-                            exit(
-                                (NamespaceErrorType::Mount as i32) | (errno << NS_ERROR_TYPE_BITS),
-                            );
-                        }
-                        exit(0);
-                    }
-                    Err(uid_map_err) => {
-                        exit(
-                            (NamespaceErrorType::WriteSignalSafe as i32)
-                                | (uid_map_err << NS_ERROR_TYPE_BITS),
-                        );
-                    }
-                }
+            if !mount {
+                exit(0);
             }
-            // SAFETY: We just called a libc function that failed (-1).
-            let errno = unsafe { *libc::__errno_location() };
-            exit((NamespaceErrorType::Unshare as i32) | (errno << NS_ERROR_TYPE_BITS));
+            // The same sequence `perform_remount` runs for an action, so a
+            // policy that allows a bind to self but refuses a sized tmpfs,
+            // or a mkdir under it, fails here and not in every action's
+            // pre_exec. All of it is inside this child's private mount
+            // namespace.
+            if isolate_tmp
+                && let Err(err) = bind_mount(c"/tmp", c"/tmp")
+                    .and_then(|()| mount_tmpfs(c"/tmp", Some(ROOT_MASK_TMPFS_OPTIONS)))
+                    .and_then(|()| mkdir_p_signal_safe(c"/tmp/nativelink-namespace-probe/action"))
+            {
+                let errno = err.raw_os_error().unwrap_or(libc::EIO);
+                exit(probe_exit_code(NamespaceErrorType::Mount, errno));
+            }
+            exit(0);
         }
         pid if pid > 0 => {
-            let mut status = 0;
-            // SAFETY: The pid is valid and created by us and the status is our own stack.
-            while unsafe { libc::waitpid(pid, &raw mut status, 0) } == -1 {
-                // SAFETY: We just called a libc function that failed (-1).
-                let errno = unsafe { *libc::__errno_location() };
-                if errno != libc::EINTR {
-                    error!(errno = errno, "Namespaces: Failure in waitpid");
-                    return false;
-                }
-            }
-            if libc::WIFEXITED(status) {
-                match libc::WEXITSTATUS(status) {
-                    0 => {
-                        return true;
-                    }
-                    s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::Unshare as i32 => {
-                        let errno = s >> NS_ERROR_TYPE_BITS;
-                        error!(errno, "Namespaces: Error during unshare");
-                        if errno == libc::EPERM {
-                            error!(
-                                "If the worker is inside Docker, namespaces don't work unless it's a privileged container"
-                            );
-                        }
-                    }
-                    s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::WriteSignalSafe as i32 => {
+            match wait_probe(pid) {
+                Some(0) => return true,
+                Some(s) if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::Unshare as i32 => {
+                    let errno = s >> NS_ERROR_TYPE_BITS;
+                    error!(errno, "Namespaces: Error during unshare");
+                    if errno == libc::EPERM {
                         error!(
-                            errno = s >> NS_ERROR_TYPE_BITS,
-                            "Namespaces: Error while writing the id maps under /proc/self"
-                        );
-                    }
-                    s if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::Mount as i32 => {
-                        error!(
-                            errno = s >> NS_ERROR_TYPE_BITS,
-                            "Failure to mount during namespace checking"
-                        );
-                    }
-                    other => {
-                        error!(
-                            exit_code = other,
-                            "Namespace check failure with unknown exit code"
+                            "If the worker is inside Docker, namespaces don't work unless it's a privileged container"
                         );
                     }
                 }
-            } else {
-                error!(
-                    exit_code = status,
-                    "Namespaces: waitpid exit with non-exit code"
-                );
+                Some(s) if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::WriteSignalSafe as i32 => {
+                    error!(
+                        errno = s >> NS_ERROR_TYPE_BITS,
+                        "Namespaces: Error while writing the id maps under /proc/self"
+                    );
+                }
+                Some(s) if s & NS_ERROR_TYPE_MASK == NamespaceErrorType::Mount as i32 => {
+                    error!(
+                        errno = s >> NS_ERROR_TYPE_BITS,
+                        "Failure to mount during namespace checking"
+                    );
+                }
+                Some(other) => {
+                    error!(
+                        exit_code = other,
+                        "Namespace check failure with unknown exit code"
+                    );
+                }
+                None => {}
             }
             false
         }
+        _ => false,
+    }
+}
+
+/// Whether a fresh `proc` can be mounted over `/proc` inside an action's
+/// PID namespace here, so that `/proc` lists the action's processes under
+/// the PIDs the action knows them by. When it cannot, the worker runs
+/// actions with the host's `/proc` instead, after the warning this logs. An
+/// unprivileged container that masks paths under `/proc` is the usual
+/// reason: the kernel refuses a `proc` mount in a user namespace that would
+/// reveal what those masks hide. A syscall policy that denies `mount`, or
+/// the mount namespace itself, is the other.
+pub fn fresh_proc_supported() -> bool {
+    // SAFETY: Posix requires that geteuid and getegid are always successful.
+    let uid = unsafe { libc::geteuid() };
+    // SAFETY: As above.
+    let gid = unsafe { libc::getegid() };
+    let uid_map = format!("{uid} {uid} 1\n");
+    let gid_map = format!("{gid} {gid} 1\n");
+    // SAFETY: We ensure that if pid == 0 we only call async-signal-safe functions.
+    let pid = unsafe { libc::fork() };
+    match pid {
+        0 => {
+            // The mount namespace, private, is what the fresh /proc needs,
+            // so here it is required.
+            if let Err(code) = enter_probe_namespaces(true, uid_map.as_bytes(), gid_map.as_bytes())
+            {
+                exit(code);
+            }
+            // A proc mount reflects the PID namespace of the process that
+            // mounts it, and after the unshare only the next child is in
+            // the new one, as an action is.
+            // SAFETY: Only async-signal-safe calls follow in either process.
+            match unsafe { libc::fork() } {
+                0 => match mount_proc() {
+                    Ok(()) => exit(0),
+                    Err(err) => {
+                        let errno = err.raw_os_error().unwrap_or(libc::EIO);
+                        exit(probe_exit_code(NamespaceErrorType::Mount, errno));
+                    }
+                },
+                child if child > 0 => {
+                    let mut status = 0;
+                    // SAFETY: The pid is valid and created by us and the status is our own stack.
+                    while unsafe { libc::waitpid(child, &raw mut status, 0) } == -1 {
+                        // SAFETY: We just called a libc function that failed (-1).
+                        if unsafe { *libc::__errno_location() } != libc::EINTR {
+                            exit(PROBE_FORK_FAILED);
+                        }
+                    }
+                    if libc::WIFEXITED(status) {
+                        exit(libc::WEXITSTATUS(status));
+                    }
+                    exit(PROBE_FORK_FAILED);
+                }
+                _ => exit(PROBE_FORK_FAILED),
+            }
+        }
+        pid if pid > 0 => match wait_probe(pid) {
+            Some(0) => true,
+            Some(PROBE_FORK_FAILED) => {
+                warn!("Namespaces: the fresh /proc probe could not fork");
+                false
+            }
+            Some(s) => {
+                warn!(
+                    errno = s >> NS_ERROR_TYPE_BITS,
+                    "Namespaces: a fresh /proc cannot be mounted inside an action's PID namespace here, so actions see the host's /proc, which lists processes by their host PIDs"
+                );
+                false
+            }
+            None => false,
+        },
         _ => false,
     }
 }
@@ -404,6 +517,77 @@ fn mount_tmpfs(target: &core::ffi::CStr, options: Option<&core::ffi::CStr>) -> R
     Ok(())
 }
 
+/// Linux statvfs flag, not exposed by the libc crate on musl.
+const ST_RELATIME: libc::c_ulong = 0x1000;
+
+/// Make every mount in the current mount namespace private, so nothing
+/// mounted in it propagates back to the host. Async-signal-safe.
+fn make_mounts_private() -> Result<(), Error> {
+    // SAFETY: mount is async-signal-safe. We pass a null pointer for the source and valid
+    // C-string pointers for the target. The parameters match POSIX requirements.
+    if unsafe {
+        libc::mount(
+            core::ptr::null(),
+            c"/".as_ptr(),
+            core::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            core::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The flags for the fresh `proc` mounted over `/proc`: the usual
+/// restrictions, plus the read-only and atime flags the host's `/proc`
+/// carries. Inside a user namespace every inherited mount is locked, and
+/// the kernel refuses a new `proc` that would be more permissive than the
+/// locked one it covers, so those flags are mirrored rather than assumed.
+/// Async-signal-safe: the kernel reports the flags with the `statfs` call
+/// itself (`ST_VALID`, since 2.6.36), so neither libc reads anything else.
+fn proc_mount_flags() -> libc::c_ulong {
+    let mut flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+    let mut stats = core::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: the path is a valid C string and stats is writable storage.
+    if unsafe { libc::statvfs(c"/proc".as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return flags;
+    }
+    // SAFETY: statvfs initialized the structure on success.
+    let host = unsafe { stats.assume_init() }.f_flag;
+    for (stat_flag, mount_flag) in [
+        (libc::ST_RDONLY, libc::MS_RDONLY),
+        (libc::ST_NOATIME, libc::MS_NOATIME),
+        (libc::ST_NODIRATIME, libc::MS_NODIRATIME),
+        (ST_RELATIME, libc::MS_RELATIME),
+    ] {
+        if host & stat_flag != 0 {
+            flags |= mount_flag;
+        }
+    }
+    flags
+}
+
+/// Mount a fresh `proc` over `/proc`. It reflects the PID namespace of the
+/// calling process, so call it from inside the action's. Async-signal-safe.
+fn mount_proc() -> Result<(), Error> {
+    // SAFETY: mount is async-signal-safe. The source, target and filesystem type are valid C-strings.
+    if unsafe {
+        libc::mount(
+            c"proc".as_ptr(),
+            c"/proc".as_ptr(),
+            c"proc".as_ptr(),
+            proc_mount_flags(),
+            core::ptr::null(),
+        )
+    } != 0
+    {
+        return Err(Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Bind mount `source` over `target` in an async-signal-safe manner.
 fn bind_mount(source: &core::ffi::CStr, target: &core::ffi::CStr) -> Result<(), Error> {
     // SAFETY: mount is async-signal-safe. Both paths are valid C-strings.
@@ -460,21 +644,8 @@ fn perform_remount(
     action_directory: &core::ffi::CStr,
     input_mounts: &[ReadOnlyBindMount],
 ) -> Result<(), Error> {
-    // Make the mount namespace private to avoid changes propagating back to the host.
-    // SAFETY: mount is async-signal-safe. We pass a null pointer for the source and valid
-    // C-string pointers for the target. The parameters match POSIX requirements.
-    if unsafe {
-        libc::mount(
-            core::ptr::null(),
-            c"/".as_ptr(),
-            core::ptr::null(),
-            libc::MS_REC | libc::MS_PRIVATE,
-            core::ptr::null(),
-        )
-    } != 0
-    {
-        return Err(Error::last_os_error());
-    }
+    // The caller has already made the mount namespace private, so nothing
+    // below propagates back to the host.
 
     // Install inputs while cache paths are still visible. The recursive action
     // bind below preserves these mounts when its parent is masked or hidden by
@@ -586,9 +757,6 @@ impl ReadOnlyBindMount {
     pub fn new(source: &std::path::Path, target: &std::path::Path) -> Result<Self, Error> {
         use std::os::unix::ffi::OsStrExt;
 
-        // Linux statvfs flag, not exposed by the libc crate on musl.
-        const ST_RELATIME: libc::c_ulong = 0x1000;
-
         // The child changes its working directory before running pre-exec.
         let source = std::path::absolute(source)?;
         let target = std::path::absolute(target)?;
@@ -665,14 +833,20 @@ fn mount_readonly_inputs(mounts: &[ReadOnlyBindMount]) -> Result<(), Error> {
 
 /// A hook for a `Command::spawn` to create the process in a new namespace.
 /// This creates a stub process that the Command points at which forwards
-/// SIGKILL to the actual process in the new user, PID, UTS and IPC
+/// SIGKILL to the actual process in the new user, PID, UTS, IPC and mount
 /// namespaces.  Pass this function to `CommandBuilder::pre_exec`.
 ///
-/// When `mount` is set the process also gets its own mount namespace in
-/// which the root action directory is masked so sibling actions are not
-/// visible. When `tmp_directory` is given as well, that directory (the
-/// action's own, already created) is bound over `/tmp`, so the action has
-/// a private `/tmp` that is removed with it.
+/// The process is PID 1 of its PID namespace and gets a fresh `proc` over
+/// `/proc`, so what it finds there is its own processes under the PIDs it
+/// knows them by. The mount namespace is private, so that mount never
+/// reaches the host; where the host refuses it (see
+/// [`fresh_proc_supported`]) the process keeps the host's `/proc`.
+///
+/// When `mount` is set the root action directory is masked in that mount
+/// namespace so sibling actions are not visible. When `tmp_directory` is
+/// given as well, that directory (the action's own, already created) is
+/// bound over `/tmp`, so the action has a private `/tmp` that is removed
+/// with it.
 ///
 /// This function is async-signal-safe and has no external locks or
 /// memory allocations.
@@ -711,16 +885,7 @@ pub fn configure_namespace_with_input_mounts(
     // SAFETY: It is always safe to call getegid on Posix.
     let gid = unsafe { libc::getegid() };
 
-    let mut flags =
-        libc::CLONE_NEWPID | libc::CLONE_NEWUSER | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS;
-    if mount {
-        flags |= libc::CLONE_NEWNS;
-    }
-    // SAFETY: Unshare does not have any unsafe effects and modifies no
-    // memory, it is also async-signal-safe.
-    if unsafe { libc::unshare(flags) } != 0 {
-        return Err(Error::last_os_error());
-    }
+    let has_mount_namespace = unshare_action_namespaces(mount).map_err(Error::from_raw_os_error)?;
 
     if let Err(e) = write_signal_safe(c"/proc/self/setgroups", b"deny") {
         // If we fail to write this it will just make gid_map fail later,
@@ -745,7 +910,11 @@ pub fn configure_namespace_with_input_mounts(
         }
     }
 
-    // Configure the mount namespace if enabled.
+    // Nothing mounted from here on, the fresh /proc included, may reach
+    // the host. Without a private mount namespace there is no fresh /proc.
+    let fresh_proc = has_mount_namespace && privatize_mounts(mount)?;
+
+    // Mask the root action directory if enabled.
     if mount {
         perform_remount(
             tmp_directory,
@@ -775,6 +944,18 @@ pub fn configure_namespace_with_input_mounts(
             // SAFETY: This function is async-signal-safe and references no memory or resources.
             if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } != 0 {
                 exit(1);
+            }
+            // This process is PID 1 of the action's PID namespace, so a
+            // proc it mounts lists that namespace: a child the action forks
+            // is found under /proc by the PID the fork returned, not
+            // whichever host process has that number. A refusal is the one
+            // `fresh_proc_supported` warned about at startup, and leaves the
+            // host's /proc in place as before.
+            if fresh_proc
+                && let Err(err) = mount_proc()
+                && !err.raw_os_error().is_some_and(is_denial)
+            {
+                return Err(err);
             }
             Ok(())
         }

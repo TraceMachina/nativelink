@@ -443,6 +443,46 @@ async fn check_header_test() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn update_with_unknown_size_round_trips() -> Result<(), Error> {
+    const BLOCK_SIZE: u32 = 10;
+    let store_owned = CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: nativelink_config::stores::CompressionAlgorithm::Lz4(
+                nativelink_config::stores::Lz4Config {
+                    block_size: BLOCK_SIZE,
+                    ..Default::default()
+                },
+            ),
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )
+    .err_tip(|| "Failed to create compression store")?;
+    let store = Pin::new(&store_owned);
+
+    let mut rng = SmallRng::seed_from_u64(1);
+    let mut data = vec![0u8; DUMMY_DATA_SIZE];
+    rng.fill(&mut data[..]);
+    let digest = DigestInfo::try_new(VALID_HASH, DUMMY_DATA_SIZE).unwrap();
+
+    let (mut tx, rx) = make_buf_channel_pair();
+    let payload = Bytes::from(data.clone());
+    let send_fut = async move {
+        tx.send(payload).await?;
+        tx.send_eof()
+    };
+    let (res1, res2) = futures::join!(
+        send_fut,
+        store.update(digest, rx, UploadSizeInfo::MaxSize(u64::MAX))
+    );
+    res1.merge(res2)?;
+
+    let read_back = store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(read_back.as_ref(), data.as_slice());
+    Ok(())
+}
+
+#[nativelink_test]
 async fn check_footer_test() -> Result<(), Error> {
     const BLOCK_SIZE: u32 = 32 * 1024;
     const EXPECTED_INDEXES: [u32; 7] = [32898, 32898, 32898, 32898, 140, 140, 140];

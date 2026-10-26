@@ -1,5 +1,5 @@
 # ---
-name: Local Remote Execution
+name: CI / LRE
 
 on:
   push:
