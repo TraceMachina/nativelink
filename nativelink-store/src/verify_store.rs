@@ -323,15 +323,36 @@ impl StoreDriver for VerifyStore {
         if let Err(err) = &result
             && err.code == Code::DataLoss
         {
-            // The copy that served this read is bad; drop it from every
-            // cache below so the next read repopulates from the durable
-            // tier, or fails with NotFound and the client re-uploads.
-            match self
-                .inner_store
-                .as_store_driver_pin()
-                .remove(key.borrow())
-                .await
-            {
+            // Keep the durable copy unless it is the wrong size too: a bad
+            // cache copy must not cost the only good one. Read it back
+            // rather than trust `has`, which for a filesystem store is the
+            // size indexed at write time, not the file's.
+            let inner = self.inner_store.as_store_driver_pin();
+            let removed = async {
+                let cached = inner.remove_cached(key.borrow()).await?;
+                let durable_is_bad = match &key {
+                    StoreKey::Digest(digest) => {
+                        let (mut tx, mut rx) = make_buf_channel_pair();
+                        let read_key = key.borrow().into_owned();
+                        let read_fut = async move {
+                            self.inner_store.get_part(read_key, &mut tx, 0, None).await
+                        };
+                        let (read_res, drained) = tokio::join!(read_fut, rx.drain());
+                        match read_res.and(drained) {
+                            Ok(size) => size != digest.size_bytes(),
+                            // Other errors mean unchecked, not bad.
+                            Err(err) => err.code == Code::DataLoss,
+                        }
+                    }
+                    StoreKey::Str(_) => false,
+                };
+                if durable_is_bad {
+                    return Ok(inner.remove(key.borrow()).await? || cached);
+                }
+                Ok::<_, Error>(cached)
+            }
+            .await;
+            match removed {
                 Ok(removed) => warn!(
                     ?key,
                     removed, "Dropped a copy that failed size verification"
@@ -348,6 +369,13 @@ impl StoreDriver for VerifyStore {
 
     async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
         self.inner_store.as_store_driver_pin().remove(key).await
+    }
+
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.inner_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
     }
 
     fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
