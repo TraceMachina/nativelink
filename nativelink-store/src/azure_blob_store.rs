@@ -125,8 +125,9 @@ impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
 /// headers included), fails and is retried. Without a bound, a request that
 /// hangs keeps its permit forever, and `max_concurrent_requests` of them
 /// wedge the store. The read timer runs only while the body is polled, so a
-/// download that a slow reader holds back is not cut off.
-const AZURE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// download that a slow reader holds back is not cut off. The values are the
+/// Azure SDK's own defaults, which this store's client replaces.
+const AZURE_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const AZURE_READ_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// How long a cancelled upload's cleanup waits before it looks at the block
