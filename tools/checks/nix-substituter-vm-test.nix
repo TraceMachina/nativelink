@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 # End-to-end check for the Nix binary-cache (substituter) facade.
 #
 # Boots a NixOS VM running `nativelink` with two `nix_cache` services and

@@ -539,3 +539,4 @@ execlog
 [Cc]odecs
 [Cc]leartext
 [Ss]niffable
+[Tt]iering
