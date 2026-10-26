@@ -1,62 +1,63 @@
-export interface EmailData {
+const RESEND_API = "https://api.resend.com";
+const NOTIFY_ADDRESS = "hello@nativelink.com";
+
+export interface BookDownload {
   email: string;
   time: string;
 }
 
-const subscriptionTemplate = (data: EmailData): string => `
-  <p>New book download from <strong>${data.email}</strong></p>
-  <p>Time: ${data.time}</p>
-`;
+function resend(path: string, apiKey: string, body: unknown): Promise<Response> {
+  return fetch(`${RESEND_API}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
 
-const thanksTemplate = (): string => `
-  <p>Hello,</p>
-  <p>Thank you for downloading <em>Extending Bazel to Its Full Potential</em>.</p>
-  <p>We will get back to you as soon as possible if you have questions.</p>
-  <p>Best regards,<br>The NativeLink Team</p>
-`;
+async function isExistingContact(res: Response): Promise<boolean> {
+  if (res.status === 409) {
+    return true;
+  }
+  const error = (await res.json().catch(() => null)) as { message?: unknown } | null;
+  return typeof error?.message === "string" && /already exists/i.test(error.message);
+}
 
 /**
- * Notify the team and thank the reader via Resend.
- * Requires `RESEND_API_KEY` in the marketing app environment.
+ * Store the reader as a Resend contact, then notify the team. Storing must succeed;
+ * the notification is best-effort so a dropped internal email never costs a download.
+ * Requires `RESEND_API_KEY`; `RESEND_SEGMENT_ID` optionally files the contact under a segment.
  */
-export async function sendBookDownloadMails(data: EmailData): Promise<void> {
+export async function recordBookDownload({ email, time }: BookDownload): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     throw new Error("RESEND_API_KEY is not configured");
   }
 
-  const recipients = [
-    {
-      email: data.email,
-      subject: "Thank you for your download",
-      html: thanksTemplate(),
-    },
-    {
-      email: "hello@nativelink.com",
+  const segmentId = process.env.RESEND_SEGMENT_ID;
+  const contact = await resend("/contacts", apiKey, {
+    email,
+    unsubscribed: false,
+    ...(segmentId ? { segments: [{ id: segmentId }] } : {}),
+  });
+  if (!contact.ok && !(await isExistingContact(contact))) {
+    throw new Error(`Failed to store contact: ${contact.status} ${contact.statusText}`);
+  }
+
+  try {
+    // Plain text: the address is caller-controlled and must never be rendered as markup.
+    const notification = await resend("/emails", apiKey, {
+      from: "Nativelink System <system@nativelink.com>",
+      to: [NOTIFY_ADDRESS],
       subject: "New O'Reilly book download",
-      html: subscriptionTemplate(data),
-    },
-  ];
-
-  for (const recipient of recipients) {
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        from: "Nativelink System <system@nativelink.com>",
-        to: [recipient.email],
-        subject: recipient.subject,
-        html: recipient.html,
-      }),
+      text: `New book download from ${email}\nTime: ${time}\n`,
     });
-
-    if (!res.ok) {
-      const errorData = await res.json().catch(() => null);
-      console.error("Failed to send email:", errorData);
-      throw new Error(`Failed to send email: ${res.statusText}`);
+    if (!notification.ok) {
+      console.error("Failed to send download notification:", notification.status);
     }
+  } catch (error) {
+    console.error("Failed to send download notification:", error);
   }
 }

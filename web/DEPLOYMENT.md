@@ -87,7 +87,8 @@ you run the docs server elsewhere.
 | `DOCS_URL`        | apps/web prod | ✓        | —                        | Full URL of the docs deployment, no trailing slash |
 | `DOCS_DEV_URL`    | apps/web dev  |          | `http://localhost:3001`  | Override the local docs target                     |
 | `GITHUB_TOKEN`    | apps/web      |          | unauthenticated          | Lifts the GitHub API rate limit on `/community`    |
-| `RESEND_API_KEY`  | apps/web      | for book | —                        | Powers `/api/mail` on `/resources/oreilly-bazel-book` |
+| `RESEND_API_KEY`  | apps/web      | for book | —                        | Powers `/api/mail` on `/resources/oreilly-bazel-book`: stores the reader as a Resend contact and notifies hello@nativelink.com. Needs contacts and sending access, and `nativelink.com` verified as a sending domain |
+| `RESEND_SEGMENT_ID` | apps/web    |          | none                     | Files book-download contacts under this Resend segment |
 
 ## Preview deployments
 

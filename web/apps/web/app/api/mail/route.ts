@@ -1,8 +1,23 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { EMAIL_REGEX, PERSONAL_EMAIL_DOMAINS } from "../../../lib/book-download";
-import { sendBookDownloadMails } from "../../../lib/mail";
+import { workEmailError } from "../../../lib/book-download";
+import { recordBookDownload } from "../../../lib/mail";
+import { createRateLimiter } from "../../../lib/rate-limit";
+
+const allowRequest = createRateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
+
+// Vercel sets x-forwarded-for itself, so the first entry is the real client address.
+function clientIp(request: NextRequest): string {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+}
 
 export async function POST(request: NextRequest) {
+  if (!allowRequest(clientIp(request))) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again later." },
+      { status: 429 },
+    );
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -18,24 +33,16 @@ export async function POST(request: NextRequest) {
       ? (body as { email: string }).email.trim()
       : "";
 
-  if (email.length > 254 || !EMAIL_REGEX.test(email)) {
-    return NextResponse.json({ error: "Please enter a valid email address" }, { status: 400 });
-  }
-
-  const domain = email.split("@")[1]?.toLowerCase();
-  if (domain && PERSONAL_EMAIL_DOMAINS.has(domain)) {
-    return NextResponse.json({ error: "Please use your work email address" }, { status: 400 });
+  const invalid = workEmailError(email);
+  if (invalid) {
+    return NextResponse.json({ error: invalid }, { status: 400 });
   }
 
   try {
-    await sendBookDownloadMails({
-      email,
-      time: new Date().toISOString(),
-    });
-
+    await recordBookDownload({ email, time: new Date().toISOString() });
     return NextResponse.json({ message: "Successfully subscribed!" });
   } catch (error) {
-    console.error("Error sending mails:", error);
+    console.error("Error recording book download:", error);
     return NextResponse.json(
       { error: "Failed to subscribe. Please try again later." },
       { status: 500 },

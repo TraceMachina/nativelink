@@ -2,7 +2,7 @@
 
 import { Button } from "@nativelink/ui";
 import { type FormEvent, useState } from "react";
-import { BOOK_DOWNLOAD_URL, EMAIL_REGEX, PERSONAL_EMAIL_DOMAINS } from "../lib/book-download";
+import { BOOK_DOWNLOAD_URL, workEmailError } from "../lib/book-download";
 
 export function BookDownloadForm() {
   const [email, setEmail] = useState("");
@@ -15,14 +15,9 @@ export function BookDownloadForm() {
     setMessage("");
     setIsSuccess(false);
 
-    if (!EMAIL_REGEX.test(email)) {
-      setMessage("Please enter a valid email address");
-      return;
-    }
-
-    const domain = email.split("@")[1]?.toLowerCase();
-    if (domain && PERSONAL_EMAIL_DOMAINS.has(domain)) {
-      setMessage("Please use your work email address");
+    const invalid = workEmailError(email.trim());
+    if (invalid) {
+      setMessage(invalid);
       return;
     }
 
@@ -106,7 +101,8 @@ export function BookDownloadForm() {
         </Button>
 
         <p className="text-center text-xs leading-relaxed text-muted">
-          By downloading, you agree to receive occasional updates from NativeLink.
+          By downloading, you agree to receive occasional updates from NativeLink. You can
+          unsubscribe at any time.
         </p>
       </form>
     </div>
