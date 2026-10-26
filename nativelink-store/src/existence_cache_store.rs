@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use nativelink_config::stores::{EvictionPolicy, ExistenceCacheSpec};
-use nativelink_error::{Error, ResultExt, error_if};
+use nativelink_error::{Code, Error, ResultExt, error_if};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::common::DigestInfo;
@@ -286,11 +286,27 @@ impl<I: InstantWrapper> StoreDriver for ExistenceCacheStore<I> {
             .inner_store
             .get_part(digest, writer, offset, length)
             .await;
-        if result.is_ok() {
-            let _ = self
-                .existence_cache
-                .insert(digest, ExistenceItem(digest.size_bytes()))
-                .await;
+        match &result {
+            Ok(()) => {
+                let _ = self
+                    .existence_cache
+                    .insert(digest, ExistenceItem(digest.size_bytes()))
+                    .await;
+            }
+            // The store below no longer holds a blob we may be vouching
+            // for (deleted from the object store, say, which sends no
+            // removal event). Stop vouching now rather than at the TTL:
+            // a client told the blob is present skips uploading it, and
+            // its retry would ask us again and be told the same.
+            Err(err) if err.code == Code::NotFound => {
+                if self.existence_cache.remove(&digest).await {
+                    debug!(
+                        ?digest,
+                        "Read found no blob; dropped it from the existence cache"
+                    );
+                }
+            }
+            Err(_) => {}
         }
         result
     }

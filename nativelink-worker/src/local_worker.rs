@@ -1266,10 +1266,28 @@ pub async fn new_local_worker(
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
-                resource_enforcement: config
-                    .resource_enforcement
-                    .as_ref()
-                    .and_then(ResourceEnforcement::from_config),
+                resource_enforcement: config.resource_enforcement.as_ref().and_then(
+                    |enforcement| {
+                        let mut resource_enforcement =
+                            ResourceEnforcement::from_config(enforcement)?;
+                        if let Some(pressure_kill) = &mut resource_enforcement.pressure_kill {
+                            pressure_kill.largest_reservation_kb =
+                                crate::capacity::advertised_memory_kb(
+                                    config.capacity.as_ref(),
+                                    config.capacity.as_ref().map_or(0, |capacity| {
+                                        crate::capacity::memory_headroom_percent(
+                                            capacity,
+                                            Some(enforcement),
+                                        )
+                                    }),
+                                    crate::capacity::observe_cgroup(),
+                                    &config.platform_properties,
+                                    &enforcement.memory_property_name,
+                                );
+                        }
+                        Some(resource_enforcement)
+                    },
+                ),
             },
             cas_store: fast_slow_store,
             ac_store,
