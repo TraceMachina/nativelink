@@ -23,7 +23,7 @@ use nativelink_error::Code;
 #[cfg(target_family = "unix")]
 use nativelink_worker::capacity::find_limit;
 use nativelink_worker::capacity::{
-    ObservedCapacity, advertised, free_memory_kb_from, free_memory_kb_with,
+    ObservedCapacity, advertised, advertised_memory_kb, free_memory_kb_from, free_memory_kb_with,
     memory_headroom_percent, own_memory_limit_in, parse_cpu_max, parse_meminfo_available_kb,
     parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
     parse_memory_stat_reclaimable_kb, parse_self_cgroup, resolve_cgroup_dir, without_cgroup,
@@ -53,6 +53,8 @@ fn enforcement(memory: MemoryEnforcement, headroom: u64) -> ResourceEnforcementC
         memory_property_name: "memory_kb".to_string(),
         memory_headroom_percent: headroom,
         disk_headroom_percent: 20,
+        memory_pressure_kill_percent: 0,
+        memory_pressure_kill_after_s: 30,
     }
 }
 
@@ -86,6 +88,37 @@ fn advertised_takes_off_the_overhead_and_the_headroom() {
     };
     assert_eq!(advertised(observed, &config(), 20), (13, 40 * 1024 * 1024));
     assert_eq!(advertised(observed, &config(), 0), (13, 48 * 1024 * 1024));
+}
+
+/// The figure the scheduler sees: the cgroup's when the capacity block sets
+/// the property, else the static one, else nothing.
+#[test]
+fn advertised_memory_is_what_the_scheduler_sees() {
+    let observed = Some(ObservedCapacity {
+        cpu_millicores: 14_000,
+        memory_kb: 52 * 1024 * 1024,
+    });
+    let properties = HashMap::from([(
+        "memory_kb".to_string(),
+        WorkerProperty::Values(vec!["1000".to_string()]),
+    )]);
+    let capacity = config();
+    assert_eq!(
+        advertised_memory_kb(Some(&capacity), 20, observed, &properties, "memory_kb"),
+        Some(40 * 1024 * 1024)
+    );
+    assert_eq!(
+        advertised_memory_kb(Some(&capacity), 20, None, &properties, "memory_kb"),
+        Some(1000)
+    );
+    assert_eq!(
+        advertised_memory_kb(None, 0, observed, &properties, "memory_kb"),
+        Some(1000)
+    );
+    assert_eq!(
+        advertised_memory_kb(Some(&capacity), 20, observed, &properties, "mem"),
+        None
+    );
 }
 
 /// The headroom is typed once: unset, the block follows the enforcement
@@ -508,4 +541,22 @@ fn only_an_own_limit_with_readable_usage_counts_as_limited() {
         dir,
         files(Some("25769803776\n"), None)
     ));
+}
+
+/// `memory.pressure` has a `some` line and a `full` line; the kill reads
+/// the `full` average over ten seconds, the share of time every task in
+/// the cgroup was stalled.
+#[test]
+fn pressure_full_avg10_is_read_from_the_full_line() {
+    use nativelink_worker::capacity::parse_pressure_full_avg10;
+    let text = "some avg10=48.20 avg60=20.00 avg300=5.00 total=1234567\n\
+                full avg10=12.50 avg60=3.00 avg300=1.00 total=123456\n";
+    assert_eq!(parse_pressure_full_avg10(text), Some(12.5));
+    assert_eq!(
+        parse_pressure_full_avg10("some avg10=48.20 avg60=20.00 avg300=5.00 total=1\n"),
+        None,
+        "no full line, no figure"
+    );
+    assert_eq!(parse_pressure_full_avg10("full avg10=x\n"), None);
+    assert_eq!(parse_pressure_full_avg10(""), None);
 }
