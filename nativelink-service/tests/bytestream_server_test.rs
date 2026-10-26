@@ -2532,3 +2532,83 @@ async fn retry_that_sees_the_commit_finish_and_then_disconnects_is_not_parked()
     assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
     Ok(())
 }
+
+/// Like the test above, but the retry is cancelled (its deadline fires and
+/// the handler is dropped) after it saw the commit finish, rather than
+/// failing on its own client stream. Dropping the handler parks the stream
+/// with no chance to clean up, so the finished update must already be kept as
+/// its result: before, it was spawned again and panicked, and the next resume
+/// got an `Internal` error from the panicked task.
+#[nativelink_test]
+async fn retry_cancelled_after_the_commit_finishes_is_not_polled_again()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let (bs_server, inner, gate, eof_received) = make_gated_server(false).await?;
+    let resource_name = make_resource_name(WRITE_DATA.len());
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+    for _ in 0..200 {
+        if eof_received.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        eof_received.load(Ordering::Acquire),
+        "the store never saw EOF"
+    );
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // A retry resends a prefix and waits, so it is mid-stream when the
+    // commit finishes.
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: WRITE_DATA[..5].into(),
+    })?))
+    .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    gate.notify_one();
+    let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+    let mut committed = None;
+    for _ in 0..200 {
+        committed = inner.has(digest).await?;
+        if committed.is_some() {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(committed, Some(WRITE_DATA.len() as u64));
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    // Then that retry is cancelled while it waits for its next chunk.
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: i64::try_from(WRITE_DATA.len())?,
+        finish_write: true,
+        data: Bytes::new(),
+    })?))
+    .await?;
+    let response = tokio::time::timeout(core::time::Duration::from_secs(5), join_handle)
+        .await
+        .expect("resume hung")
+        .expect("task panicked")?
+        .into_inner();
+    assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
+    Ok(())
+}

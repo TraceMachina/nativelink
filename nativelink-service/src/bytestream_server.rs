@@ -409,15 +409,41 @@ async fn process_compressed_client_stream(
 type ReadStream = Pin<Box<dyn Stream<Item = Result<ReadResponse, Status>> + Send + 'static>>;
 type StoreUpdateFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
+/// The store's update for one upload. Once it returns, its result is kept in
+/// place of the future, so whichever request or task picks the stream up
+/// next reads the result instead of polling a finished future again.
+enum StoreUpdate {
+    Running(StoreUpdateFuture),
+    Finished(Result<(), Error>),
+}
+
+impl StoreUpdate {
+    /// Waits for the update and keeps its result. Cancel safe: the result is
+    /// stored in the same poll that produces it, so a request dropped at any
+    /// await leaves either the running future or its result, never a
+    /// finished future.
+    async fn wait(&mut self) -> Result<(), Error> {
+        let result = match self {
+            Self::Finished(result) => return result.clone(),
+            Self::Running(store_update_fut) => store_update_fut.await,
+        };
+        *self = Self::Finished(result.clone());
+        result
+    }
+}
+
 struct StreamState {
     uuid: UuidKey,
     tx: DropCloserWriteHalf,
-    store_update_fut: StoreUpdateFuture,
+    store_update: StoreUpdate,
     digest_function: DigestHasherFunc,
     /// Set once the client's final chunk has been handed to the store with
     /// EOF: from then on the store's update needs nothing more from the
     /// client, only time to commit.
     eof_sent: Arc<AtomicBool>,
+    /// Set once the update runs on a task of its own, so parking the stream
+    /// again does not wrap the task a second time.
+    committing_in_background: bool,
 }
 
 impl Debug for StreamState {
@@ -475,49 +501,57 @@ impl Drop for ActiveStreamGuard {
         // filesystem store's write permits, say) holding its place, and
         // taking a permit when its turn came, until the sweeper dropped it:
         // enough of those and no upload on the instance commits at all.
-        let stream_state = if stream_state.eof_sent.load(Ordering::Acquire) {
-            self.metrics
-                .uploads_finished_in_background
-                .fetch_add(1, Ordering::Relaxed);
-            let StreamState {
-                uuid,
-                tx,
-                store_update_fut,
-                digest_function,
-                eof_sent,
-            } = stream_state;
-            let commit = background_spawn!("bytestream_finish_upload", async move {
-                tokio::time::timeout(BACKGROUND_COMMIT_TIMEOUT, store_update_fut)
-                    .await
-                    .unwrap_or_else(|_| {
-                        warn!(
-                            uuid = format!("{uuid:032x}"),
-                            timeout_s = BACKGROUND_COMMIT_TIMEOUT.as_secs(),
-                            "Abandoned upload did not commit in time; dropping it"
-                        );
-                        Err(make_err!(
-                            Code::DeadlineExceeded,
-                            "Upload commit did not finish within {} s",
-                            BACKGROUND_COMMIT_TIMEOUT.as_secs()
-                        ))
-                    })
-            });
-            StreamState {
-                uuid,
-                tx,
-                store_update_fut: Box::pin(async move {
+        // An update that already finished, or already runs on its own task,
+        // is parked as it is.
+        let StreamState {
+            uuid,
+            tx,
+            store_update,
+            digest_function,
+            eof_sent,
+            mut committing_in_background,
+        } = stream_state;
+        let store_update = match store_update {
+            StoreUpdate::Running(store_update_fut)
+                if eof_sent.load(Ordering::Acquire) && !committing_in_background =>
+            {
+                self.metrics
+                    .uploads_finished_in_background
+                    .fetch_add(1, Ordering::Relaxed);
+                let commit = background_spawn!("bytestream_finish_upload", async move {
+                    tokio::time::timeout(BACKGROUND_COMMIT_TIMEOUT, store_update_fut)
+                        .await
+                        .unwrap_or_else(|_| {
+                            warn!(
+                                uuid = format!("{uuid:032x}"),
+                                timeout_s = BACKGROUND_COMMIT_TIMEOUT.as_secs(),
+                                "Abandoned upload did not commit in time; dropping it"
+                            );
+                            Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "Upload commit did not finish within {} s",
+                                BACKGROUND_COMMIT_TIMEOUT.as_secs()
+                            ))
+                        })
+                });
+                committing_in_background = true;
+                StoreUpdate::Running(Box::pin(async move {
                     commit.await.map_err(|err| {
                         make_err!(Code::Internal, "Upload commit task failed: {err:?}")
                     })?
-                }),
-                digest_function,
-                eof_sent,
+                }))
             }
-        } else {
-            stream_state
+            store_update => store_update,
         };
         active_uploads_slot.1 = Some(IdleStream {
-            stream_state,
+            stream_state: StreamState {
+                uuid,
+                tx,
+                store_update,
+                digest_function,
+                eof_sent,
+                committing_in_background,
+            },
             idle_since: Instant::now(),
         });
     }
@@ -809,9 +843,10 @@ impl ByteStreamServer {
             stream_state: Some(StreamState {
                 uuid,
                 tx,
-                store_update_fut,
+                store_update: StoreUpdate::Running(store_update_fut),
                 digest_function,
                 eof_sent: Arc::new(AtomicBool::new(false)),
+                committing_in_background: false,
             }),
             bytes_received,
             active_uploads: instance.active_uploads.clone(),
@@ -1065,8 +1100,6 @@ impl ByteStreamServer {
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
         let eof_sent = active_stream.eof_sent.clone();
-        let store_done = AtomicBool::new(false);
-        let store_committed = AtomicBool::new(false);
         let result = try_join!(
             process_client_stream(
                 stream,
@@ -1076,22 +1109,24 @@ impl ByteStreamServer {
                 expected_size
             ),
             async {
-                let result = (&mut active_stream.store_update_fut).await;
-                store_done.store(true, Ordering::Relaxed);
-                store_committed.store(result.is_ok(), Ordering::Relaxed);
-                result.map_err(|err| err.append("Error updating inner store"))
+                active_stream
+                    .store_update
+                    .wait()
+                    .await
+                    .map_err(|err| err.append("Error updating inner store"))
             }
         );
         if let Err(err) = result {
-            // A store update that already returned cannot be polled again.
             // A commit stays parked as its result, so a resume collects the
-            // committed size; anything else is dropped, so a retry starts over.
-            if store_done.load(Ordering::Relaxed) {
-                if store_committed.load(Ordering::Relaxed) && eof_sent.load(Ordering::Acquire) {
-                    active_stream.store_update_fut = Box::pin(core::future::ready(Ok(())));
-                } else {
-                    active_stream_guard.graceful_finish();
-                }
+            // committed size; a store update that failed, or returned before
+            // EOF, is dropped, so a retry starts over.
+            let start_over = matches!(
+                &active_stream.store_update,
+                StoreUpdate::Finished(store_result)
+                    if store_result.is_err() || !eof_sent.load(Ordering::Acquire)
+            );
+            if start_over {
+                active_stream_guard.graceful_finish();
             }
             return Err(err);
         }
