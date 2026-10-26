@@ -49,7 +49,7 @@ export async function recordBookDownload({ email, time }: BookDownload): Promise
   try {
     // Plain text: the address is caller-controlled and must never be rendered as markup.
     const notification = await resend("/emails", apiKey, {
-      from: "Nativelink System <system@nativelink.com>",
+      from: "NativeLink System <system@nativelink.io>",
       to: [NOTIFY_ADDRESS],
       subject: "New O'Reilly book download",
       text: `New book download from ${email}\nTime: ${time}\n`,
