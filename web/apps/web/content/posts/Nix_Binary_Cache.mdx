@@ -1,156 +1,136 @@
 ---
-title: "One Cache for Bazel and Nix: NativeLink Now Serves a Nix Binary Cache from the CAS"
-tags: ["nix", "binary-cache", "build-acceleration", "blog-posts"]
+title: "Serve a Nix Binary Cache from Your NativeLink CAS: A Fifteen-Minute Tutorial"
+tags: ["tutorial", "nix", "binary-cache", "build-acceleration", "blog-posts"]
 image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp
 slug: nix-binary-cache
 pubDate: 2026-10-26
-readTime: 7 minutes
+readTime: 8 minutes
 ---
 
-## One Cache for Bazel and Nix: NativeLink Now Serves a Nix Binary Cache from the CAS
+## Serve a Nix Binary Cache from Your NativeLink CAS: A Fifteen-Minute Tutorial
 
 If your team builds with Bazel or Buck2 *and* with Nix, you have probably been
 running two cache fleets: a content-addressable store (CAS) for remote
 execution, and a separate Nix binary cache — an S3 bucket, or another
 service — with its own storage, its own eviction story, and its own
-operational surface. NativeLink now collapses that into one deployment: the
-new `nix_cache` service serves the Nix HTTP binary-cache protocol directly
-from the same stores that back your gRPC CAS.
+operational surface. NativeLink's new `nix_cache` service collapses that into
+one deployment: it serves the Nix HTTP binary-cache protocol directly from
+the same stores that back your gRPC CAS. Each NAR is an ordinary CAS blob
+keyed by `sha256(nar)`, so verification, fast/slow tiering,
+completeness checking, and eviction compose with it exactly as they do for
+Bazel traffic.
 
-Point stock `nix` at a NativeLink listener with nothing but a `substituters`
-entry, and it pushes and pulls store paths the way it would against
-`cache.nixos.org` — with signing, access tokens, and read-through to upstream
-caches handled by the server.
+This tutorial takes you from zero to a working cache that stock `nix` pushes
+to and pulls from, in about fifteen minutes. At the end we'll point at the
+production knobs — signing, tokens, and read-through to `cache.nixos.org` —
+and at the two client binaries that ship alongside the server.
 
 -----
 
-### What shipped
+### Prerequisites
 
-The `nix_cache` service is the one service on a NativeLink listener that
-speaks plain HTTP rather than gRPC. It mounts a router at
-`/nix/<instance_name>` and answers the three endpoints the Nix binary-cache
-protocol is made of: `nix-cache-info`, `.narinfo` metadata lookups, and
-`nar/` downloads.
+* A `nix` client, 2.18 or newer.
+* A checkout of [NativeLink](https://github.com/TraceMachina/nativelink), or
+  flakes enabled so `nix run github:TraceMachina/nativelink` works.
 
-The important design decision is what a store path *is* inside NativeLink:
-each NAR is an ordinary CAS blob keyed by `sha256(nar)`, plus a small
-path-info record holding the `.narinfo` metadata (references, the deriving
-derivation, signatures). Because NARs are just blobs, everything you already use for
-Bazel traffic composes with them unchanged: `verify` wrappers re-hash every
-upload, `fast_slow` tiers hot content in front of cheap bulk storage,
-`completeness_checking` makes sure a `.narinfo` whose NAR was evicted answers
-404 instead of advertising bytes the cache cannot serve, and eviction
-policies apply as they do everywhere else. A NAR store may even be the same
-store your gRPC CAS uses.
+-----
 
-Alongside the server, the `nativelink-nix-client` crate ships two binaries:
+### 1. Start NativeLink with the Nix cache example config
+
+The repository ships
+[`basic_cas_with_nix.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas_with_nix.json5):
+the standard CAS/scheduler/worker example plus three stores and one
+`nix_cache` service entry. The Nix NAR store in it reuses the *same*
+content-addressed store as the gRPC CAS, so Nix NARs and Bazel blobs live
+side by side in one store.
+
+```bash
+curl -O https://raw.githubusercontent.com/TraceMachina/nativelink/main/nativelink-config/examples/basic_cas_with_nix.json5
+nix run github:TraceMachina/nativelink -- basic_cas_with_nix.json5
+```
+
+The cache root is now `http://localhost:50051/nix/main`, on the same
+listener as the gRPC services. Confirm it answers:
+
+```bash
+curl http://localhost:50051/nix/main/nix-cache-info
+```
+
+You should get a 200 with `StoreDir: /nix/store` and `Priority: 40`.
+
+### 2. Point nix at it
+
+The example config serves unsigned metadata (`signing_key_files: []`), so
+for this walkthrough tell `nix` not to require signatures. Build something
+small and push its closure:
+
+```bash
+nix build nixpkgs#hello
+nix copy --to 'http://localhost:50051/nix/main' ./result
+```
+
+Then pull it back the way a second machine would — substitute instead of
+building:
+
+```bash
+nix copy --no-require-sigs --from 'http://localhost:50051/nix/main' \
+  $(readlink ./result)
+```
+
+### 3. Look at what the cache stored
+
+Every store path becomes one `.narinfo` metadata record plus one NAR blob in
+the CAS. Fetch the record for the path you just pushed:
+
+```bash
+curl "http://localhost:50051/nix/main/$(basename $(readlink ./result) | cut -c1-32).narinfo"
+```
+
+That is the whole protocol surface: `nix-cache-info`, `.narinfo` lookups,
+and `nar/` downloads. Point the `substituters` line of any machine's
+`nix.conf` at the URL and it substitutes from your CAS.
+
+-----
+
+### Going to production
+
+Three decisions separate the demo from a cache you can put in front of a
+team. All of them are config, not code:
+
+* **Sign what you serve.** Generate a key once with
+  `nix key generate-secret`, list it in `signing_key_files`, and every
+  served `.narinfo` gets a `Sig` line. List two keys during a rotation.
+  Clients then pin the public half in `trusted-public-keys` and you drop the
+  `--no-require-sigs` crutch.
+* **Gate reads and writes.** Public listeners set `read_only`, which turns
+  every `PUT` into a 405. Private caches gate access on bearer tokens, which
+  stock `nix` sends as the password from a `netrc` entry.
+* **Read through to upstream.** `upstream_caches` turns a local miss into a
+  fetch from `cache.nixos.org`: the upstream signature is verified against
+  the keys you trust, the path is ingested once, and it is served locally
+  from then on.
+
+The full walkthrough of these — plus the store-wrapper reasoning
+(`verify` on the NAR store, `completeness_checking` on the path-info store
+so an evicted NAR answers 404 instead of advertising bytes the cache cannot
+serve) and a troubleshooting table for the classic failure modes — is in the
+[Serve a Nix binary cache](https://github.com/TraceMachina/nativelink/blob/main/web/apps/docs/content/docs/how-to/nix-binary-cache.mdx)
+how-to guide.
+
+-----
+
+### The clients: nl-nix and nl-watch-store
+
+Stock `nix` is all you need, but the `nativelink-nix-client` crate ships two
+binaries for the paths where stock tooling is slow or manual:
 
 * **`nl-nix`** — a push/pull client that streams zstd end to end and
   verifies `.narinfo` signatures on pull against the public keys you pass
   with `--trusted-public-key`, refusing unsigned metadata unless you
   explicitly say `--no-check-sigs`.
-* **`nl-watch-store`** — a daemon (Linux only) that watches `/nix/store` and
-  pushes every newly built path to the cache as it lands, so CI machines and
+* **`nl-watch-store`** — a daemon (Linux only) that watches `/nix/store`
+  and pushes every newly built path as it lands, so CI machines and
   developer workstations populate the cache as a side effect of building.
-
------
-
-### The twenty-minute setup
-
-A cache is three named stores and one service entry. The NAR store holds the
-bytes; the path-info store holds one record per store path; a small alias
-store maps client-chosen NAR URLs back to digests.
-
-```json5
-{
-  stores: [
-    {
-      name: "NIX_NAR_STORE",
-      verify: {
-        verify_size: true,
-        verify_hash: true,
-        backend: {
-          fast_slow: {
-            fast: { filesystem: { /* hot tier with a small eviction limit */ } },
-            slow: { filesystem: { /* bulk tier */ } },
-          },
-        },
-      },
-    },
-    {
-      name: "NIX_PATH_INFO_STORE",
-      completeness_checking: {
-        backend: { memory: { eviction_policy: { max_bytes: 100000000 } } },
-        cas_store: { ref_store: { name: "NIX_NAR_STORE" } },
-      },
-    },
-    {
-      name: "NIX_ALIAS_STORE",
-      memory: { eviction_policy: { max_bytes: 100000000 } },
-    },
-  ],
-  servers: [
-    {
-      name: "nix_cache",
-      listener: { http: { socket_address: "0.0.0.0:50071" } },
-      services: {
-        nix_cache: [
-          {
-            instance_name: "main",
-            cas_store: "NIX_NAR_STORE",
-            path_info_store: "NIX_PATH_INFO_STORE",
-            alias_store: "NIX_ALIAS_STORE",
-            signing_key_files: ["/etc/nativelink/nix-cache.key"],
-          },
-        ],
-      },
-    },
-  ],
-}
-```
-
-Generate a signing key once and publish its public half:
-
-```bash
-nix key generate-secret --key-name nix-cache.example.org-1 > /etc/nativelink/nix-cache.key
-nix key convert-secret-to-public < /etc/nativelink/nix-cache.key
-```
-
-Then clients need two lines of `nix.conf`:
-
-```ini
-substituters = http://cache.example.org:50071/nix/main https://cache.nixos.org
-trusted-public-keys = nix-cache.example.org-1:<base64> cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-```
-
-And the round trip is stock `nix`:
-
-```bash
-nix copy --to 'http://cache.example.org:50071/nix/main' ./result
-nix copy --from 'http://cache.example.org:50071/nix/main' /nix/store/<hash>-<name>
-```
-
-A complete remote-execution stack with the Nix cache on the same listener is
-in the repository as
-[`basic_cas_with_nix.json5`](https://github.com/TraceMachina/nativelink/blob/main/nativelink-config/examples/basic_cas_with_nix.json5).
-
------
-
-### Policy knobs that matter in production
-
-* **Signing and rotation.** Every served `.narinfo` gets one `Sig` line per
-  key in `signing_key_files`, so you can list two keys during a rotation.
-* **Access control.** Public listeners set `read_only`, turning every `PUT`
-  into a 405. Private caches gate reads and writes on bearer tokens, which
-  stock `nix` sends as the password from a `netrc` entry.
-* **Read-through.** `upstream_caches` turns a local miss into a fetch from
-  `cache.nixos.org` (or any upstream you name): the upstream signature is
-  verified against the keys you trust, the path is ingested once, and it is
-  served locally from then on. An upstream with no trusted keys is refused at
-  startup.
-* **Compression.** By default a push is served back in the compression the
-  client used; set `serve_compression` to `"zstd"` to transcode uncompressed
-  uploads once at ingest.
 
 -----
 
@@ -165,14 +145,6 @@ nothing in the service evaluates Nix expressions. What Bazel, Buck2, and Nix
 share is the thing that is expensive to run twice: the storage, its fast and
 slow tiers, verification, eviction, and the listener.
 
------
-
-### Get started
-
-The full walkthrough — including the troubleshooting table for the classic
-failure modes, like Nix quietly disabling a substituter for a minute after a
-single 5xx — is in the new
-[Serve a Nix binary cache](https://github.com/TraceMachina/nativelink/blob/main/web/apps/docs/content/docs/how-to/nix-binary-cache.mdx)
-how-to guide. If you already run [NativeLink](https://github.com/TraceMachina/nativelink)
+If you already run [NativeLink](https://github.com/TraceMachina/nativelink)
 for remote execution, your Nix builds can be substituting from it this
 afternoon.
