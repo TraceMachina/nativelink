@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -43,11 +44,12 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::operation_state_manager::{ActionStateResult, ActionStateResultStream};
 use nativelink_util::origin_event::{
     BAZEL_METADATA_KEY, OriginMetadata, request_metadata_to_baggage,
 };
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{StoreDriver, StoreLike};
 use opentelemetry::KeyValue;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::{Context, FutureExt};
@@ -652,5 +654,158 @@ async fn operations_wait_operation_timeout() -> Result<(), Box<dyn core::error::
     assert_eq!(operation.name, operation_name);
     assert!(!operation.done);
 
+    Ok(())
+}
+
+/// A store that loses a blob without telling anyone, as an object store
+/// does when its lifecycle rule or an operator deletes it.
+#[derive(nativelink_metric::MetricsComponent)]
+struct SilentStore {
+    inner: Arc<nativelink_store::memory_store::MemoryStore>,
+}
+
+#[async_trait]
+impl StoreDriver for SilentStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[nativelink_util::store_trait::StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(keys, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: nativelink_util::store_trait::StoreKey<'_>,
+        reader: nativelink_util::buf_channel::DropCloserReadHalf,
+        size_info: nativelink_util::store_trait::UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        Pin::new(self.inner.as_ref())
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: nativelink_util::store_trait::StoreKey<'_>,
+        writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(
+        &self,
+        _key: Option<nativelink_util::store_trait::StoreKey>,
+    ) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: nativelink_util::store_trait::RemoveCallback,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SilentStore);
+
+/// A blob can leave the object store after the existence cache learned it,
+/// and the cache is told nothing. The action that needs it then fails with
+/// the blob missing; the execution server must stop vouching for it before
+/// the client hears, or the client's retry asks `FindMissingBlobs`, is told
+/// the blob is present, uploads nothing, and fails the same way until the
+/// cache entry expires.
+#[nativelink_test]
+async fn missing_input_drops_the_blob_from_the_existence_cache()
+-> Result<(), Box<dyn core::error::Error>> {
+    use futures::StreamExt as _;
+    use nativelink_config::stores::{ExistenceCacheSpec, NoopSpec};
+    use nativelink_error::ErrorContext;
+    use nativelink_store::existence_cache_store::ExistenceCacheStore;
+    use nativelink_store::memory_store::MemoryStore;
+    use nativelink_util::store_trait::Store;
+
+    let inner = Arc::new(SilentStore {
+        inner: MemoryStore::new(&MemorySpec::default()),
+    });
+    let cache = ExistenceCacheStore::new(
+        &ExistenceCacheSpec {
+            backend: StoreSpec::Noop(NoopSpec::default()),
+            eviction_policy: None,
+        },
+        Store::new(inner.clone()),
+    );
+    let store_manager = StoreManager::new();
+    store_manager.add_store("main_cas", Store::new(cache.clone()))?;
+    let (execution_server, mock_scheduler) = make_execution_server(&store_manager)?;
+
+    let digest = make_fake_digest(0xbb, 3);
+    Store::new(inner.clone())
+        .update_oneshot(digest, "abc".into())
+        .await?;
+    assert_eq!(Store::new(cache.clone()).has(digest).await?, Some(3));
+    // Gone below the cache, which still vouches for it.
+    assert!(inner.inner.remove_entry(digest.into()).await);
+    assert!(cache.exists_in_cache(&digest).await);
+
+    let mut error = make_err!(
+        Code::NotFound,
+        "Object {digest} not found in either fast or slow store"
+    );
+    error.context = ErrorContext::MissingDigest {
+        hash: digest.packed_hash().to_string(),
+        size: 3,
+    };
+    let failed = Arc::new(ActionState {
+        client_operation_id: OperationId::from("some_operation_id"),
+        stage: ActionStage::Completed(ActionResult {
+            error: Some(error),
+            ..ActionResult::default()
+        }),
+        action_digest: make_fake_digest(0xaa, 16),
+        last_transition_timestamp: SystemTime::UNIX_EPOCH,
+    });
+    let stream: ActionStateResultStream = Box::pin(stream::once(async move {
+        let result: Box<dyn ActionStateResult> = Box::new(MockActionStateResult {
+            states: vec![failed],
+        });
+        result
+    }));
+    let (response, _) = tokio::join!(
+        execution_server.wait_execution(Request::new(
+            nativelink_proto::build::bazel::remote::execution::v2::WaitExecutionRequest {
+                name: format!("{INSTANCE_NAME}/some_operation_id"),
+            }
+        )),
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+    let mut updates = response?.into_inner();
+    while let Some(update) = updates.next().await {
+        update?;
+    }
+    assert!(
+        !cache.exists_in_cache(&digest).await,
+        "the execution server must drop a missing input from the existence cache"
+    );
+    assert_eq!(Store::new(cache).has(digest).await?, None);
     Ok(())
 }
