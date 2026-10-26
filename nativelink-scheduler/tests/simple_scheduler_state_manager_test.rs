@@ -36,7 +36,7 @@ use nativelink_scheduler::awaited_action_db::{
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::simple_scheduler_state_manager::{
-    SimpleSchedulerStateManager, TimeoutCause,
+    SimpleSchedulerStateManager, SweptAttempt, TimeoutCause,
 };
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_registry::WorkerRegistry;
@@ -1415,7 +1415,7 @@ async fn executing_sweep_retires_a_silent_action_without_a_client() -> Result<()
         .await?;
     assert_eq!(report.retired, 0);
     assert_eq!(report.requeued, 0);
-    assert!(report.ended.is_empty());
+    assert_eq!(report.ended, Vec::<SweptAttempt>::new());
     // Five minutes executing: counted in the 5m to 15m bucket.
     assert_eq!(report.ages.counts(), [0, 0, 1, 0, 0, 0]);
     assert_eq!(report.ages.oldest(), Duration::from_mins(5));
