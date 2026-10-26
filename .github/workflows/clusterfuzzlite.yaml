@@ -21,15 +21,17 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  fuzz:
+  build:
     # `branches` above filters the base. The head check keeps this off
     # ordinary pull requests. Other events always run.
     if: >-
       github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'release/') ||
       startsWith(github.event.pull_request.title, 'Release NativeLink')
-    name: Fuzz
+    name: Build
     runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -45,7 +47,50 @@ jobs:
           language: rust
           sanitizer: address
 
-      - name: Run fuzzers
+      - name: Discover fuzz targets
+        id: targets
+        run: |
+          targets="$(find out -maxdepth 1 -type f -perm -111 -printf '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0))')"
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload fuzzers
+        uses: >- # v4.6.2
+          actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: fuzzers-${{ github.run_id }}
+          path: out
+          if-no-files-found: error
+          retention-days: 1
+
+  fuzz:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.build.outputs.targets) }}
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Download fuzzers
+        uses: >- # v4.3.0
+          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: fuzzers-${{ github.run_id }}
+          path: all-fuzzers
+
+      - name: Select fuzzer
+        run: |
+          mkdir -p out
+          cp "all-fuzzers/${{ matrix.target }}" "out/${{ matrix.target }}"
+          chmod +x "out/${{ matrix.target }}"
+
+      - name: Run fuzzer
         uses: >- # v1
           google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
         with:
