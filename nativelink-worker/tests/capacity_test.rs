@@ -23,7 +23,7 @@ use nativelink_error::Code;
 #[cfg(target_family = "unix")]
 use nativelink_worker::capacity::find_limit;
 use nativelink_worker::capacity::{
-    ObservedCapacity, advertised, free_memory_kb_from, free_memory_kb_with,
+    ObservedCapacity, advertised, advertised_memory_kb, free_memory_kb_from, free_memory_kb_with,
     memory_headroom_percent, own_memory_limit_in, parse_cpu_max, parse_meminfo_available_kb,
     parse_meminfo_total_kb, parse_memory_current_kb, parse_memory_max,
     parse_memory_stat_reclaimable_kb, parse_self_cgroup, resolve_cgroup_dir, without_cgroup,
@@ -88,6 +88,37 @@ fn advertised_takes_off_the_overhead_and_the_headroom() {
     };
     assert_eq!(advertised(observed, &config(), 20), (13, 40 * 1024 * 1024));
     assert_eq!(advertised(observed, &config(), 0), (13, 48 * 1024 * 1024));
+}
+
+/// The figure the scheduler sees: the cgroup's when the capacity block sets
+/// the property, else the static one, else nothing.
+#[test]
+fn advertised_memory_is_what_the_scheduler_sees() {
+    let observed = Some(ObservedCapacity {
+        cpu_millicores: 14_000,
+        memory_kb: 52 * 1024 * 1024,
+    });
+    let properties = HashMap::from([(
+        "memory_kb".to_string(),
+        WorkerProperty::Values(vec!["1000".to_string()]),
+    )]);
+    let capacity = config();
+    assert_eq!(
+        advertised_memory_kb(Some(&capacity), 20, observed, &properties, "memory_kb"),
+        Some(40 * 1024 * 1024)
+    );
+    assert_eq!(
+        advertised_memory_kb(Some(&capacity), 20, None, &properties, "memory_kb"),
+        Some(1000)
+    );
+    assert_eq!(
+        advertised_memory_kb(None, 0, observed, &properties, "memory_kb"),
+        Some(1000)
+    );
+    assert_eq!(
+        advertised_memory_kb(Some(&capacity), 20, observed, &properties, "mem"),
+        None
+    );
 }
 
 /// The headroom is typed once: unset, the block follows the enforcement

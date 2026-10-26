@@ -122,6 +122,28 @@ pub const fn advertised(
     (cpu, memory)
 }
 
+/// The largest memory reservation the scheduler can match to this worker:
+/// what it advertises under `property`, from the cgroup when the capacity
+/// block sets that property and the cgroup was read, else from the static
+/// platform properties. `None` when the worker advertises no such figure.
+pub fn advertised_memory_kb<S: BuildHasher>(
+    capacity: Option<&CapacityConfig>,
+    memory_headroom_percent: u64,
+    observed: Option<ObservedCapacity>,
+    properties: &HashMap<String, WorkerProperty, S>,
+    property: &str,
+) -> Option<u64> {
+    if let (Some(config), Some(observed)) = (capacity, observed)
+        && config.memory_property_name == property
+    {
+        return Some(advertised(observed, config, memory_headroom_percent).1);
+    }
+    match properties.get(property)? {
+        WorkerProperty::Values(values) => values.iter().filter_map(|v| v.parse().ok()).max(),
+        WorkerProperty::QueryCmd(_) => None,
+    }
+}
+
 /// What to do when the cgroup cannot be read: the configured properties
 /// stand if they carry both numbers, since an operator who kept them has a
 /// worker that still takes work; a worker with neither would register and

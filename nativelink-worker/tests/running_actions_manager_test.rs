@@ -10588,6 +10588,49 @@ done
         );
     }
 
+    /// With 20% headroom a 52 GiB pod advertises 40 GiB, so the largest
+    /// reservation it is ever given is 40 GiB, well under its cgroup limit.
+    /// An action holding that whole figure is still never the victim.
+    #[test]
+    fn pressure_victim_skips_an_action_reserving_the_advertised_memory() {
+        use nativelink_config::cas_server::{CapacityConfig, CpuUnit, WorkerProperty};
+        use nativelink_worker::capacity::{ObservedCapacity, advertised_memory_kb};
+        use nativelink_worker::running_actions_manager::{PressureCandidate, pick_pressure_victim};
+        const GIB: u64 = 1024 * 1024;
+        let capacity = CapacityConfig {
+            cpu_property_name: "cpu_count".to_string(),
+            memory_property_name: "memory_kb".to_string(),
+            cpu_unit: CpuUnit::Cores,
+            overhead_cpu_millicores: 1000,
+            overhead_memory_kb: 4 * GIB,
+            memory_headroom_percent: None,
+        };
+        let largest = advertised_memory_kb(
+            Some(&capacity),
+            20,
+            Some(ObservedCapacity {
+                cpu_millicores: 14_000,
+                memory_kb: 52 * GIB,
+            }),
+            &HashMap::<String, WorkerProperty>::new(),
+            "memory_kb",
+        );
+        assert_eq!(largest, Some(40 * GIB));
+        let candidates = || {
+            [PressureCandidate {
+                item: "whole",
+                last_kb: 45 * GIB,
+                reserved_kb: 40 * GIB,
+                kill_requested: false,
+            }]
+        };
+        assert_eq!(
+            pick_pressure_victim(candidates(), Some(52 * GIB)),
+            Some("whole")
+        );
+        assert_eq!(pick_pressure_victim(candidates(), largest), None);
+    }
+
     /// An action running `arguments` on a manager with `memory: soft` and
     /// the pressure kill armed at a threshold the host never reaches, so
     /// only the test asks for a kill, under a 1 GiB reservation.
@@ -10618,6 +10661,7 @@ done
                         pressure_kill: Some(PressureKill {
                             full_avg10_percent: 100,
                             after: Duration::from_hours(1),
+                            largest_reservation_kb: None,
                         }),
                     }),
                     ..Default::default()

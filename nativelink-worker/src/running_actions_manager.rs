@@ -4963,6 +4963,9 @@ pub struct PressureKill {
     pub full_avg10_percent: u64,
     /// For this long without a break.
     pub after: Duration,
+    /// The largest memory reservation the worker advertises; an action
+    /// holding it is never the victim. `None` falls back to the cgroup limit.
+    pub largest_reservation_kb: Option<u64>,
 }
 
 /// The reservation a memory ceiling is built from.
@@ -4999,6 +5002,7 @@ impl ResourceEnforcement {
         let pressure_kill = (config.memory_pressure_kill_percent > 0).then(|| PressureKill {
             full_avg10_percent: config.memory_pressure_kill_percent.min(100),
             after: Duration::from_secs(config.memory_pressure_kill_after_s.max(1)),
+            largest_reservation_kb: None,
         });
         if pressure_kill.is_some() && memory.is_none() {
             warn!(
@@ -5996,7 +6000,9 @@ async fn memory_pressure_monitor(manager: Weak<RunningActionsManagerImpl>, polic
                 reserved_kb: action.memory_watch.reserved_memory_kb(),
                 kill_requested: action.memory_watch.kill_requested(),
             }),
-            manager.pod_memory_limit_kb,
+            policy
+                .largest_reservation_kb
+                .or(manager.pod_memory_limit_kb),
         ) else {
             warn!(
                 full_avg10,
