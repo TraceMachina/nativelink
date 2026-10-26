@@ -25,12 +25,22 @@ class BenchmarkTest(unittest.TestCase):
             self.assertNotIn(hosted_build, workflow)
         self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
         self.assertIn("inputs.repetitions || '1'", workflow)
-        self.assertIn('group: cluster-ci-${{ github.ref }}', workflow)
+        self.assertNotIn('group: cluster-ci-${{ github.ref }}', workflow)
         self.assertEqual(cluster_ci.SUPERVISOR, '/opt/ci/ci_supervisor.py')
         self.assertNotIn('  nix-bazel:', Path('.github/workflows/nix.yaml').read_text())
         pinned_version = Path('.bazelversion').read_text().strip()
         self.assertNotIn(f'bazel_version: {pinned_version}',
                          Path('.github/workflows/native-bazel.yaml').read_text())
+
+    def test_bazel_and_nix_queue_for_the_same_retained_checkout(self):
+        # A per-branch/workflow key lets both producers start and spend the
+        # pod admission budget fighting for the same checkout lock.
+        for filename, job in (('parallel-cluster-ci.yaml', 'cluster'), ('nix.yaml', 'nix-build')):
+            with self.subTest(workflow=filename):
+                workflow = Path('.github/workflows', filename).read_text()
+                producer = workflow.split(f'  {job}:\n', 1)[1].split('    steps:', 1)[0]
+                self.assertIn('    concurrency:\n      group: retained-cluster-client\n'
+                              '      cancel-in-progress: false\n      queue: max\n', producer)
 
     def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
         with tempfile.TemporaryDirectory() as directory:

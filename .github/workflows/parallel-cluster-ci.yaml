@@ -21,10 +21,6 @@ permissions:
 # The hosted job dispatches work; Nix, downloads and Bazel stay on the cluster.
 # Outside fork workflows require repository approval and do not receive this
 # environment or its credentials.
-concurrency:
-  group: cluster-ci-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   cluster:
     if: >-
@@ -32,6 +28,12 @@ jobs:
       startsWith(github.ref, 'refs/heads/') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     name: NativeLink / Linux
+    # Both producers mutate the same retained checkout. Queue before allocating
+    # a runner; keep pending jobs instead of replacing another branch's check.
+    concurrency:
+      group: retained-cluster-client
+      cancel-in-progress: false
+      queue: max
     environment: cluster-ci-benchmark
     permissions:
       contents: read

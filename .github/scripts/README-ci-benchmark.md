@@ -96,6 +96,14 @@ that supervisor before this dispatcher: `/opt/ci/ci_supervisor.py bridge` is a
 versioned protocol installed outside the mutable checkout. An unavailable
 supervisor stops dispatch before a command can start.
 
+The Bazel and Nix producer jobs share a GitHub concurrency group with
+`queue: max`. Jobs wait before allocating a runner instead of spending the
+pod's admission budget waiting for the shared checkout. Pending jobs remain
+queued, and the Nix artifact consumers still run in parallel. See
+[GitHub's concurrency queue documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+Older workflow revisions do not join this queue automatically; let their
+active jobs finish during rollout.
+
 The GitHub dispatcher sends heartbeats every 10 seconds. A 60-second heartbeat
 gap, disconnect, explicit cancellation or 150-minute execution deadline triggers
 pod-side cleanup before the next checkout can begin. Queue admission has a
@@ -108,7 +116,7 @@ use `--noblock_for_lock`, including the supervisor's idle probe. After cancellat
 cleanup first interrupts the command; only an unresponsive owned server is
 restarted. Disk, repository and Nix caches remain intact. A supervisor failure
 causes container recovery, which loses in-memory analysis but preserves persistent volumes.
-GitHub concurrency remains per branch so one PR cannot cancel another branch.
+Neither producer cancels an active or pending job from another branch.
 
 The timeout test distinguishes a terminated zombie from a live child. That
 expectation issue was discovered during a soak test in our systems; host reaping

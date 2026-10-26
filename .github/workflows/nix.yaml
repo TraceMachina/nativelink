@@ -22,6 +22,7 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   # Credentialed work uses reviewed repository branches, like the Bazel lane.
@@ -32,6 +33,11 @@ jobs:
       startsWith(github.ref, 'refs/heads/') &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     name: Build shared Nix package
+    # Match the Bazel producer; downstream artifact consumers remain parallel.
+    concurrency:
+      group: retained-cluster-client
+      cancel-in-progress: false
+      queue: max
     environment: cluster-ci-benchmark
     permissions:
       contents: read
