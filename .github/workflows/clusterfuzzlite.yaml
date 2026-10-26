@@ -72,6 +72,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Select fuzz target
+        run: printf '%s\n' '${{ matrix.target }}' > .clusterfuzzlite/fuzz-target
+
       - name: Build fuzzer
         uses: >- # v1
           google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1

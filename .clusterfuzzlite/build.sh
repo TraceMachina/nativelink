@@ -1,9 +1,14 @@
 #!/bin/bash -eu
 
 fuzz_dir="$SRC/nativelink/nativelink-test/fuzz"
+target="${FUZZ_TARGET:-}"
 
-if [[ -n ${FUZZ_TARGET:-} ]]; then
-    cargo fuzz build --fuzz-dir "$fuzz_dir" "$FUZZ_TARGET"
+if [[ -z $target && -f "$SRC/nativelink/.clusterfuzzlite/fuzz-target" ]]; then
+    target="$(< "$SRC/nativelink/.clusterfuzzlite/fuzz-target")"
+fi
+
+if [[ -n $target ]]; then
+    cargo fuzz build --fuzz-dir "$fuzz_dir" "$target"
 else
     cargo fuzz build --fuzz-dir "$fuzz_dir"
 fi
@@ -14,8 +19,8 @@ mapfile -t targets < <(
         --format-version 1 |
         jq -r '.packages[0].targets[] | select(.kind | index("bin")) | .name'
 )
-if [[ -n ${FUZZ_TARGET:-} ]]; then
-    targets=("$FUZZ_TARGET")
+if [[ -n $target ]]; then
+    targets=("$target")
 fi
 for target in "${targets[@]}"; do
     cp "$fuzz_dir/target/x86_64-unknown-linux-gnu/release/$target" "$OUT/$target"
