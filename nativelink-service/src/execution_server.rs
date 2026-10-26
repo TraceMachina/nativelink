@@ -24,7 +24,7 @@ use bytes::Bytes;
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName, WithInstanceName};
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Error, ErrorContext, ResultExt, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
     Execution, ExecutionServer as Server,
 };
@@ -41,10 +41,11 @@ use nativelink_proto::google::rpc::{
 };
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
-    TypeUrl,
+    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY,
+    OperationId, TypeUrl,
 };
 use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
@@ -63,6 +64,31 @@ use tracing::{Instrument, Level, debug, error, error_span, instrument, warn};
 /// scheduling stream begins. Stream is the happy path; Reject is a
 /// client-facing gRPC `Status` returned without going through NL's
 /// internal Error/instrumentation pipeline.
+/// When an action fails because one of its blobs is missing, stop this
+/// instance's existence cache vouching for that blob before the client
+/// hears about it. Bazel answers the failure by asking `FindMissingBlobs`
+/// again and uploading what it is told is missing; if the cache still
+/// says present (the blob left the object store, which sends no removal
+/// event, after the cache learned it), nothing is uploaded and the retry
+/// fails the same way until the cache entry expires.
+async fn forget_missing_input(cas_store: &Store, stage: &ActionStage) {
+    let ActionStage::Completed(result) = stage else {
+        return;
+    };
+    let Some(ErrorContext::MissingDigest { hash, size }) =
+        result.error.as_ref().map(|err| &err.context)
+    else {
+        return;
+    };
+    let Ok(digest) = DigestInfo::try_new(hash, *size) else {
+        return;
+    };
+    if let Some(cache) = cas_store.downcast_ref::<ExistenceCacheStore<SystemTime>>(None) {
+        cache.remove_from_cache(&digest).await;
+        debug!(%digest, "Action input missing; dropped it from the existence cache");
+    }
+}
+
 enum ExecuteOutcome<S> {
     Stream(S),
     Reject(Status),
@@ -338,15 +364,18 @@ impl ExecutionServer {
     fn to_execute_stream(
         nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
+        cas_store: Store,
     ) -> impl Stream<Item = Result<Operation, Status>> + Send + use<> {
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
         unfold(Some(action_listener), move |maybe_action_listener| {
             let client_operation_id = client_operation_id.clone();
+            let cas_store = cas_store.clone();
             async move {
                 let mut action_listener = maybe_action_listener?;
                 match action_listener.changed().await {
                     Ok((action_update, _maybe_origin_metadata)) => {
                         debug!(?action_update, "Execute Resp Stream");
+                        forget_missing_input(&cas_store, &action_update.stage).await;
                         Some((
                             Ok(action_update.as_operation(client_operation_id)),
                             (!action_update.stage.is_finished()).then_some(action_listener),
@@ -490,6 +519,7 @@ impl ExecutionServer {
                     .clone(),
             ),
             action_listener,
+            instance_info.cas_store.clone(),
         )))
     }
 
@@ -525,7 +555,11 @@ impl ExecutionServer {
         else {
             return Err(Status::not_found("Failed to find existing task"));
         };
-        Ok(Self::to_execute_stream(&nl_operation_id, rx))
+        Ok(Self::to_execute_stream(
+            &nl_operation_id,
+            rx,
+            instance_info.cas_store.clone(),
+        ))
     }
 }
 

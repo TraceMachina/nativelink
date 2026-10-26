@@ -20,8 +20,8 @@ use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::google::rpc::PreconditionFailure;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionResult, ActionUniqueKey, ActionUniqueQualifier, ExecutionMetadata,
-    INTERNAL_ERROR_EXIT_CODE, TypeUrl, to_execute_response,
+    ActionInfo, ActionResult, ActionStage, ActionUniqueKey, ActionUniqueQualifier,
+    ExecutionMetadata, INTERNAL_ERROR_EXIT_CODE, TypeUrl, to_execute_response,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
@@ -219,4 +219,33 @@ fn to_execute_response_emits_default_status_when_no_error() {
     assert_eq!(status.code, 0);
     assert_eq!(status.details, vec![]);
     assert_eq!(status.message, "");
+}
+
+/// A CAS that forwards `Execute` to a separate scheduler turns the
+/// scheduler's `ExecuteResponse` back into an action stage and sends the
+/// client a fresh response from it. The missing-blob violation must
+/// survive that hop: it is what tells the client to upload the blob again,
+/// and what lets the CAS stop its existence cache vouching for it.
+#[nativelink_test]
+fn missing_blob_survives_a_forwarding_hop() {
+    let digest = missing_digest();
+    let from_scheduler = to_execute_response(action_result_with_error(Some(
+        make_missing_blob_error(&digest),
+    )));
+    let ActionStage::Completed(result) =
+        ActionStage::try_from(from_scheduler).expect("a scheduler response converts")
+    else {
+        panic!("a finished response is a completed stage");
+    };
+    let error = result.error.clone().expect("the error survives");
+    assert_eq!(
+        error.context,
+        ErrorContext::MissingDigest {
+            hash: digest.packed_hash().to_string(),
+            size: i64::try_from(digest.size_bytes()).unwrap(),
+        },
+        "the missing digest must be read back from the PreconditionFailure detail",
+    );
+    let to_client = to_execute_response(result);
+    assert_missing_blob_status(&to_client.status.expect("status must be set"), &digest);
 }

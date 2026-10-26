@@ -366,3 +366,36 @@ async fn an_aged_positive_asks_the_inner_store_again() -> Result<(), Error> {
     );
     Ok(())
 }
+
+/// A read that finds no blob below the cache drops the digest from the
+/// cache at once. Without that, a blob that left the object store keeps
+/// being reported present for the whole TTL while every read of it fails.
+#[nativelink_test]
+async fn a_read_that_finds_nothing_stops_the_cache_vouching() -> Result<(), Error> {
+    let spec = ExistenceCacheSpec {
+        backend: StoreSpec::Noop(NoopSpec::default()),
+        eviction_policy: Option::default(),
+    };
+    let inner = SilentlyEvictingStore::new();
+    let store = ExistenceCacheStore::new(&spec, Store::new(inner.clone()));
+    let digest = DigestInfo::try_new(VALID_HASH1, 3).unwrap();
+    Store::new(inner.clone())
+        .update_oneshot(digest, "123".into())
+        .await?;
+    assert_eq!(store.has(digest).await?, Some(3));
+    inner.lose(digest).await;
+    assert_eq!(store.has(digest).await?, Some(3), "the cache still vouches");
+
+    let err = store
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("the blob is gone");
+    assert_eq!(err.code, nativelink_error::Code::NotFound);
+    assert!(!store.exists_in_cache(&digest).await);
+    assert_eq!(
+        store.has(digest).await?,
+        None,
+        "the next check tells the truth"
+    );
+    Ok(())
+}
