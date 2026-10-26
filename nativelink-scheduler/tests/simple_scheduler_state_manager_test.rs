@@ -26,7 +26,9 @@ use nativelink_macro::nativelink_test;
 use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
 };
-use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::UpdateForWorker;
+use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
+    AttemptEndReason, UpdateForWorker,
+};
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
     SortedAwaitedActionState,
@@ -1413,6 +1415,7 @@ async fn executing_sweep_retires_a_silent_action_without_a_client() -> Result<()
         .await?;
     assert_eq!(report.retired, 0);
     assert_eq!(report.requeued, 0);
+    assert!(report.ended.is_empty());
     // Five minutes executing: counted in the 5m to 15m bucket.
     assert_eq!(report.ages.counts(), [0, 0, 1, 0, 0, 0]);
     assert_eq!(report.ages.oldest(), Duration::from_mins(5));
@@ -1429,6 +1432,12 @@ async fn executing_sweep_retires_a_silent_action_without_a_client() -> Result<()
         .sweep_executing_actions(&still_running, &mut lost_since, Duration::from_mins(1))
         .await?;
     assert_eq!(report.retired, 1);
+    let [ended] = report.ended.as_slice() else {
+        panic!("one ended attempt, got {:?}", report.ended);
+    };
+    assert_eq!(ended.worker_id, worker_id);
+    assert_eq!(ended.reason, AttemptEndReason::Timeout);
+    assert!(ended.detail.starts_with("Operation "), "{}", ended.detail);
     // Back in the queue, where the abandoned-client rule then completes it:
     // nobody has been listening for twenty minutes, and this db keeps no
     // completed records. Either way it is no longer executing.
@@ -1486,6 +1495,14 @@ async fn executing_sweep_requeues_an_action_its_worker_no_longer_runs() -> Resul
         .sweep_executing_actions(&not_running, &mut lost_since, grace)
         .await?;
     assert_eq!(report.requeued, 1);
+    assert_eq!(
+        report
+            .ended
+            .iter()
+            .map(|ended| (&ended.worker_id, ended.reason))
+            .collect::<Vec<_>>(),
+        [(&worker_id, AttemptEndReason::LostResult)]
+    );
     assert!(lost_since.is_empty());
     assert_eq!(
         count_in_stage(&state_mgr, OperationStageFlags::Queued).await?,
