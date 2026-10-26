@@ -1486,11 +1486,13 @@ pub struct CommonObjectSpec {
     /// At the limit, further requests wait in the process, first come first
     /// served, for one in flight to finish: nothing is sent or refused, so
     /// the cost shows up as latency against callers' deadlines. A download
-    /// holds its permit while its body streams to the reader. Set it above
-    /// `max_concurrent_reads`, so existence checks and uploads keep room
-    /// beside downloads. Every store in a `shard` has a limit of its own,
-    /// so N shards hold up to N times this. 0 (the default) leaves requests
-    /// unbounded, as before.
+    /// holds its permit while its body streams to the reader, so the store
+    /// refuses to start unless `max_concurrent_reads` is above 0 and below
+    /// this: downloads then never hold more than `max_concurrent_reads`
+    /// permits, and existence checks and uploads always keep the rest.
+    /// Every store in a `shard` has a limit of its own, so N shards hold up
+    /// to N times this. 0 (the default) leaves requests unbounded, as
+    /// before.
     ///
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]

@@ -121,16 +121,24 @@ impl<NowFn> core::fmt::Debug for AzureBlobStore<NowFn> {
     }
 }
 
+/// A request that cannot connect, or reads nothing for this long (response
+/// headers included), fails and is retried. Without a bound, a request that
+/// hangs keeps its permit forever, and `max_concurrent_requests` of them
+/// wedge the store. The read timer runs only while the body is polled, so a
+/// download that a slow reader holds back is not cut off.
+const AZURE_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const AZURE_READ_TIMEOUT: Duration = Duration::from_mins(1);
+
 /// How long a cancelled upload's cleanup waits before it looks at the block
 /// list, so a block whose request was already in flight has landed and is
 /// seen rather than raced.
 const STAGED_BLOCK_DISCARD_DELAY: Duration = Duration::from_secs(5);
 
-/// Discards the blocks an upload staged if the upload never commits: on an
-/// error the caller does it inline and disarms this; when the upload future
-/// is dropped instead (the `ByteStream` it fed died and the server swept it),
-/// `Drop` does it from a background task, since a dropped future runs no
-/// code of its own.
+/// Discards the blocks an upload staged if the upload never commits, from a
+/// background task in `Drop`: after an error, so the caller gets it without
+/// waiting for request permits, and when the upload future is dropped (the
+/// `ByteStream` it fed died and the server swept it), since a dropped future
+/// runs no code of its own. Only a committed upload disarms it.
 struct StagedBlocksGuard {
     client: Arc<BlobContainerClient>,
     requests: Option<Arc<Semaphore>>,
@@ -358,6 +366,8 @@ where
 
         let client = reqwest::Client::builder()
             .use_preconfigured_tls(tls_config)
+            .connect_timeout(AZURE_CONNECT_TIMEOUT)
+            .read_timeout(AZURE_READ_TIMEOUT)
             .build()
             .map_err(|e| make_err!(Code::Unavailable, "Failed to build Azure HTTP client: {e}"))?;
 
@@ -400,6 +410,16 @@ where
             AdaptivePermits::new("azure", max, min, max, grow_after)
         });
         let max_concurrent_requests = spec.common.max_concurrent_requests;
+        let max_concurrent_reads = spec.common.max_concurrent_reads;
+        if max_concurrent_requests > 0
+            && (max_concurrent_reads == 0 || max_concurrent_reads >= max_concurrent_requests)
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "max_concurrent_requests ({max_concurrent_requests}) needs max_concurrent_reads between 1 and {}: a download holds its request permit while its body streams, so without that gap downloads can take every permit and stall existence checks and uploads (max_concurrent_reads is {max_concurrent_reads})",
+                max_concurrent_requests - 1
+            ));
+        }
         let request_permits = (max_concurrent_requests > 0)
             .then(|| Arc::new(Semaphore::new(max_concurrent_requests)));
         let throttle_retry_budget =
@@ -1061,9 +1081,8 @@ where
         let result = self
             .upload_staged_blocks(&blob_path, reader, upload_size)
             .await;
-        guard.disarm();
-        if result.is_err() {
-            discard_staged_blocks(&self.client, self.request_permits.as_ref(), &blob_path).await;
+        if result.is_ok() {
+            guard.disarm();
         }
         result
     }

@@ -1347,7 +1347,7 @@ async fn incomplete_multipart_upload_never_commits_azure_blocks() -> Result<(), 
 
 // Size validation must run inside the guarded upload so failure also discards
 // staged blocks, while retaining any previously committed copy.
-#[nativelink_test]
+#[nativelink_test(start_paused = true)]
 async fn invalid_multipart_size_discards_staged_blocks_and_preserves_committed_copy()
 -> Result<(), Error> {
     const BLOCK: usize = 5 * 1024 * 1024;
@@ -1376,6 +1376,9 @@ async fn invalid_multipart_size_discards_staged_blocks_and_preserves_committed_c
             let (result, sent) = tokio::join!(store.update(digest, rx, upload_size), send);
             sent?;
             assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            // The discard runs in the background after its grace period.
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            tokio::task::yield_now().await;
             assert_eq!(mock.request_count(), 3, "stage, inspect, then discard");
             if existing_copy {
                 assert_eq!(mock.deleted(), Vec::<String>::new());
@@ -1408,7 +1411,7 @@ fn two_block_payload() -> Vec<u8> {
 /// A block that fails to stage fails the upload, and the blocks that did
 /// stage are discarded: with nothing committed under the name, the blob is
 /// deleted, and no block list is ever committed.
-#[nativelink_test]
+#[nativelink_test(start_paused = true)]
 async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error> {
     let send_data = two_block_payload();
     let mock = MockTransport::new();
@@ -1428,6 +1431,9 @@ async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error
         .await
         .expect_err("the refused block fails the upload");
     assert_eq!(err.code, Code::Aborted, "{err:?}");
+    // The discard runs in the background after its grace period.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
 
     assert_eq!(
         mock.deleted(),
@@ -1447,7 +1453,7 @@ async fn failed_staged_upload_deletes_the_uncommitted_blob() -> Result<(), Error
 /// When the name already holds a committed blob (a re-upload of a key that
 /// exists), the committed blocks are kept: re-committing that list is what
 /// discards the staged ones, and nothing is deleted.
-#[nativelink_test]
+#[nativelink_test(start_paused = true)]
 async fn failed_staged_upload_keeps_the_committed_blocks() -> Result<(), Error> {
     let send_data = two_block_payload();
     let mock = MockTransport::new();
@@ -1468,6 +1474,9 @@ async fn failed_staged_upload_keeps_the_committed_blocks() -> Result<(), Error> 
         .update_oneshot(StoreKey::from(&digest), send_data.into())
         .await
         .expect_err("the refused block fails the upload");
+    // The discard runs in the background after its grace period.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
 
     assert!(
         mock.deleted().is_empty(),
@@ -1628,13 +1637,106 @@ fn create_test_store_with_request_limit(
     mock: Arc<MockTransport>,
     max_concurrent_requests: usize,
 ) -> Result<TestStore, Error> {
+    // The store refuses a request limit without a smaller read limit beside it.
+    let max_concurrent_reads = if max_concurrent_requests > 0 {
+        (max_concurrent_requests / 2).max(1)
+    } else {
+        0
+    };
     create_test_store_with_common(
         mock,
         CommonObjectSpec {
             max_concurrent_requests,
+            max_concurrent_reads,
             ..Default::default()
         },
     )
+}
+
+/// A download holds its request permit while its body streams, so a request
+/// limit needs a smaller read limit beside it, or downloads could take every
+/// permit; the store refuses to start without one.
+#[nativelink_test]
+async fn max_concurrent_requests_needs_a_smaller_read_limit() -> Result<(), Error> {
+    for reads in [0, 4, 5] {
+        let err = create_test_store_with_common(
+            MockTransport::new(),
+            CommonObjectSpec {
+                max_concurrent_reads: reads,
+                max_concurrent_requests: 4,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument, "reads {reads}: {err:?}");
+        assert!(
+            format!("{err:?}").contains("needs max_concurrent_reads between 1 and 3"),
+            "reads {reads}: {err:?}"
+        );
+    }
+    create_test_store_with_common(
+        MockTransport::new(),
+        CommonObjectSpec {
+            max_concurrent_reads: 3,
+            max_concurrent_requests: 4,
+            ..Default::default()
+        },
+    )?;
+    create_test_store_with_common(
+        MockTransport::new(),
+        CommonObjectSpec {
+            max_concurrent_reads: 16,
+            ..Default::default()
+        },
+    )?;
+    Ok(())
+}
+
+/// Downloads take request permits only up to the read limit, so behind a
+/// queue of them an existence check still gets a permit at once: it waits
+/// one request, not rounds of downloads.
+#[nativelink_test(start_paused = true)]
+async fn queued_downloads_leave_existence_checks_a_permit() -> Result<(), Error> {
+    const DOWNLOADS: usize = 8;
+    let mock = MockTransport::new();
+    mock.hold_each_request(HOLD);
+    for _ in 0..DOWNLOADS {
+        mock.push_download(download_ok(StatusCode::Ok, vec![1u8; 100]));
+    }
+    mock.push_properties(properties_ok(100));
+    let store = create_test_store_with_common(
+        Arc::clone(&mock),
+        CommonObjectSpec {
+            max_concurrent_reads: 2,
+            max_concurrent_requests: 4,
+            ..Default::default()
+        },
+    )?;
+    let downloads = futures::future::join_all((0..DOWNLOADS).map(|i| {
+        let store = Arc::clone(&store);
+        async move {
+            store
+                .get_part_unchunked(numbered_digest(i, 100)?, 0, None)
+                .await
+        }
+    }));
+    let check = async {
+        tokio::task::yield_now().await;
+        let start = tokio::time::Instant::now();
+        let found = store.has(numbered_digest(DOWNLOADS, 100)?).await?;
+        Ok::<_, Error>((found, start.elapsed()))
+    };
+    let (downloaded, checked) = tokio::join!(downloads, check);
+    for result in downloaded {
+        assert_eq!(result?.len(), 100);
+    }
+    let (found, waited) = checked?;
+    assert_eq!(found, Some(100));
+    assert!(
+        waited < 2 * HOLD,
+        "the existence check waited {waited:?} behind the downloads"
+    );
+    Ok(())
 }
 
 fn numbered_digest(i: usize, size: usize) -> Result<DigestInfo, Error> {
