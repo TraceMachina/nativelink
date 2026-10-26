@@ -1,5 +1,5 @@
 ---
-title: "Serve a Nix Binary Cache from Your NativeLink CAS: A Fifteen-Minute Tutorial"
+title: "Serve a Nix Binary Cache from Your NativeLink CAS: A Hands-On Tutorial"
 tags: ["tutorial", "nix", "binary-cache", "build-acceleration", "blog-posts"]
 image: https://nativelink-cdn.s3.us-east-1.amazonaws.com/nativelink_logo.webp
 slug: nix-binary-cache
@@ -7,7 +7,7 @@ pubDate: 2026-10-26
 readTime: 8 minutes
 ---
 
-## Serve a Nix Binary Cache from Your NativeLink CAS: A Fifteen-Minute Tutorial
+## Serve a Nix Binary Cache from Your NativeLink CAS: A Hands-On Tutorial
 
 If your team builds with Bazel or Buck2 *and* with Nix, you have probably been
 running two cache fleets: a content-addressable store (CAS) for remote
@@ -21,7 +21,7 @@ completeness checking, and eviction compose with it exactly as they do for
 Bazel traffic.
 
 This tutorial takes you from zero to a working cache that stock `nix` pushes
-to and pulls from, in about fifteen minutes. At the end we'll point at the
+to and pulls from, in well under a half hour. At the end we'll point at the
 production knobs — signing, tokens, and read-through to `cache.nixos.org` —
 and at the two client binaries that ship alongside the server.
 
