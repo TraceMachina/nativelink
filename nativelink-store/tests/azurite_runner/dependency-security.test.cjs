@@ -194,3 +194,26 @@ test("a request whose trailing bytes land after the body is read still finishes"
 		await new Promise((resolve) => server.close(resolve));
 	}
 });
+
+// GHSA-xcx6-jx8p-x3h5: a confidential client trusted instance-aware cloud
+// host names from the authorization code payload, so a crafted payload could
+// redirect the token request. Azurite reaches MSAL Node through
+// @azure/identity, so the patched version arrives through the override in
+// package.json. The fix also rejects instance-aware confidential clients.
+test("@azure/identity resolves an MSAL Node that rejects instance-aware confidential clients", () => {
+	const identityRequire = createRequire(
+		require.resolve("@azure/identity/package.json"),
+	);
+	const { ConfidentialClientApplication } = identityRequire("@azure/msal-node");
+	assert.throws(
+		() =>
+			new ConfidentialClientApplication({
+				auth: {
+					clientId: "00000000-0000-0000-0000-000000000000",
+					clientSecret: "secret",
+					instanceAware: true,
+				},
+			}),
+		{ errorCode: "unsupported_cca_instance_aware" },
+	);
+});
