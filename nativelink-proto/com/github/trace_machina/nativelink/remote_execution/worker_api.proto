@@ -213,7 +213,85 @@ message ActionResourceUsage {
     /// What the action was admitted with, from its platform properties.
     Reservation reserved = 10;
 
-    reserved 11; // NextId.
+    /// Time from the start of the input fetch to its end, in milliseconds:
+    /// `input_fetch_completed_timestamp - input_fetch_start_timestamp` of
+    /// the action result's `ExecutedActionMetadata`.
+    uint64 input_fetch_ms = 11;
+
+    /// Time spent uploading outputs, in milliseconds, from the same
+    /// metadata. Zero when the action failed before uploading.
+    uint64 output_upload_ms = 12;
+
+    /// Bytes of the input files hardlinked into the action's directory.
+    /// Subtrees served whole by the worker's directory cache are not
+    /// walked, so they are not counted.
+    uint64 input_bytes = 13;
+
+    /// Of `input_bytes`, the bytes the worker's local store already held;
+    /// the rest were fetched from the CAS for this action. Files a failed
+    /// fetch attempt downloaded count as fetched, not cached, on the retry.
+    uint64 input_cached_bytes = 14;
+
+    /// Bytes of the output files, stdout and stderr in the action result.
+    /// An output directory counts its tree digest, not its contents.
+    uint64 output_bytes = 15;
+
+    reserved 16; // NextId.
+}
+
+/// Why one attempt at an action ended without the result it was run for.
+/// The action was requeued, failed for having been tried too often, or, for
+/// a missing input, handed back to the client to upload and ask again;
+/// either way the attempt cost time a build waited for.
+enum AttemptEndReason {
+    ATTEMPT_END_REASON_UNKNOWN = 0;
+    /// The worker running it went away: disconnected, evicted, OOM-killed
+    /// as a whole, or stopped answering keepalives.
+    WORKER_LOST = 1;
+    /// The scheduler's executing sweep timed it out: past `Action.timeout`
+    /// plus the grace a live worker has to report, or no update from the
+    /// worker for too long. A command past its timeout on a live worker
+    /// comes back as a result and is not an ended attempt.
+    TIMEOUT = 2;
+    /// Killed for memory and requeued with a larger reservation.
+    OUT_OF_MEMORY = 3;
+    /// An input it needed was missing from the CAS. The worker returns this
+    /// as a `FAILED_PRECONDITION` result, so the client uploads the input
+    /// and runs the action again.
+    MISSING_INPUT = 4;
+    /// The worker had no room for it; not counted as an attempt.
+    BACKPRESSURE = 5;
+    /// The worker declined it before starting.
+    DECLINED = 6;
+    /// Any other error the worker reported for it.
+    WORKER_ERROR = 7;
+    /// The input fetch ran past the worker's `max_download_timeout`.
+    INPUT_FETCH_TIMEOUT = 8;
+    /// The worker finished it but the scheduler could not store the result,
+    /// so the executing sweep requeued it.
+    LOST_RESULT = 9;
+}
+
+/// One attempt at an action ended without the result it was run for.
+/// Published as an origin event whose parent is the attempt's
+/// `scheduler_start_execute` event, once the scheduler has recorded the
+/// end; an update it rejects publishes nothing. The event does not say
+/// whether the action was requeued: a later `scheduler_start_execute` for
+/// the same operation is the retry, and an action with none failed.
+message ActionAttemptEnded {
+    /// The operation the attempt belonged to.
+    string operation_id = 1;
+
+    /// The worker the attempt ran on.
+    string worker_id = 2;
+
+    /// Why it ended.
+    AttemptEndReason reason = 3;
+
+    /// The error the scheduler acted on, when there was one.
+    string detail = 4;
+
+    reserved 5; // NextId.
 }
 
 /// Result sent back from the server when a node connects.
