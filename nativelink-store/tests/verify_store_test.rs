@@ -958,6 +958,183 @@ async fn verify_repair_drops_a_bad_durable_copy_no_cache_holds() -> Result<(), E
     Ok(())
 }
 
+mod failing {
+    use core::pin::Pin;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use nativelink_error::{Code, Error, make_err};
+    use nativelink_metric::{
+        MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent,
+    };
+    use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
+    use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
+    use nativelink_util::store_trait::{
+        RemoveItemCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+    };
+
+    /// Wraps a store; reads or writes can be made to fail with a code other
+    /// than `DataLoss`, as an unreadable disk or a full cache disk would.
+    #[derive(Debug)]
+    pub(super) struct FailingStore {
+        pub(super) inner: Store,
+        pub(super) fail_reads: AtomicBool,
+        pub(super) fail_writes: AtomicBool,
+    }
+
+    impl FailingStore {
+        pub(super) fn new(inner: Store) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                fail_reads: AtomicBool::new(false),
+                fail_writes: AtomicBool::new(false),
+            })
+        }
+    }
+
+    impl MetricsComponent for FailingStore {
+        fn publish(
+            &self,
+            _kind: MetricKind,
+            _field_metadata: MetricFieldData,
+        ) -> Result<MetricPublishKnownKindData, nativelink_metric::Error> {
+            Ok(MetricPublishKnownKindData::Component)
+        }
+    }
+
+    #[async_trait]
+    impl StoreDriver for FailingStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+        async fn has_with_results(
+            self: Pin<&Self>,
+            keys: &[StoreKey<'_>],
+            results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            self.inner
+                .as_store_driver_pin()
+                .has_with_results(keys, results)
+                .await
+        }
+        async fn update(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            reader: DropCloserReadHalf,
+            size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            if self.fail_writes.load(Ordering::Relaxed) {
+                return Err(make_err!(
+                    Code::ResourceExhausted,
+                    "No space left on device"
+                ));
+            }
+            self.inner
+                .as_store_driver_pin()
+                .update(key, reader, size_info)
+                .await
+        }
+        async fn get_part(
+            self: Pin<&Self>,
+            key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            offset: u64,
+            length: Option<u64>,
+        ) -> Result<(), Error> {
+            if self.fail_reads.load(Ordering::Relaxed) {
+                return Err(make_err!(Code::Internal, "Too many open files"));
+            }
+            self.inner
+                .as_store_driver_pin()
+                .get_part(key, writer, offset, length)
+                .await
+        }
+        async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+            self.inner.as_store_driver_pin().remove(key).await
+        }
+        fn inner_store(&self, _key: Option<StoreKey>) -> &dyn StoreDriver {
+            self
+        }
+        fn as_any<'a>(&'a self) -> &'a (dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: Arc<dyn RemoveItemCallback>,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    default_health_status_indicator!(FailingStore);
+}
+
+/// A bad cache copy over a good durable copy, where the repair's read-back
+/// fails with something other than `DataLoss`: the durable copy is kept.
+async fn repair_with_a_failing_tier(durable_unreadable: bool) -> Result<(), Error> {
+    use core::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    use failing::FailingStore;
+    use nativelink_config::stores::RefSpec;
+    use nativelink_store::default_store_factory::store_factory;
+    use nativelink_store::store_manager::StoreManager;
+
+    let payload = "v".repeat(78);
+    let digest = DigestInfo::try_new(VALID_HASH1, payload.len())?;
+    let manager = Arc::new(StoreManager::new());
+    let memory_spec = StoreSpec::Memory(MemorySpec::default());
+    let memory = || store_factory(&memory_spec, &manager, None);
+    let cache = FailingStore::new(memory().await?);
+    let durable = FailingStore::new(memory().await?);
+    manager.add_store("cache", Store::new(cache.clone()))?;
+    manager.add_store("durable", Store::new(durable.clone()))?;
+    let tier = |name: &str| StoreSpec::RefStore(RefSpec { name: name.into() });
+    let store = store_factory(
+        &StoreSpec::Verify(Box::new(VerifySpec {
+            verify_size: true,
+            verify_hash: false,
+            backend: fast_slow(tier("cache"), tier("durable")),
+        })),
+        &manager,
+        None,
+    )
+    .await?;
+    store.clone().into_inner().post_init().await?;
+    durable
+        .inner
+        .update_oneshot(digest, payload.clone().into())
+        .await?;
+    cache.inner.update_oneshot(digest, "short".into()).await?;
+    if durable_unreadable {
+        durable.fail_reads.store(true, Ordering::Relaxed);
+    } else {
+        cache.fail_writes.store(true, Ordering::Relaxed);
+    }
+
+    let err = store.get_part_unchunked(digest, 0, None).await.unwrap_err();
+    assert_eq!(err.code, Code::DataLoss, "{err:?}");
+    assert_eq!(
+        durable.inner.get_part_unchunked(digest, 0, None).await?,
+        payload.as_bytes(),
+        "the durable copy is kept"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn verify_repair_keeps_a_durable_copy_it_cannot_read() -> Result<(), Error> {
+    repair_with_a_failing_tier(true).await
+}
+
+#[nativelink_test]
+async fn verify_repair_keeps_the_durable_copy_when_the_cache_refill_fails() -> Result<(), Error> {
+    repair_with_a_failing_tier(false).await
+}
+
 fn truncate_files(directory: &std::path::Path, len: u64) -> Result<(), Error> {
     for entry in std::fs::read_dir(directory)? {
         let path = entry?.path();

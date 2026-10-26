@@ -658,6 +658,7 @@ pub trait StoreDriver:
 
     /// Like [`StoreDriver::remove`], but only for copies in cache tiers
     /// inside this store; the copy reads fall back to is kept.
+    /// Stores that forward `remove` must forward this too.
     async fn remove_cached(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
         Ok(false)
     }

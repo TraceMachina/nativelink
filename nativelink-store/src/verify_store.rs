@@ -340,7 +340,8 @@ impl StoreDriver for VerifyStore {
                         let (read_res, drained) = tokio::join!(read_fut, rx.drain());
                         match read_res.and(drained) {
                             Ok(size) => size != digest.size_bytes(),
-                            Err(err) => err.code != Code::NotFound,
+                            // Other errors mean unchecked, not bad.
+                            Err(err) => err.code == Code::DataLoss,
                         }
                     }
                     StoreKey::Str(_) => false,
