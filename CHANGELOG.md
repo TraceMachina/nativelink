@@ -3,6 +3,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.2](https://github.com/TraceMachina/nativelink/compare/v1.8.1..v1.8.2) - 2026-10-26
+
+
+
+### ⛰️  Features
+
+- Bound the requests an Azure store keeps in flight, uploads included ([#2985](https://github.com/TraceMachina/nativelink/issues/2985)) - ([4a6f505](https://github.com/TraceMachina/nativelink/commit/4a6f505a9ae399bc7d3ae1a983b1abe9cacd47c5))
+- Report action phases, transfer bytes and why an attempt ended in origin events ([#3040](https://github.com/TraceMachina/nativelink/issues/3040)) - ([19cdbe7](https://github.com/TraceMachina/nativelink/commit/19cdbe724443e51acfecf0d3917d6f41858bbcf8))
+
+### 🐛 Bug Fixes
+
+- verify's repair no longer deletes the durable filesystem copy ([#3046](https://github.com/TraceMachina/nativelink/issues/3046)) - ([19e8462](https://github.com/TraceMachina/nativelink/commit/19e846261295d95649d536349133967a03acb8a8))
+- Finish an upload's commit on its own task when the client leaves after its last byte, instead of parking it unpolled in the store's write queue ([#3044](https://github.com/TraceMachina/nativelink/issues/3044)) - ([779c3e7](https://github.com/TraceMachina/nativelink/commit/779c3e7748ff02a403bc90462c646f47fb7c6f0b))
+- Sample and kill an action across its whole process tree, and kill the action furthest over its reservation under worker memory pressure ([#3038](https://github.com/TraceMachina/nativelink/issues/3038)) - ([bed7314](https://github.com/TraceMachina/nativelink/commit/bed73142f3edc3e8fbe00f2384223e53c52391dd))
+- Stop the existence cache vouching for a blob once it is found missing, and keep the missing-blob detail through a forwarded status ([#3047](https://github.com/TraceMachina/nativelink/issues/3047)) - ([4ba0f7d](https://github.com/TraceMachina/nativelink/commit/4ba0f7dad5f802c4cfe3ac8a91bc33cf02405787))
+- Grow the compression store's block index as blocks are written instead of sizing it from the upload size ([#3045](https://github.com/TraceMachina/nativelink/issues/3045)) - ([722ce48](https://github.com/TraceMachina/nativelink/commit/722ce482ac34e740e92f5af39fc65bfa50a34275))
+- Forward binary headers in forward_headers ([#3017](https://github.com/TraceMachina/nativelink/issues/3017)) - ([e76fd95](https://github.com/TraceMachina/nativelink/commit/e76fd959a761d333d7a2e04d0bac8e35015ab063))
+- Declare macOS rustc dylibs and rust-objcopy as lre-rs toolchain inputs ([#3036](https://github.com/TraceMachina/nativelink/issues/3036)) - ([f01785c](https://github.com/TraceMachina/nativelink/commit/f01785c51acbdae72c86672f4ce92439e98c82d0))
+- Give a namespaced action a /proc that matches its PID namespace ([#3024](https://github.com/TraceMachina/nativelink/issues/3024)) - ([db200db](https://github.com/TraceMachina/nativelink/commit/db200dbdf1a25fca35fa458cccbcbf692edfc60b))
+
+### 📚 Documentation
+
+- Move README use cases into AGENTS.md as an agent index ([#3043](https://github.com/TraceMachina/nativelink/issues/3043)) - ([3a63e8e](https://github.com/TraceMachina/nativelink/commit/3a63e8e343ebb94d1952305590bcd7a3c3b0c04c))
+
+### 🧪 Testing & CI
+
+- Compare the swept attempts with assert_eq in the executing sweep test ([#3053](https://github.com/TraceMachina/nativelink/issues/3053)) - ([0909e73](https://github.com/TraceMachina/nativelink/commit/0909e7338a43e2b69f52f55d1201dae3ba5d8a12))
+- Express the Azure port-hint interval in minutes ([#3050](https://github.com/TraceMachina/nativelink/issues/3050)) - ([315f096](https://github.com/TraceMachina/nativelink/commit/315f096a52f17dd413beb4827d6ba34beea78171))
+- run AddressSanitizer and fuzzing nightly ([#3029](https://github.com/TraceMachina/nativelink/issues/3029)) - ([e4b5314](https://github.com/TraceMachina/nativelink/commit/e4b5314e6c970db371d077db8f9b1faf68aed8d7))
+- Keep coverage publication independent of cache uploads ([#3033](https://github.com/TraceMachina/nativelink/issues/3033)) - ([0c4a6cf](https://github.com/TraceMachina/nativelink/commit/0c4a6cfd20270d80b040bf6b9be77c63adff8fc2))
+
+### ⬆️ Bumps & Version Updates
+
+- Override MSAL Node to 7.1.0 in the Azurite test runner ([#3048](https://github.com/TraceMachina/nativelink/issues/3048)) - ([7e55aeb](https://github.com/TraceMachina/nativelink/commit/7e55aeb5df35413c1e2064b104fec2df93583ae9))
+- Update five dependencies with OSV advisories ([#3035](https://github.com/TraceMachina/nativelink/issues/3035)) - ([42b4b4d](https://github.com/TraceMachina/nativelink/commit/42b4b4d48c41231d1570509701b11f353411a23e))
+
 ## [1.8.1](https://github.com/TraceMachina/nativelink/compare/v1.8.0..v1.8.1) - 2026-10-23
 
 
