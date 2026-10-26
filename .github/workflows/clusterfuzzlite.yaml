@@ -21,14 +21,14 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  build:
+  discover:
     # `branches` above filters the base. The head check keeps this off
     # ordinary pull requests. Other events always run.
     if: >-
       github.event_name != 'pull_request' ||
       startsWith(github.head_ref, 'release/') ||
       startsWith(github.event.pull_request.title, 'Release NativeLink')
-    name: Build
+    name: Discover targets
     runs-on: ubuntu-24.04
     outputs:
       targets: ${{ steps.targets.outputs.targets }}
@@ -39,37 +39,32 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build fuzzers
-        id: build
-        uses: >- # v1
-          google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
-        with:
-          language: rust
-          sanitizer: address
-
       - name: Discover fuzz targets
         id: targets
         run: |
-          targets="$(find out -maxdepth 1 -type f -perm -111 -printf '%f\n' | jq -Rsc 'split("\n") | map(select(length > 0))')"
+          targets="$(
+            awk '
+              /^\[\[bin\]\]$/ { in_bin = 1; next }
+              in_bin && /^name = / {
+                gsub(/"/, "", $3)
+                print $3
+                in_bin = 0
+              }
+            ' nativelink-test/fuzz/Cargo.toml |
+              jq -Rsc 'split("\n") | map(select(length > 0))'
+          )"
           echo "targets=${targets}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload fuzzers
-        uses: >- # v4.6.2
-          actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
-        with:
-          name: fuzzers-${{ github.run_id }}
-          path: out
-          if-no-files-found: error
-          retention-days: 1
-
   fuzz:
-    needs: build
+    needs: discover
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.build.outputs.targets) }}
+        target: ${{ fromJSON(needs.discover.outputs.targets) }}
     name: ${{ matrix.target }}
     runs-on: ubuntu-24.04
+    env:
+      FUZZ_TARGET: ${{ matrix.target }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -77,18 +72,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download fuzzers
-        uses: >- # v4.3.0
-          actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - name: Build fuzzer
+        uses: >- # v1
+          google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
         with:
-          name: fuzzers-${{ github.run_id }}
-          path: all-fuzzers
-
-      - name: Select fuzzer
-        run: |
-          mkdir -p out
-          cp "all-fuzzers/${{ matrix.target }}" "out/${{ matrix.target }}"
-          chmod +x "out/${{ matrix.target }}"
+          language: rust
+          sanitizer: address
 
       - name: Run fuzzer
         uses: >- # v1
