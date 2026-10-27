@@ -59,6 +59,7 @@ use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION, PeerS
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::resource_sketch::ResourceSketch;
 use crate::simple_scheduler_state_manager::{
     RetryLimits, SimpleSchedulerStateManager, is_lost_record,
 };
@@ -1134,7 +1135,25 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
-        Self::new_with_callback(
+        Self::new_with_resource_sketch(
+            spec,
+            awaited_action_db,
+            task_change_notify,
+            maybe_origin_event_tx,
+            None,
+        )
+    }
+
+    /// `new`, with the sketch a `historical_resource` parent learns from:
+    /// every sampled usage report the workers send goes into it.
+    pub fn new_with_resource_sketch<A: AwaitedActionDb>(
+        spec: &SimpleSpec,
+        awaited_action_db: A,
+        task_change_notify: Arc<Notify>,
+        maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
+    ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
+        Self::new_with_fleet_exchange_interval(
             spec,
             awaited_action_db,
             || {
@@ -1151,6 +1170,8 @@ impl SimpleScheduler {
             task_change_notify,
             SystemTime::now,
             maybe_origin_event_tx,
+            resource_sketch,
+            FLEET_EXCHANGE_INTERVAL,
         )
     }
 
@@ -1175,6 +1196,7 @@ impl SimpleScheduler {
             task_change_notify,
             now_fn,
             maybe_origin_event_tx,
+            None,
             FLEET_EXCHANGE_INTERVAL,
         )
     }
@@ -1182,6 +1204,7 @@ impl SimpleScheduler {
     /// Same as `new_with_callback`, with the interval at which worker
     /// capabilities are swapped with peer schedulers, so a test need not wait
     /// out the real one.
+    #[expect(clippy::too_many_arguments, reason = "the full constructor")]
     pub fn new_with_fleet_exchange_interval<
         Fut: Future<Output = ()> + Send,
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -1195,6 +1218,7 @@ impl SimpleScheduler {
         task_change_notify: Arc<Notify>,
         now_fn: NowFn,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
         fleet_exchange_interval: Duration,
     ) -> (Arc<Self>, Arc<dyn WorkerScheduler>) {
         let platform_property_manager = Arc::new(PlatformPropertyManager::new(
@@ -1302,6 +1326,7 @@ impl SimpleScheduler {
             spec.dispatch_ack_timeout_s,
             worker_registry,
             maybe_origin_event_tx.clone(),
+            resource_sketch,
             has_peers,
             record_ttl,
             scheduler_id.clone(),

@@ -25,6 +25,7 @@ pub mod memory_awaited_action_db;
 pub mod mock_scheduler;
 pub mod platform_property_manager;
 pub mod property_modifier_scheduler;
+pub mod resource_sketch;
 pub mod simple_scheduler;
 pub mod simple_scheduler_state_manager;
 pub mod store_awaited_action_db;
