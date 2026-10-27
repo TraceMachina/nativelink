@@ -2,9 +2,10 @@
 
 fuzz_dir="$SRC/nativelink/nativelink-test/fuzz"
 target="${FUZZ_TARGET:-}"
+selector_file="${GITHUB_WORKSPACE:-/github/workspace}/.clusterfuzzlite/fuzz-target"
 
-if [[ -z $target && -f "$SRC/nativelink/.clusterfuzzlite/fuzz-target" ]]; then
-    target="$(< "$SRC/nativelink/.clusterfuzzlite/fuzz-target")"
+if [[ -z $target && -f $selector_file ]]; then
+    target="$(< "$selector_file")"
 fi
 
 if [[ -n $target ]]; then
