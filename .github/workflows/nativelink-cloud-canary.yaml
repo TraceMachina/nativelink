@@ -29,6 +29,9 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
       - name: Setup Bazel
         uses: >- # v0.19.0
           bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
@@ -146,6 +149,9 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
       - name: Set up Docker Buildx
         uses: >- # v3.9.0
           docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
@@ -160,6 +166,8 @@ jobs:
             OPT_LEVEL=fastbuild
             ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
           load: true # Brings the image into `docker images` for docker-compose.
+          secret-files: |
+            ci-metadata=ci-metadata.bazelrc
           tags: trace_machina/nativelink:latest
 
       - name: Run upload-dependent integration tests

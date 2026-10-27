@@ -35,6 +35,7 @@ jobs:
     environment: cluster-ci-benchmark
     permissions:
       contents: read
+      actions: read
       id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 180
@@ -46,8 +47,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
       - name: Test CI reporting and credential isolation
-        run: python3 -m unittest discover -s .github/scripts -p 'test_ci_benchmark.py' -v
+        run: python3 -m unittest discover -s .github/scripts -p 'test_ci*.py' -v
 
       - name: Install pinned cluster client
         run: |
