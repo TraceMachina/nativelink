@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::StreamExt;
-use nativelink_error::{Error, ResultExt};
+use nativelink_error::{Error, ResultExt, make_input_err};
 use nativelink_util::action_messages::ActionStage;
 use nativelink_util::metrics::record_awaited_action_orphan;
 use nativelink_util::operation_state_manager::{
@@ -30,6 +30,7 @@ use nativelink_util::operation_state_manager::{
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
+use crate::resource_sketch::{Family, ResourceSketch, SAMPLER_GENERATION, SketchKey};
 use crate::simple_scheduler_state_manager::is_lost_record;
 use crate::worker_scheduler::WorkerSummary;
 
@@ -137,6 +138,143 @@ pub fn workers_json(workers: &[WorkerSummary]) -> Result<String, Error> {
         Error::new(
             nativelink_error::Code::Internal,
             format!("Serializing the worker listing: {e}"),
+        )
+    })
+}
+
+/// Counts per sketch family.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct FamilyCounts {
+    pub target: u64,
+    pub mnemonic: u64,
+    pub command: u64,
+}
+
+impl FamilyCounts {
+    fn from_slice<T: Copy + Into<u64>>(values: [T; 3]) -> Self {
+        Self {
+            target: values[0].into(),
+            mnemonic: values[1].into(),
+            command: values[2].into(),
+        }
+    }
+}
+
+/// One hint of the listing, in the hints-file shape plus what the sketch
+/// knows about it.
+#[derive(Debug, Serialize)]
+pub struct HintListing {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_mnemonic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cpu_count: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub memory_kb: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub disk_kb: u64,
+    pub samples: u32,
+    pub last_seen_s: u64,
+    /// `measured`, or `seed` for a hint from the file no attempt has
+    /// replaced yet.
+    pub source: &'static str,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if takes a reference"
+)]
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// The hints listing: a header with the sketch's size and the shaped hints,
+/// most recently used first.
+#[derive(Debug, Serialize)]
+pub struct HintsListing {
+    pub sampler_generation: u32,
+    pub window_days: u64,
+    pub headroom_percent: u64,
+    pub entries: FamilyCounts,
+    pub capacity: FamilyCounts,
+    pub evictions: FamilyCounts,
+    pub samples: FamilyCounts,
+    pub probation: u64,
+    pub hints: Vec<HintListing>,
+}
+
+/// The hints listing as the JSON body the admin API serves. Its `hints`
+/// are a valid `hints_file`, so a new fleet can be seeded from an old one.
+/// `family` narrows to `target`, `mnemonic` or `command`; `limit` caps the
+/// rows, 100,000 by default.
+pub fn hints_json(
+    sketch: &ResourceSketch,
+    family: Option<&str>,
+    limit: Option<usize>,
+) -> Result<String, Error> {
+    let family = match family {
+        None | Some("") => None,
+        Some("target") => Some(Family::Target),
+        Some("mnemonic") => Some(Family::Mnemonic),
+        Some("command") => Some(Family::Command),
+        Some(other) => {
+            return Err(make_input_err!(
+                "family must be target, mnemonic or command, not {other:?}"
+            ));
+        }
+    };
+    let stats = sketch.stats();
+    let hints = sketch
+        .hints(family, limit.unwrap_or(100_000))
+        .into_iter()
+        .map(|row| {
+            let (target_id, action_mnemonic, command_digest) = match row.key {
+                SketchKey::Target { target, mnemonic } => (
+                    Some(target.to_string()),
+                    mnemonic.map(|m| m.to_string()),
+                    None,
+                ),
+                SketchKey::Mnemonic { mnemonic } => (None, Some(mnemonic.to_string()), None),
+                SketchKey::Command { digest } => (None, None, Some(digest.to_string())),
+            };
+            HintListing {
+                target_id,
+                action_mnemonic,
+                command_digest,
+                class: row.shaped.class,
+                cpu_count: row.shaped.cpu_count,
+                memory_kb: row.shaped.memory_kb,
+                disk_kb: row.shaped.disk_kb,
+                samples: row.samples,
+                last_seen_s: row.last_seen_s,
+                source: if row.seeded { "seed" } else { "measured" },
+            }
+        })
+        .collect();
+    let listing = HintsListing {
+        sampler_generation: SAMPLER_GENERATION,
+        window_days: sketch.window().as_secs() / 86_400,
+        headroom_percent: sketch.policy().headroom_percent,
+        entries: FamilyCounts::from_slice(
+            stats.entries.map(|n| u64::try_from(n).unwrap_or(u64::MAX)),
+        ),
+        capacity: FamilyCounts::from_slice(
+            stats.capacity.map(|n| u64::try_from(n).unwrap_or(u64::MAX)),
+        ),
+        evictions: FamilyCounts::from_slice(stats.evictions),
+        samples: FamilyCounts::from_slice(stats.samples),
+        probation: u64::try_from(stats.probation).unwrap_or(u64::MAX),
+        hints,
+    };
+    serde_json::to_string(&listing).map_err(|e| {
+        Error::new(
+            nativelink_error::Code::Internal,
+            format!("Serializing the hints listing: {e}"),
         )
     })
 }

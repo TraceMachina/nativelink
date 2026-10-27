@@ -267,6 +267,7 @@ use crate::match_outcome::{
     MatchOutcome, PropertyShape, UnsatisfiableReason, explain_unsatisfiable,
 };
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::resource_sketch::{Observation, ResourceSketch, SketchKey};
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
@@ -2266,6 +2267,14 @@ pub struct ApiWorkerScheduler {
     /// resource usage. `None` when origin events are disabled.
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
 
+    /// Where a `historical_resource` parent keeps what each kind of action
+    /// used; every sampled usage report goes in. `None` without one.
+    resource_sketch: Option<Arc<ResourceSketch>>,
+
+    /// The memory property the escalation policy reads, so a kill at a
+    /// reservation the worker did not echo can still be filed at it.
+    memory_property: Option<String>,
+
     /// Woken when a worker joins or leaves this scheduler.
     local_fleet_change_notify: Arc<Notify>,
 }
@@ -2329,6 +2338,7 @@ impl ApiWorkerScheduler {
         dispatch_ack_timeout_s: u64,
         worker_registry: SharedWorkerRegistry,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
         has_peers: bool,
         record_ttl: Duration,
         scheduler_id: String,
@@ -2343,6 +2353,9 @@ impl ApiWorkerScheduler {
         );
         let local_fleet_change_notify = Arc::new(Notify::new());
         let capacity_generation = Arc::new(AtomicU64::new(0));
+        let memory_property = memory_escalation
+            .as_ref()
+            .map(|policy| policy.property.clone());
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
@@ -2382,6 +2395,8 @@ impl ApiWorkerScheduler {
             worker_registry,
             metrics: Arc::new(SchedulerMetrics::default()),
             maybe_origin_event_tx,
+            resource_sketch,
+            memory_property,
             local_fleet_change_notify,
             capacity_generation,
             scheduler_id,
@@ -2709,6 +2724,55 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     outcome.as_str_name(),
                 );
             }
+        }
+
+        // What the scheduler learns from: outside the `inner` lock, the
+        // sketch has its own.
+        if let (Some(sketch), Some(action_info), true) = (
+            self.resource_sketch.as_ref(),
+            maybe_action_info.as_ref(),
+            resource_usage.sampled,
+        ) {
+            let metadata = action_info.origin_metadata.bazel_metadata.as_ref();
+            let key = SketchKey::for_attempt(
+                metadata.map(|m| m.target_id.as_str()),
+                metadata.map(|m| m.action_mnemonic.as_str()),
+                &action_info.inner.command_digest.to_string(),
+            );
+            let killed = outcome == ResourceOutcome::KilledMemory;
+            // What it ran under: the worker's echo, else what the scheduler
+            // sent, the same two sources the escalation reads.
+            let killed_at_kb = killed
+                .then(|| {
+                    resource_usage
+                        .reserved
+                        .map(|r| r.memory_kb)
+                        .filter(|kb| *kb > 0)
+                        .or_else(|| {
+                            let property = self.memory_property.as_deref()?;
+                            match action_info.platform_properties.properties.get(property) {
+                                Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
+                                _ => None,
+                            }
+                        })
+                })
+                .flatten();
+            let observation = Observation {
+                peak_memory_kb: resource_usage.peak_memory_kb,
+                cpu_millicores: (resource_usage.wall_time_ms > 0).then(|| {
+                    resource_usage.cpu_time_ms.saturating_mul(1000) / resource_usage.wall_time_ms
+                }),
+                peak_disk_kb: resource_usage.peak_disk_kb,
+                killed_at_kb,
+                killed: !matches!(
+                    outcome,
+                    ResourceOutcome::Unknown | ResourceOutcome::Completed
+                ),
+                now_s: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            };
+            sketch.observe(key, &observation);
         }
 
         let Some(origin_event_tx) = self.maybe_origin_event_tx.as_ref() else {

@@ -229,22 +229,37 @@ and do not spend `max_job_retries`. The execution histograms carry an
 `execution.outcome` attribute so the killed samples can be told from the
 completed ones.
 
-The `historical_resource` scheduler that fills reservations reads hints by a
-key ladder, each step probed only when the action carries that key:
-`(target_id, action_mnemonic)`, then `target_id`, then the
-action's `action_digest`, then its `command_digest` (each `hash-size` or
-`hash/size`), then the mnemonic alone. The digest keys reach every client,
-whether or not it sends Bazel request metadata; the action digest is what
-origin events carry, so it is what a producer fed by them writes. A hint may name a `class` instead of numbers, and
-**`classes`** on the same scheduler defines the fleet's size ladder: named
-points with `cpu_count`, `memory_kb` and `disk_kb`, listed ascending. An
-action no hint matches takes the class picked by `class_by_mnemonic`, then
+The `historical_resource` scheduler that fills reservations sizes an action
+from what the scheduler itself measured. Every sampled usage report a worker
+sends lands in a bounded sketch: one entry per key with 25-bucket log2
+histograms of peak memory, CPU and disk, the exact maxima, the reservation
+the action was last killed at, and when it was last seen. The key is the
+`(target_id, action_mnemonic)` the client sent, the mnemonic alone when it
+sent no target, or the action's `command_digest` when it sent neither (the
+same program with the same arguments, whatever its inputs, so one key
+gathers every run; a digest earns an entry on its second sighting or a
+kill, since one that ran once is an action-cache hit next time). A lookup
+walks that ladder most specific first and reserves the 95th percentile
+bucket's upper bound, capped by the exact maximum, plus `headroom_percent`,
+never at or below the kill. **`classes`** on the same scheduler defines the
+fleet's size ladder: named points with `cpu_count`, `memory_kb` and
+`disk_kb`, listed ascending, and a hint takes the smallest class that holds
+its numbers on every dimension the class names. An action the sketch has
+nothing for takes the class picked by `class_by_mnemonic`, then
 `class_by_timeout` (Bazel test sizes arrive as timeouts), then
 `default_class`; without classes the raw `cold_start` numbers apply. With
 `memory_escalation.ladder_kb` set to the classes' memory values, a memory
 kill steps the reservation to the next class instead of scaling it, and a
-kill at the top class fails the action. Older hint files still load: every
-new field is optional.
+kill at the top class fails the action.
+
+The sketch lives within `memory_budget_bytes` (keys the fleet has not run
+for `window_days` are forgotten, and a full family evicts its least
+recently seen key) and is written to `snapshot_store` every
+`snapshot_interval_s`, so a restart keeps what the scheduler learned. The
+admin API's `/scheduler/{instance}/hints` lists what it reserves for every
+key in the `hints_file` shape, which is how a new fleet is seeded from an
+old one: the file is read once into an empty sketch and a seeded hint
+stands until the first real sample of its key.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 

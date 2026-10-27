@@ -175,6 +175,7 @@ async fn scheduler_defers_to_a_peers_worker_it_cannot_see() -> Result<(), Error>
             Arc::new(Notify::new()),
             MockInstantWrapped::default,
             None,
+            None,
             EXCHANGE_INTERVAL,
         )
         .0

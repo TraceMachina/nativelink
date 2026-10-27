@@ -222,7 +222,7 @@ pub struct Shaped {
 }
 
 impl Shaped {
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.cpu_count == 0 && self.memory_kb == 0 && self.disk_kb == 0
     }
 }
@@ -471,7 +471,7 @@ impl ResourceSketch {
             if family.is_some_and(|wanted| wanted != f) {
                 continue;
             }
-            for (key, entry) in inner.families[f.index()].iter() {
+            for (key, entry) in &inner.families[f.index()] {
                 if rows.len() >= limit {
                     return rows;
                 }
@@ -563,7 +563,7 @@ fn p95_capped(hist: &Hist, max: u64) -> u64 {
     }
 }
 
-fn with_headroom(value: u64, headroom_percent: u64) -> u64 {
+const fn with_headroom(value: u64, headroom_percent: u64) -> u64 {
     if value == 0 {
         return 0;
     }
@@ -615,6 +615,19 @@ fn shape(policy: &Policy, entry: &Entry) -> Shaped {
     // class, so no CPU need is stated and the class goes by memory.
     let mut cpu = with_headroom(p95_capped(&entry.cpu, entry.max_cpu_millicores), headroom);
     let mut disk_kb = with_headroom(p95_capped(&entry.disk, entry.max_disk_kb), headroom);
+    // A number on a dimension the fleet does not reserve says nothing about
+    // the ones it does, so it is dropped before anything is decided from
+    // it: a disk-only measurement is no measurement, and the cold start
+    // applies, rather than the smallest class.
+    if !policy.reserve_cpu {
+        cpu = 0;
+    }
+    if !policy.reserve_memory {
+        memory_kb = 0;
+    }
+    if !policy.reserve_disk {
+        disk_kb = 0;
+    }
     if memory_kb == 0 && cpu == 0 && disk_kb == 0 {
         return Shaped::default();
     }

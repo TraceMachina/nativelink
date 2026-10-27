@@ -32,6 +32,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
 use nativelink_scheduler::historical_resource_scheduler::HistoricalResourceScheduler;
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
+use nativelink_scheduler::resource_sketch::{Observation, SketchKey};
 use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::operation_state_manager::ClientStateManager;
@@ -67,6 +68,12 @@ fn base_spec(hints_file: String, cold_start: Option<ColdStartSpec>) -> Historica
     HistoricalResourceSpec {
         hints_file,
         refresh_interval_s: 0,
+        // No headroom, so a seeded number comes back as stated.
+        headroom_percent: 0,
+        window_days: 7,
+        memory_budget_bytes: 16 << 20,
+        snapshot_store: None,
+        snapshot_interval_s: 0,
         cpu_property_name: "cpu_count".to_string(),
         memory_property_name: "memory_kb".to_string(),
         disk_property_name: "disk_kb".to_string(),
@@ -83,8 +90,15 @@ fn make_scheduler_with_spec(
     spec: &HistoricalResourceSpec,
 ) -> (Arc<MockActionScheduler>, HistoricalResourceScheduler) {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
-    let scheduler = HistoricalResourceScheduler::new(spec, mock_scheduler.clone());
+    let sketch = Arc::new(HistoricalResourceScheduler::sketch_from_spec(spec));
+    let scheduler = HistoricalResourceScheduler::new(spec, mock_scheduler.clone(), sketch);
     (mock_scheduler, scheduler)
+}
+
+fn now_s() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn class(name: &str, cpu_count: u64, memory_kb: u64, disk_kb: u64) -> SizeClassSpec {
@@ -163,10 +177,10 @@ async fn command_digest_hint_matches_an_action_without_metadata() -> Result<(), 
     Ok(())
 }
 
-/// A hint keyed by the action digest, which is what origin events carry,
-/// matches the action whose digest it is and no other.
+/// The sketch keys a nameless action by its command digest, not its action
+/// digest: a seed naming only an action digest seeds nothing.
 #[nativelink_test]
-async fn action_digest_hint_matches_only_its_action() -> Result<(), Error> {
+async fn an_action_digest_only_hint_seeds_nothing() -> Result<(), Error> {
     let digest = DigestInfo::new([9; 32], 42);
     let hints_file = write_hints_file(&format!(
         r#"[ {{ "action_digest": "{digest}", "memory_kb": 7000000 }} ]"#
@@ -174,10 +188,59 @@ async fn action_digest_hint_matches_only_its_action() -> Result<(), Error> {
     let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
     let matching = make_base_action_info(UNIX_EPOCH, digest);
     let properties = properties_after_add(&scheduler, &mock_scheduler, matching, None).await?;
-    assert_eq!(properties["memory_kb"], "7000000");
-    let other = make_base_action_info(UNIX_EPOCH, DigestInfo::new([8; 32], 42));
-    let properties = properties_after_add(&scheduler, &mock_scheduler, other, None).await?;
     assert!(properties.is_empty(), "{properties:?}");
+    assert_eq!(scheduler.sketch().stats().entries, [0, 0, 0]);
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// What the workers report is what sizes the next run: an attempt observed
+/// twice is reserved its measured p95 with the headroom, and the seed it
+/// replaced is gone.
+#[nativelink_test]
+async fn a_measured_action_is_sized_from_its_own_samples() -> Result<(), Error> {
+    let hints_file = write_hints_file(
+        r#"[ { "target_id": "//pkg:t", "action_mnemonic": "Genrule", "memory_kb": 500000 } ]"#,
+    );
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.headroom_percent = 20;
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+
+    // The seed, with the headroom.
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base.clone(),
+        Some(("//pkg:t", "Genrule")),
+    )
+    .await?;
+    assert_eq!(properties["memory_kb"], "600000");
+
+    // Two attempts land through the worker scheduler's path.
+    let key = SketchKey::for_attempt(Some("//pkg:t"), Some("Genrule"), "unused");
+    for peak in [3_000_000u64, 3_500_000] {
+        scheduler.sketch().observe(
+            key.clone(),
+            &Observation {
+                peak_memory_kb: peak,
+                cpu_millicores: Some(1200),
+                now_s: now_s(),
+                ..Observation::default()
+            },
+        );
+    }
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base,
+        Some(("//pkg:t", "Genrule")),
+    )
+    .await?;
+    // The p95 bucket of 3.5M KiB is [2M, 4M), capped by the exact maximum,
+    // plus 20 percent.
+    assert_eq!(properties["memory_kb"], "4200000");
+    assert_eq!(properties["cpu_count"], "1440");
     drop(fs::remove_file(hints_file));
     Ok(())
 }
@@ -205,7 +268,9 @@ async fn classes_resolve_hints_and_cold_start() -> Result<(), Error> {
     let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
     let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
 
-    // A hint with a class: the class fills what the hint leaves out.
+    // A hint with a class: the class fills what the hint leaves out, and
+    // the seed is then shaped like a measurement. 5000 millicores is above
+    // every class on this ladder, so the top class stands for it.
     let properties = properties_after_add(
         &scheduler,
         &mock_scheduler,
@@ -214,14 +279,11 @@ async fn classes_resolve_hints_and_cold_start() -> Result<(), Error> {
     )
     .await?;
     assert_eq!(
-        properties["cpu_count"], "5000",
-        "the hint's own number wins"
+        properties["cpu_count"], "4000",
+        "past the top of the ladder, the top class"
     );
-    assert_eq!(
-        properties["memory_kb"], "12000000",
-        "the class fills memory"
-    );
-    assert_eq!(properties["disk_kb"], "4000000");
+    assert_eq!(properties["memory_kb"], "36000000");
+    assert_eq!(properties["disk_kb"], "16000000");
 
     // No hint, a known heavy mnemonic: its class.
     let properties = properties_after_add(
@@ -290,15 +352,15 @@ async fn a_hint_dimension_the_ladder_does_not_reserve_is_dropped() -> Result<(),
         Some(("//pkg:a", "Genrule")),
     )
     .await?;
-    assert_eq!(properties["cpu_count"], "1500", "the hint's own cpu stands");
+    assert_eq!(
+        properties["cpu_count"], "2000",
+        "the class that holds the hint's cpu"
+    );
     assert_eq!(properties["memory_kb"], "6291456", "the class fills memory");
     assert!(
         !properties.contains_key("disk_kb"),
         "disk is not a dimension this ladder reserves: {properties:?}"
     );
-    assert!(logs_contain(
-        "Hints carry a dimension neither the ladder nor the cold start reserves; it is ignored"
-    ));
 
     // A hint left with nothing but disk falls through to the cold start.
     let properties = properties_after_add(
@@ -439,18 +501,24 @@ async fn add_action_applies_historical_resource_hint() -> Result<(), Error> {
     Ok(())
 }
 
-/// A record naming a target and a digest is reachable by either key; a
-/// single composite key was reachable by neither.
+/// A seed has one key: the target when it names one. The digest it may
+/// also carry is not a second key, so a nameless action does not find it.
 #[nativelink_test]
-async fn a_hint_naming_a_target_and_a_digest_is_found_by_either() -> Result<(), Error> {
+async fn a_hint_naming_a_target_is_found_by_the_target_only() -> Result<(), Error> {
     let digest = DigestInfo::new([3; 32], 12);
     let hints_file = write_hints_file(&format!(
-        r#"[ {{ "target_id": "//pkg:t", "action_digest": "{digest}", "memory_kb": 5000000 }} ]"#
+        r#"[ {{ "target_id": "//pkg:t", "command_digest": "{digest}", "memory_kb": 5000000 }} ]"#
     ));
     let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
-    let by_digest = make_base_action_info(UNIX_EPOCH, digest);
-    let properties = properties_after_add(&scheduler, &mock_scheduler, by_digest, None).await?;
-    assert_eq!(properties["memory_kb"], "5000000", "found by the digest");
+    let mut by_digest = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest())
+        .as_ref()
+        .clone();
+    by_digest.command_digest = digest;
+    let properties =
+        properties_after_add(&scheduler, &mock_scheduler, Arc::new(by_digest), None).await?;
+    assert!(properties.is_empty(), "not a digest key: {properties:?}");
+    // The ladder's second rung, the target alone, reaches a seed that
+    // named no mnemonic whatever mnemonic the action carries.
     let by_target = make_base_action_info(UNIX_EPOCH, DigestInfo::new([4; 32], 12));
     let properties = properties_after_add(
         &scheduler,
@@ -465,18 +533,26 @@ async fn a_hint_naming_a_target_and_a_digest_is_found_by_either() -> Result<(), 
 }
 
 /// The ladder holds: an action with a mnemonic and no target takes the
-/// digest hint before the mnemonic one.
+/// command digest hint before the mnemonic one.
 #[nativelink_test]
 async fn a_mnemonic_alone_does_not_outrank_a_digest_hint() -> Result<(), Error> {
     let digest = DigestInfo::new([5; 32], 12);
     let hints_file = write_hints_file(&format!(
         r#"[ {{ "action_mnemonic": "Link", "memory_kb": 1000000 }},
-             {{ "action_digest": "{digest}", "memory_kb": 9000000 }} ]"#
+             {{ "command_digest": "{digest}", "memory_kb": 9000000 }} ]"#
     ));
     let (mock_scheduler, scheduler) = make_scheduler(hints_file.clone());
-    let action = make_base_action_info(UNIX_EPOCH, digest);
-    let properties =
-        properties_after_add(&scheduler, &mock_scheduler, action, Some(("", "Link"))).await?;
+    let mut action = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest())
+        .as_ref()
+        .clone();
+    action.command_digest = digest;
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        Arc::new(action),
+        Some(("", "Link")),
+    )
+    .await?;
     assert_eq!(properties["memory_kb"], "9000000");
     drop(fs::remove_file(hints_file));
     Ok(())

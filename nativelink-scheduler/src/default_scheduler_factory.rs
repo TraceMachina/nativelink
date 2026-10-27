@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::time::Duration;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -33,6 +34,7 @@ use crate::historical_resource_scheduler::HistoricalResourceScheduler;
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
+use crate::resource_sketch::ResourceSketch;
 use crate::simple_scheduler::SimpleScheduler;
 use crate::store_awaited_action_db::StoreAwaitedActionDb;
 use crate::worker_scheduler::WorkerScheduler;
@@ -41,9 +43,13 @@ use crate::worker_scheduler::WorkerScheduler;
 /// If this changes, remember to change the documentation in the config.
 const DEFAULT_RETAIN_COMPLETED_FOR_S: u32 = 60;
 
+/// The action scheduler, the worker scheduler, and the resource sketch of a
+/// `historical_resource` layer when the configuration has one (the admin
+/// API serves it).
 pub type SchedulerFactoryResults = (
     Option<Arc<dyn KnownPlatformPropertyProvider>>,
     Option<Arc<dyn WorkerScheduler>>,
+    Option<Arc<ResourceSketch>>,
 );
 
 pub async fn scheduler_factory(
@@ -51,28 +57,38 @@ pub async fn scheduler_factory(
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
 ) -> Result<SchedulerFactoryResults, Error> {
-    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx).await
+    inner_scheduler_factory(spec, store_manager, maybe_origin_event_tx, None).await
 }
 
+/// `resource_sketch` is the sketch of the `historical_resource` layer above
+/// this spec, if any, handed down so the worker scheduler feeds it.
 async fn inner_scheduler_factory(
     spec: &SchedulerSpec,
     store_manager: &StoreManager,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+    resource_sketch: Option<Arc<ResourceSketch>>,
 ) -> Result<SchedulerFactoryResults, Error> {
     let scheduler: SchedulerFactoryResults = match spec {
         SchedulerSpec::Simple(spec) => {
-            simple_scheduler_factory(spec, store_manager, SystemTime::now, maybe_origin_event_tx)
-                .await?
+            simple_scheduler_factory(
+                spec,
+                store_manager,
+                SystemTime::now,
+                maybe_origin_event_tx,
+                resource_sketch,
+            )
+            .await?
         }
-        SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None),
+        SchedulerSpec::Grpc(spec) => (Some(Arc::new(GrpcScheduler::new(spec)?)), None, None),
         SchedulerSpec::CacheLookup(spec) => {
             let ac_store = store_manager
                 .get_store(&spec.ac_store)
                 .err_tip(|| format!("'ac_store': '{}' does not exist", spec.ac_store))?;
-            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+            let (action_scheduler, worker_scheduler, sketch) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                resource_sketch,
             ))
             .await
             .err_tip(|| "In nested CacheLookupScheduler construction")?;
@@ -80,13 +96,14 @@ async fn inner_scheduler_factory(
                 ac_store,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             )?);
-            (Some(cache_lookup_scheduler), worker_scheduler)
+            (Some(cache_lookup_scheduler), worker_scheduler, sketch)
         }
         SchedulerSpec::PropertyModifier(spec) => {
-            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+            let (action_scheduler, worker_scheduler, sketch) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                resource_sketch,
             ))
             .await
             .err_tip(|| "In nested PropertyModifierScheduler construction")?;
@@ -94,7 +111,7 @@ async fn inner_scheduler_factory(
                 spec,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
             ));
-            (Some(property_modifier_scheduler), worker_scheduler)
+            (Some(property_modifier_scheduler), worker_scheduler, sketch)
         }
         SchedulerSpec::HistoricalResource(spec) => {
             HistoricalResourceScheduler::validate(spec)?;
@@ -127,18 +144,45 @@ async fn inner_scheduler_factory(
                     }
                 }
             }
-            let (action_scheduler, worker_scheduler) = Box::pin(inner_scheduler_factory(
+            // The sketch outlives this layer's construction: the worker
+            // scheduler below feeds it, this layer reads it, and the admin
+            // API lists it. A snapshot in the named store is what a restart
+            // starts from; the hints file only seeds an empty sketch.
+            let sketch = Arc::new(HistoricalResourceScheduler::sketch_from_spec(spec));
+            let snapshot_store = match &spec.snapshot_store {
+                Some(name) => Some(
+                    store_manager
+                        .get_store(name)
+                        .err_tip(|| format!("'snapshot_store': '{name}' does not exist"))?,
+                ),
+                None => None,
+            };
+            if let Some(store) = &snapshot_store {
+                HistoricalResourceScheduler::load_snapshot(&sketch, store).await;
+            }
+            let (action_scheduler, worker_scheduler, _) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
+                Some(sketch.clone()),
             ))
             .await
             .err_tip(|| "In nested HistoricalResourceScheduler construction")?;
             let historical_resource_scheduler = Arc::new(HistoricalResourceScheduler::new(
                 spec,
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
+                sketch.clone(),
             ));
-            (Some(historical_resource_scheduler), worker_scheduler)
+            HistoricalResourceScheduler::spawn_snapshot_writer(
+                sketch.clone(),
+                snapshot_store,
+                Duration::from_secs(spec.snapshot_interval_s),
+            );
+            (
+                Some(historical_resource_scheduler),
+                worker_scheduler,
+                Some(sketch),
+            )
         }
     };
 
@@ -150,6 +194,7 @@ async fn simple_scheduler_factory(
     store_manager: &StoreManager,
     now_fn: fn() -> SystemTime,
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
+    resource_sketch: Option<Arc<ResourceSketch>>,
 ) -> Result<SchedulerFactoryResults, Error> {
     if let Some(policy) = &spec.memory_escalation
         && policy.percent <= 100
@@ -180,13 +225,14 @@ async fn simple_scheduler_factory(
                 &task_change_notify,
                 SystemTime::now,
             );
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new_with_resource_sketch(
                 spec,
                 awaited_action_db,
                 task_change_notify,
                 maybe_origin_event_tx.cloned(),
+                resource_sketch,
             );
-            Ok((Some(action_scheduler), Some(worker_scheduler)))
+            Ok((Some(action_scheduler), Some(worker_scheduler), None))
         }
         ExperimentalSimpleSchedulerBackend::Redis(redis_config) => {
             let store = store_manager
@@ -230,13 +276,14 @@ async fn simple_scheduler_factory(
             )
             .await
             .err_tip(|| "In state_manager_factory::redis_state_manager")?;
-            let (action_scheduler, worker_scheduler) = SimpleScheduler::new(
+            let (action_scheduler, worker_scheduler) = SimpleScheduler::new_with_resource_sketch(
                 spec,
                 awaited_action_db,
                 task_change_notify,
                 maybe_origin_event_tx.cloned(),
+                resource_sketch,
             );
-            Ok((Some(action_scheduler), Some(worker_scheduler)))
+            Ok((Some(action_scheduler), Some(worker_scheduler), None))
         }
     }
 }

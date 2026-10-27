@@ -1273,9 +1273,51 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
         hint_resolutions: meter
             .u64_counter("scheduler.hints.resolutions")
             .with_description(
-                "Actions the historical resource scheduler sized, by where the numbers came from: a hint keyed by target, action digest, command digest or mnemonic, the cold start, or nothing",
+                "Actions the historical resource scheduler sized, by where the numbers came from: a hint keyed by target, command digest or mnemonic, a seed from the hints file, the cold start, or nothing",
             )
             .with_unit("{action}")
+            .build(),
+
+        hints_entries: meter
+            .u64_gauge("scheduler.hints.entries")
+            .with_description("Keys the scheduler holds a measured resource profile for, by family")
+            .with_unit("{key}")
+            .build(),
+
+        hints_capacity: meter
+            .u64_gauge("scheduler.hints.capacity")
+            .with_description("Keys a family can hold before it evicts the least recently seen")
+            .with_unit("{key}")
+            .build(),
+
+        hints_evictions: meter
+            .u64_counter("scheduler.hints.evictions")
+            .with_description("Keys evicted from a full family; climbing means the budget is too small or a client puts something unbounded in target_id")
+            .with_unit("{key}")
+            .build(),
+
+        hints_samples: meter
+            .u64_counter("scheduler.hints.samples")
+            .with_description("Sampled usage reports the sketch recorded, by family")
+            .with_unit("{sample}")
+            .build(),
+
+        hints_snapshot_bytes: meter
+            .u64_gauge("scheduler.hints.snapshot.bytes")
+            .with_description("Size of the last sketch snapshot written")
+            .with_unit("By")
+            .build(),
+
+        hints_snapshot_age: meter
+            .u64_gauge("scheduler.hints.snapshot.age")
+            .with_description("Seconds since the sketch was last snapshotted; zero before the first write")
+            .with_unit("s")
+            .build(),
+
+        hints_snapshot_failures: meter
+            .u64_counter("scheduler.hints.snapshot.failures")
+            .with_description("Sketch snapshot writes that failed; the sketch in memory is unaffected")
+            .with_unit("{write}")
             .build(),
     }
 });
@@ -1325,6 +1367,54 @@ pub struct SchedulerOtlpMetrics {
     pub sweep_failures: metrics::Counter<u64>,
     /// Actions sized by the historical resource scheduler, by source.
     pub hint_resolutions: metrics::Counter<u64>,
+    /// Keys the scheduler's resource sketch holds, by family.
+    pub hints_entries: metrics::Gauge<u64>,
+    /// Keys a sketch family can hold, by family.
+    pub hints_capacity: metrics::Gauge<u64>,
+    /// Keys evicted from a full sketch family, by family.
+    pub hints_evictions: metrics::Counter<u64>,
+    /// Usage reports the sketch recorded, by family.
+    pub hints_samples: metrics::Counter<u64>,
+    /// Bytes of the last sketch snapshot.
+    pub hints_snapshot_bytes: metrics::Gauge<u64>,
+    /// Seconds since the last sketch snapshot.
+    pub hints_snapshot_age: metrics::Gauge<u64>,
+    /// Sketch snapshot writes that failed.
+    pub hints_snapshot_failures: metrics::Counter<u64>,
+}
+
+/// Records the sketch's size for one family: what it holds, what it can
+/// hold, and the running totals of evictions and samples since start
+/// (counters take the delta from the last report).
+pub fn record_hints_family(
+    family: &'static str,
+    entries: u64,
+    capacity: u64,
+    evictions_delta: u64,
+    samples_delta: u64,
+) {
+    let attrs = [KeyValue::new("family", family)];
+    SCHEDULER_METRICS.hints_entries.record(entries, &attrs);
+    SCHEDULER_METRICS.hints_capacity.record(capacity, &attrs);
+    if evictions_delta > 0 {
+        SCHEDULER_METRICS
+            .hints_evictions
+            .add(evictions_delta, &attrs);
+    }
+    if samples_delta > 0 {
+        SCHEDULER_METRICS.hints_samples.add(samples_delta, &attrs);
+    }
+}
+
+/// Records a sketch snapshot write.
+pub fn record_hints_snapshot(bytes: u64, age_s: u64) {
+    SCHEDULER_METRICS.hints_snapshot_bytes.record(bytes, &[]);
+    SCHEDULER_METRICS.hints_snapshot_age.record(age_s, &[]);
+}
+
+/// Records a sketch snapshot write that failed.
+pub fn record_hints_snapshot_failure() {
+    SCHEDULER_METRICS.hints_snapshot_failures.add(1, &[]);
 }
 
 /// Records a completed matching pass.
