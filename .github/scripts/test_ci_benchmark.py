@@ -151,6 +151,9 @@ class BenchmarkTest(unittest.TestCase):
                "NL_WORKER_IMAGE": "image@sha256:123"}
         flags, endpoints = ci_benchmark.configuration("cluster", env)
         self.assertNotIn(env["NL_API_KEY"], " ".join(flags) + endpoints)
+        self.assertIn("--build_event_publish_all_actions", flags)
+        self.assertIn("--bes_upload_mode=wait_for_upload_complete", flags)
+        self.assertIn("--bes_instance_name=main", flags)
         self.assertGreater(flags.index("--jobs=48"), flags.index("--config=nl-rbe"))
         with self.assertRaises(ValueError):
             ci_benchmark.configuration("cluster", {**env, "NL_API_KEY": ""})

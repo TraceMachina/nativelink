@@ -78,6 +78,8 @@ def configuration(lane, environ):
         flags.append(f"--credential_helper={host}={helper}")
     flags += ["--config=nl-rbe", f"--remote_executor={cache}",
               f"--remote_instance_name={environ['NL_INSTANCE']}",
+              f"--bes_instance_name={environ['NL_INSTANCE']}",
+              "--build_event_publish_all_actions", "--bes_upload_mode=wait_for_upload_complete",
               f"--bes_results_url={environ['NL_RESULTS_URL']}",
               f"--remote_default_exec_properties=container-image={environ['NL_WORKER_IMAGE']}",
               "--remote_default_exec_properties=cpu_count=1000",
