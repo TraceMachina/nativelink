@@ -249,3 +249,6 @@ try-import %workspace%/ci.bazelrc
 
 # Allow user-side customization.
 try-import %workspace%/user.bazelrc
+
+# Generated per-job metadata; absent for ordinary local builds.
+try-import %workspace%/ci-metadata.bazelrc

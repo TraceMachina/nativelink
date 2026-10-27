@@ -12,6 +12,8 @@ import time
 from urllib.parse import urlsplit
 import uuid
 
+import ci_metadata
+
 
 def cache_usage(summary):
     runners = summary.get("runnerCount", [])
@@ -104,6 +106,7 @@ def execute(command, environ):
 def run(args):
     start = time.monotonic()
     environ = os.environ.copy()
+    ci_metadata.restore(Path.cwd(), environ)
     flags, environ["NL_ENDPOINTS"] = configuration(args.lane, environ)
     result = {"schema": 1, "lane": args.lane, "revision": environ["GITHUB_SHA"],
               "bazel_version": Path(".bazelversion").read_text().strip(),

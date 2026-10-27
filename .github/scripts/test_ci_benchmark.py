@@ -18,6 +18,14 @@ import cluster_credentials
 
 
 class BenchmarkTest(unittest.TestCase):
+    def test_container_metadata_is_optional_and_not_a_layer_input(self):
+        self.assertIn('ci-metadata.bazelrc', Path('.dockerignore').read_text().splitlines())
+        dockerfile = Path('deployment-examples/docker-compose/Dockerfile').read_text()
+        self.assertIn('--mount=type=secret,id=ci-metadata,target=/root/nativelink/ci-metadata.bazelrc', dockerfile)
+        for workflow in ('main.yaml', 'nativelink-cloud-canary.yaml'):
+            self.assertIn('ci-metadata=ci-metadata.bazelrc',
+                          Path('.github/workflows', workflow).read_text())
+
     def test_primary_ci_dispatches_builds_without_a_hosted_baseline(self):
         workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
         for hosted_build in ('matrix:', 'baseline', 'prepare-nix', 'setup-bazel', 'bazel test'):
@@ -59,7 +67,10 @@ class BenchmarkTest(unittest.TestCase):
                    GITHUB_REPOSITORY='TraceMachina/nativelink', GITHUB_EVENT_NAME='push',
                    GITHUB_REF='refs/heads/feature/example',
                    GITHUB_TOKEN='never-forward', ACTIONS_ID_TOKEN_REQUEST_TOKEN='never-forward')
+        env['CI_BAZEL_METADATA'] = json.dumps({'pipeline': 'CI / Test', 'job': 'Test / Linux'})
         result = cluster_ci.payload(env, 3)
+        self.assertEqual(json.loads(result['CI_BAZEL_METADATA']),
+                         {'pipeline': 'CI / Test', 'job': 'Test / Linux'})
         self.assertNotIn('never-forward', json.dumps(result))
         self.assertEqual(result['NL_SUMMARY_DIRECTORY'], '/workspace/ci-results/123-1')
         self.assertEqual(result['NL_PERSISTENT_CACHE'], '/workspace')
@@ -168,6 +179,21 @@ class BenchmarkTest(unittest.TestCase):
             result = json.loads((Path(directory) / "cluster.json").read_text())
             self.assertEqual(result["exit_code"], 7)
             self.assertEqual(len(result["runs"]), 1)
+
+    def test_retained_runner_writes_metadata_before_bazel_starts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = type('Args', (), {'lane': 'cluster', 'repetitions': 1, 'output': root})()
+            def execute(_command, _env):
+                self.assertIn('--build_metadata=job=Current job',
+                              (root / 'ci-metadata.bazelrc').read_text())
+                return 0
+            with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40, 'BENCHMARK_STARTED': '0',
+                                         'CI_BAZEL_METADATA': json.dumps({'job': 'Current job'})}), \
+                    patch.object(ci_benchmark.Path, 'cwd', return_value=root), \
+                    patch.object(ci_benchmark, 'configuration', return_value=([], '')), \
+                    patch.object(ci_benchmark, 'execute', side_effect=execute):
+                self.assertEqual(ci_benchmark.run(args), 0)
 
     def test_host_bazel_does_not_inherit_the_nix_library_path(self):
         with tempfile.TemporaryDirectory() as directory:
