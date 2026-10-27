@@ -915,6 +915,71 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
     }
 }
 
+/// Deletes the temp key of an upload that did not publish, however it
+/// ended. `delete` is for an error the store sees. `Drop` is for the update
+/// future being dropped mid-stream, which is how the `ByteStream` server ends
+/// an upload whose client went away or closed the stream early: no error
+/// reaches the store, so without this the key stayed until its TTL. The
+/// SETRANGE of any chunk still in flight was queued on this same connection
+/// before the DEL, so Redis applies the DEL after it and no chunk recreates
+/// the key.
+struct TempKeyGuard<C>
+where
+    C: ConnectionLike + Clone + Send + Sync + 'static,
+{
+    connection: C,
+    temp_key: String,
+    armed: bool,
+}
+
+impl<C> TempKeyGuard<C>
+where
+    C: ConnectionLike + Clone + Send + Sync + 'static,
+{
+    /// The upload published; the key is gone under its final name.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+
+    async fn delete(mut self) {
+        self.armed = false;
+        if let Err(err) = self.connection.del::<_, ()>(&self.temp_key).await {
+            debug!(
+                ?err,
+                temp_key = %self.temp_key,
+                "Could not delete the temp key of a failed upload; its TTL removes it"
+            );
+        }
+    }
+}
+
+impl<C> Drop for TempKeyGuard<C>
+where
+    C: ConnectionLike + Clone + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Dropped mid-stream. Nothing can be awaited here, so the delete runs
+        // on its own task; without a runtime (shutdown) the TTL does it.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let temp_key = core::mem::take(&mut self.temp_key);
+        let mut connection = self.connection.clone();
+        handle.spawn(async move {
+            if let Err(err) = connection.del::<_, ()>(&temp_key).await {
+                debug!(
+                    ?err,
+                    temp_key,
+                    "Could not delete the temp key of a dropped upload; its TTL removes it"
+                );
+            }
+        });
+    }
+}
+
 impl<C, M> RedisStore<C, M>
 where
     C: ConnectionLike + Clone + Send + Sync + Unpin + 'static,
@@ -929,7 +994,8 @@ where
     /// they lived forever, and a CAS that failed or restarted under load left
     /// them in numbers. The lifetime is `key_ttl_s` when set, else
     /// [`TEMP_KEY_TTL`]; an upload that outlives it is refused rather than
-    /// published, see the TTL check after the chunks.
+    /// published, see the TTL check after the chunks. The caller's
+    /// [`TempKeyGuard`] deletes the key when this does not publish.
     async fn update_through_temp_key(
         &self,
         key: &StoreKey<'_>,
@@ -1174,20 +1240,6 @@ where
 
         Ok(blob_len.try_into().unwrap_or(0))
     }
-
-    /// Frees a failed upload's temp key now; its TTL would do it later.
-    async fn delete_temp_key(&self, temp_key: &str) {
-        let Ok((mut connection_manager, _uuid)) = self.connection_manager.get_connection().await
-        else {
-            return;
-        };
-        if let Err(err) = connection_manager.del::<_, ()>(temp_key).await {
-            debug!(
-                ?err,
-                temp_key, "Could not delete the temp key of a failed upload; its TTL removes it"
-            );
-        }
-    }
 }
 
 #[async_trait]
@@ -1417,17 +1469,29 @@ where
             }
         }
 
-        let result = self
+        // The temp key expires on its own. Deleting it as soon as the upload
+        // cannot publish frees the memory now rather than at the end of its
+        // lifetime, which is the difference between a bounded and a full
+        // Redis when uploads fail or are abandoned in numbers.
+        let (connection, _uuid) = self.connection_manager.get_connection().await?;
+        let guard = TempKeyGuard {
+            connection,
+            temp_key: temp_key.clone(),
+            armed: true,
+        };
+        match self
             .update_through_temp_key(&key, &final_key, &temp_key, reader, upload_size)
-            .await;
-        if result.is_err() {
-            // The temp key expires on its own. Deleting it here frees the
-            // memory now rather than at the end of its lifetime, which is
-            // the difference between a bounded and a full Redis when uploads
-            // fail in numbers.
-            self.delete_temp_key(&temp_key).await;
+            .await
+        {
+            Ok(len) => {
+                guard.disarm();
+                Ok(len)
+            }
+            Err(err) => {
+                guard.delete().await;
+                Err(err)
+            }
         }
-        result
     }
 
     async fn get_part(

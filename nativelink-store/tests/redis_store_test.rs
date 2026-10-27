@@ -3270,6 +3270,62 @@ async fn update_deletes_the_temp_key_when_the_upload_fails() -> Result<(), Error
     Ok(())
 }
 
+/// The `ByteStream` server drops the store future when a client goes away or
+/// closes its stream early; no error reaches the store. The temp key must
+/// still be deleted then, not left for its TTL: a bed showed every abandoned
+/// upload's key sitting for the hour.
+#[nativelink_test]
+async fn update_deletes_the_temp_key_when_dropped_mid_stream() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 4)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = Arc::new(
+        make_mock_store(vec![
+            stage(&temp_key, TEMP_TTL),
+            MockCmd::new(
+                redis::cmd("SETRANGE")
+                    .arg(&temp_key)
+                    .arg(0)
+                    .arg(data.to_vec()),
+                Ok(Value::Int(0)),
+            ),
+            // Issued from the guard's own task once the update is dropped.
+            MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(1))),
+            // A read afterwards so the DEL expectation is consumed in order.
+            MockCmd::with_values(
+                redis::pipe()
+                    .cmd("STRLEN")
+                    .arg(&real_key)
+                    .cmd("EXISTS")
+                    .arg(&real_key),
+                Ok(vec![Value::Int(0), Value::Boolean(false)]),
+            ),
+        ])
+        .await,
+    );
+    let (mut tx, rx) = make_buf_channel_pair();
+    let upload = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            StoreLike::update(&*store, digest, rx, UploadSizeInfo::ExactSize(4)).await
+        })
+    };
+    // The first chunk lands; the second never comes.
+    tx.send(data).await?;
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    upload.abort();
+    assert!(upload.await.unwrap_err().is_cancelled());
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
 /// SETRANGE on a key that has expired creates it again, zero-filled and
 /// without a TTL, and the length still matches. An upload that outlived its
 /// temp key must be refused, not published as zeros under the digest.
