@@ -64,16 +64,13 @@ jobs:
     name: ${{ matrix.target }}
     runs-on: ubuntu-24.04
     env:
-      FUZZ_TARGET: ${{ matrix.target }}
+      CFL_EXTRA_FUZZ_TARGET: ${{ matrix.target }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-
-      - name: Select fuzz target
-        run: printf '%s\n' '${{ matrix.target }}' > .clusterfuzzlite/fuzz-target
 
       - name: Build fuzzer
         uses: >- # v1

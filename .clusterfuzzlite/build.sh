@@ -1,12 +1,7 @@
 #!/bin/bash -eu
 
 fuzz_dir="$SRC/nativelink/nativelink-test/fuzz"
-target="${FUZZ_TARGET:-}"
-selector_file="${GITHUB_WORKSPACE:-/github/workspace}/.clusterfuzzlite/fuzz-target"
-
-if [[ -z $target && -f $selector_file ]]; then
-    target="$(< "$selector_file")"
-fi
+target="${CFL_EXTRA_FUZZ_TARGET:-${FUZZ_TARGET:-}}"
 
 if [[ -n $target ]]; then
     cargo fuzz build --fuzz-dir "$fuzz_dir" "$target"
