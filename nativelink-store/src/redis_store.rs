@@ -52,8 +52,8 @@ use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
 use redis::sentinel::{SentinelClient, SentinelNodeConnectionInfo, SentinelServerType};
 use redis::{
-    AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, ScanOptions, Script, Value,
-    pipe,
+    AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, ScanOptions, Script, SetExpiry,
+    SetOptions, Value, pipe,
 };
 use serde::Deserialize;
 use serde::de::IntoDeserializer;
@@ -136,6 +136,16 @@ const DEFAULT_CLIENT_PERMITS: usize = 500;
 fn ttl_seconds(key_ttl: Duration) -> i64 {
     i64::try_from(key_ttl.as_secs()).unwrap_or(i64::MAX).max(1)
 }
+
+/// Lifetime of an upload's temp key on a store without `key_ttl_s`.
+///
+/// Longer than any upload a client is allowed to take (Bazel's
+/// `--remote_timeout` is 60 s by default, and a resumed upload waits at most
+/// the `ByteStream` server's disconnect timeout), and short enough that the
+/// uploads in flight when a CAS dies are gone within the hour. An upload that
+/// outlives it fails rather than publishing a key that was recreated without
+/// its first chunks.
+const TEMP_KEY_TTL: Duration = Duration::from_hours(1);
 
 /// A wrapper around Redis to allow it to be reconnected.
 pub trait RedisManager<C>
@@ -905,6 +915,281 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
     }
 }
 
+impl<C, M> RedisStore<C, M>
+where
+    C: ConnectionLike + Clone + Send + Sync + Unpin + 'static,
+    M: RedisManager<C> + Unpin + Send + Sync + 'static,
+{
+    /// Stages an upload under `temp_key` and publishes it as `final_key`.
+    ///
+    /// The temp key is created with a lifetime before any byte lands, and
+    /// `SETRANGE` keeps a key's TTL, so an upload that stops anywhere (the
+    /// client went away, this process did) leaves a key Redis removes on its
+    /// own. Nothing else cleans temp keys up: on a store without `key_ttl_s`
+    /// they lived forever, and a CAS that failed or restarted under load left
+    /// them in numbers. The lifetime is `key_ttl_s` when set, else
+    /// [`TEMP_KEY_TTL`]; an upload that outlives it is refused rather than
+    /// published, see the TTL check after the chunks.
+    async fn update_through_temp_key(
+        &self,
+        key: &StoreKey<'_>,
+        final_key: &str,
+        temp_key: &str,
+        reader: DropCloserReadHalf,
+        upload_size: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        let mut client = self.get_client().await?;
+
+        let temp_ttl_secs = self.key_ttl.unwrap_or(TEMP_KEY_TTL).as_secs().max(1);
+        let staged = SetOptions::default().with_expiration(SetExpiry::EX(temp_ttl_secs));
+        match client
+            .connection_manager
+            .set_options::<_, _, ()>(temp_key, "", staged.clone())
+            .await
+        {
+            Ok(()) => {}
+            Err(err) if is_retryable_redis_error(&err) => {
+                let (connection_manager, uuid) =
+                    self.connection_manager.reconnect(client.uuid).await?;
+                client.connection_manager = connection_manager;
+                client.uuid = uuid;
+                client
+                    .connection_manager
+                    .set_options::<_, _, ()>(temp_key, "", staged)
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "(after reconnect) while creating temp key ({temp_key}) in RedisStore::update"
+                        )
+                    })?;
+            }
+            Err(err) => {
+                return Err(Error::from(err).append(format!(
+                    "While creating temp key ({temp_key}) in RedisStore::update"
+                )));
+            }
+        }
+
+        let mut read_stream = reader
+            .scan(0u32, |bytes_read, chunk_res| {
+                future::ready(Some(
+                    chunk_res
+                        .err_tip(|| "Failed to read chunk in update in redis store")
+                        .and_then(|chunk| {
+                            let offset = isize::try_from(*bytes_read).err_tip(|| "Could not convert offset to isize in RedisStore::update")?;
+                            let chunk_len = u32::try_from(chunk.len()).err_tip(
+                                || "Could not convert chunk length to u32 in RedisStore::update",
+                            )?;
+                            let new_bytes_read = bytes_read
+                                .checked_add(chunk_len)
+                                .err_tip(|| "Overflow protection in RedisStore::update")?;
+                            *bytes_read = new_bytes_read;
+                            Ok::<_, Error>((offset, *bytes_read, chunk))
+                        }),
+                ))
+            })
+            .map(|res| {
+                let (offset, end_pos, chunk) = res?;
+                Ok(async move {
+                    let (mut connection_manager, connect_id) = self.connection_manager.get_connection().await?;
+                    match connection_manager
+                        .setrange::<_, _, usize>(temp_key, offset, chunk.to_vec())
+                        .await {
+                        Ok(_) => {},
+                        Err(err)
+                            if is_retryable_redis_error(&err) =>
+                        {
+                            let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
+                            connection_manager
+                                .setrange::<_, _, usize>(temp_key, offset, chunk.to_vec())
+                                .await
+                                .err_tip(
+                                    || format!("(after reconnect) while appending to temp key ({temp_key}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
+                                )?;
+                        }
+                        Err(err) => {
+                            let mut error: Error = err.into();
+                            error
+                                .messages
+                                .push(format!("While appending to temp key ({temp_key}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"));
+                            return Err(error);
+                        }
+                    }
+                    Ok::<u32, Error>(end_pos)
+                })
+            })
+            .try_buffer_unordered(self.max_chunk_uploads_per_update);
+
+        let mut total_len: u32 = 0;
+        while let Some(last_pos) = read_stream.try_next().await? {
+            if last_pos > total_len {
+                total_len = last_pos;
+            }
+        }
+
+        let expected_len = usize::try_from(total_len).unwrap_or(usize::MAX);
+        upload_size.validate_size(u64::from(total_len))?;
+
+        // The chunk writes above reconnect on any transient failover error, so on a mid-write Redis
+        // failover the data lands on the *current* master. The length check and
+        // rename below must run against that same master: the connection
+        // captured before the writes may now point at a demoted replica, where
+        // strlen reads 0 and would fail an otherwise healthy write. Re-resolve
+        // the master and retry so a transient topology change (failover or brief
+        // replica lag) doesn't drop the value.
+        let mut attempt: u32 = 0;
+        let blob_len = loop {
+            attempt += 1;
+            // The master can go away between the chunk writes and this check
+            // too, and the connection then waits out the command timeout on a
+            // dead peer. Re-resolve the master and ask it, like every other
+            // step here does, instead of failing the upload. The error can
+            // also be immediate (connection refused while the old master is
+            // gone and Sentinel has not promoted a replica yet), so back off
+            // before each retry, doubling, so the attempts together span a
+            // typical failover of a few seconds rather than a few milliseconds.
+            //
+            // The key's remaining TTL comes back in the same round trip.
+            let (blob_len, remaining_ttl): (usize, i64) = match pipe()
+                .strlen(temp_key)
+                .ttl(temp_key)
+                .query_async(&mut client.connection_manager)
+                .await
+            {
+                Ok(checked) => checked,
+                Err(err)
+                    if is_retryable_redis_error(&err) && attempt < MAX_REDIS_RETRY_ATTEMPTS =>
+                {
+                    let (connection_manager, uuid) =
+                        self.connection_manager.reconnect(client.uuid).await?;
+                    client.connection_manager = connection_manager;
+                    client.uuid = uuid;
+                    let backoff =
+                        DEFAULT_RETRY_DELAY * 2f32.powi(i32::try_from(attempt).unwrap_or(i32::MAX));
+                    sleep(Duration::from_secs_f32(backoff)).await;
+                    continue;
+                }
+                Err(err) => {
+                    return Err(Error::from(err)
+                        .append(format!("In RedisStore::update strlen check for {temp_key}")));
+                }
+            };
+            // Safety check: reject if a retried append double-wrote the data.
+            if blob_len > expected_len {
+                return Err(make_input_err!(
+                    "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes",
+                    key.as_str(),
+                    temp_key,
+                    total_len,
+                    blob_len,
+                ));
+            }
+            if blob_len == expected_len {
+                // SETRANGE on a key that has expired creates it again,
+                // zero-filled up to the offset and with no TTL, and the
+                // length still matches. This is the only sign that the
+                // upload outlived its staging key; publishing it would store
+                // zeros under a digest they do not hash to.
+                if remaining_ttl < 0 {
+                    return Err(make_err!(
+                        Code::DeadlineExceeded,
+                        "Upload of {}({}) outlived the {}s lifetime of its temp key and a later chunk recreated it; not published",
+                        key.as_str(),
+                        temp_key,
+                        temp_ttl_secs,
+                    ));
+                }
+                break blob_len;
+            }
+            // blob_len < expected (typically 0): the temp key isn't visible on
+            // this connection yet; re-resolve the master and retry.
+            if attempt >= MAX_REDIS_RETRY_ATTEMPTS {
+                return Err(make_input_err!(
+                    "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes after {} attempts",
+                    key.as_str(),
+                    temp_key,
+                    total_len,
+                    blob_len,
+                    attempt,
+                ));
+            }
+            let (connection_manager, uuid) = self.connection_manager.reconnect(client.uuid).await?;
+            client.connection_manager = connection_manager;
+            client.uuid = uuid;
+            sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
+        };
+
+        // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
+        // The rename carries the temp key's TTL across, so the real key gets
+        // its own lifetime in the same round trip: `key_ttl_s` counted from
+        // completion rather than from the first byte, or none at all.
+        // Reconnect once on a transient failover error in case the master moved between the verify and here.
+        let mut publish = pipe();
+        publish.rename(temp_key, final_key);
+        match self.key_ttl {
+            Some(key_ttl) => publish.expire(final_key, ttl_seconds(key_ttl)),
+            None => publish.persist(final_key),
+        };
+        let ((), kept): ((), bool) = match publish.query_async(&mut client.connection_manager).await
+        {
+            Ok(published) => published,
+            Err(err) if is_retryable_redis_error(&err) => {
+                let (connection_manager, uuid) =
+                    self.connection_manager.reconnect(client.uuid).await?;
+                client.connection_manager = connection_manager;
+                client.uuid = uuid;
+                publish
+                    .query_async(&mut client.connection_manager)
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "While publishing {final_key} (after reconnect) in RedisStore::update()"
+                        )
+                    })?
+            }
+            Err(err) => {
+                return Err(Error::from(err).append(format!(
+                    "While publishing {final_key} in RedisStore::update()"
+                )));
+            }
+        };
+        // EXPIRE and PERSIST answer 0 only when the key is gone: it expired
+        // between the TTL check and here. The client has to send it again.
+        if !kept {
+            return Err(make_err!(
+                Code::DeadlineExceeded,
+                "Upload of {}({}) expired as it was published; not stored",
+                key.as_str(),
+                final_key,
+            ));
+        }
+
+        // If we have a publish channel configured, send a notice that the key has been set.
+        if let Some(pub_sub_channel) = &self.pub_sub_channel {
+            client
+                .connection_manager
+                .publish::<_, _, ()>(pub_sub_channel, final_key)
+                .await?;
+        }
+
+        Ok(blob_len.try_into().unwrap_or(0))
+    }
+
+    /// Frees a failed upload's temp key now; its TTL would do it later.
+    async fn delete_temp_key(&self, temp_key: &str) {
+        let Ok((mut connection_manager, _uuid)) = self.connection_manager.get_connection().await
+        else {
+            return;
+        };
+        if let Err(err) = connection_manager.del::<_, ()>(temp_key).await {
+            debug!(
+                ?err,
+                temp_key, "Could not delete the temp key of a failed upload; its TTL removes it"
+            );
+        }
+    }
+}
+
 #[async_trait]
 impl<C, M> StoreDriver for RedisStore<C, M>
 where
@@ -1132,234 +1417,17 @@ where
             }
         }
 
-        let mut client = self.get_client().await?;
-
-        let mut read_stream = reader
-            .scan(0u32, |bytes_read, chunk_res| {
-                future::ready(Some(
-                    chunk_res
-                        .err_tip(|| "Failed to read chunk in update in redis store")
-                        .and_then(|chunk| {
-                            let offset = isize::try_from(*bytes_read).err_tip(|| "Could not convert offset to isize in RedisStore::update")?;
-                            let chunk_len = u32::try_from(chunk.len()).err_tip(
-                                || "Could not convert chunk length to u32 in RedisStore::update",
-                            )?;
-                            let new_bytes_read = bytes_read
-                                .checked_add(chunk_len)
-                                .err_tip(|| "Overflow protection in RedisStore::update")?;
-                            *bytes_read = new_bytes_read;
-                            Ok::<_, Error>((offset, *bytes_read, chunk))
-                        }),
-                ))
-            })
-            .map(|res| {
-                let (offset, end_pos, chunk) = res?;
-                let temp_key_ref = &temp_key;
-                Ok(async move {
-                    let (mut connection_manager, connect_id) = self.connection_manager.get_connection().await?;
-                    match connection_manager
-                        .setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec())
-                        .await {
-                        Ok(_) => {},
-                        Err(err)
-                            if is_retryable_redis_error(&err) =>
-                        {
-                            let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
-                            connection_manager
-                                .setrange::<_, _, usize>(temp_key_ref, offset, chunk.to_vec())
-                                .await
-                                .err_tip(
-                                    || format!("(after reconnect) while appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
-                                )?;
-                        }
-                        Err(err) => {
-                            let mut error: Error = err.into();
-                            error
-                                .messages
-                                .push(format!("While appending to temp key ({temp_key_ref}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"));
-                            return Err(error);
-                        }
-                    }
-                    // Guard the temp key as soon as it exists. An update that
-                    // dies anywhere after this — mid-upload, during the length
-                    // check, during the rename — would otherwise leave the
-                    // temp key behind forever, and nothing cleans those up.
-                    // EXPIRE on a key that does not exist yet is a no-op, so
-                    // this has to happen after the first chunk lands rather
-                    // than before the loop.
-                    if offset == 0 && let Some(key_ttl) = self.key_ttl {
-                        let ttl_secs = ttl_seconds(key_ttl);
-                        match connection_manager.expire::<_, ()>(temp_key_ref, ttl_secs).await {
-                            Ok(()) => {}
-                            Err(err) if is_retryable_redis_error(&err) => {
-                                let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
-                                connection_manager
-                                    .expire::<_, ()>(temp_key_ref, ttl_secs)
-                                    .await
-                                    .err_tip(|| format!("(after reconnect) while setting TTL on temp key ({temp_key_ref}) in RedisStore::update"))?;
-                            }
-                            Err(err) => {
-                                return Err(Error::from(err).append(format!("While setting TTL on temp key ({temp_key_ref}) in RedisStore::update")));
-                            }
-                        }
-                    }
-                    Ok::<u32, Error>(end_pos)
-                })
-            })
-            .try_buffer_unordered(self.max_chunk_uploads_per_update);
-
-        let mut total_len: u32 = 0;
-        while let Some(last_pos) = read_stream.try_next().await? {
-            if last_pos > total_len {
-                total_len = last_pos;
-            }
+        let result = self
+            .update_through_temp_key(&key, &final_key, &temp_key, reader, upload_size)
+            .await;
+        if result.is_err() {
+            // The temp key expires on its own. Deleting it here frees the
+            // memory now rather than at the end of its lifetime, which is
+            // the difference between a bounded and a full Redis when uploads
+            // fail in numbers.
+            self.delete_temp_key(&temp_key).await;
         }
-
-        let expected_len = usize::try_from(total_len).unwrap_or(usize::MAX);
-        upload_size.validate_size(u64::from(total_len))?;
-
-        // The chunk writes above reconnect on any transient failover error, so on a mid-write Redis
-        // failover the data lands on the *current* master. The length check and
-        // rename below must run against that same master: the connection
-        // captured before the writes may now point at a demoted replica, where
-        // strlen reads 0 and would fail an otherwise healthy write. Re-resolve
-        // the master and retry so a transient topology change (failover or brief
-        // replica lag) doesn't drop the value.
-        let mut attempt: u32 = 0;
-        let blob_len = loop {
-            attempt += 1;
-            // The master can go away between the chunk writes and this check
-            // too, and the connection then waits out the command timeout on a
-            // dead peer. Re-resolve the master and ask it, like every other
-            // step here does, instead of failing the upload. The error can
-            // also be immediate (connection refused while the old master is
-            // gone and Sentinel has not promoted a replica yet), so back off
-            // before each retry, doubling, so the attempts together span a
-            // typical failover of a few seconds rather than a few milliseconds.
-            let blob_len: usize = match client.connection_manager.strlen(&temp_key).await {
-                Ok(len) => len,
-                Err(err)
-                    if is_retryable_redis_error(&err) && attempt < MAX_REDIS_RETRY_ATTEMPTS =>
-                {
-                    let (connection_manager, uuid) =
-                        self.connection_manager.reconnect(client.uuid).await?;
-                    client.connection_manager = connection_manager;
-                    client.uuid = uuid;
-                    let backoff =
-                        DEFAULT_RETRY_DELAY * 2f32.powi(i32::try_from(attempt).unwrap_or(i32::MAX));
-                    sleep(Duration::from_secs_f32(backoff)).await;
-                    continue;
-                }
-                Err(err) => {
-                    return Err(Error::from(err)
-                        .append(format!("In RedisStore::update strlen check for {temp_key}")));
-                }
-            };
-            // Safety check: reject if a retried append double-wrote the data.
-            if blob_len > expected_len {
-                return Err(make_input_err!(
-                    "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes",
-                    key.borrow().as_str(),
-                    temp_key,
-                    total_len,
-                    blob_len,
-                ));
-            }
-            if blob_len == expected_len {
-                break blob_len;
-            }
-            // blob_len < expected (typically 0): the temp key isn't visible on
-            // this connection yet — re-resolve the master and retry.
-            if attempt >= MAX_REDIS_RETRY_ATTEMPTS {
-                return Err(make_input_err!(
-                    "Data length mismatch in RedisStore::update for {}({}) - expected {} bytes, got {} bytes after {} attempts",
-                    key.borrow().as_str(),
-                    temp_key,
-                    total_len,
-                    blob_len,
-                    attempt,
-                ));
-            }
-            let (connection_manager, uuid) = self.connection_manager.reconnect(client.uuid).await?;
-            client.connection_manager = connection_manager;
-            client.uuid = uuid;
-            sleep(Duration::from_secs_f32(DEFAULT_RETRY_DELAY)).await;
-        };
-
-        // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
-        // Reconnect once on a transient failover error in case the master moved between the verify and here.
-        match client
-            .connection_manager
-            .rename::<_, _, ()>(&temp_key, final_key.as_ref())
-            .await
-        {
-            Ok(()) => {}
-            Err(err) if is_retryable_redis_error(&err) => {
-                let (connection_manager, uuid) =
-                    self.connection_manager.reconnect(client.uuid).await?;
-                client.connection_manager = connection_manager;
-                client.uuid = uuid;
-                client
-                    .connection_manager
-                    .rename::<_, _, ()>(&temp_key, final_key.as_ref())
-                    .await
-                    .err_tip(
-                        || "While queueing key rename (after reconnect) in RedisStore::update()",
-                    )?;
-            }
-            Err(err) => {
-                return Err(
-                    Error::from(err).append("While queueing key rename in RedisStore::update()")
-                );
-            }
-        }
-
-        // The rename carries the temp key's TTL across, so the key is never
-        // unprotected. Re-setting it here restarts the window at completion
-        // rather than at the first byte, which matters for a large blob whose
-        // upload takes a noticeable slice of the TTL. Reconnect once on a
-        // transient failover error, the same as the rename above: a key that
-        // silently never expires is the bug this option exists to prevent.
-        if let Some(key_ttl) = self.key_ttl {
-            let ttl_secs = ttl_seconds(key_ttl);
-            match client
-                .connection_manager
-                .expire::<_, ()>(final_key.as_ref(), ttl_secs)
-                .await
-            {
-                Ok(()) => {}
-                Err(err) if is_retryable_redis_error(&err) => {
-                    let (connection_manager, uuid) =
-                        self.connection_manager.reconnect(client.uuid).await?;
-                    client.connection_manager = connection_manager;
-                    client.uuid = uuid;
-                    client
-                        .connection_manager
-                        .expire::<_, ()>(final_key.as_ref(), ttl_secs)
-                        .await
-                        .err_tip(|| {
-                            format!(
-                                "While setting TTL on {final_key} (after reconnect) in RedisStore::update()"
-                            )
-                        })?;
-                }
-                Err(err) => {
-                    return Err(Error::from(err).append(format!(
-                        "While setting TTL on {final_key} in RedisStore::update()"
-                    )));
-                }
-            }
-        }
-
-        // If we have a publish channel configured, send a notice that the key has been set.
-        if let Some(pub_sub_channel) = &self.pub_sub_channel {
-            client
-                .connection_manager
-                .publish::<_, _, ()>(pub_sub_channel, final_key.as_ref())
-                .await?;
-        }
-
-        Ok(blob_len.try_into().unwrap_or(0))
+        result
     }
 
     async fn get_part(

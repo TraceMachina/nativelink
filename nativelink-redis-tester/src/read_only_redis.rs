@@ -110,7 +110,9 @@ impl ReadOnlyRedis {
                         }
                     }
                     "STRLEN" => Either::Left(Value::Int(5)),
-                    "RENAME" | "HMSET" => {
+                    "TTL" => Either::Left(Value::Int(60)),
+                    "PERSIST" => Either::Left(Value::Int(1)),
+                    "SET" | "RENAME" | "HMSET" => {
                         let value = self.readonly_triggered.load(Ordering::Relaxed);
                         if value {
                             Either::Left(Value::Okay)

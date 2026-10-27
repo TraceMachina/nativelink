@@ -86,7 +86,7 @@ bounding how much work you can have in flight.
 | `connection_timeout_ms` | 3000 | Ceiling on establishing a connection |
 | `health_check_timeout_ms` | 4000 | Ceiling on the health-check `PING` |
 | `scan_count` | 10000 | `COUNT` hint per `SCAN` iteration |
-| `key_ttl_s` | 0 (never) | Expiry set on every key this store writes; must exceed the longest upload |
+| `key_ttl_s` | 0 (never) | Expiry set on every key this store writes; must exceed the longest upload. Unset, only an upload's temp key expires, after an hour |
 
 `max_client_permits` is the most useful lever. It exists precisely to stop
 timeouts caused by many, many inflight actions: when the ceiling is reached,
