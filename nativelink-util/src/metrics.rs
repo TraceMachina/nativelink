@@ -1273,7 +1273,7 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
         hint_resolutions: meter
             .u64_counter("scheduler.hints.resolutions")
             .with_description(
-                "Actions the historical resource scheduler sized, by where the numbers came from: a hint keyed by target, command digest or mnemonic, a seed from the hints file, the cold start, or nothing",
+                "Actions the historical resource scheduler sized, by where the numbers came from: a hint keyed by target, action digest, command digest or mnemonic, the cold start, or nothing",
             )
             .with_unit("{action}")
             .build(),
