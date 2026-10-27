@@ -4,6 +4,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 exports_files(
     [
         ".rustfmt.toml",
+        "Cargo.lock",
         "clippy.toml",
     ],
     visibility = ["//visibility:public"],
