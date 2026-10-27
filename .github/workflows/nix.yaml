@@ -194,6 +194,9 @@ jobs:
           nix_name: .#${{ matrix.test-name }}-with-nativelink-test
 
   rbe-toolchain:
+    permissions:
+      contents: read
+      actions: read
     if: ${{ github.event_name != 'schedule' }}
     name: rbe ${{ matrix.command}}
     needs: [nix-build]
@@ -205,6 +208,9 @@ jobs:
       - name: Checkout
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
 
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
