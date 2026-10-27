@@ -206,6 +206,21 @@ in {
     pass_filenames = false;
   };
 
+  # Forbid compile-time environment paths that the hermetic build rejects.
+  check-hermetic-env = {
+    description = "Check compiled code retains no compile-time environment paths";
+    enable = true;
+    entry = let
+      script = pkgs.writeShellScriptBin "check-hermetic-env" ''
+        set -eu
+
+        ${pkgs.python3}/bin/python $(${flake-root}/bin/flake-root)/tools/check_hermetic_env.py $(${flake-root}/bin/flake-root)
+      '';
+    in "${script}/bin/check-hermetic-env";
+    types = ["rust"];
+    pass_filenames = false;
+  };
+
   # Check licenses
   check-license = {
     description = "Check licenses";
