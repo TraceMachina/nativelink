@@ -19,8 +19,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
-    convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,
-    convert_numeric_with_shellexpand, convert_string_with_shellexpand,
+    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
+    convert_duration_with_shellexpand_and_negative, convert_numeric_with_shellexpand,
+    convert_string_with_shellexpand,
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
@@ -526,6 +527,22 @@ const fn default_historical_resource_refresh_interval_s() -> u64 {
     30
 }
 
+const fn default_historical_resource_headroom_percent() -> u64 {
+    20
+}
+
+const fn default_historical_resource_window_days() -> u64 {
+    7
+}
+
+const fn default_historical_resource_memory_budget_bytes() -> u64 {
+    128 * 1024 * 1024
+}
+
+const fn default_historical_resource_snapshot_interval_s() -> u64 {
+    60
+}
+
 fn default_historical_resource_cpu_property_name() -> String {
     "cpu_count".to_string()
 }
@@ -704,8 +721,12 @@ pub struct TimeoutClassSpec {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HistoricalResourceSpec {
-    /// JSON file containing historical resource hints keyed by Bazel
-    /// `RequestMetadata` `target_id` and/or `action_mnemonic`.
+    /// Optional JSON file of hints to seed the scheduler's sketch from, read
+    /// once at start when no snapshot is loaded. The scheduler learns what
+    /// every kind of action uses from the usage its workers report, so a
+    /// file is only worth having for a fresh fleet that inherits another's
+    /// history: the admin API's `/scheduler/{instance}/hints` is this shape.
+    /// A seeded hint stands until the first real sample of its key.
     ///
     /// Supported file shapes:
     /// ```json
@@ -717,16 +738,62 @@ pub struct HistoricalResourceSpec {
     /// ```json
     /// { "hints": [ ... ] }
     /// ```
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub hints_file: String,
 
-    /// Reload interval for `hints_file`. Set to 0 to load once.
-    /// Default: 30 seconds
+    /// Ignored. The file is a one-time seed, not a live source; the
+    /// scheduler keeps its own measurements. Accepted so a configuration
+    /// written for an earlier release still loads.
     #[serde(
         default = "default_historical_resource_refresh_interval_s",
         deserialize_with = "convert_duration_with_shellexpand"
     )]
     pub refresh_interval_s: u64,
+
+    /// Headroom over the measured 95th percentile, in percent.
+    /// Default: 20
+    #[serde(
+        default = "default_historical_resource_headroom_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub headroom_percent: u64,
+
+    /// A key not measured for this many days is forgotten.
+    /// Default: 7
+    #[serde(
+        default = "default_historical_resource_window_days",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub window_days: u64,
+
+    /// Memory the sketch may use for what it has learned, in bytes. About
+    /// 400 bytes a key, split across keys by target, by mnemonic and by
+    /// command digest (80, 10 and 10 percent); the least recently seen key
+    /// of a full family goes first. The default holds about 300k keys,
+    /// more than the largest installation seen has distinct targets times
+    /// mnemonics in a week.
+    /// Default: 134217728 (128 MiB)
+    #[serde(
+        default = "default_historical_resource_memory_budget_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub memory_budget_bytes: u64,
+
+    /// Name of the store the sketch is snapshotted to, so a restart keeps
+    /// what the scheduler learned. The CAS's durable store serves; the
+    /// snapshot is one blob under a fixed key. Unset, the sketch lives in
+    /// memory only and a restart starts from `hints_file`, if any.
+    #[serde(default)]
+    pub snapshot_store: Option<String>,
+
+    /// How often the snapshot is written. Zero turns the periodic write
+    /// off; the write at shutdown stays.
+    /// Default: 60 seconds
+    #[serde(
+        default = "default_historical_resource_snapshot_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub snapshot_interval_s: u64,
 
     /// Platform property name used for CPU minimums. The nested scheduler
     /// must declare it as a `minimum` property (as it must the memory and
