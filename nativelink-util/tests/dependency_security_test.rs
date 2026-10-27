@@ -23,8 +23,6 @@
 //! This test reads the resolved lock and fails when any copy of these
 //! crates, not merely the newest, is below its fixed release.
 
-use std::path::PathBuf;
-
 const FIXED_FLOORS: &[(&str, [u64; 3])] = &[
     ("zstd", [0, 14, 3]),
     ("zstd-safe", [8, 2, 0]),
@@ -32,12 +30,12 @@ const FIXED_FLOORS: &[(&str, [u64; 3])] = &[
 ];
 
 /// The lock to audit: the runner's environment names it under Bazel, and a
-/// cargo invocation finds it by walking up from this crate's manifest.
+/// cargo invocation finds it by walking up from its working directory.
 fn cargo_lock_contents() -> Option<String> {
     if let Ok(path) = std::env::var("CARGO_LOCK_FOR_AUDIT") {
         return std::fs::read_to_string(path).ok();
     }
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut dir = std::env::current_dir().ok()?;
     loop {
         let candidate = dir.join("Cargo.lock");
         if candidate.is_file() {
