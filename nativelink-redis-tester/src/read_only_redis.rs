@@ -55,6 +55,8 @@ impl ReadOnlyRedis {
         let inner = move |buf: &[u8]| -> String {
             let mut output = String::new();
             let mut buf_index = 0;
+            // The replies queued since a MULTI, answered by its EXEC.
+            let mut queued: Option<Vec<Value>> = None;
             loop {
                 let frame = match decode(&buf[buf_index..]).unwrap() {
                     Some((frame, amt)) => {
@@ -122,8 +124,12 @@ impl ReadOnlyRedis {
                         }
                     }
                     "EVALSHA" => Either::Left(Value::Array(vec![Value::Int(1), Value::Int(0)])),
+                    "MULTI" => {
+                        queued = Some(Vec::new());
+                        Either::Left(Value::Okay)
+                    }
+                    "EXEC" => Either::Left(Value::Array(queued.take().unwrap_or_default())),
                     "EXPIRE" => {
-                        assert_eq!(args[1], OwnedFrame::BulkString(b"60".to_vec()));
                         let value = self.readonly_triggered.load(Ordering::Relaxed);
                         if value {
                             Either::Left(Value::Int(1))
@@ -137,6 +143,13 @@ impl ReadOnlyRedis {
                     }
                 };
 
+                let ret = match (ret, queued.as_mut(), cmd.as_str()) {
+                    (Either::Left(v), Some(queued), cmd) if cmd != "MULTI" && cmd != "EXEC" => {
+                        queued.push(v);
+                        Either::Left(Value::SimpleString("QUEUED".into()))
+                    }
+                    (ret, _, _) => ret,
+                };
                 match ret {
                     Either::Left(v) => {
                         arg_as_string(&mut output, v);

@@ -137,15 +137,27 @@ fn ttl_seconds(key_ttl: Duration) -> i64 {
     i64::try_from(key_ttl.as_secs()).unwrap_or(i64::MAX).max(1)
 }
 
-/// Lifetime of an upload's temp key on a store without `key_ttl_s`.
+/// Lifetime of an upload's temp key on a store without `key_ttl_s`. Every
+/// chunk arms it again, so it bounds the gap between two chunks, not the
+/// upload.
 ///
-/// Longer than any upload a client is allowed to take (Bazel's
+/// Longer than any pause a client is allowed between chunks (Bazel's
 /// `--remote_timeout` is 60 s by default, and a resumed upload waits at most
 /// the `ByteStream` server's disconnect timeout), and short enough that the
 /// uploads in flight when a CAS dies are gone within the hour. An upload that
-/// outlives it fails rather than publishing a key that was recreated without
-/// its first chunks.
+/// goes quiet for longer fails rather than publishing a key that was
+/// recreated without its first chunks.
 const TEMP_KEY_TTL: Duration = Duration::from_hours(1);
+
+/// `RENAME` of a key that is not there. On a retried publish that means
+/// the first attempt applied before its reply was lost, or the failover
+/// lost the temp key; the caller tells the two apart by the final key.
+fn is_no_such_key(err: &redis::RedisError) -> bool {
+    err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError)
+        && err
+            .detail()
+            .is_some_and(|detail| detail.contains("no such key"))
+}
 
 /// A wrapper around Redis to allow it to be reconnected.
 pub trait RedisManager<C>
@@ -919,10 +931,13 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
 /// ended. `delete` is for an error the store sees. `Drop` is for the update
 /// future being dropped mid-stream, which is how the `ByteStream` server ends
 /// an upload whose client went away or closed the stream early: no error
-/// reaches the store, so without this the key stayed until its TTL. The
-/// SETRANGE of any chunk still in flight was queued on this same connection
-/// before the DEL, so Redis applies the DEL after it and no chunk recreates
-/// the key.
+/// reaches the store, so without this the key stayed until its TTL. A chunk
+/// still in flight on this connection was queued before the DEL, so Redis
+/// applies the DEL after it; a chunk retried on another connection has no
+/// such order and can recreate the key after the DEL, which is why every
+/// chunk write arms the lifetime again and deletes a key it finds recreated
+/// (see `update_through_temp_key`). What this cannot delete, the lifetime
+/// removes.
 struct TempKeyGuard<C>
 where
     C: ConnectionLike + Clone + Send + Sync + 'static,
@@ -941,9 +956,16 @@ where
         self.armed = false;
     }
 
-    async fn delete(mut self) {
+    async fn delete(self) {
+        let connection = self.connection.clone();
+        self.delete_with(connection).await;
+    }
+
+    /// `delete` on `connection` rather than the one the guard was given:
+    /// after a failover the upload ended on a newer one.
+    async fn delete_with(mut self, mut connection: C) {
         self.armed = false;
-        if let Err(err) = self.connection.del::<_, ()>(&self.temp_key).await {
+        if let Err(err) = connection.del::<_, ()>(&self.temp_key).await {
             debug!(
                 ?err,
                 temp_key = %self.temp_key,
@@ -988,14 +1010,15 @@ where
     /// Stages an upload under `temp_key` and publishes it as `final_key`.
     ///
     /// The temp key is created with a lifetime before any byte lands, and
-    /// `SETRANGE` keeps a key's TTL, so an upload that stops anywhere (the
+    /// every chunk arms it again, so an upload that stops anywhere (the
     /// client went away, this process did) leaves a key Redis removes on its
     /// own. Nothing else cleans temp keys up: on a store without `key_ttl_s`
     /// they lived forever, and a CAS that failed or restarted under load left
     /// them in numbers. The lifetime is `key_ttl_s` when set, else
-    /// [`TEMP_KEY_TTL`]; an upload that outlives it is refused rather than
-    /// published, see the TTL check after the chunks. The caller's
-    /// [`TempKeyGuard`] deletes the key when this does not publish.
+    /// [`TEMP_KEY_TTL`]; a key that expired or was lost in a failover and was
+    /// recreated by a later chunk is refused rather than published, see the
+    /// TTL checks on each chunk and after them. The caller's [`TempKeyGuard`]
+    /// deletes the key when this does not publish.
     async fn update_through_temp_key(
         &self,
         key: &StoreKey<'_>,
@@ -1007,6 +1030,7 @@ where
         let mut client = self.get_client().await?;
 
         let temp_ttl_secs = self.key_ttl.unwrap_or(TEMP_KEY_TTL).as_secs().max(1);
+        let temp_ttl = ttl_seconds(self.key_ttl.unwrap_or(TEMP_KEY_TTL));
         let staged = SetOptions::default().with_expiration(SetExpiry::EX(temp_ttl_secs));
         match client
             .connection_manager
@@ -1058,20 +1082,35 @@ where
                 let (offset, end_pos, chunk) = res?;
                 Ok(async move {
                     let (mut connection_manager, connect_id) = self.connection_manager.get_connection().await?;
-                    match connection_manager
-                        .setrange::<_, _, usize>(temp_key, offset, chunk.to_vec())
-                        .await {
-                        Ok(_) => {},
-                        Err(err)
-                            if is_retryable_redis_error(&err) =>
-                        {
-                            let (mut connection_manager, _connect_id) = self.connection_manager.reconnect(connect_id).await?;
-                            connection_manager
-                                .setrange::<_, _, usize>(temp_key, offset, chunk.to_vec())
+                    // The chunk, the key's TTL as it stood before the chunk,
+                    // and the lifetime armed again, in one round trip. A key
+                    // that expired or was lost in a failover is recreated by
+                    // the SETRANGE, zero-filled and with no TTL, and only the
+                    // TTL tells. The EXPIRE makes the lifetime a bound on the
+                    // gap between chunks rather than on the upload, and gives
+                    // even a recreated key a lifetime, so a chunk that lands
+                    // after the upload's DEL (one retried on another
+                    // connection, say) leaves nothing behind for good.
+                    let mut write = pipe();
+                    write
+                        .setrange(temp_key, offset, chunk.to_vec())
+                        .ttl(temp_key)
+                        .expire(temp_key, temp_ttl);
+                    let (_, ttl_before, _): (usize, i64, i64) = match write
+                        .query_async(&mut connection_manager)
+                        .await
+                    {
+                        Ok(written) => written,
+                        Err(err) if is_retryable_redis_error(&err) => {
+                            let (reconnected, _connect_id) =
+                                self.connection_manager.reconnect(connect_id).await?;
+                            connection_manager = reconnected;
+                            write
+                                .query_async(&mut connection_manager)
                                 .await
-                                .err_tip(
-                                    || format!("(after reconnect) while appending to temp key ({temp_key}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"),
-                                )?;
+                                .err_tip(|| {
+                                    format!("(after reconnect) while appending to temp key ({temp_key}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}")
+                                })?
                         }
                         Err(err) => {
                             let mut error: Error = err.into();
@@ -1080,6 +1119,22 @@ where
                                 .push(format!("While appending to temp key ({temp_key}) in RedisStore::update. offset = {offset}. end_pos = {end_pos}"));
                             return Err(error);
                         }
+                    };
+                    if ttl_before < 0 {
+                        // Recreated by this chunk: gone now rather than at
+                        // the end of the lifetime the EXPIRE just gave it.
+                        if let Err(err) = connection_manager.del::<_, ()>(temp_key).await {
+                            debug!(
+                                ?err,
+                                temp_key,
+                                "Could not delete a recreated temp key; its TTL removes it"
+                            );
+                        }
+                        return Err(make_err!(
+                            Code::Aborted,
+                            "Chunk at offset {offset} of {}({temp_key}) found the temp key gone (expired after {temp_ttl}s without a chunk, or lost in a failover) and recreated it; not published, send the upload again",
+                            key.as_str(),
+                        ));
                     }
                     Ok::<u32, Error>(end_pos)
                 })
@@ -1151,15 +1206,16 @@ where
                 ));
             }
             if blob_len == expected_len {
-                // SETRANGE on a key that has expired creates it again,
-                // zero-filled up to the offset and with no TTL, and the
-                // length still matches. This is the only sign that the
-                // upload outlived its staging key; publishing it would store
+                // SETRANGE on a key that has expired or was lost creates it
+                // again, zero-filled up to the offset and with no TTL, and
+                // the length still matches. Each chunk checks this on its
+                // own write; this is the check for whatever happened between
+                // the last chunk's EXPIRE and here. Publishing would store
                 // zeros under a digest they do not hash to.
                 if remaining_ttl < 0 {
                     return Err(make_err!(
-                        Code::DeadlineExceeded,
-                        "Upload of {}({}) outlived the {}s lifetime of its temp key and a later chunk recreated it; not published",
+                        Code::Aborted,
+                        "Upload of {}({}) lost its temp key (expired after {}s without a chunk, or lost in a failover) and a later chunk recreated it; not published, send it again",
                         key.as_str(),
                         temp_key,
                         temp_ttl_secs,
@@ -1187,44 +1243,81 @@ where
 
         // Rename the temp key so that the data appears under the real key. Any data already present in the real key is lost.
         // The rename carries the temp key's TTL across, so the real key gets
-        // its own lifetime in the same round trip: `key_ttl_s` counted from
-        // completion rather than from the first byte, or none at all.
+        // its own lifetime in the same transaction: `key_ttl_s` counted from
+        // completion rather than from the first byte, or none at all. One
+        // transaction, so nothing can be published with the temp key's
+        // lifetime still on it, and so a transaction that applied on the
+        // old master before its reply was lost in a failover left the final
+        // key complete, which the retry below recognizes.
         // Reconnect once on a transient failover error in case the master moved between the verify and here.
         let mut publish = pipe();
-        publish.rename(temp_key, final_key);
+        publish.atomic().rename(temp_key, final_key);
         match self.key_ttl {
             Some(key_ttl) => publish.expire(final_key, ttl_seconds(key_ttl)),
             None => publish.persist(final_key),
         };
-        let ((), kept): ((), bool) = match publish.query_async(&mut client.connection_manager).await
-        {
-            Ok(published) => published,
-            Err(err) if is_retryable_redis_error(&err) => {
-                let (connection_manager, uuid) =
-                    self.connection_manager.reconnect(client.uuid).await?;
-                client.connection_manager = connection_manager;
-                client.uuid = uuid;
-                publish
-                    .query_async(&mut client.connection_manager)
+        let published: Option<((), bool)> =
+            match publish.query_async(&mut client.connection_manager).await {
+                Ok(published) => Some(published),
+                Err(err) if is_retryable_redis_error(&err) => {
+                    let (connection_manager, uuid) =
+                        self.connection_manager.reconnect(client.uuid).await?;
+                    client.connection_manager = connection_manager;
+                    client.uuid = uuid;
+                    match publish.query_async(&mut client.connection_manager).await {
+                        Ok(published) => Some(published),
+                        Err(err) if is_no_such_key(&err) => None,
+                        Err(err) => {
+                            return Err(Error::from(err).append(format!(
+                            "While publishing {final_key} (after reconnect) in RedisStore::update()"
+                        )));
+                        }
+                    }
+                }
+                Err(err) => {
+                    return Err(Error::from(err).append(format!(
+                        "While publishing {final_key} in RedisStore::update()"
+                    )));
+                }
+            };
+        let kept = if let Some(((), kept)) = published {
+            kept
+        } else {
+            // The temp key is gone on the master the retry reached.
+            // Either the first attempt applied and the final key is this
+            // upload, or the failover lost the temp key and the final key
+            // is whatever was there before. For a digest key the two are
+            // the same bytes; for a string key this accepts the value
+            // already there, as an upload that lost a race does.
+            let len: usize = client
+                    .connection_manager
+                    .strlen(final_key)
                     .await
                     .err_tip(|| {
                         format!(
-                            "While publishing {final_key} (after reconnect) in RedisStore::update()"
+                            "While checking {final_key} after a publish whose reply was lost in RedisStore::update()"
                         )
-                    })?
+                    })?;
+            if len != expected_len {
+                return Err(make_err!(
+                    Code::Aborted,
+                    "Upload of {}({}) lost its temp key in a failover and {} is not it ({} bytes, expected {}); send it again",
+                    key.as_str(),
+                    temp_key,
+                    final_key,
+                    len,
+                    expected_len,
+                ));
             }
-            Err(err) => {
-                return Err(Error::from(err).append(format!(
-                    "While publishing {final_key} in RedisStore::update()"
-                )));
-            }
+            true
         };
-        // EXPIRE and PERSIST answer 0 only when the key is gone: it expired
-        // between the TTL check and here. The client has to send it again.
+        // EXPIRE and PERSIST answer 0 only when the key is gone, which inside
+        // the transaction means it expired as the RENAME ran. The client has
+        // to send it again.
         if !kept {
             return Err(make_err!(
-                Code::DeadlineExceeded,
-                "Upload of {}({}) expired as it was published; not stored",
+                Code::Aborted,
+                "Upload of {}({}) expired as it was published; not stored, send it again",
                 key.as_str(),
                 final_key,
             ));
@@ -1488,7 +1581,12 @@ where
                 Ok(len)
             }
             Err(err) => {
-                guard.delete().await;
+                // On the connection the upload ended on, which after a
+                // failover is a newer one than the guard was given.
+                match self.connection_manager.get_connection().await {
+                    Ok((connection, _uuid)) => guard.delete_with(connection).await,
+                    Err(_) => guard.delete().await,
+                }
                 Err(err)
             }
         }

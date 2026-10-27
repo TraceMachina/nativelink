@@ -168,6 +168,35 @@ fn stage(temp_key: &str, ttl_secs: i64) -> MockCmd {
     )
 }
 
+/// One chunk write: the SETRANGE, the key's TTL as it stood before it (how
+/// the store tells a key the chunk recreated), and the EXPIRE that arms the
+/// lifetime again.
+fn chunk_pipe(temp_key: &str, offset: usize, data: &[u8], ttl_secs: i64) -> redis::Pipeline {
+    let mut pipe = redis::pipe();
+    pipe.cmd("SETRANGE")
+        .arg(temp_key)
+        .arg(offset)
+        .arg(data)
+        .cmd("TTL")
+        .arg(temp_key)
+        .cmd("EXPIRE")
+        .arg(temp_key)
+        .arg(ttl_secs);
+    pipe
+}
+
+/// A chunk write that found the key alive: `written` is SETRANGE's answer.
+fn chunk(temp_key: &str, offset: usize, data: &[u8], ttl_secs: i64, written: i64) -> MockCmd {
+    MockCmd::with_values(
+        chunk_pipe(temp_key, offset, data, ttl_secs),
+        Ok(vec![
+            Value::Int(written),
+            Value::Int(ttl_secs),
+            Value::Int(1),
+        ]),
+    )
+}
+
 /// The length check after the chunks, which reads the key's remaining TTL
 /// in the same round trip.
 fn length_check(temp_key: &str, len: usize, remaining_ttl: i64) -> MockCmd {
@@ -185,31 +214,44 @@ fn length_check(temp_key: &str, len: usize, remaining_ttl: i64) -> MockCmd {
 }
 
 /// The publish on a store without `key_ttl_s`: the rename and, because the
-/// rename carries the temp key's TTL across, a PERSIST in the same round trip.
+/// rename carries the temp key's TTL across, a PERSIST in one transaction.
+/// A transaction's answer is EXEC's array of the two replies.
+fn publish_pipe(temp_key: &str, real_key: &str) -> redis::Pipeline {
+    let mut pipe = redis::pipe();
+    pipe.atomic()
+        .cmd("RENAME")
+        .arg(temp_key)
+        .arg(real_key)
+        .cmd("PERSIST")
+        .arg(real_key);
+    pipe
+}
+
 fn publish(temp_key: &str, real_key: &str) -> MockCmd {
     MockCmd::with_values(
-        redis::pipe()
-            .cmd("RENAME")
-            .arg(temp_key)
-            .arg(real_key)
-            .cmd("PERSIST")
-            .arg(real_key),
-        Ok(vec![Value::Okay, Value::Int(1)]),
+        publish_pipe(temp_key, real_key),
+        Ok(vec![Value::Array(vec![Value::Okay, Value::Int(1)])]),
     )
 }
 
 /// The publish on a store with `key_ttl_s`: the rename and the retention
-/// window restarted at completion, in one round trip.
+/// window restarted at completion, in one transaction.
+fn publish_with_ttl_pipe(temp_key: &str, real_key: &str, ttl_secs: i64) -> redis::Pipeline {
+    let mut pipe = redis::pipe();
+    pipe.atomic()
+        .cmd("RENAME")
+        .arg(temp_key)
+        .arg(real_key)
+        .cmd("EXPIRE")
+        .arg(real_key)
+        .arg(ttl_secs);
+    pipe
+}
+
 fn publish_with_ttl(temp_key: &str, real_key: &str, ttl_secs: i64) -> MockCmd {
     MockCmd::with_values(
-        redis::pipe()
-            .cmd("RENAME")
-            .arg(temp_key)
-            .arg(real_key)
-            .cmd("EXPIRE")
-            .arg(real_key)
-            .arg(ttl_secs),
-        Ok(vec![Value::Okay, Value::Int(1)]),
+        publish_with_ttl_pipe(temp_key, real_key, ttl_secs),
+        Ok(vec![Value::Array(vec![Value::Okay, Value::Int(1)])]),
     )
 }
 
@@ -230,13 +272,7 @@ async fn upload_and_get_data() -> Result<(), Error> {
         // The first set of commands are for setting the data.
         // Append the real value to the temp key.
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(&temp_key)
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         length_check(&temp_key, data.len(), TEMP_TTL),
         // Move the data from the fake key to the real key.
         publish(&temp_key, &real_key),
@@ -292,13 +328,7 @@ async fn update_retries_after_transient_zero_length() -> Result<(), Error> {
 
     let commands = vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         // First verify hits a stale/replica connection that can't see the temp key.
         length_check(&temp_key, 0, TEMP_TTL),
         // After re-resolving the master, the retry sees the real length.
@@ -324,13 +354,7 @@ async fn update_errors_when_length_never_matches() -> Result<(), Error> {
 
     let mut commands = vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
     ];
     // MAX_REDIS_RETRY_ATTEMPTS (5) length checks that all return 0.
     for _ in 0..5 {
@@ -420,24 +444,15 @@ async fn update_retries_after_transient_write_error() -> Result<(), Error> {
     let commands = vec![
         // First chunk write fails with a retryable connection error.
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Err::<Value, _>(RedisError::from(std::io::Error::new(
+        MockCmd::with_values(
+            chunk_pipe(&temp_key, 0, &data, TEMP_TTL),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
                 std::io::ErrorKind::ConnectionReset,
                 "transient",
             ))),
         ),
         // After re-resolving the master, the retried chunk write succeeds.
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         length_check(&temp_key, data.len(), TEMP_TTL),
         publish(&temp_key, &real_key),
     ];
@@ -462,13 +477,7 @@ async fn upload_and_get_data_with_prefix() -> Result<(), Error> {
 
     let commands = vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         length_check(&temp_key, data.len(), TEMP_TTL),
         publish(&temp_key, &real_key),
         MockCmd::with_values(
@@ -555,13 +564,7 @@ async fn test_large_downloads_are_chunked() -> Result<(), Error> {
 
     let commands = vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         length_check(&temp_key, data.len(), TEMP_TTL),
         publish(&temp_key, &real_key),
         MockCmd::with_values(
@@ -636,20 +639,8 @@ async fn yield_between_sending_packets_in_update() -> Result<(), Error> {
     let commands = vec![
         // We expect multiple `"SETRANGE"`s as we send data in multiple chunks
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(0)
-                .arg(data_p1.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(temp_key.clone())
-                .arg(data_p1.len())
-                .arg(data_p2.clone().to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data_p1, TEMP_TTL, 0),
+        chunk(&temp_key, data_p1.len(), &data_p2, TEMP_TTL, 0),
         length_check(&temp_key, data.len(), TEMP_TTL),
         publish(&temp_key, &real_key),
         MockCmd::with_values(
@@ -2966,13 +2957,7 @@ where
             )])),
         ),
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(&temp_key)
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         length_check(&temp_key, data.len(), TEMP_TTL),
         // Move the data from the fake key to the real key.
         publish(&temp_key, &real_key),
@@ -3079,13 +3064,7 @@ async fn update_sets_a_ttl_when_configured() -> Result<(), Error> {
             // The temp key carries the store's TTL from the moment it exists,
             // so an update that dies before the rename cannot orphan it.
             stage(&temp_key, ttl_arg),
-            MockCmd::new(
-                redis::cmd("SETRANGE")
-                    .arg(&temp_key)
-                    .arg(0)
-                    .arg(data.to_vec()),
-                Ok(Value::Int(0)),
-            ),
+            chunk(&temp_key, 0, &data, ttl_arg, 0),
             length_check(&temp_key, data.len(), ttl_arg),
             // Re-set with the rename so the retention window starts at
             // completion rather than at the first byte.
@@ -3126,23 +3105,11 @@ async fn update_retries_the_publish_after_a_failover() -> Result<(), Error> {
     let store = make_mock_store_with_ttl(
         vec![
             stage(&temp_key, ttl_arg),
-            MockCmd::new(
-                redis::cmd("SETRANGE")
-                    .arg(&temp_key)
-                    .arg(0)
-                    .arg(data.to_vec()),
-                Ok(Value::Int(0)),
-            ),
+            chunk(&temp_key, 0, &data, ttl_arg, 0),
             length_check(&temp_key, data.len(), ttl_arg),
             // The master goes away right as the key is published.
             MockCmd::with_values(
-                redis::pipe()
-                    .cmd("RENAME")
-                    .arg(&temp_key)
-                    .arg(&real_key)
-                    .cmd("EXPIRE")
-                    .arg(&real_key)
-                    .arg(ttl_arg),
+                publish_with_ttl_pipe(&temp_key, &real_key, ttl_arg),
                 Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
                     std::io::ErrorKind::ConnectionReset,
                     "connection reset by peer",
@@ -3170,13 +3137,7 @@ async fn update_retries_the_length_check_after_a_failover() -> Result<(), Error>
     let real_key = packed_hash_hex;
     let store = make_mock_store(vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(&temp_key)
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         // The master goes away right as the length is checked.
         MockCmd::with_values(
             redis::pipe()
@@ -3214,13 +3175,7 @@ async fn update_leaves_the_real_key_without_a_ttl_by_default() -> Result<(), Err
     let real_key = packed_hash_hex;
     let store = make_mock_store(vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(&temp_key)
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         length_check(&temp_key, data.len(), TEMP_TTL),
         publish(&temp_key, &real_key),
     ])
@@ -3241,12 +3196,9 @@ async fn update_deletes_the_temp_key_when_the_upload_fails() -> Result<(), Error
     let real_key = packed_hash_hex;
     let store = make_mock_store(vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(&temp_key)
-                .arg(0)
-                .arg(data.to_vec()),
-            Err::<Value, _>(RedisError::from((
+        MockCmd::with_values(
+            chunk_pipe(&temp_key, 0, &data, TEMP_TTL),
+            Err::<Vec<Value>, _>(RedisError::from((
                 redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
                 "WRONGTYPE Operation against a key holding the wrong kind of value",
             ))),
@@ -3284,13 +3236,7 @@ async fn update_deletes_the_temp_key_when_dropped_mid_stream() -> Result<(), Err
     let store = Arc::new(
         make_mock_store(vec![
             stage(&temp_key, TEMP_TTL),
-            MockCmd::new(
-                redis::cmd("SETRANGE")
-                    .arg(&temp_key)
-                    .arg(0)
-                    .arg(data.to_vec()),
-                Ok(Value::Int(0)),
-            ),
+            chunk(&temp_key, 0, &data, TEMP_TTL, 0),
             // Issued from the guard's own task once the update is dropped.
             MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(1))),
             // A read afterwards so the DEL expectation is consumed in order.
@@ -3327,8 +3273,8 @@ async fn update_deletes_the_temp_key_when_dropped_mid_stream() -> Result<(), Err
 }
 
 /// SETRANGE on a key that has expired creates it again, zero-filled and
-/// without a TTL, and the length still matches. An upload that outlived its
-/// temp key must be refused, not published as zeros under the digest.
+/// without a TTL, and the length still matches. A key found that way by the
+/// length check must be refused, not published as zeros under the digest.
 #[nativelink_test]
 async fn update_refuses_a_temp_key_that_lost_its_ttl() -> Result<(), Error> {
     let data = Bytes::from_static(b"14");
@@ -3338,13 +3284,7 @@ async fn update_refuses_a_temp_key_that_lost_its_ttl() -> Result<(), Error> {
     let real_key = packed_hash_hex;
     let store = make_mock_store(vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(&temp_key)
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         // TTL answers -1: the key exists with no expiry, so it is not the one
         // this upload staged.
         length_check(&temp_key, data.len(), -1),
@@ -3360,9 +3300,127 @@ async fn update_refuses_a_temp_key_that_lost_its_ttl() -> Result<(), Error> {
     ])
     .await;
     let err = store.update_oneshot(digest, data).await.unwrap_err();
-    assert_eq!(err.code, Code::DeadlineExceeded, "{err:?}");
-    assert!(err.to_string().contains("outlived"), "{err:?}");
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+    assert!(err.to_string().contains("lost its temp key"), "{err:?}");
     assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+/// Every chunk reads the key's TTL as it was before the SETRANGE. An answer
+/// of -1 means the key was gone (expired, or lost in a failover) and this
+/// chunk recreated it: the chunk deletes what it made and the upload fails
+/// with a code the client retries on, instead of the length check finding
+/// zeros an hour later.
+#[nativelink_test]
+async fn a_chunk_that_finds_its_temp_key_gone_deletes_it_and_fails() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        MockCmd::with_values(
+            chunk_pipe(&temp_key, 0, &data, TEMP_TTL),
+            Ok(vec![Value::Int(2), Value::Int(-1), Value::Int(1)]),
+        ),
+        // The chunk deletes the key it recreated, then the guard deletes
+        // again on the error path.
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(1))),
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(0))),
+        MockCmd::with_values(
+            redis::pipe()
+                .cmd("STRLEN")
+                .arg(&real_key)
+                .cmd("EXISTS")
+                .arg(&real_key),
+            Ok(vec![Value::Int(0), Value::Boolean(false)]),
+        ),
+    ])
+    .await;
+    let err = store.update_oneshot(digest, data).await.unwrap_err();
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+    assert!(
+        err.to_string().contains("found the temp key gone"),
+        "{err:?}"
+    );
+    assert_eq!(store.has(digest).await?, None);
+    Ok(())
+}
+
+/// The publish is one transaction. When it applied on the old master but
+/// its reply was lost in the failover, the retry's RENAME finds no temp
+/// key; the final key then has the upload's length, and that is a success,
+/// not an error that makes the client send the bytes again under a key
+/// that already holds them.
+#[nativelink_test]
+async fn a_publish_whose_reply_was_lost_is_accepted_on_retry() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ))),
+        ),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from((
+                redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+                "ERR",
+                "no such key".to_owned(),
+            ))),
+        ),
+        MockCmd::new(redis::cmd("STRLEN").arg(&real_key), Ok(Value::Int(2))),
+    ])
+    .await;
+    store.update_oneshot(digest, data).await?;
+    Ok(())
+}
+
+/// The same lost reply when the failover also lost the temp key: the final
+/// key is not the upload, and the client is told to send it again.
+#[nativelink_test]
+async fn a_lost_publish_whose_final_key_is_not_the_upload_fails() -> Result<(), Error> {
+    let data = Bytes::from_static(b"14");
+    let digest = DigestInfo::try_new(VALID_HASH1, 2)?;
+    let packed_hash_hex = format!("{digest}");
+    let temp_key = make_temp_key(&packed_hash_hex);
+    let real_key = packed_hash_hex;
+    let store = make_mock_store(vec![
+        stage(&temp_key, TEMP_TTL),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
+        length_check(&temp_key, data.len(), TEMP_TTL),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "connection reset by peer",
+            ))),
+        ),
+        MockCmd::with_values(
+            publish_pipe(&temp_key, &real_key),
+            Err::<Vec<Value>, _>(RedisError::from((
+                redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
+                "ERR",
+                "no such key".to_owned(),
+            ))),
+        ),
+        MockCmd::new(redis::cmd("STRLEN").arg(&real_key), Ok(Value::Int(0))),
+        MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(0))),
+    ])
+    .await;
+    let err = store.update_oneshot(digest, data).await.unwrap_err();
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
+    assert!(err.to_string().contains("is not it"), "{err:?}");
     Ok(())
 }
 
@@ -3377,23 +3435,12 @@ async fn update_refuses_a_key_that_expired_as_it_was_published() -> Result<(), E
     let real_key = packed_hash_hex;
     let store = make_mock_store(vec![
         stage(&temp_key, TEMP_TTL),
-        MockCmd::new(
-            redis::cmd("SETRANGE")
-                .arg(&temp_key)
-                .arg(0)
-                .arg(data.to_vec()),
-            Ok(Value::Int(0)),
-        ),
+        chunk(&temp_key, 0, &data, TEMP_TTL, 0),
         // Under a second left on the key.
         length_check(&temp_key, data.len(), 0),
         MockCmd::with_values(
-            redis::pipe()
-                .cmd("RENAME")
-                .arg(&temp_key)
-                .arg(&real_key)
-                .cmd("PERSIST")
-                .arg(&real_key),
-            Ok(vec![Value::Okay, Value::Int(0)]),
+            publish_pipe(&temp_key, &real_key),
+            Ok(vec![Value::Array(vec![Value::Okay, Value::Int(0)])]),
         ),
         MockCmd::new(redis::cmd("DEL").arg(&temp_key), Ok(Value::Int(0))),
         MockCmd::with_values(
@@ -3407,7 +3454,7 @@ async fn update_refuses_a_key_that_expired_as_it_was_published() -> Result<(), E
     ])
     .await;
     let err = store.update_oneshot(digest, data).await.unwrap_err();
-    assert_eq!(err.code, Code::DeadlineExceeded, "{err:?}");
+    assert_eq!(err.code, Code::Aborted, "{err:?}");
     assert!(err.to_string().contains("expired"), "{err:?}");
     assert_eq!(store.has(digest).await?, None);
     Ok(())
@@ -3496,12 +3543,12 @@ async fn incomplete_upload_never_renames_redis_temp_key() -> Result<(), Error> {
         let temp_key = make_temp_key(&key.to_string());
         let mut commands = vec![stage(&temp_key, TEMP_TTL)];
         if !payload.is_empty() {
-            commands.push(MockCmd::new(
-                redis::cmd("SETRANGE")
-                    .arg(&temp_key)
-                    .arg(0)
-                    .arg(payload.to_vec()),
-                Ok(Value::Int(i64::try_from(payload.len()).unwrap())),
+            commands.push(chunk(
+                &temp_key,
+                0,
+                &payload,
+                TEMP_TTL,
+                i64::try_from(payload.len()).unwrap(),
             ));
         }
         // The short upload frees its temp key. Any STRLEN or RENAME beyond
