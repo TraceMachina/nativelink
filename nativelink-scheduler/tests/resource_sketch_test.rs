@@ -16,8 +16,8 @@ use core::time::Duration;
 
 use nativelink_config::schedulers::SizeClassSpec;
 use nativelink_scheduler::resource_sketch::{
-    Budget, Entry, Family, Hist, Observation, Policy, ResourceSketch, SAMPLER_GENERATION,
-    SketchKey, Snapshot,
+    Budget, Entry, Family, Half, Hist, Observation, Policy, ResourceSketch, SAMPLER_GENERATION,
+    SHARDS, SketchKey, Snapshot,
 };
 use pretty_assertions::assert_eq;
 
@@ -40,8 +40,14 @@ const fn policy(headroom_percent: u64, classes: Vec<SizeClassSpec>) -> Policy {
     }
 }
 
+/// The clock the tests look up at: a week in, so every sample in the tests
+/// (seconds 1 to a few thousand, or NOW itself) sits inside the window.
+const NOW: u64 = 7 * 86_400;
+
+/// One shard, so the eviction order is the one LRU order of each family;
+/// the scheduler uses `SHARDS`.
 fn sketch(policy: Policy, budget: Budget) -> ResourceSketch {
-    ResourceSketch::new(policy, budget, Duration::from_hours(7 * 24))
+    ResourceSketch::with_shards(policy, budget, Duration::from_hours(7 * 24), 1)
 }
 
 const fn small_budget() -> Budget {
@@ -114,7 +120,7 @@ fn shape_caps_the_bucket_by_the_exact_maximum() {
     let sketch = sketch(policy(20, vec![]), small_budget());
     let key = target("//a", "Genrule");
     sketch.observe(key.clone(), &memory(3_000_000, 1));
-    let shaped = sketch.shape(&sketch.lookup(&key).unwrap());
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
     assert_eq!(shaped.memory_kb, 3_600_000);
     assert_eq!(shaped.cpu_count, 0, "no cpu measured");
     assert!(shaped.class.is_none());
@@ -123,13 +129,13 @@ fn shape_caps_the_bucket_by_the_exact_maximum() {
         sketch.observe(key.clone(), &memory(3_000_000, 1));
     }
     assert_eq!(
-        sketch.shape(&sketch.lookup(&key).unwrap()).memory_kb,
+        sketch.shape(&sketch.lookup(&key, NOW).unwrap()).memory_kb,
         3_600_000
     );
     // One at 3.9M moves the max, not the bucket.
     sketch.observe(key.clone(), &memory(3_900_000, 1));
     assert_eq!(
-        sketch.shape(&sketch.lookup(&key).unwrap()).memory_kb,
+        sketch.shape(&sketch.lookup(&key, NOW).unwrap()).memory_kb,
         4_680_000
     );
 }
@@ -155,7 +161,7 @@ fn shape_sits_above_the_kill() {
             ..Observation::default()
         },
     );
-    let shaped = sketch.shape(&sketch.lookup(&key).unwrap());
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
     assert_eq!(shaped.class.as_deref(), Some("m"), "s was killed at");
     assert_eq!(shaped.memory_kb, 6_000_000);
     // Killed at the top: no class sits above it, the raw number stands.
@@ -169,7 +175,7 @@ fn shape_sits_above_the_kill() {
             ..Observation::default()
         },
     );
-    let shaped = sketch.shape(&sketch.lookup(&key).unwrap());
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
     assert!(shaped.class.is_none(), "{shaped:?}");
     assert_eq!(shaped.memory_kb, 12_000_001);
 }
@@ -190,10 +196,10 @@ fn shape_drops_a_dimension_the_fleet_does_not_reserve() {
             ..Observation::default()
         },
     );
-    let shaped = sketch.shape(&sketch.lookup(&key).unwrap());
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
     assert!(shaped.is_empty(), "{shaped:?}");
     sketch.observe(key.clone(), &memory(500_000, 2));
-    let shaped = sketch.shape(&sketch.lookup(&key).unwrap());
+    let shaped = sketch.shape(&sketch.lookup(&key, NOW).unwrap());
     assert_eq!(shaped.class.as_deref(), Some("s"));
     assert_eq!(shaped.disk_kb, 0);
 }
@@ -204,10 +210,10 @@ fn shape_drops_a_dimension_the_fleet_does_not_reserve() {
 fn a_command_key_is_on_probation_until_seen_twice_or_killed() {
     let sketch = sketch(policy(0, vec![]), small_budget());
     assert!(!sketch.observe(command("aa-1"), &memory(1000, 1)));
-    assert!(sketch.lookup(&command("aa-1")).is_none());
+    assert!(sketch.lookup(&command("aa-1"), NOW).is_none());
     assert_eq!(sketch.stats().probation, 1);
     assert!(sketch.observe(command("aa-1"), &memory(1000, 2)));
-    assert_eq!(sketch.lookup(&command("aa-1")).unwrap().samples, 1);
+    assert_eq!(sketch.lookup(&command("aa-1"), NOW).unwrap().samples, 1);
     assert_eq!(sketch.stats().probation, 0);
     assert!(sketch.observe(
         command("bb-1"),
@@ -219,7 +225,7 @@ fn a_command_key_is_on_probation_until_seen_twice_or_killed() {
         }
     ));
     assert!(
-        sketch.lookup(&command("bb-1")).is_some(),
+        sketch.lookup(&command("bb-1"), NOW).is_some(),
         "a kill admits at once"
     );
     // Target keys are admitted on first sight.
@@ -234,17 +240,21 @@ fn a_full_family_evicts_the_least_recently_seen() {
     for name in ["//a", "//b", "//c"] {
         sketch.observe(target(name, "X"), &memory(1000, 1));
     }
-    assert!(sketch.lookup(&target("//a", "X")).is_some(), "promotes //a");
+    assert!(
+        sketch.lookup(&target("//a", "X"), NOW).is_some(),
+        "promotes //a"
+    );
     sketch.observe(target("//d", "X"), &memory(1000, 2));
     assert!(
-        sketch.lookup(&target("//b", "X")).is_none(),
+        sketch.lookup(&target("//b", "X"), NOW).is_none(),
         "//b was the oldest"
     );
-    assert!(sketch.lookup(&target("//a", "X")).is_some());
+    assert!(sketch.lookup(&target("//a", "X"), NOW).is_some());
     let stats = sketch.stats();
-    assert_eq!(stats.entries, [3, 0, 0]);
+    // The four attempts named mnemonic X, so the mnemonic family holds it.
+    assert_eq!(stats.entries, [3, 1, 0]);
     assert_eq!(stats.evictions, [1, 0, 0]);
-    assert_eq!(stats.samples, [4, 0, 0]);
+    assert_eq!(stats.samples, [4, 4, 0]);
 }
 
 /// A snapshot round-trips every field, drops keys outside the window, and
@@ -269,8 +279,15 @@ fn a_snapshot_round_trips_and_ages_out() {
     sketch.observe(command("cc-9"), &memory(5000, now));
     sketch.observe(command("cc-9"), &memory(6000, now));
     let snapshot = sketch.snapshot(now);
-    assert_eq!(snapshot.entries.len(), 2, "//old aged out");
-    assert_eq!(sketch.stats().entries, [1, 0, 1], "and was dropped");
+    assert_eq!(
+        snapshot.entries.len(),
+        3,
+        "//old left out, the mnemonics in"
+    );
+    assert_eq!(sketch.stats().entries, [2, 2, 1], "nothing dropped yet");
+    assert_eq!(sketch.age_out(now), 2, "//old and its mnemonic X dropped");
+    assert_eq!(sketch.stats().entries, [1, 1, 1]);
+    assert_eq!(sketch.snapshot(now), snapshot);
     let bytes = snapshot.encode();
     let decoded = Snapshot::decode(&bytes).unwrap();
     assert_eq!(decoded, snapshot);
@@ -280,17 +297,30 @@ fn a_snapshot_round_trips_and_ages_out() {
         .find(|(key, _)| *key == target("//new", "Y"))
         .unwrap();
     assert_eq!(entry.samples, 1);
-    assert_eq!(entry.max_memory_kb, 123_456);
-    assert_eq!(entry.max_cpu_millicores, 2500);
-    assert_eq!(entry.max_disk_kb, 77);
+    assert_eq!(entry.current.max_memory_kb, 123_456);
+    assert_eq!(entry.current.max_cpu_millicores, 2500);
+    assert_eq!(entry.current.max_disk_kb, 77);
+    assert_eq!(entry.previous, Half::default());
     assert_eq!(entry.killed_at_kb, 100_000);
+    assert_eq!(entry.killed_at_s, now);
     assert_eq!(entry.last_seen_s, now);
+    assert_eq!(entry.period, now / (7 * 86_400 / 2));
     assert!(!entry.seeded);
 
     let fresh = self::sketch(policy(0, vec![]), small_budget());
-    assert_eq!(fresh.load(decoded).unwrap(), 2);
+    assert_eq!(fresh.load(decoded.clone(), now).unwrap(), 3);
     // The command key's first sighting was probation; one sample counted.
-    assert_eq!(fresh.lookup(&command("cc-9")).unwrap().samples, 1);
+    assert_eq!(fresh.lookup(&command("cc-9"), now).unwrap().samples, 1);
+    // Loaded again (another replica's view of the same keys) the counts add.
+    assert_eq!(fresh.load(decoded, now).unwrap(), 3);
+    assert_eq!(fresh.lookup(&command("cc-9"), now).unwrap().samples, 2);
+    assert_eq!(
+        fresh
+            .lookup(&target("//new", "Y"), now)
+            .unwrap()
+            .memory_samples(),
+        2
+    );
 
     // Truncated is an error, not a partial load.
     assert!(Snapshot::decode(&bytes[..bytes.len() - 3]).is_err());
@@ -298,26 +328,35 @@ fn a_snapshot_round_trips_and_ages_out() {
     let mut other = sketch.snapshot(now);
     other.sampler_generation = SAMPLER_GENERATION + 1;
     let fresh = self::sketch(policy(0, vec![]), small_budget());
-    assert!(fresh.load(other).is_err());
+    assert!(fresh.load(other, now).is_err());
     assert_eq!(fresh.stats().entries, [0, 0, 0]);
 }
 
-/// A seed stands until the first real sample of its key, and never
-/// replaces one.
+/// A seed stands until the first real sample of its key, which replaces it
+/// whole (an oversized seed must neither cap nor lift what is measured),
+/// and a seed never replaces a measurement.
 #[test]
 fn a_seed_yields_to_the_first_sample_and_never_replaces_one() {
     let sketch = sketch(policy(0, vec![]), small_budget());
     let key = target("//a", "X");
-    assert!(sketch.seed(key.clone(), Entry::seeded(1000, 500_000, 0, 1, 1)));
-    let entry = sketch.lookup(&key).unwrap();
+    assert!(sketch.seed(key.clone(), Entry::seeded(1000, 500_000_000, 0, 1, 1)));
+    let entry = sketch.lookup(&key, NOW).unwrap();
     assert!(entry.seeded);
-    assert_eq!(sketch.shape(&entry).memory_kb, 500_000);
+    assert_eq!(sketch.shape(&entry).memory_kb, 500_000_000);
     assert_eq!(sketch.shape(&entry).cpu_count, 1000);
+    // A seed does not age out: it stands until its first sample.
+    assert_eq!(sketch.age_out(NOW + 30 * 86_400), 0);
     sketch.observe(key.clone(), &memory(2_000_000, 2));
-    let entry = sketch.lookup(&key).unwrap();
+    let entry = sketch.lookup(&key, NOW).unwrap();
     assert!(!entry.seeded);
-    assert_eq!(entry.samples, 2, "the seed's sample count carries");
+    assert_eq!(entry.samples, 1, "the seed is gone, not merged");
+    assert_eq!(
+        entry.max_memory_kb(),
+        2_000_000,
+        "the seed's maximum with it"
+    );
     assert_eq!(sketch.shape(&entry).memory_kb, 2_000_000);
+    assert_eq!(sketch.shape(&entry).cpu_count, 0, "the seed's cpu with it");
     assert!(
         !sketch.seed(key, Entry::seeded(1, 1, 1, 1, 1)),
         "a measured key is never reseeded"
@@ -342,11 +381,115 @@ fn the_budget_and_the_listing() {
         &memory(2000, 2),
     );
     let rows = sketch.hints(None, 10);
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].key, target("//a", "X"));
-    assert_eq!(rows[0].shaped.class.as_deref(), Some("s"));
-    assert_eq!(rows[0].shaped.memory_kb, 2_000_000);
-    assert_eq!(sketch.hints(Some(Family::Mnemonic), 10).len(), 1);
+    // The target, its mnemonic X, and Link; most recently seen first.
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows[0].key,
+        SketchKey::for_attempt(None, Some("Link"), "unused")
+    );
+    let a = rows
+        .iter()
+        .find(|row| row.key == target("//a", "X"))
+        .unwrap();
+    assert_eq!(a.shaped.class.as_deref(), Some("s"));
+    assert_eq!(a.shaped.memory_kb, 2_000_000);
+    assert_eq!(sketch.hints(Some(Family::Mnemonic), 10).len(), 2);
     assert_eq!(sketch.hints(Some(Family::Command), 10).len(), 0);
     assert_eq!(sketch.hints(None, 1).len(), 1);
+    // The scheduler's own shard count spreads a family's capacity.
+    let sharded = ResourceSketch::new(policy(0, vec![]), small_budget(), Duration::from_hours(1));
+    assert_eq!(sharded.stats().capacity, [SHARDS, SHARDS, SHARDS]);
+}
+
+/// A sample counts for between half a window and a whole one, never
+/// longer: what a key used last week stops shaping it however often it
+/// runs, a kill floor expires with the window, and a lookup past the window
+/// finds nothing.
+#[test]
+fn samples_leave_with_the_window_and_the_kill_floor_expires() {
+    let window = Duration::from_hours(7 * 24);
+    let sketch = ResourceSketch::with_shards(policy(0, vec![]), small_budget(), window, 1);
+    let key = target("//a", "X");
+    let day = 86_400u64;
+    // Day 100 is half-window 28 (3.5 days each).
+    let start = 100 * day;
+    for _ in 0..100 {
+        sketch.observe(key.clone(), &memory(7_000_000, start));
+    }
+    sketch.observe(
+        key.clone(),
+        &Observation {
+            peak_memory_kb: 7_500_000,
+            killed_at_kb: Some(8_000_000),
+            killed: true,
+            now_s: start,
+            ..Observation::default()
+        },
+    );
+    let entry = sketch.lookup(&key, start).unwrap();
+    assert_eq!(sketch.shape(&entry).memory_kb, 8_000_001, "above the kill");
+    // Three days on, the next half-window: a few small samples, and the
+    // big ones still count.
+    for i in 0..3u64 {
+        sketch.observe(key.clone(), &memory(1_000_000, start + 3 * day + i));
+    }
+    let entry = sketch.lookup(&key, start + 3 * day).unwrap();
+    assert_eq!(entry.current.memory.total(), 3);
+    assert_eq!(entry.previous.memory.total(), 101);
+    assert_eq!(
+        sketch.shape(&entry).memory_kb,
+        8_000_001,
+        "the kill still holds"
+    );
+    // Eight days on: two half-windows past the big samples and a window
+    // past the kill. The tick ages the key; the small samples are what is
+    // left, and the maximum left with the big ones.
+    assert_eq!(sketch.age_out(start + 8 * day), 0);
+    let entry = sketch.lookup(&key, start + 8 * day).unwrap();
+    assert_eq!(entry.killed_at_kb, 0, "the floor expired");
+    assert_eq!(entry.previous.memory.total(), 3);
+    assert_eq!(entry.current, Half::default());
+    assert_eq!(entry.max_memory_kb(), 1_000_000);
+    assert_eq!(
+        sketch.shape(&entry).memory_kb,
+        1_000_000,
+        "capped by the exact maximum"
+    );
+    // A sample a week old is gone whatever came after it: a key seen once
+    // a week sizes from its latest sample.
+    let rare = target("//rare", "X");
+    sketch.observe(rare.clone(), &memory(9_000_000, start));
+    sketch.observe(rare.clone(), &memory(1_000, start + 7 * day + 1));
+    assert_eq!(
+        sketch
+            .shape(&sketch.lookup(&rare, start + 7 * day + 1).unwrap())
+            .memory_kb,
+        1_000
+    );
+    // Past the window the key is dropped by a lookup, not sized from.
+    assert!(sketch.lookup(&key, start + 16 * day).is_none());
+    assert_eq!(sketch.stats().entries[0], 1, "only //rare is left");
+}
+
+/// An attempt that names a target and a mnemonic teaches the mnemonic
+/// family too, so a target never seen is sized from its kind of action.
+#[test]
+fn a_named_attempt_teaches_its_mnemonic() {
+    let sketch = sketch(policy(0, vec![]), small_budget());
+    sketch.observe(target("//a", "Javac"), &memory(3_000_000, 1));
+    sketch.observe(target("//b", "Javac"), &memory(1_000_000, 2));
+    let javac = SketchKey::for_attempt(None, Some("Javac"), "unused");
+    let entry = sketch.lookup(&javac, NOW).unwrap();
+    assert_eq!(entry.samples, 2);
+    assert_eq!(entry.max_memory_kb(), 3_000_000);
+    assert_eq!(sketch.stats().samples, [2, 2, 0]);
+    // A key without a mnemonic teaches no mnemonic; a mnemonic-only key
+    // counts once.
+    sketch.observe(
+        SketchKey::for_attempt(Some("//c"), None, "unused"),
+        &memory(1_000, 3),
+    );
+    sketch.observe(javac.clone(), &memory(1_000, 4));
+    assert_eq!(sketch.stats().samples, [3, 3, 0]);
+    assert_eq!(sketch.lookup(&javac, NOW).unwrap().samples, 3);
 }

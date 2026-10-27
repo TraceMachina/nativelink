@@ -48,14 +48,40 @@ use opentelemetry::context::Context;
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::resource_sketch::{
     Budget, Entry, Family, Policy, ResourceSketch, Shaped, SketchKey, Snapshot, Stats,
 };
 
-/// The key the sketch snapshot is written under in `snapshot_store`.
-pub const SNAPSHOT_KEY: &str = "historical_resource_sketch";
+/// The prefix the sketch snapshots are written under in `snapshot_store`,
+/// one key per scheduler replica; see [`snapshot_key`].
+pub const SNAPSHOT_KEY_PREFIX: &str = "historical_resource_sketch/";
+
+/// The first string past every key under the prefix, for a listing.
+const SNAPSHOT_KEY_PREFIX_END: &str = "historical_resource_sketch0";
+
+/// The key the store is probed with at start; outside the prefix, so a
+/// listing never reads it as a snapshot.
+const SNAPSHOT_PROBE_KEY: &str = "historical_resource_sketch.probe";
+
+/// The snapshot key of one replica.
+#[must_use]
+pub fn snapshot_key(replica: &str) -> String {
+    format!("{SNAPSHOT_KEY_PREFIX}{replica}")
+}
+
+/// The replica this process writes its snapshot as: the pod's hostname,
+/// else a fresh id. Every replica sees the usage of the workers connected
+/// to it and no other, so each writes its own key and a start merges them.
+#[must_use]
+pub fn replica_id() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
 
 /// One hint of the seed file. The v1 fields keep their meaning; the v2
 /// fields are optional, so a v1 file still loads. `class` names a point on
@@ -310,54 +336,119 @@ impl HistoricalResourceScheduler {
         &self.sketch
     }
 
-    /// Loads the snapshot under [`SNAPSHOT_KEY`] in `store` into `sketch`.
-    /// No snapshot, an unreadable one and one of another sampler generation
-    /// all leave the sketch as it is, logged; the seed, if any, follows.
-    pub async fn load_snapshot(sketch: &ResourceSketch, store: &Store) {
-        let bytes = match store
-            .get_part_unchunked(StoreKey::Str(SNAPSHOT_KEY.into()), 0, None)
+    /// `snapshot_store` must take a string key: a stack that routes by
+    /// digest (`size_partitioning`) refuses one. A probe at start writes a
+    /// key beside the snapshots and reads it back, so such a stack fails at
+    /// start with a message rather than at the first write a minute later.
+    pub async fn probe_snapshot_store(store: &Store, name: &str) -> Result<(), Error> {
+        const HELP: &str = "it must take a string key: memory, filesystem, redis, s3, gcs or azure, or verify, compression, shard and fast_slow over one; not size_partitioning";
+        let bytes = Bytes::from_static(b"resource sketch probe");
+        store
+            .update_oneshot(StoreKey::Str(SNAPSHOT_PROBE_KEY.into()), bytes.clone())
             .await
-        {
-            Ok(bytes) => bytes,
-            Err(err) if err.code == Code::NotFound => {
-                debug!("No resource sketch snapshot; the sketch starts empty");
-                return;
+            .err_tip(|| {
+                format!(
+                    "historical_resource.snapshot_store {name:?} refused the probe write; {HELP}"
+                )
+            })?;
+        let read = store
+            .get_part_unchunked(StoreKey::Str(SNAPSHOT_PROBE_KEY.into()), 0, None)
+            .await
+            .err_tip(|| {
+                format!(
+                    "historical_resource.snapshot_store {name:?} could not read the probe back; {HELP}"
+                )
+            })?;
+        if read != bytes {
+            return Err(make_input_err!(
+                "historical_resource.snapshot_store {name:?} read a different value back for the probe key; {HELP}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Loads every snapshot under [`SNAPSHOT_KEY_PREFIX`] in `store` into
+    /// `sketch`, merged: each scheduler replica writes what the workers
+    /// connected to it reported, and a start wants all of it. A store that
+    /// cannot list keys yields this replica's own snapshot only. No
+    /// snapshot, an unreadable one and one of another sampler generation
+    /// are logged and skipped; the seed, if any, follows an empty sketch.
+    pub async fn load_snapshots(sketch: &ResourceSketch, store: &Store, own_key: &str) {
+        let mut keys: Vec<String> = Vec::new();
+        let listed = store
+            .list(
+                StoreKey::Str(SNAPSHOT_KEY_PREFIX.into())
+                    ..StoreKey::Str(SNAPSHOT_KEY_PREFIX_END.into()),
+                |key| {
+                    if let StoreKey::Str(name) = key {
+                        keys.push(name.to_string());
+                    }
+                    true
+                },
+            )
+            .await;
+        match listed {
+            Ok(_) => {}
+            Err(err) if err.code == Code::Unimplemented => {
+                info!("The snapshot store cannot list keys; only this replica's snapshot is read");
+                keys.clear();
             }
             Err(err) => {
                 warn!(
                     ?err,
-                    "Could not read the resource sketch snapshot; the sketch starts empty"
+                    "Could not list the resource sketch snapshots; only this replica's is read"
                 );
-                return;
+                keys.clear();
             }
-        };
-        match Snapshot::decode(&bytes).and_then(|snapshot| {
-            let written_at_s = snapshot.written_at_s;
-            sketch.load(snapshot).map(|loaded| (loaded, written_at_s))
-        }) {
-            Ok((loaded, written_at_s)) => {
-                info!(
-                    loaded,
-                    age_s = now_s().saturating_sub(written_at_s),
-                    "Loaded the resource sketch snapshot"
-                );
+        }
+        if !keys.iter().any(|key| key == own_key) {
+            keys.push(own_key.to_string());
+        }
+        let now = now_s();
+        let (mut snapshots, mut loaded) = (0usize, 0usize);
+        for key in keys {
+            let bytes = match store
+                .get_part_unchunked(StoreKey::Str(key.as_str().into()), 0, None)
+                .await
+            {
+                Ok(bytes) => bytes,
+                Err(err) if err.code == Code::NotFound => continue,
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        key, "Could not read a resource sketch snapshot; skipped"
+                    );
+                    continue;
+                }
+            };
+            match Snapshot::decode(&bytes).and_then(|snapshot| {
+                let age_s = now.saturating_sub(snapshot.written_at_s);
+                sketch.load(snapshot, now).map(|entries| (entries, age_s))
+            }) {
+                Ok((entries, age_s)) => {
+                    debug!(key, entries, age_s, "Loaded a resource sketch snapshot");
+                    snapshots += 1;
+                    loaded += entries;
+                }
+                Err(err) => warn!(?err, key, "Resource sketch snapshot not loaded; skipped"),
             }
-            Err(err) => {
-                warn!(
-                    ?err,
-                    "Resource sketch snapshot not loaded; the sketch starts empty"
-                );
-            }
+        }
+        if snapshots == 0 {
+            debug!("No resource sketch snapshot; the sketch starts empty");
+        } else {
+            info!(snapshots, loaded, "Loaded the resource sketch snapshots");
         }
     }
 
-    /// Writes the sketch to `store` every `interval` and reports the
-    /// sketch's size on the same tick. Without a store only the report
-    /// runs, every minute; an interval of zero turns the write off.
+    /// Every `interval`: ages the sketch (the window and the daily decay
+    /// are enforced here, store or not), writes it to `store` under `key`
+    /// when there is one, and reports its size. Without a store, or with
+    /// an interval of zero, the tick is a minute and the write is skipped.
     pub fn spawn_snapshot_writer(
         sketch: Arc<ResourceSketch>,
         store: Option<Store>,
         interval: Duration,
+        key: String,
     ) {
         let write = store.filter(|_| !interval.is_zero());
         let tick = if interval.is_zero() {
@@ -371,11 +462,18 @@ impl HistoricalResourceScheduler {
             loop {
                 tokio::time::sleep(tick).await;
                 let now = now_s();
+                let dropped = sketch.age_out(now);
+                if dropped > 0 {
+                    debug!(
+                        dropped,
+                        "Resource sketch keys not seen for the window were dropped"
+                    );
+                }
                 if let Some(store) = &write {
                     let bytes = sketch.snapshot(now).encode();
                     let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                     match store
-                        .update_oneshot(StoreKey::Str(SNAPSHOT_KEY.into()), Bytes::from(bytes))
+                        .update_oneshot(StoreKey::Str(key.as_str().into()), Bytes::from(bytes))
                         .await
                     {
                         Ok(()) => {
@@ -385,6 +483,7 @@ impl HistoricalResourceScheduler {
                         Err(err) => {
                             warn!(
                                 ?err,
+                                key,
                                 "Could not write the resource sketch snapshot; retrying next interval"
                             );
                             record_hints_snapshot_failure();
@@ -516,9 +615,10 @@ impl HistoricalResourceScheduler {
                 "mnemonic",
             ),
         ];
+        let now = now_s();
         for (key, source) in ladder {
             if let Some(key) = key
-                && let Some(entry) = self.sketch.lookup(&key)
+                && let Some(entry) = self.sketch.lookup(&key, now)
             {
                 let source = if entry.seeded { "seed" } else { source };
                 return Some((entry, source));

@@ -30,7 +30,7 @@ use tokio::sync::{Notify, mpsc};
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
-use crate::historical_resource_scheduler::HistoricalResourceScheduler;
+use crate::historical_resource_scheduler::{HistoricalResourceScheduler, replica_id, snapshot_key};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::memory_awaited_action_db::MemoryAwaitedActionDb;
 use crate::property_modifier_scheduler::PropertyModifierScheduler;
@@ -157,8 +157,14 @@ async fn inner_scheduler_factory(
                 ),
                 None => None,
             };
+            let snapshot_key = snapshot_key(&replica_id());
             if let Some(store) = &snapshot_store {
-                HistoricalResourceScheduler::load_snapshot(&sketch, store).await;
+                HistoricalResourceScheduler::probe_snapshot_store(
+                    store,
+                    spec.snapshot_store.as_deref().unwrap_or_default(),
+                )
+                .await?;
+                HistoricalResourceScheduler::load_snapshots(&sketch, store, &snapshot_key).await;
             }
             let (action_scheduler, worker_scheduler, _) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
@@ -177,6 +183,7 @@ async fn inner_scheduler_factory(
                 sketch.clone(),
                 snapshot_store,
                 Duration::from_secs(spec.snapshot_interval_s),
+                snapshot_key,
             );
             (
                 Some(historical_resource_scheduler),

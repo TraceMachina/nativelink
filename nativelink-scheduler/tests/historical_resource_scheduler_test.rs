@@ -27,16 +27,22 @@ use nativelink_config::schedulers::{
     ColdStartSpec, HistoricalResourceSpec, SchedulerSpec, SimpleSpec, SizeClassSpec,
     TimeoutClassSpec,
 };
+use nativelink_config::stores::{MemorySpec, SizePartitioningSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
-use nativelink_scheduler::historical_resource_scheduler::HistoricalResourceScheduler;
+use nativelink_scheduler::historical_resource_scheduler::{
+    HistoricalResourceScheduler, snapshot_key,
+};
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_scheduler::resource_sketch::{Observation, SketchKey};
+use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::size_partitioning_store::SizePartitioningStore;
 use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::operation_state_manager::ClientStateManager;
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
+use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
 use opentelemetry::KeyValue;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::{Context, FutureExt as OtelFutureExt};
@@ -242,6 +248,102 @@ async fn a_measured_action_is_sized_from_its_own_samples() -> Result<(), Error> 
     assert_eq!(properties["memory_kb"], "4200000");
     assert_eq!(properties["cpu_count"], "1440");
     drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// Bazel names both the target and the mnemonic, so a target the sketch has
+/// never seen is sized from what its mnemonic's other targets used, not
+/// from the cold start.
+#[nativelink_test]
+async fn a_new_target_is_sized_from_its_mnemonic() -> Result<(), Error> {
+    let hints_file = write_hints_file("[]");
+    let mut spec = base_spec(hints_file.clone(), None);
+    spec.headroom_percent = 0;
+    let (mock_scheduler, scheduler) = make_scheduler_with_spec(&spec);
+    let base = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    for (target, peak) in [("//lib:a", 2_000_000u64), ("//lib:b", 3_000_000)] {
+        scheduler.sketch().observe(
+            SketchKey::for_attempt(Some(target), Some("Javac"), "unused"),
+            &Observation {
+                peak_memory_kb: peak,
+                now_s: now_s(),
+                ..Observation::default()
+            },
+        );
+    }
+    let properties = properties_after_add(
+        &scheduler,
+        &mock_scheduler,
+        base,
+        Some(("//lib:never-seen", "Javac")),
+    )
+    .await?;
+    // The p95 bucket of the two Javac samples is [2M, 4M), capped by the
+    // exact maximum.
+    assert_eq!(properties["memory_kb"], "3000000");
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// Each replica writes its own snapshot; a start reads every replica's and
+/// merges them, so a restarted replica sees what the whole fleet learned.
+/// The store is probed for a string key first.
+#[nativelink_test]
+async fn snapshots_are_per_replica_and_merged_at_start() -> Result<(), Error> {
+    let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    HistoricalResourceScheduler::probe_snapshot_store(&store, "memory").await?;
+    let hints_file = write_hints_file("[]");
+    let spec = base_spec(hints_file.clone(), None);
+    let key = SketchKey::for_attempt(Some("//pkg:t"), Some("Genrule"), "unused");
+    let now = now_s();
+    for (replica, peak) in [("cas-0", 1_000_000u64), ("cas-1", 3_000_000)] {
+        let sketch = HistoricalResourceScheduler::sketch_from_spec(&spec);
+        sketch.observe(
+            key.clone(),
+            &Observation {
+                peak_memory_kb: peak,
+                now_s: now,
+                ..Observation::default()
+            },
+        );
+        store
+            .update_oneshot(
+                StoreKey::Str(snapshot_key(replica).into()),
+                sketch.snapshot(now).encode().into(),
+            )
+            .await?;
+    }
+    let sketch = HistoricalResourceScheduler::sketch_from_spec(&spec);
+    HistoricalResourceScheduler::load_snapshots(&sketch, &store, &snapshot_key("cas-2")).await;
+    let entry = sketch.lookup(&key, now).unwrap();
+    assert_eq!(entry.samples, 2, "both replicas' samples");
+    assert_eq!(entry.max_memory_kb(), 3_000_000);
+    assert_eq!(entry.memory_samples(), 2);
+    assert_eq!(sketch.stats().entries, [1, 1, 0]);
+    drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// A store that routes by digest cannot hold a string key; the probe says
+/// so at start.
+#[nativelink_test]
+async fn a_store_that_refuses_string_keys_fails_the_probe() -> Result<(), Error> {
+    let store = Store::new(SizePartitioningStore::new(
+        &SizePartitioningSpec {
+            size: 1,
+            lower_store: StoreSpec::Memory(MemorySpec::default()),
+            upper_store: StoreSpec::Memory(MemorySpec::default()),
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    ));
+    let err = HistoricalResourceScheduler::probe_snapshot_store(&store, "split")
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("must take a string key"),
+        "{err:?}"
+    );
     Ok(())
 }
 

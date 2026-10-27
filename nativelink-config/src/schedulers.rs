@@ -759,7 +759,10 @@ pub struct HistoricalResourceSpec {
     )]
     pub headroom_percent: u64,
 
-    /// A key not measured for this many days is forgotten.
+    /// A key not measured for this many days is forgotten. Within the
+    /// window a sample weighs half as much each day, so what a key used
+    /// last week stops shaping it, and a memory kill stops lifting the
+    /// key's reservation this many days after it.
     /// Default: 7
     #[serde(
         default = "default_historical_resource_window_days",
@@ -780,10 +783,17 @@ pub struct HistoricalResourceSpec {
     )]
     pub memory_budget_bytes: u64,
 
-    /// Name of the store the sketch is written to, so a restart keeps
-    /// what the scheduler learned. The CAS's durable store serves; the
-    /// snapshot is one blob under a fixed key. Unset, the sketch lives in
-    /// memory only and a restart starts from `hints_file`, if any.
+    /// Name of the store each scheduler replica writes its sketch to, under
+    /// its own key (`historical_resource_sketch/<hostname>`), so a restart
+    /// keeps what the schedulers learned: a start reads every replica's
+    /// snapshot and merges them, since each replica sees only the workers
+    /// connected to it (a store that cannot list keys yields this replica's
+    /// own). The store must take a string key: `memory`, `filesystem`,
+    /// `redis`, `s3`, `gcs` or `azure`, or `verify`, `compression`, `shard`
+    /// and `fast_slow` over one, not `size_partitioning`; the start probes
+    /// it and refuses to start otherwise. Give it eviction or a key TTL, so the snapshot of a
+    /// replica that is gone does not stay forever. Unset, the sketch lives
+    /// in memory only and a restart starts from `hints_file`, if any.
     #[serde(default)]
     pub snapshot_store: Option<String>,
 
