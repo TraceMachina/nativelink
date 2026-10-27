@@ -32,12 +32,14 @@ const FIXED_FLOORS: &[(&str, [u64; 3])] = &[
 ];
 
 /// The lock to audit: the runner's environment names it under Bazel, and a
-/// cargo invocation finds it by walking up from this crate's manifest.
+/// cargo invocation finds it by walking up from this crate's manifest. Both
+/// come from the runtime environment: compiling the manifest path in would
+/// embed the absolute workspace path, which the hermetic build rejects.
 fn cargo_lock_contents() -> Option<String> {
     if let Ok(path) = std::env::var("CARGO_LOCK_FOR_AUDIT") {
         return std::fs::read_to_string(path).ok();
     }
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR")?);
     loop {
         let candidate = dir.join("Cargo.lock");
         if candidate.is_file() {
