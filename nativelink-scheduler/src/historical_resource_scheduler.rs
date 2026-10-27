@@ -16,7 +16,7 @@
 //! usage report the workers send lands in a [`ResourceSketch`]; an action
 //! is reserved what the sketch has learned for its key, shaped with the
 //! headroom and the ladder configured here, or by the cold-start policy
-//! when the sketch has nothing. The sketch is snapshotted to a store so a
+//! when the sketch has nothing. The sketch is written to a store so a
 //! restart keeps it; a hints file seeds an empty sketch once.
 
 use core::time::Duration;

@@ -768,7 +768,7 @@ pub struct HistoricalResourceSpec {
 
     /// Memory the sketch may use for what it has learned, in bytes. About
     /// 400 bytes a key, split across keys by target, by mnemonic and by
-    /// command digest (80, 10 and 10 percent); the least recently seen key
+    /// command digest (80%, 10% and 10%); the least recently seen key
     /// of a full family goes first. The default holds about 300k keys,
     /// more than the largest installation seen has distinct targets times
     /// mnemonics in a week.
@@ -779,7 +779,7 @@ pub struct HistoricalResourceSpec {
     )]
     pub memory_budget_bytes: u64,
 
-    /// Name of the store the sketch is snapshotted to, so a restart keeps
+    /// Name of the store the sketch is written to, so a restart keeps
     /// what the scheduler learned. The CAS's durable store serves; the
     /// snapshot is one blob under a fixed key. Unset, the sketch lives in
     /// memory only and a restart starts from `hints_file`, if any.
