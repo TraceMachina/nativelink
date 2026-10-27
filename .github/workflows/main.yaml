@@ -101,6 +101,9 @@ jobs:
       uses: >- # v6.0.2
         actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+    - name: Write Bazel CI metadata
+      uses: ./.github/actions/ci-metadata
+
     - name: Setup NativeLink Cloud
       uses: ./.github/actions/setup-nativelink-cloud
       with:
@@ -129,6 +132,7 @@ jobs:
           ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
         secret-files: |
           nativelink-bazelrc=user.bazelrc
+          ci-metadata=ci-metadata.bazelrc
         load: true # This brings the build into `docker images` from buildx.
         tags: trace_machina/nativelink:latest
 
