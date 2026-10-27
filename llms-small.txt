@@ -4851,7 +4851,7 @@ Bazel.
 ## Prerequisites
 
 - Bazelisk, which reads `.bazelversion` and fetches the right Bazel for
-  you. CI runs 9.1.1 and also checks 8.7.0.
+  you. CI runs 9.3.1 and also checks 8.8.2.
 - A C++ toolchain (clang or gcc) for native dependencies.
 - On macOS: XCode command-line tools.
 - On Linux, inside the Nix shell, the LRE toolchains link with `mold`;

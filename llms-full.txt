@@ -8516,6 +8516,30 @@ worker reads an action's properties from the scheduler's dispatch rather than
 the client's request, so a reservation the scheduler placed the action by is
 the one enforced and exported to the environment.
 
+The sample covers every process that belongs to the action: its process
+group, the children of any member, and the process groups those belong to.
+Both links are needed. A shell that exits and leaves its work with the
+worker as parent is still covered by its group, and a Bazel test, which
+`test-setup.sh` runs under `set -m` in a process group of its own, is
+reached through its parent; before this the test's own memory was never
+seen, so a 20 GB test was hinted and held at the few MB of its wrapper.
+
+An action that fits under the pod's limit only by thrashing never reaches
+the OOM killer; the worker slows until the scheduler evicts it, and the
+action moves to the next worker with the same reservation.
+`memory_pressure_kill_percent` ends that on the worker: when the cgroup's
+`memory.pressure` `full avg10` (the share of the last ten seconds every
+task spent stalled on memory) stays at or above that value for
+`memory_pressure_kill_after_s` (default 30), the worker kills the running
+action furthest over its reservation, or the one with the largest sample
+when none is over, as a memory kill, so the scheduler requeues it with a
+larger reservation. An action that reserves the whole worker is never
+picked. The kill does not check that the actions caused the pressure:
+pressure from the worker itself (page cache from the filesystem store, a
+large upload) still kills an action. It needs `memory: soft` for the
+samples, reads the nearest limited cgroup v2 directory (so a privileged pod
+reads its own container scope under the host tree), and is off at 0.
+
 `disk: guard` adds a check before any input is fetched: an action whose
 `disk_kb` reservation exceeds the free space under the work directory, less
 what the actions already admitted reserved, is refused with `RESOURCE_EXHAUSTED`, which the scheduler requeues without
@@ -8538,6 +8562,8 @@ comes with the size ladder.
   "memory": "soft",
   "memory_property_name": "memory_kb",
   "memory_headroom_percent": 20,
+  "memory_pressure_kill_percent": 40,
+  "memory_pressure_kill_after_s": 30,
   "disk": "soft",
   "disk_property_name": "disk_kb",
   "disk_headroom_percent": 20
@@ -10498,7 +10524,7 @@ bounding how much work you can have in flight.
 | `connection_timeout_ms` | 3000 | Ceiling on establishing a connection |
 | `health_check_timeout_ms` | 4000 | Ceiling on the health-check `PING` |
 | `scan_count` | 10000 | `COUNT` hint per `SCAN` iteration |
-| `key_ttl_s` | 0 (never) | Expiry set on every key this store writes; must exceed the longest upload |
+| `key_ttl_s` | 0 (never) | Expiry set on every key this store writes; must exceed the longest gap between two chunks of an upload. Unset, only an upload's temp key expires, an hour after its last chunk |
 
 `max_client_permits` is the most useful lever. It exists precisely to stop
 timeouts caused by many, many inflight actions: when the ceiling is reached,
@@ -10641,7 +10667,11 @@ size.
 NativeLink does not evict from Redis; that's the instance's `maxmemory` and
 `maxmemory-policy`. The one knob on this side is `key_ttl_s`, which puts an
 expiry on every key the store writes (meant for stores whose consumer can
-stop, not for scheduler state). Set the Redis-side limits, and reconsider
+stop, not for scheduler state). An upload's `temp-*` key always has one,
+`key_ttl_s` or an hour, armed again by every chunk and deleted when the
+upload fails or its client goes away, so abandoned uploads do not
+accumulate; an upload that sends nothing for that long is refused and the
+client sends it again. Set the Redis-side limits, and reconsider
 whether the bulk CAS should live here at all. For large blobs, a filesystem or object store tier is both
 cheaper and better suited.
 
@@ -14945,7 +14975,7 @@ on the way back up, so a crash mid-write reclaims itself.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Unit restarts in a loop, journal says `unknown field` | Config is parsed with `deny_unknown_fields`; one unrecognised key is fatal | Check the key in the [configuration reference](/reference/nativelink-config) |
-| Process exits during startup, no error about ports | `NL_OTEL_ENDPOINT` without a scheme or explicit port panics before binding | Use `http://host:4317`; see [CLI and environment](/reference/cli-and-env) |
+| Process exits during startup, no error about ports | `NL_OTEL_ENDPOINT` without a scheme or explicit port stops the process before binding | Use `http://host:4317`; see [CLI and environment](/reference/cli-and-env) |
 | Everything slows down under load, nothing errors | File-descriptor semaphore exhaustion blocks rather than failing | Raise `LimitNOFILE` **and** `max_open_files` together |
 | Two workers on one host behave erratically | They share a `work_directory`, which is purged at startup | Give each worker its own |
 | Disk full, then every request fails and keeps retrying | ENOSPC surfaces as a generic error code that clients and upstream stores retry, and eviction is not triggered by write failures | [Runbooks](/operate/runbooks#the-disk-fills-up) |
@@ -15033,12 +15063,12 @@ export RUST_LOG=info
 <Callout type="warn" title="NL_OTEL_ENDPOINT needs a scheme and an explicit port">
 
   The value is parsed as a URL and the host and port are pulled out
-  individually, and each step `unwrap`s. A value with no scheme, or with no
-  explicit port, yields `None` for the port and **panics the process during
-  startup**, before it binds a socket.
+  individually. A value with no scheme, or with no explicit port, **stops the
+  process during startup** with an error, before it binds a socket, rather
+  than falling back to a default.
 
   `http://otel-collector:4317` is correct. `otel-collector:4317` and
-  `http://otel-collector` both crash the binary.
+  `http://otel-collector` both stop the binary.
 
 </Callout>
 
@@ -15051,12 +15081,28 @@ a cluster, because it re-resolves the collector's DNS as pods move. Either way
 the transport is OTLP over gRPC: the binary is built with only the gRPC
 exporter, so `OTEL_EXPORTER_OTLP_PROTOCOL` cannot switch it to HTTP.
 
+An `https://` endpoint, in either variable, gets TLS. Without further
+configuration the collector's certificate is checked against the host's
+system trust store, which is what you want for a collector behind a
+public certificate. For a collector with a private CA, set
+`OTEL_EXPORTER_OTLP_CERTIFICATE` to the PEM file of that CA and only it is
+trusted. For a collector that asks the client for a certificate (mTLS), set
+`OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` and `OTEL_EXPORTER_OTLP_CLIENT_KEY`
+together. These are the OpenTelemetry specification's own variable names,
+so a worker outside the cluster (a macOS worker, say) reaches the cluster's
+collector with the same configuration any other OTLP client would use. The
+per-signal forms (`OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE` and so on) win over
+the general one, as the specification says.
+
 The rest of the surface is small enough to state in full:
 
 | Variable | Default | What it does here |
 | --- | --- | --- |
-| `NL_OTEL_ENDPOINT` | unset | One shared gRPC channel for logs, traces and metrics. Panics on a malformed value. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Used only when `NL_OTEL_ENDPOINT` is unset. |
+| `NL_OTEL_ENDPOINT` | unset | One shared gRPC channel for logs, traces and metrics. Stops the process on a malformed value. An `https://` value gets TLS; a per-signal certificate variable gives that signal a channel of its own, built with its material. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Used only when `NL_OTEL_ENDPOINT` is unset. An `https://` value gets TLS. |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | unset | Path to the PEM CA that signs the collector's certificate. Set, it is the only CA trusted; unset, the system trust store is. |
+| `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` | unset | Path to the PEM certificate the exporter presents to the collector for mTLS. Requires `OTEL_EXPORTER_OTLP_CLIENT_KEY`; one without the other stops the process. |
+| `OTEL_EXPORTER_OTLP_CLIENT_KEY` | unset | Path to the PEM private key for that certificate. |
 | `OTEL_EXPORTER_OTLP_COMPRESSION` | unset | `gzip` or `zstd` on the gRPC exporters; the shipped Kubernetes manifests set `zstd`. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | How often metrics flush. NativeLink sets no interval, so the SDK default of one minute applies. This is the first hop in the [reaction-time budget](/operate/autoscaling-reference#the-reaction-time-budget); lower it to 10000 before you scale on anything. |
 | `RUST_LOG` | `info` | Applies to the stdout layer **and** to all three OTLP layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled. |
@@ -15270,7 +15316,7 @@ each one decides where you have to point the collector:
 | Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
 | Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
 | Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes, whether it succeeded, and how many waiting actions took room that opened mid-pass ahead of newer ones |
-| Sizing | `nativelink_scheduler_hints_resolutions_total` | The scheduler, with `historical_resource` configured | Actions sized, by source: a hint (`target`, `action_digest`, `command_digest`, `mnemonic`), `cold_start`, or `none`; the `cold_start` share is what a hint feed is meant to drive down |
+| Sizing | `nativelink_scheduler_hints_*` | The scheduler, with `historical_resource` configured | Actions sized, by source (`target`, `command_digest`, `mnemonic`, `seed`, `cold_start`, `none`; the `cold_start` share falls as the sketch learns), the sketch's keys and capacity by family, its evictions and samples, and the snapshot's size, age and failed writes |
 | gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
 | Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
 | Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |
@@ -15426,7 +15472,8 @@ not your pipeline.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Process panics at startup with a URL error | `NL_OTEL_ENDPOINT` has no scheme or no explicit port | Use `http://host:4317` |
+| Process stops at startup with a URL error | `NL_OTEL_ENDPOINT` has no scheme or no explicit port | Use `http://host:4317` |
+| Process stops at startup naming an `OTEL_EXPORTER_OTLP_*` variable | A certificate variable names a file the process cannot read, or a client certificate is set without its key | Fix the path, or set `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` and `OTEL_EXPORTER_OTLP_CLIENT_KEY` together |
 | No metrics anywhere, process healthy | Nothing is pushing; check `otelcol_receiver_accepted_metric_points` on `:8888` | Verify the endpoint and that it is set on the process you are looking for |
 | Metrics appear a minute late | `OTEL_METRIC_EXPORT_INTERVAL` defaults to 60 s | Set `10000` |
 | `nativelink_execution_*` present, `nativelink_cache_*` missing | No store is wrapped | [Turn on cache metrics](#turn-on-cache-metrics) |
@@ -15806,10 +15853,13 @@ run on your behalf.
 What the worker actually does before executing an action:
 
 ```text
-unshare(CLONE_NEWPID | CLONE_NEWUSER | CLONE_NEWIPC | CLONE_NEWUTS)
+unshare(CLONE_NEWPID | CLONE_NEWUSER | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWNS)
 write /proc/self/setgroups  "deny"
 write /proc/self/uid_map    "<uid> <uid> 1"
 write /proc/self/gid_map    "<gid> <gid> 1"
+mount --make-rprivate /
+fork                         # the child is PID 1 of the new PID namespace
+mount -t proc proc /proc     # in that child, so /proc lists the action's processes
 ```
 
 <SourceLink file="nativelink-worker/src/namespace_utils.rs" symbol="unshare" />
@@ -15818,10 +15868,15 @@ Read the uid map carefully. It is an **identity** map: uid *N* inside the
 namespace is uid *N* outside it. The action runs as the worker's own user, with
 the worker's own privileges on the host filesystem. This is not a
 uid-remapping sandbox; it is a process-reaping and hermeticity mechanism. PID
-namespacing means orphaned children die with the action instead of leaking;
-IPC and UTS namespacing means actions cannot see each other's semaphores or
-hostname (the hostname is set to `nativelink`). With `use_mount_namespace`
-the flag list also gains `CLONE_NEWNS`, the worker's own root action
+namespacing means orphaned children die with the action instead of leaking,
+and the fresh `/proc` means what an action finds there is its own processes,
+each under the PID the action knows it by (where the host refuses that mount, as an
+unprivileged container that masks paths under `/proc` does, the worker warns
+at startup and the action sees the host's `/proc`); IPC and UTS namespacing
+means actions cannot see each other's semaphores or hostname (the hostname is
+set to `nativelink`). The mount namespace is private to the action, so the
+`/proc` mount never reaches the host; without `use_mount_namespace` nothing
+else in it changes. With `use_mount_namespace` the worker's own root action
 directory is masked so one action cannot see another's tree, and `/tmp` is
 replaced with the action's own temporary directory, on the worker's disk and
 removed with the action, so actions cannot collide on, or leak state
@@ -19534,22 +19589,45 @@ and do not spend `max_job_retries`. The execution histograms carry an
 `execution.outcome` attribute so the killed samples can be told from the
 completed ones.
 
-The `historical_resource` scheduler that fills reservations reads hints by a
-key ladder, each step probed only when the action carries that key:
-`(target_id, action_mnemonic)`, then `target_id`, then the
-action's `action_digest`, then its `command_digest` (each `hash-size` or
-`hash/size`), then the mnemonic alone. The digest keys reach every client,
-whether or not it sends Bazel request metadata; the action digest is what
-origin events carry, so it is what a producer fed by them writes. A hint may name a `class` instead of numbers, and
-**`classes`** on the same scheduler defines the fleet's size ladder: named
-points with `cpu_count`, `memory_kb` and `disk_kb`, listed ascending. An
-action no hint matches takes the class picked by `class_by_mnemonic`, then
+The `historical_resource` scheduler that fills reservations sizes an action
+from what the scheduler itself measured. Every sampled usage report a worker
+sends lands in a bounded sketch: one entry per key with 25-bucket log2
+histograms of peak memory, CPU and disk, the exact maxima, the reservation
+the action was last killed at, and when it was last seen. The key is the
+`(target_id, action_mnemonic)` the client sent, the mnemonic alone when it
+sent no target, or the action's `command_digest` when it sent neither (the
+same program with the same arguments, whatever its inputs, so one key
+gathers every run; a digest earns an entry on its second sighting or a
+kill, since one that ran once is an action-cache hit next time). An attempt
+that names both is recorded under its mnemonic as well, so a target the
+sketch has never seen is sized from its kind of action rather than the cold
+start. A lookup walks that ladder most specific first and reserves the 95th
+percentile bucket's upper bound, capped by the exact maximum, plus
+`headroom_percent`, never at or below the kill. Within the window a sample
+weighs half as much each day, so what a key used last week stops shaping
+it, and a kill floor expires with the window. **`classes`** on the same scheduler defines the
+fleet's size ladder: named points with `cpu_count`, `memory_kb` and
+`disk_kb`, listed ascending, and a hint takes the smallest class that holds
+its numbers on every dimension the class names. An action the sketch has
+nothing for takes the class picked by `class_by_mnemonic`, then
 `class_by_timeout` (Bazel test sizes arrive as timeouts), then
 `default_class`; without classes the raw `cold_start` numbers apply. With
 `memory_escalation.ladder_kb` set to the classes' memory values, a memory
 kill steps the reservation to the next class instead of scaling it, and a
-kill at the top class fails the action. Older hint files still load: every
-new field is optional.
+kill at the top class fails the action.
+
+The sketch lives within `memory_budget_bytes` (keys the fleet has not run
+for `window_days` are forgotten, and a full family evicts its least
+recently seen key), split over shards by key hash so a snapshot never holds
+up the Execute path. Each scheduler replica sees only the workers connected
+to it, so each writes its own snapshot to `snapshot_store` every
+`snapshot_interval_s` under `historical_resource_sketch/<hostname>`, and a
+start reads every replica's snapshot and merges them; the store must take a
+string key, which the start probes. The admin API's
+`/scheduler/{instance}/hints` lists what it reserves for every key in the
+`hints_file` shape, which is how a new fleet is seeded from an old one: the
+file is read once into an empty sketch and a seeded hint stands until the
+first real sample of its key replaces it.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
@@ -21038,20 +21116,23 @@ They are the only variables that change the binary's own behaviour.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `NL_LOG` | `pretty` | Format of the stdout log layer. `compact` and `json` are recognised; **any other value silently falls back to `pretty`**, including a typo like `Json`. |
-| `RUST_LOG` | `info` | Log filter, parsed by `tracing_subscriber`'s `EnvFilter` in lossy mode; an unparseable directive is dropped rather than fatal. Applies to the stdout layer *and* to the OTLP log, trace and metric layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled from here. |
-| `NL_OTEL_ENDPOINT` | not set | When set, all three OTLP exporters share one client-side load-balanced gRPC channel pointed at this endpoint. When unset, each exporter is built with the SDK's own tonic defaults instead. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Standard OpenTelemetry SDK variable. Applies only when `NL_OTEL_ENDPOINT` is unset; an explicit channel wins over the SDK's endpoint resolution. The signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` variables behave the same way. |
+| `RUST_LOG` | `info` | Log filter, parsed by `tracing_subscriber`'s `EnvFilter` in lossy mode; a directive that cannot be parsed is dropped rather than fatal. Applies to the stdout layer *and* to the OTLP log, trace and metric layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled from here. |
+| `NL_OTEL_ENDPOINT` | not set | When set, all three OTLP exporters share one client-side load-balanced gRPC channel pointed at this endpoint. When unset, each exporter is built with the SDK's own tonic defaults instead. An `https://` endpoint gets TLS, with the certificate variables below or the system trust store. A per-signal certificate variable gives that signal a channel of its own, built with its material, instead of the shared one. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Standard OpenTelemetry SDK variable. Applies only when `NL_OTEL_ENDPOINT` is unset; an explicit channel wins over the SDK's endpoint resolution. The signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` variables behave the same way. An `https://` endpoint gets TLS, with the certificate variables below or the system trust store. |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | not set | Standard OpenTelemetry variable, read by NativeLink itself because the Rust SDK does not: the path to a PEM file holding the CA that signs the collector's certificate. Set, it is the only CA trusted; unset, the host's system trust store is. The signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_CERTIFICATE` forms win over it. An empty value counts as unset; a path that cannot be read stops the process at startup. |
+| `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` | not set | The path to the PEM certificate the exporter presents when the collector asks for one (mTLS). Has to be set together with `OTEL_EXPORTER_OTLP_CLIENT_KEY`; one without the other stops the process at startup. Signal-specific forms as above. |
+| `OTEL_EXPORTER_OTLP_CLIENT_KEY` | not set | The path to the PEM private key for `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`. Signal-specific forms as above. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | How often the periodic metric reader flushes to the collector. NativeLink sets no interval of its own, so the SDK default of one minute applies unless you override it here. This is the first hop in the [reaction-time budget](/operate/autoscaling-reference). |
 
 <Callout type="warn" title="NL_OTEL_ENDPOINT requires a scheme and an explicit port">
 
   The endpoint is parsed as a URL and then the host and port are pulled out
-  individually, and each step `unwrap`s. A value with no scheme, or with no
-  explicit port, yields `None` for the port and **panics the process during
-  startup** rather than falling back to a default.
+  individually. A value with no scheme, or with no explicit port, **stops the
+  process during startup** with an error rather than falling back to a
+  default.
 
   `http://otel-collector:4317` is correct. `otel-collector:4317` and
-  `http://otel-collector` both crash the binary before it binds a socket.
+  `http://otel-collector` both stop the binary before it binds a socket.
 
 </Callout>
 
@@ -21957,7 +22038,7 @@ Bazel.
 ## Prerequisites [#prerequisites]
 
 - Bazelisk, which reads `.bazelversion` and fetches the right Bazel for
-  you. CI runs 9.1.1 and also checks 8.7.0.
+  you. CI runs 9.3.1 and also checks 8.8.2.
 - A C++ toolchain (clang or gcc) for native dependencies.
 - On macOS: XCode command-line tools.
 - On Linux, inside the Nix shell, the LRE toolchains link with `mold`;
