@@ -36,7 +36,6 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
   "metrics",
   "tls-ring",
   "trace",
-  "zstd-tonic",
 ] }
 opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false, features = [
   "default",
