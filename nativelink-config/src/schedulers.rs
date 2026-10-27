@@ -750,7 +750,8 @@ pub struct HistoricalResourceSpec {
     )]
     pub refresh_interval_s: u64,
 
-    /// Headroom over the measured 95th percentile, in percent.
+    /// Headroom over the measured 95th percentile, as a share of it: 20
+    /// reserves 20% more than was measured.
     /// Default: 20
     #[serde(
         default = "default_historical_resource_headroom_percent",
