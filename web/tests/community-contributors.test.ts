@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { type Contributor, visibleContributors } from "../apps/web/lib/github";
+import {
+  type Contributor,
+  FALLBACK_CONTRIBUTORS,
+  visibleContributors,
+} from "../apps/web/lib/github";
 
 function contributor(login: string, type?: string): Contributor {
   return {
@@ -20,5 +24,14 @@ describe("visibleContributors", () => {
       contributor("blaise-d", "User"),
     ];
     expect(visibleContributors(listing).map((c) => c.login)).toEqual(["aaronmondal", "blaise-d"]);
+  });
+});
+
+describe("FALLBACK_CONTRIBUTORS", () => {
+  test("is already filtered and carries real contribution counts", () => {
+    expect(visibleContributors(FALLBACK_CONTRIBUTORS)).toEqual(FALLBACK_CONTRIBUTORS);
+    for (const c of FALLBACK_CONTRIBUTORS) {
+      expect(c.contributions).toBeGreaterThan(0);
+    }
   });
 });
