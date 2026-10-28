@@ -270,6 +270,7 @@ rust_test(
         "@crates//:redis",
         "@crates//:serde_json",
         "@crates//:sha2",
+        "@crates//:tracing-test",
     ],
 )
 
