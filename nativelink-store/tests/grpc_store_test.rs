@@ -61,6 +61,8 @@ const VALID_HASH: &str = "0123456789abcdef00000000000000000001000000000000012345
 const RAW_INPUT: &str = "123";
 
 fn test_spec<T: Into<String>>(endpoint: T, use_legacy_resource_names: bool) -> GrpcSpec {
+    // Match the fake servers' IPv4 bind address. Resolving localhost can reach
+    // an unrelated service listening on the same port on IPv6 loopback.
     GrpcSpec {
         instance_name: String::new(),
         endpoints: vec![GrpcEndpoint {
@@ -284,7 +286,7 @@ async fn write_update_works_core(
 ) -> Result<(), Error> {
     let (server, port) = make_fake_bytestream_server().await;
     let spec = test_spec(
-        format!("http://localhost:{port}"),
+        format!("http://127.0.0.1:{port}"),
         use_legacy_resource_names,
     );
     let store = GrpcStore::new(&spec)?;
@@ -326,7 +328,7 @@ async fn write_update_works() -> Result<(), Error> {
 #[nativelink_test]
 async fn empty_cas_blob_skips_remote_bytestream() -> Result<(), Error> {
     let (server, port) = make_fake_bytestream_server().await;
-    let store = GrpcStore::new(&test_spec(format!("http://localhost:{port}"), false))?;
+    let store = GrpcStore::new(&test_spec(format!("http://127.0.0.1:{port}"), false))?;
     for digest in nativelink_store::cas_utils::ZERO_BYTE_DIGESTS {
         store.update_oneshot(digest, Bytes::new()).await?;
     }
@@ -353,7 +355,7 @@ async fn cas_update_restarts_from_zero_after_upstream_loses_the_upload() -> Resu
     // More than the two cached messages: replaying them cannot restart this upload.
     *server.fail_mid_upload.lock().await = 3;
     let (server, port) = spawn_bytestream_server(server).await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.retry.max_retries = 1;
     spec.rpc_timeout_s = 30;
     let store = GrpcStore::new(&spec)?;
@@ -407,7 +409,7 @@ async fn cas_update_preserves_permanent_errors_and_makes_transient_errors_retrya
         };
         *server.fail_mid_upload.lock().await = 1;
         let (_, port) = spawn_bytestream_server(server).await;
-        let mut spec = test_spec(format!("http://localhost:{port}"), false);
+        let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
         spec.retry.max_retries = 1;
         let store = GrpcStore::new(&spec)?;
         let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len())?;
@@ -430,7 +432,7 @@ async fn cas_update_preserves_permanent_errors_and_makes_transient_errors_retrya
 #[nativelink_test]
 async fn event_sink_uses_payload_size_and_rejects_cache_operations() -> Result<(), Error> {
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     spec.instance_name = "bep".into();
     let store = GrpcStore::new(&spec)?;
@@ -496,7 +498,7 @@ async fn event_sink_rejects_incomplete_acknowledgement() -> Result<(), Error> {
         ..FakeStreamServer::new_draining()
     };
     let (_, port) = spawn_bytestream_server(server).await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     let store = GrpcStore::new(&spec)?;
     let err = store
@@ -512,7 +514,7 @@ async fn event_sink_retry_preserves_upload_identity_after_lost_ack() -> Result<(
     let server = FakeStreamServer::new_draining();
     *server.fail_after_commit.lock().await = true;
     let (server, port) = spawn_bytestream_server(server).await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     spec.retry.max_retries = 1;
     let store = GrpcStore::new(&spec)?;
@@ -540,7 +542,7 @@ async fn event_sink_retry_resends_a_multi_chunk_event_from_zero() -> Result<(), 
     // to resume from, so resuming would start mid-event.
     *server.fail_mid_upload.lock().await = 3;
     let (server, port) = spawn_bytestream_server(server).await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     spec.retry.max_retries = 1;
     // Two attempts move about 12 MiB; the shared one-second limit is too
@@ -585,7 +587,7 @@ where
 {
     let (server, port) = make_fake_bytestream_server().await;
     let spec = edit_spec(test_spec(
-        format!("http://localhost:{port}"),
+        format!("http://127.0.0.1:{port}"),
         use_legacy_resource_names,
     ));
     let store = GrpcStore::new(&spec)?;
@@ -772,7 +774,7 @@ async fn make_fake_cas_server() -> (FakeCasServer, u16) {
 #[nativelink_test]
 async fn split_and_splice_blob_forward_to_backend() -> Result<(), Error> {
     let (server, port) = make_fake_cas_server().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.instance_name = "backend_instance".to_string();
     let store = GrpcStore::new(&spec)?;
 
@@ -828,7 +830,7 @@ async fn update_splits_buffers_larger_than_the_grpc_message_limit() -> Result<()
     const BLOB_LEN: usize = 9_869_079;
 
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     // This test moves and reassembles almost 10 MiB under instrumented builds.
     // The deadline is headroom for that, not part of the test: at 5 s the
     // ASan job timed out on a loaded runner with nothing else wrong.
@@ -914,7 +916,7 @@ async fn write_splits_frames_larger_than_the_grpc_message_limit() -> Result<(), 
     const BLOB_LEN: usize = 5_242_883;
 
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     // Streaming several MiB through ByteStream is slow under instrumented
     // builds. This deadline is headroom for that, not part of the test.
     spec.rpc_timeout_s = 30;
@@ -988,7 +990,7 @@ async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<()
     const ENTRIES: usize = 12; // ~10.5MiB total, comfortably over the limit.
 
     let (server, port) = make_fake_cas_server().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.instance_name = "backend_instance".to_string();
     // Over 10 MiB through the fake server; headroom for sanitizer builds.
     spec.rpc_timeout_s = 30;
@@ -1058,7 +1060,7 @@ async fn incomplete_upload_never_commits_remote_bytestream() -> Result<(), Error
     for compressed in [false, true] {
         for payload in [Bytes::new(), Bytes::from_static(b"short")] {
             let (server, port) = make_fake_bytestream_server_draining().await;
-            let mut spec = test_spec(format!("http://localhost:{port}"), false);
+            let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
             spec.experimental_remote_cache_compression = Some(compressed);
             let store = GrpcStore::new(&spec)?;
             let digest = DigestInfo::try_new(VALID_HASH, 64 * 1024)?;
@@ -1093,7 +1095,7 @@ async fn incomplete_upload_never_commits_remote_bytestream() -> Result<(), Error
 #[nativelink_test]
 async fn incomplete_oneshot_cas_upload_never_sends_remote_write() -> Result<(), Error> {
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let store = GrpcStore::new(&test_spec(format!("http://localhost:{port}"), false))?;
+    let store = GrpcStore::new(&test_spec(format!("http://127.0.0.1:{port}"), false))?;
     let digest = DigestInfo::try_new(VALID_HASH, 78)?;
     for payload in [Bytes::new(), Bytes::from_static(b"short")] {
         assert_eq!(

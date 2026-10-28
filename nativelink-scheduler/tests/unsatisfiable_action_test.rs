@@ -20,12 +20,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures::poll;
 use futures::task::Poll;
 use mock_instant::thread_local::MockClock;
-use nativelink_config::schedulers::{PropertyType, SimpleSpec};
+use nativelink_config::schedulers::{HistoricalResourceSpec, PropertyType, SimpleSpec};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::UpdateForWorker;
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
+use nativelink_scheduler::historical_resource_scheduler::HistoricalResourceScheduler;
 use nativelink_scheduler::match_outcome::{PropertyShape, explain_unsatisfiable};
+use nativelink_scheduler::resource_sketch::{Observation, SketchKey};
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::unsatisfiable_tracker::UnsatisfiableTracker;
 use nativelink_scheduler::worker::Worker;
@@ -1117,5 +1119,76 @@ async fn tracker_without_a_timeout_is_never_due() -> Result<(), Error> {
     tracker.end_pass(at(0), 1);
     assert!(!tracker.observe(shape(1), at(1_000_000), 1, at(0)).is_due);
     assert_eq!(tracker.next_deadline(at(1_000_000)), None);
+    Ok(())
+}
+
+/// A learned post-kill class can belong to a pool with no registered worker.
+/// The memory backend sees only connected workers: the timeout must cover
+/// first registration, not just creation of the provisioned pod.
+#[nativelink_test]
+async fn learned_large_class_waits_for_pool_when_timeout_allows_cold_start() -> Result<(), Error> {
+    for timeout in [TIMEOUT_S, 0, 300] {
+        let scheduler = make_scheduler(&make_spec(timeout));
+        let mut small_rx = add_worker(&scheduler, "small", cpu_worker_properties(), 0).await?;
+        small_rx.recv().await.unwrap();
+        let spec: HistoricalResourceSpec = serde_json::from_value(serde_json::json!({
+            "learn_from_workers": true, "memory_budget_bytes": 1_048_576,
+            "classes": [
+                {"name": "small", "cpu_count": 7000, "memory_kb": 31_457_280},
+                {"name": "large", "cpu_count": 15000, "memory_kb": 41_943_040}
+            ],
+            "scheduler": {"simple": {}}
+        }))
+        .unwrap();
+        let sketch = Arc::new(HistoricalResourceScheduler::sketch_from_spec(&spec));
+        let mut input = make_base_action_info(
+            UNIX_EPOCH + MockClock::time(),
+            DigestInfo::new([71; 32], 512),
+        );
+        Arc::make_mut(&mut input).platform_properties = cpu_action_properties();
+        sketch.observe(
+            SketchKey::for_attempt(None, None, &input.command_digest.to_string()),
+            &Observation {
+                peak_memory_kb: 32_000_000,
+                killed: true,
+                killed_at_kb: Some(31_457_280),
+                now_s: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                ..Observation::default()
+            },
+        );
+        let historical = HistoricalResourceScheduler::new(&spec, scheduler.clone(), sketch);
+        let action = historical.add_action(OperationId::default(), input).await?;
+        let sized = action.as_action_info().await?.0;
+        assert_eq!(sized.platform_properties["memory_kb"], "41943040");
+        assert_eq!(sized.platform_properties["cpu_count"], "15000");
+        scheduler.do_try_match_for_test().await?;
+        MockClock::advance(Duration::from_secs(90));
+        scheduler.do_try_match_for_test().await?;
+        if timeout == TIMEOUT_S {
+            assert_failed_as_unsatisfiable(&stage_of(action.as_ref()).await?);
+            continue;
+        }
+        assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Queued);
+        assert!(
+            small_rx.try_recv().is_err(),
+            "never lower the reservation to the small pool"
+        );
+        let mut large = cpu_worker_properties();
+        large.properties.insert(
+            "cpu_count".to_string(),
+            PlatformPropertyValue::Minimum(15_000),
+        );
+        large.properties.insert(
+            "memory_kb".to_string(),
+            PlatformPropertyValue::Minimum(41_943_040),
+        );
+        let mut large_rx = add_worker(&scheduler, "large", large, 0).await?;
+        large_rx.recv().await.unwrap();
+        scheduler.do_try_match_for_test().await?;
+        assert_eq!(stage_of(action.as_ref()).await?, ActionStage::Executing);
+    }
     Ok(())
 }
