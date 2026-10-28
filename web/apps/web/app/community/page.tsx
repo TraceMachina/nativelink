@@ -258,14 +258,12 @@ export default async function CommunityPage() {
                 Send us your handle, we'll send you swag.
               </h3>
               <p className="mx-auto mt-3 max-w-[480px] text-[15px] text-muted-foreground">
-                Merged a PR? Helped someone on Slack? Wrote a tutorial? Fill out the form and our
-                team will be in touch.
+                Merged a PR? Helped someone on Slack? Wrote a tutorial? Join the Slack and tell us
+                your handle there; our team will be in touch.
               </p>
               <div className="mt-6 flex justify-center">
                 <Button size="lg" asChild>
-                  <a href="https://forms.gle/LtaWSixEC6bYi5xF7" target="_blank" rel="noreferrer">
-                    Fill out the form
-                  </a>
+                  <a href="#slack">Join the Slack</a>
                 </Button>
               </div>
             </div>
