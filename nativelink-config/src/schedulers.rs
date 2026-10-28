@@ -804,7 +804,7 @@ pub struct HistoricalResourceSpec {
     /// scheduler process's own top-level `stores`, not in another CAS process.
     /// A missing name or failed startup probe logs a warning and disables
     /// persistence until restart; scheduling and in-memory learning continue.
-    /// Each replica prefers its own key (historical_resource_sketch/<replica_id>).
+    /// Each replica prefers its own key (`historical_resource_sketch/<replica_id>`).
     /// When that key is missing, it restores the newest compatible snapshot
     /// under the prefix if the store supports listing. Only one history is
     /// restored, never merged. Use a separate store prefix for each logical
