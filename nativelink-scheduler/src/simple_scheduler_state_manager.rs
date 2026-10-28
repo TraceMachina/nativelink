@@ -28,7 +28,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::AttemptEndReason;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
-    OperationId, WorkerId,
+    OperationId, STORE_UNREACHABLE_ERROR_TIP, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
@@ -688,12 +688,14 @@ where
                     // Through the error path, so the loss spends one of the
                     // action's `max_job_retries` and a result the store keeps
                     // refusing ends in a failure the client sees, not a loop.
+                    // This is a lost execution result, not a worker-reported
+                    // Unavailable store read that uses the store-loss budget.
                     match self
                         .inner_update_operation(
                             &operation_id,
                             Some(worker_id),
                             UpdateOperationType::UpdateWithError(make_err!(
-                                Code::Unavailable,
+                                Code::Internal,
                                 "The worker finished this operation but its result never reached the scheduler"
                             )),
                         )
@@ -1334,11 +1336,38 @@ where
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;
-                    if !due_to_backpressure {
+                    // Nor a store the worker could not reach once its retries
+                    // ran out: a CAS pod being replaced is not the action's
+                    // doing. The worker marks those; a bare Unavailable is
+                    // also what this scheduler raises for a lost result, which
+                    // must keep spending max_job_retries. A store that never
+                    // comes back is bounded like a lost worker.
+                    let store_unreachable =
+                        err.message_string().contains(STORE_UNREACHABLE_ERROR_TIP);
+                    if store_unreachable {
+                        awaited_action.store_losses += 1;
+                    } else if !due_to_backpressure {
                         awaited_action.attempts += 1;
                     }
 
-                    if awaited_action.attempts > self.max_job_retries {
+                    if store_unreachable
+                        && awaited_action.store_losses > self.max_worker_loss_retries
+                    {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(make_err!(
+                                Code::FailedPrecondition,
+                                "The worker running this action could not reach its store {} times, more than max_worker_loss_retries ({}); the store this action's inputs live on is down, not the action. {}",
+                                awaited_action.store_losses,
+                                self.max_worker_loss_retries,
+                                format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
+                            ).merge(err.clone())),
+                            ..ActionResult::default()
+                        })
+                    } else if awaited_action.attempts > self.max_job_retries {
                         // FailedPrecondition, not Internal: Bazel resubmits an
                         // Internal execute failure as a fresh operation with a
                         // fresh attempt counter, so the cap never reached the
