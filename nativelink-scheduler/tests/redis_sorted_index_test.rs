@@ -318,6 +318,25 @@ async fn a_stale_member_is_skipped_and_removed() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn a_lost_set_does_not_read_as_an_empty_queue() -> Result<(), Error> {
+    let Some(url) = test_url() else { return Ok(()) };
+    flush(&url).await;
+    create_index(&url).await?;
+    let db = open_db(&url, Some(sorted(true)), 0).await?;
+    add_four(&db).await?;
+    assert_eq!(queued(&db).await?, EXPECTED);
+
+    // Evicted, or lost with its server, while the hashes survived.
+    let _: () = redis::cmd("DEL")
+        .arg(QUEUED_SET)
+        .query_async(&mut raw(&url).await)
+        .await
+        .unwrap();
+    assert_eq!(queued(&db).await?, EXPECTED);
+    Ok(())
+}
+
+#[nativelink_test]
 async fn pages_lose_and_duplicate_nothing() -> Result<(), Error> {
     let Some(url) = test_url() else { return Ok(()) };
     flush(&url).await;

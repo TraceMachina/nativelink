@@ -24,11 +24,15 @@
 //! is exact only to 53 bits.
 //!
 //! Reads page the set by key range and never trust it blindly: a member
-//! whose hash no longer says the same thing is skipped and removed.
+//! whose hash no longer says the same thing is skipped and removed. The
+//! removal checks the hash again in the same script, since the action can
+//! be written back between the read and the removal: a re-queued action
+//! keeps its sort key and so comes back as the very same member.
 
 use core::marker::PhantomData;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -37,8 +41,8 @@ use nativelink_config::stores::RedisSortedIndexSpec;
 use nativelink_error::{Error, ResultExt};
 use nativelink_util::store_trait::{SchedulerIndexProvider, SchedulerStoreDecodeTo, SortedIndex};
 use parking_lot::Mutex;
-use redis::Value;
 use redis::aio::ConnectionLike;
+use redis::{Script, Value};
 use tracing::warn;
 
 use crate::redis_store::{DATA_FIELD_NAME, VERSION_FIELD_NAME};
@@ -53,6 +57,68 @@ const SET_NAMESPACE: &str = "nlsq:";
 /// than the reconcile interval, since a set that never reconciled is never
 /// read and the queue stays on `RediSearch` until it does.
 const RECONCILE_RETRY: Duration = Duration::from_secs(10);
+
+/// Removes the members of `KEYS[1]` among `ARGV[5..]` whose hash still does
+/// not match them, rechecking each hash inside the script. A read decides a
+/// member is stale from an `HMGET` taken before; by the time it removes it,
+/// the action may have been written back under the same member (a
+/// re-queued action keeps its sort key), and removing it then would hide a
+/// queued action until the next reconcile.
+///
+/// Like the write script, it reaches hashes it was not given as keys, which
+/// is why the sorted index is refused in Cluster mode.
+///   ARGV[1]: the data field, which a live hash always has.
+///   ARGV[2]: the indexed field naming the set.
+///   ARGV[3]: the sort field.
+///   ARGV[4]: the index value the set holds.
+///   ARGV[5..]: members, `<sort key>:<redis key>`.
+/// Returns the number removed.
+const REMOVE_STALE_SCRIPT: &str = r"
+local set = KEYS[1]
+local data_field = ARGV[1]
+local index_field = ARGV[2]
+local sort_field = ARGV[3]
+local value = ARGV[4]
+local removed = 0
+for i = 5, #ARGV do
+    local member = ARGV[i]
+    local sep = string.find(member, ':', 1, true)
+    local live = false
+    if sep then
+        local key = string.sub(member, sep + 1)
+        live = redis.call('HEXISTS', key, data_field) == 1
+            and redis.call('HGET', key, index_field) == value
+            and redis.call('HGET', key, sort_field) == string.sub(member, 1, sep - 1)
+    end
+    if not live then
+        removed = removed + redis.call('ZREM', set, member)
+    end
+end
+return removed
+";
+
+static REMOVE_STALE: LazyLock<Script> = LazyLock::new(|| Script::new(REMOVE_STALE_SCRIPT));
+
+/// Runs [`REMOVE_STALE_SCRIPT`] over `members` of `set`, which holds the
+/// keys whose `index_field` is `value`.
+pub(crate) async fn remove_stale<C: ConnectionLike + Send>(
+    connection: &mut C,
+    set: &str,
+    index_field: &str,
+    sort_field: &str,
+    value: &str,
+    members: &[String],
+) -> redis::RedisResult<u64> {
+    REMOVE_STALE
+        .key(set)
+        .arg(DATA_FIELD_NAME)
+        .arg(index_field)
+        .arg(sort_field)
+        .arg(value)
+        .arg(members)
+        .invoke_async(connection)
+        .await
+}
 
 /// How long the reconcile walk's cursor may sit idle between reads.
 const RECONCILE_CURSOR_IDLE_MS: u64 = 30_000;
@@ -355,6 +421,11 @@ where
         }
     }
 
+    /// Whether the pages read so far produced any row.
+    pub(crate) fn has_rows(&self) -> bool {
+        !self.rows.is_empty()
+    }
+
     /// Reads the next page into `rows`. Keyset paging: the next page starts
     /// strictly after the last member read, so nothing is held on the
     /// server between pages and nothing can expire there.
@@ -418,11 +489,15 @@ where
         }
         if !stale.is_empty() {
             // Best effort: a member left behind is skipped again next read.
-            let removed: Result<u64, _> = redis::cmd("ZREM")
-                .arg(&self.set)
-                .arg(&stale)
-                .query_async(&mut self.connection)
-                .await;
+            let removed = remove_stale(
+                &mut self.connection,
+                &self.set,
+                K::INDEX_NAME,
+                K::MAYBE_SORT_KEY.unwrap_or_default(),
+                &self.index_value,
+                &stale,
+            )
+            .await;
             if let Err(err) = removed {
                 warn!(set = %self.set, ?err, "Could not remove stale sorted-index members");
             }
@@ -609,5 +684,67 @@ mod tests {
             assert_eq!(row_field(&row, "sort_key").as_deref(), Some("00ff"));
             assert_eq!(row_field(&row, "state"), None);
         }
+    }
+
+    /// Against a real Redis when `NATIVELINK_REDIS_TEST_URL` is set; the
+    /// fake does not run Lua. A member that a read judged stale but whose
+    /// action has since been written back under it must stay.
+    #[nativelink_macro::nativelink_test]
+    async fn removing_stale_members_rechecks_each_hash() {
+        let Ok(url) = std::env::var("NATIVELINK_REDIS_TEST_URL") else {
+            return;
+        };
+        let client = redis::Client::open(url).unwrap();
+        let mut con = client.get_multiplexed_async_connection().await.unwrap();
+        let set = "nlsq:test_remove_stale";
+        let (requeued, moved, gone) = (
+            "00000000000000000000000000000001:aa_test_requeued",
+            "00000000000000000000000000000002:aa_test_moved",
+            "00000000000000000000000000000003:aa_test_gone",
+        );
+        let _: () = redis::pipe()
+            .del(&[set, "aa_test_requeued", "aa_test_moved", "aa_test_gone"])
+            .zadd(set, requeued, 0)
+            .zadd(set, moved, 0)
+            .zadd(set, gone, 0)
+            // Back in the queue under the same member since the read.
+            .hset_multiple(
+                "aa_test_requeued",
+                &[
+                    (DATA_FIELD_NAME, "x"),
+                    ("state", "queued"),
+                    ("sort_key", "00000000000000000000000000000001"),
+                ],
+            )
+            // Executing now.
+            .hset_multiple(
+                "aa_test_moved",
+                &[
+                    (DATA_FIELD_NAME, "x"),
+                    ("state", "executing"),
+                    ("sort_key", "00000000000000000000000000000002"),
+                ],
+            )
+            .query_async(&mut con)
+            .await
+            .unwrap();
+        let members = [requeued, moved, gone].map(String::from);
+        let removed = remove_stale(&mut con, set, "state", "sort_key", "queued", &members)
+            .await
+            .unwrap();
+        assert_eq!(removed, 2);
+        let left: Vec<String> = redis::cmd("ZRANGE")
+            .arg(set)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut con)
+            .await
+            .unwrap();
+        assert_eq!(left, vec![requeued.to_string()]);
+        let _: () = redis::cmd("DEL")
+            .arg(&[set, "aa_test_requeued", "aa_test_moved"])
+            .query_async(&mut con)
+            .await
+            .unwrap();
     }
 }

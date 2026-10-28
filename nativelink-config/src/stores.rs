@@ -2036,7 +2036,15 @@ pub struct RedisSpec {
     /// server-side cursor to expire. Present, writes maintain the sets;
     /// reads use them only once `read` is set.
     ///
-    /// Not supported in cluster mode.
+    /// Not supported in cluster mode, and the scripts reach keys under
+    /// `nlsq:` that they are not given as keys, so an ACL that limits key
+    /// patterns must allow those. Run Redis with `maxmemory-policy
+    /// noeviction`. An evicted set is caught while it is empty (an empty set
+    /// is always confirmed through `RediSearch`), but once new writes refill
+    /// it, the actions queued before are missing from it until the next
+    /// reconcile.
+    /// Do not turn it on while `migrate_temporary_indexes` is still
+    /// replacing a temporary index; reads refuse the set until it is done.
     ///
     /// Default: (unset, the queue is read through `RediSearch` only)
     #[serde(default)]

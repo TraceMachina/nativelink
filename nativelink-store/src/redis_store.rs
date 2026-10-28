@@ -2786,9 +2786,13 @@ where
             K::SORT_DESCENDING,
         );
         // The first page is read here, so a set that cannot be read sends
-        // this call to RediSearch instead of failing the caller's pass.
+        // this call to RediSearch instead of failing the caller's pass. An
+        // empty first page goes there too: an idle queue costs one cheap
+        // query, and a set that is gone (evicted, or lost with its server)
+        // cannot pass for an empty queue.
         match read.fetch_page().await {
-            Ok(()) => Some(read),
+            Ok(()) if read.has_rows() => Some(read),
+            Ok(()) => None,
             Err(err) => {
                 warn!(?err, "Sorted-index read failed; reading through RediSearch");
                 None
@@ -2861,6 +2865,8 @@ where
             .query_async::<u64>(&mut connection)
             .await
         {
+            // As for reads: an empty set is confirmed through RediSearch.
+            Ok(0) => None,
             Ok(count) => Some(count),
             Err(err) => {
                 warn!(%set, ?err, "Sorted-index count failed; counting through RediSearch");
