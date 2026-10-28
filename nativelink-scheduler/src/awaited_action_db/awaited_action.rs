@@ -106,6 +106,14 @@ pub struct AwaitedAction {
     #[serde(default)]
     #[metric(help = "How many times the AwaitedAction was escalated")]
     pub escalations: usize,
+
+    /// Requeues after the worker reported it could not reach its store
+    /// (`Unavailable`): a CAS pod being replaced, not the action's doing,
+    /// so not an attempt. Bounded like a lost worker. Absent in older
+    /// records.
+    #[serde(default)]
+    #[metric(help = "How many times the AwaitedAction's worker could not reach its store")]
+    pub store_losses: usize,
 }
 
 impl AwaitedAction {
@@ -149,6 +157,7 @@ impl AwaitedAction {
             attempts: 0,
             worker_losses: 0,
             escalations: 0,
+            store_losses: 0,
             last_worker_updated_timestamp: now,
             last_client_keepalive_timestamp: now,
             maybe_origin_metadata,

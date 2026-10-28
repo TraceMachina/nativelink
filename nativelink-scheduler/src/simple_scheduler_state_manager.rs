@@ -1334,11 +1334,37 @@ where
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;
-                    if !due_to_backpressure {
+                    // Nor a store the worker could not reach. A CAS pod being
+                    // replaced refuses every action staged against its shard
+                    // on the spot, and three such refusals within one second
+                    // used to cancel the build. It spends the lost worker's
+                    // budget instead, which still ends an action whose inputs
+                    // live on a store that never comes back.
+                    let store_unreachable = err.code == Code::Unavailable;
+                    if store_unreachable {
+                        awaited_action.store_losses += 1;
+                    } else if !due_to_backpressure {
                         awaited_action.attempts += 1;
                     }
 
-                    if awaited_action.attempts > self.max_job_retries {
+                    if store_unreachable
+                        && awaited_action.store_losses > self.max_worker_loss_retries
+                    {
+                        ActionStage::Completed(ActionResult {
+                            execution_metadata: ExecutionMetadata {
+                                worker: maybe_worker_id.map_or_else(String::default, ToString::to_string),
+                                ..ExecutionMetadata::default()
+                            },
+                            error: Some(make_err!(
+                                Code::FailedPrecondition,
+                                "The worker running this action could not reach its store {} times, more than max_worker_loss_retries ({}); the store this action's inputs live on is down, not the action. {}",
+                                awaited_action.store_losses,
+                                self.max_worker_loss_retries,
+                                format!("for operation_id: {operation_id}, maybe_worker_id: {maybe_worker_id:?}"),
+                            ).merge(err.clone())),
+                            ..ActionResult::default()
+                        })
+                    } else if awaited_action.attempts > self.max_job_retries {
                         // FailedPrecondition, not Internal: Bazel resubmits an
                         // Internal execute failure as a fresh operation with a
                         // fresh attempt counter, so the cap never reached the
