@@ -1,5 +1,6 @@
 const RESEND_API = "https://api.resend.com";
 const NOTIFY_ADDRESS = "hello@nativelink.com";
+const COMMUNITY_ADDRESS = "contact@tracemachina.com";
 
 export interface BookDownload {
   email: string;
@@ -59,5 +60,33 @@ export async function recordBookDownload({ email, time }: BookDownload): Promise
     }
   } catch (error) {
     console.error("Failed to send download notification:", error);
+  }
+}
+
+export interface SlackInviteRequest {
+  email: string;
+  time: string;
+}
+
+/**
+ * Ask the team to invite someone to the community Slack. Unlike the book
+ * download there is nothing to hand the visitor afterwards, so the email to
+ * the team is the whole action and a failure to send is a failure.
+ * Requires `RESEND_API_KEY`.
+ */
+export async function sendSlackInviteRequest({ email, time }: SlackInviteRequest): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+  // Plain text: the address is caller-controlled and must never be rendered as markup.
+  const res = await resend("/emails", apiKey, {
+    from: "NativeLink System <system@nativelink.io>",
+    to: [COMMUNITY_ADDRESS],
+    subject: `Slack invite request: ${email}`,
+    text: `${email} asked to join the NativeLink Slack community.\nTime: ${time}\n\nSend them an invite from the Slack admin console.\n`,
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to send Slack invite request: ${res.status} ${res.statusText}`);
   }
 }

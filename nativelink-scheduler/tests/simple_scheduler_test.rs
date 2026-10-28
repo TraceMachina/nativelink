@@ -49,8 +49,8 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId, SymlinkInfo,
-    WorkerId,
+    INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId,
+    STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -2596,6 +2596,240 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
             panic!("Expected Completed, got : {:?}", action_state.stage);
         }
         assert_eq!(received_state, expected_action_state);
+    }
+
+    Ok(())
+}
+
+/// The error a worker reports once its store retries ran out.
+fn store_unreachable() -> Error {
+    make_err!(Code::Unavailable, "tcp connect error").append(STORE_UNREACHABLE_ERROR_TIP)
+}
+
+/// A worker that cannot reach its store (a CAS pod being replaced) does not
+/// spend the action's `max_job_retries`; three such refusals within one
+/// second used to cancel the build. It spends its own budget, sized like a
+/// lost worker's, so an action whose store never comes back still ends, with
+/// a code the client does not retry.
+#[nativelink_test]
+async fn store_unavailable_errors_spend_the_worker_loss_budget_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            max_worker_loss_retries: 2,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(exec)) => {
+            OperationId::from(exec.operation_id.as_str())
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // Two store refusals: each requeues the action, neither is an attempt.
+    for _ in 0..2 {
+        drop(
+            scheduler
+                .update_action(
+                    &worker_id,
+                    &operation_id,
+                    UpdateOperationType::UpdateWithError(store_unreachable()),
+                )
+                .await,
+        );
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Queued
+        );
+        rx_from_worker =
+            setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => {}
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+    }
+
+    // The action's own first failure still has its whole retry budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
+            )
+            .await,
+    );
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Queued
+    );
+    rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // The third store refusal is over the worker-loss budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(store_unreachable()),
+            )
+            .await,
+    );
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    match &action_state.stage {
+        ActionStage::Completed(result) => {
+            let err = result.error.as_ref().expect("the cancel carries an error");
+            assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+            assert!(
+                err.to_string().contains(
+                    "could not reach its store 3 times, more than max_worker_loss_retries (2)"
+                ),
+                "{err}"
+            );
+        }
+        stage => panic!("Expected Completed, got : {stage:?}"),
+    }
+
+    Ok(())
+}
+
+/// An `Unavailable` the worker did not mark as a store it could not reach (a
+/// Buck2 capture helper that failed, a result the scheduler lost) is an
+/// attempt like any other error, not a store loss.
+#[nativelink_test]
+async fn unmarked_unavailable_error_spends_max_job_retries_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            max_worker_loss_retries: 5,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([98u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(exec)) => {
+            OperationId::from(exec.operation_id.as_str())
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(
+                    Code::Unavailable,
+                    "Buck2 file capture ended with exit status: 1"
+                )),
+            )
+            .await,
+    );
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Queued
+    );
+    rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(
+                    Code::Unavailable,
+                    "Buck2 file capture ended with exit status: 1"
+                )),
+            )
+            .await,
+    );
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    match &action_state.stage {
+        ActionStage::Completed(result) => {
+            let err = result.error.as_ref().expect("the cancel carries an error");
+            assert!(
+                err.to_string()
+                    .contains("attempted to execute too many times 2 > 1"),
+                "{err}"
+            );
+        }
+        stage => panic!("Expected Completed, got : {stage:?}"),
     }
 
     Ok(())
