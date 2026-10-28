@@ -104,10 +104,9 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
-    use tokio::sync::Semaphore;
-    use tokio::sync::oneshot;
     #[cfg(target_family = "unix")]
     use tokio::sync::watch;
+    use tokio::sync::{Semaphore, oneshot};
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
