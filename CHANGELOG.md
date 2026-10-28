@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
+- Count a store loss only when the worker marks it, so a lost result still spends max_job_retries ([#3081](https://github.com/TraceMachina/nativelink/issues/3081)) - ([9e47e0f](https://github.com/TraceMachina/nativelink/commit/9e47e0fe7896686a5f061000f1074abe667e0421))
 - retry the action read at start; a store the worker cannot reach does not spend the action's retries ([#3075](https://github.com/TraceMachina/nativelink/issues/3075)) - ([6fd7af8](https://github.com/TraceMachina/nativelink/commit/6fd7af8d6e0f4dc4a962648c185dd1ac15f29fc1))
 - Fix learned resource sizing regressions on main ([#3070](https://github.com/TraceMachina/nativelink/issues/3070)) - ([73df5dd](https://github.com/TraceMachina/nativelink/commit/73df5dd6b5c9bea499afc79149e29fe0986b620e))
 - Redis store: bound the temp key of every upload ([#3065](https://github.com/TraceMachina/nativelink/issues/3065)) - ([b57a164](https://github.com/TraceMachina/nativelink/commit/b57a1645db966d446779c08173b49336afb77642))
