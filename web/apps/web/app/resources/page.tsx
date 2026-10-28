@@ -21,7 +21,7 @@ const talkCard: PostCardData = {
   href: "https://www.youtube.com/watch?v=uokjTev8myk",
   external: true,
   tags: ["talk"],
-  meta: "BazelCon 2024 · 32 min video",
+  meta: "BazelCon 2024 · 5 min video",
   title: "Hermetic toolchain creation with LRE & Nix",
   excerpt:
     "Aaron Mondal walks through Local Remote Execution — running fully hermetic Bazel builds on your own laptop, no Docker required.",

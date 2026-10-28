@@ -322,6 +322,402 @@ pub struct PushConfig {
     pub read_only: bool,
 }
 
+/// Configuration for a Nix binary-cache (substituter) service. This serves
+/// the Nix HTTP binary-cache protocol (`nix-cache-info`, `*.narinfo` and
+/// `nar/*` endpoints) directly from `NativeLink` stores, so `nix` clients
+/// can list a `NativeLink` deployment in their `substituters`.
+///
+/// The service mounts an HTTP router at `path` (default `/nix/<instance>`)
+/// on the same listener as the gRPC services, so it coexists with a full
+/// remote-execution stack on one port. Its `cas_store` (NAR blobs, keyed
+/// by `DigestInfo(sha256(nar), nar_size)`) may reuse the same content-
+/// addressed store as the gRPC CAS; `path_info_store` and `alias_store`
+/// are string-keyed and must be separate stores (see their field docs).
+/// See `examples/basic_cas_with_nix.json5` for a combined deployment.
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct NixCacheConfig {
+    /// The store name referenced in the `stores` map in the main config.
+    /// This store holds the uncompressed NAR blobs and is digest-keyed:
+    /// each NAR is stored under `DigestInfo(sha256(nar), nar_size)`, so any
+    /// content-addressed CAS store works here. It is strongly recommended
+    /// to wrap this store in `verify` with both `verify_size` and
+    /// `verify_hash` enabled so corrupt or truncated NAR uploads are
+    /// rejected at write time instead of being served to clients.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub cas_store: StoreRefName,
+
+    /// The store name referenced in the `stores` map in the main config.
+    /// This store holds one record per Nix store path and is string-keyed
+    /// (NOT digest-keyed): records live under the 32-character `nixbase32`
+    /// store-path hash — the `<hash>` in `/nix/store/<hash>-<name>`.
+    ///
+    /// It is recommended to wrap this store in `completeness_checking`
+    /// with its `cas_store` referencing the NAR store above, so a
+    /// `narinfo` whose NAR has been evicted returns 404 instead of
+    /// advertising a NAR that can no longer be served.
+    ///
+    /// Never wrap this store in `existence_cache`: it drops overwrites
+    /// (later uploads of the same store path would be silently ignored)
+    /// and it rewrites string keys. Never wrap it in `verify` or
+    /// `size_partitioning` either — both reject string keys.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub path_info_store: StoreRefName,
+
+    /// The store name referenced in the `stores` map in the main config.
+    /// This is a small string-keyed store mapping client-chosen NAR URL
+    /// names (the `url` field a client wrote into an uploaded `narinfo`)
+    /// to the `(digest, size)` of the NAR blob in `cas_store`, so uploads
+    /// are served back under the exact URL the client chose.
+    ///
+    /// This store must NOT sit behind the `completeness_checking` wrapper
+    /// used for `path_info_store`: alias records are not `narinfo`
+    /// records and would fail its decoding.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub alias_store: StoreRefName,
+
+    /// URL prefix under which this instance is mounted on the listener.
+    /// If the path is "/nix/main" and your domain is "example.com", the
+    /// cache root is <http://example.com/nix/main> and clients probe
+    /// <http://example.com/nix/main/nix-cache-info>.
+    ///
+    /// Default: "/nix/<`instance_name`>"
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub path: Option<String>,
+
+    /// The Nix store directory this cache serves paths for, advertised to
+    /// clients via the `StoreDir` field of `nix-cache-info`. Clients
+    /// refuse to substitute from a cache whose store dir differs from
+    /// their own, so this must match the store dir of the Nix clients —
+    /// almost always "/nix/store".
+    ///
+    /// Default: "/nix/store"
+    #[serde(
+        default = "default_nix_store_dir",
+        deserialize_with = "convert_string_with_shellexpand"
+    )]
+    pub store_dir: String,
+
+    /// Priority advertised via the `Priority` field of `nix-cache-info`.
+    /// When a client has several substituters configured, lower values
+    /// sort earlier, so a lower number makes this cache preferred. The
+    /// official `cache.nixos.org` uses 40.
+    ///
+    /// Default: 40
+    #[serde(
+        default = "default_nix_priority",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub priority: u32,
+
+    /// Value of the `WantMassQuery` field of `nix-cache-info`. When true,
+    /// clients are told it is acceptable to batch-query this cache for
+    /// many store paths at once, for example when computing which parts
+    /// of a large closure can be substituted.
+    ///
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub want_mass_query: bool,
+
+    /// Paths to secret signing keys in the format produced by
+    /// `nix key generate-secret --key-name <name>` — a single line of
+    /// `<name>:<base64 ed25519 keypair>`. Every served `narinfo` gets one
+    /// `Sig` line per key, so listing multiple keys enables key rotation:
+    /// sign with both the old and the new key while clients migrate their
+    /// `trusted-public-keys`.
+    ///
+    /// Default: [] (`narinfo` responses are unsigned; clients then need
+    /// to trust the cache some other way, such as `require-sigs = false`)
+    #[serde(default, deserialize_with = "convert_vec_string_with_shellexpand")]
+    pub signing_key_files: Vec<String>,
+
+    /// Staging directory for decompressing compressed NAR uploads
+    /// (`.nar.xz`, `.nar.zst`, `.nar.bz2` and gzip-sniffed `.nar`).
+    /// Compressed uploads are stream-decompressed into a temporary file
+    /// here before being written to `cas_store`, so the filesystem behind
+    /// it needs enough space for the largest uncompressed NAR in flight.
+    /// The directory is created if missing and pruned of stale files at
+    /// startup.
+    ///
+    /// Default: `<system temp>/nativelink-nix-spool/<instance_name>`
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub spool_path: Option<String>,
+
+    /// When true, uploads are rejected: any `PUT` request returns
+    /// `405 Method Not Allowed`. Set this on public-facing listeners so
+    /// only internal listeners can populate the cache. A valid write
+    /// token (see `write_token_files`) does NOT override this.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub read_only: bool,
+
+    /// Paths to read-token files. Each file holds exactly ONE token
+    /// (surrounding whitespace is trimmed); listing multiple files
+    /// enables rotation — any listed token is accepted. Files are read
+    /// at startup and unreadable files or empty tokens fail fast.
+    ///
+    /// When non-empty, EVERY request on this instance (including
+    /// `nix-cache-info`) requires a valid read or write token, presented
+    /// either as `Authorization: Bearer <token>` or as HTTP Basic auth
+    /// where the token is the PASSWORD and the username is ignored —
+    /// the latter is how stock nix authenticates via `netrc`. Requests
+    /// without a valid token get `401` with a `Basic` challenge; nix
+    /// treats a `401` on a `narinfo` fetch as a clean miss, so a private
+    /// cache stays hidden from unauthenticated clients.
+    ///
+    /// SECURITY: the token is a Bearer/HTTP-Basic credential and travels
+    /// in the clear over a plaintext HTTP listener. Only enable this on a
+    /// listener that terminates TLS, or behind a TLS-terminating reverse
+    /// proxy; otherwise the token is trivially sniffable on the wire.
+    ///
+    /// Default: [] (anonymous reads)
+    #[serde(default, deserialize_with = "convert_vec_string_with_shellexpand")]
+    pub read_token_files: Vec<String>,
+
+    /// Paths to write-token files, with the same one-token-per-file
+    /// semantics as `read_token_files`. When non-empty, every `PUT`
+    /// additionally requires a valid write token — a read token alone is
+    /// not enough. `read_only` still wins over a valid write token:
+    /// uploads then get `405`.
+    ///
+    /// SECURITY: like `read_token_files`, this token is transmitted as a
+    /// Bearer/HTTP-Basic credential and is sent in cleartext over a
+    /// plaintext HTTP listener. Only expose it over TLS (or behind a
+    /// TLS-terminating proxy).
+    ///
+    /// Default: [] (writes gated only by `read_only`)
+    #[serde(default, deserialize_with = "convert_vec_string_with_shellexpand")]
+    pub write_token_files: Vec<String>,
+
+    /// Compression this cache serves NARs with: unset or `"none"` serves
+    /// uncompressed NARs; `"zstd"` transcodes each NAR once when its
+    /// `narinfo` is uploaded — the uncompressed NAR is streamed out of
+    /// `cas_store` through a zstd encoder and the compressed result is
+    /// stored back into `cas_store` under its own digest, so served
+    /// `narinfo` documents advertise a `.nar.zst` URL with real
+    /// `FileHash`/`FileSize` lines. If the compressed blob is later
+    /// evicted, serving falls back to the uncompressed NAR. Stored
+    /// signatures stay valid either way: the signed fingerprint covers
+    /// only the uncompressed NAR, never the served URL or compression.
+    ///
+    /// Default: unset (serve uncompressed NARs)
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub serve_compression: Option<String>,
+
+    /// The zstd compression level used when `serve_compression` is
+    /// `"zstd"`; ignored otherwise. Must be in zstd's valid range,
+    /// `1..=22`, when set — `nativelink --check` rejects an out-of-range
+    /// value rather than letting the encoder silently clamp it at serve
+    /// time.
+    ///
+    /// No serde default exists: when unset, the service applies zstd
+    /// level 3 at serve time.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub compression_level: Option<i32>,
+
+    /// Round-trip compression fidelity. When true (the default), a
+    /// compressed NAR upload (`.nar.xz`/`.nar.zst`/`.nar.bz2`, the codec
+    /// nix's `nix copy` picks — `xz` by default) has its ORIGINAL bytes
+    /// stored as a CAS blob and served verbatim under the client's URL,
+    /// and the served `narinfo` advertises the original
+    /// compression/`FileHash`/`FileSize`. A client that pushed a path can
+    /// then pull it straight back within the narinfo TTL (the URL it
+    /// cached still resolves), matching attic/harmonia/nix-serve. When
+    /// false, compressed uploads are decompressed to the canonical
+    /// uncompressed NAR and served as `Compression: none`, saving roughly
+    /// the compressed blob's storage (~0.3x of the NAR) at the cost of
+    /// that warm-pull round trip.
+    ///
+    /// Interaction with `serve_compression = "zstd"`: a preserved original
+    /// takes precedence over transcoding, so a compressed push is served
+    /// back in the CLIENT's original codec (no re-encode, saving CPU) and
+    /// only `Compression: none` pushes are transcoded to zstd. If a
+    /// preserved compressed blob is later evicted, serving degrades
+    /// gracefully to the uncompressed NAR (`Compression: none`); the
+    /// signed fingerprint covers only the uncompressed NAR, so stored
+    /// signatures stay valid across every rendering.
+    ///
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub preserve_upload_compression: bool,
+
+    /// Maximum size in bytes of a single uncompressed NAR the cache will
+    /// ingest. Compressed uploads (`.nar.xz`/`.nar.zst`/`.nar.bz2` and
+    /// gzip-sniffed `.nar`) are stream-decompressed into the spool
+    /// directory; without a cap a small crafted upload could decompress to
+    /// arbitrarily many bytes and fill the spool disk (a decompression
+    /// bomb). A declared size (the `Content-Length` of a direct upload, or
+    /// the size embedded in a canonical NAR name) over this limit is
+    /// rejected with `413` before the body is read, and a decompressed
+    /// stream that grows past it is aborted with `413` mid-flight (the
+    /// partial spool file is deleted).
+    ///
+    /// The default is deliberately generous so legitimate large closures
+    /// still push; size it to the spool filesystem's capacity.
+    ///
+    /// Default: 34359738368 (32 GiB)
+    #[serde(
+        default = "default_max_nar_size_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub max_nar_size_bytes: u64,
+
+    /// Maximum number of NAR GET response bodies streamed concurrently from
+    /// this instance. Each in-flight stream holds a producer task plus a
+    /// small buffer, so without a ceiling many slow readers grow aggregate
+    /// memory without bound. Requests over the limit get a retryable `503`
+    /// rather than committing a `200` and buffering.
+    ///
+    /// The default is high enough that normal parallel substitution is
+    /// never throttled.
+    ///
+    /// Default: 256
+    #[serde(
+        default = "default_max_concurrent_nar_streams",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub max_concurrent_nar_streams: usize,
+
+    /// Maximum number of zstd NAR transcodes running concurrently when
+    /// `serve_compression` is `"zstd"`. A transcode streams a whole NAR
+    /// through a zstd encoder and spools the output, so unbounded fan-out
+    /// of narinfo PUTs would balloon CPU and temp disk. Concurrent PUTs for
+    /// the SAME NAR are additionally coalesced into a single transcode.
+    ///
+    /// Default: 8
+    #[serde(
+        default = "default_max_concurrent_transcodes",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub max_concurrent_transcodes: usize,
+
+    /// Idle timeout, in seconds, on a NAR upload body: if no new bytes
+    /// arrive within this window the upload is aborted with `408` and its
+    /// spool file and file descriptor are released, so a stalled or
+    /// slowloris-style client cannot pin resources indefinitely. The timer
+    /// resets on every received chunk, so a legitimately slow but steady
+    /// upload over a slow link is never killed.
+    ///
+    /// Default: 60
+    #[serde(
+        default = "default_nar_upload_idle_timeout_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub nar_upload_idle_timeout_s: u64,
+
+    /// Upstream Nix binary caches to read through on a local miss. When
+    /// non-empty, a `narinfo` GET that misses the local `path_info_store`
+    /// is retried against each listed cache in order; the first cache that
+    /// has the path (and whose `narinfo` verifies against one of its
+    /// `trusted_public_keys`) is fetched — `narinfo` AND NAR — verified,
+    /// and ingested into this instance's stores, so the path is served
+    /// locally from then on ("durable on first fetch"). The re-served
+    /// `narinfo` is signed with this instance's own `signing_key_files`
+    /// in addition to the preserved upstream signatures.
+    ///
+    /// The NAR is fetched eagerly during the `narinfo` GET so the record
+    /// satisfies a `completeness_checking` `path_info_store` immediately;
+    /// see the store-composition notes in `examples/nix_cache.json5`.
+    /// Read-through populates the stores regardless of `read_only` (which
+    /// only gates client PUTs).
+    ///
+    /// Default: [] (read-through disabled; a local miss is a plain 404)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upstream_caches: Vec<NixUpstreamCacheConfig>,
+
+    /// How long, in seconds, to remember that a path was NOT found in any
+    /// upstream, so a repeated request (Nix issues many `narinfo` probes
+    /// while computing a closure) does not re-query every upstream each
+    /// time. Only misses are cached; a successful fetch is durable in the
+    /// stores. Set to 0 to disable negative caching.
+    ///
+    /// Ignored when `upstream_caches` is empty.
+    ///
+    /// Default: 60
+    #[serde(
+        default = "default_upstream_negative_ttl_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub upstream_negative_ttl_s: u64,
+
+    /// Timeout, in seconds, for a single upstream `narinfo` probe. Kept
+    /// short because the probe is a small metadata request; the (possibly
+    /// large) NAR download that follows a hit is not bound by this timeout
+    /// but by `max_nar_size_bytes` during ingest.
+    ///
+    /// Ignored when `upstream_caches` is empty.
+    ///
+    /// Default: 30
+    #[serde(
+        default = "default_upstream_timeout_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub upstream_timeout_s: u64,
+}
+
+/// One upstream Nix binary cache for the read-through feature (see
+/// [`NixCacheConfig::upstream_caches`]).
+#[derive(Deserialize, Serialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct NixUpstreamCacheConfig {
+    /// Base URL of the upstream binary cache, without a trailing slash,
+    /// e.g. `"https://cache.nixos.org"` or
+    /// `"https://nix-community.cachix.org"`. The `narinfo` is fetched from
+    /// `<url>/<hash>.narinfo` and the NAR from `<url>/<narinfo URL>`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub url: String,
+
+    /// Nix public keys (`<name>:<base64>`, the same form listed in a
+    /// client's `trusted-public-keys`, e.g.
+    /// `cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=`)
+    /// that a fetched `narinfo` must be signed by before this cache will
+    /// store and serve it. At least one listed key must verify the
+    /// `narinfo` fingerprint; an unsigned or unverifiable `narinfo` is
+    /// refused and the path is treated as an upstream miss, so
+    /// read-through can never be a cache-poisoning vector. Must be
+    /// non-empty.
+    #[serde(default, deserialize_with = "convert_vec_string_with_shellexpand")]
+    pub trusted_public_keys: Vec<String>,
+}
+
+fn default_nix_store_dir() -> String {
+    "/nix/store".to_string()
+}
+
+const fn default_nix_priority() -> u32 {
+    40
+}
+
+const fn default_max_nar_size_bytes() -> u64 {
+    32 * 1024 * 1024 * 1024 // 32 GiB
+}
+
+const fn default_max_concurrent_nar_streams() -> usize {
+    256
+}
+
+const fn default_max_concurrent_transcodes() -> usize {
+    8
+}
+
+const fn default_nar_upload_idle_timeout_s() -> u64 {
+    60
+}
+
+const fn default_upstream_negative_ttl_s() -> u64 {
+    60
+}
+
+const fn default_upstream_timeout_s() -> u64 {
+    30
+}
+
 // From https://github.com/serde-rs/serde/issues/818#issuecomment-287438544
 fn is_default<T: Default + PartialEq>(t: &T) -> bool {
     *t == Default::default()
@@ -567,6 +963,16 @@ pub struct ServicesConfig {
         deserialize_with = "super::backcompat::opt_vec_with_instance_name"
     )]
     pub push: Option<Vec<WithInstanceName<PushConfig>>>,
+
+    /// The Nix binary-cache (substituter) services. Each entry mounts a
+    /// Nix HTTP binary-cache endpoint on this listener that serves
+    /// `nix-cache-info`, `narinfo` records and NAR blobs from the
+    /// referenced stores.
+    #[serde(
+        default,
+        deserialize_with = "super::backcompat::opt_vec_with_instance_name"
+    )]
+    pub nix_cache: Option<Vec<WithInstanceName<NixCacheConfig>>>,
 
     /// This is the service used for workers to connect and communicate
     /// through.
@@ -1931,6 +2337,7 @@ impl CasConfig {
                 bytestream,
                 fetch,
                 push,
+                nix_cache,
                 worker_api,
                 experimental_bep,
                 admin,
@@ -1943,6 +2350,7 @@ impl CasConfig {
                 || bytestream.is_some()
                 || fetch.is_some()
                 || push.is_some()
+                || nix_cache.is_some()
                 || worker_api.is_some()
                 || experimental_bep.is_some()
                 || admin.is_some()
@@ -2330,5 +2738,160 @@ mod tests {
         assert!(logs_contain("store=\"nested-upstreams\""));
         assert!(logs_contain("instance_name=\"opt-out\""));
         assert!(logs_contain(CasConfig::ZSTD_COMPRESSION_DOCS_URL));
+    }
+}
+
+#[cfg(test)]
+mod nix_cache_tests {
+    use super::*;
+
+    fn parse_services(json5: &str) -> ServicesConfig {
+        serde_json5::from_str(json5).expect("valid ServicesConfig json5")
+    }
+
+    #[test]
+    fn nix_cache_minimal_config_applies_defaults() {
+        let services = parse_services(
+            r#"{
+                nix_cache: [{
+                    instance_name: "main",
+                    cas_store: "NIX_NAR_STORE",
+                    path_info_store: "NIX_PATH_INFO_STORE",
+                    alias_store: "NIX_ALIAS_STORE",
+                }],
+            }"#,
+        );
+        let nix_cache = services.nix_cache.expect("nix_cache service is configured");
+        assert_eq!(nix_cache.len(), 1);
+        let instance = &nix_cache[0];
+        assert_eq!(instance.instance_name, "main");
+        assert_eq!(instance.cas_store, "NIX_NAR_STORE");
+        assert_eq!(instance.path_info_store, "NIX_PATH_INFO_STORE");
+        assert_eq!(instance.alias_store, "NIX_ALIAS_STORE");
+        assert_eq!(instance.path, None);
+        assert_eq!(instance.store_dir, "/nix/store");
+        assert_eq!(instance.priority, 40);
+        assert!(instance.want_mass_query);
+        assert!(instance.signing_key_files.is_empty());
+        assert_eq!(instance.spool_path, None);
+        assert!(!instance.read_only);
+        assert!(instance.read_token_files.is_empty());
+        assert!(instance.write_token_files.is_empty());
+        assert_eq!(instance.serve_compression, None);
+        assert_eq!(instance.compression_level, None);
+        assert!(instance.preserve_upload_compression);
+        assert_eq!(instance.max_nar_size_bytes, 32 * 1024 * 1024 * 1024);
+        assert_eq!(instance.max_concurrent_nar_streams, 256);
+        assert_eq!(instance.max_concurrent_transcodes, 8);
+        assert_eq!(instance.nar_upload_idle_timeout_s, 60);
+        assert!(instance.upstream_caches.is_empty());
+        assert_eq!(instance.upstream_negative_ttl_s, 60);
+        assert_eq!(instance.upstream_timeout_s, 30);
+    }
+
+    #[test]
+    fn nix_cache_full_config_round_trips() {
+        let services = parse_services(
+            r#"{
+                nix_cache: [{
+                    instance_name: "public",
+                    cas_store: "NIX_NAR_STORE",
+                    path_info_store: "NIX_PATH_INFO_STORE",
+                    alias_store: "NIX_ALIAS_STORE",
+                    path: "/nix/public",
+                    store_dir: "/nix/store",
+                    priority: 30,
+                    want_mass_query: false,
+                    signing_key_files: ["/etc/nix/keys/nix-cache.example.org-1.key"],
+                    read_only: true,
+                    read_token_files: ["/etc/nativelink/nix-read.token"],
+                    write_token_files: ["/etc/nativelink/nix-write.token"],
+                    serve_compression: "zstd",
+                    compression_level: 19,
+                    max_nar_size_bytes: "8GB",
+                    max_concurrent_nar_streams: 512,
+                    max_concurrent_transcodes: 4,
+                    nar_upload_idle_timeout_s: 120,
+                    upstream_caches: [{
+                        url: "https://cache.nixos.org",
+                        trusted_public_keys: [
+                            "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+                        ],
+                    }],
+                    upstream_negative_ttl_s: 10,
+                    upstream_timeout_s: 5,
+                }],
+            }"#,
+        );
+        let serialized =
+            serde_json::to_string(&services).expect("ServicesConfig serializes to JSON");
+        let reparsed: ServicesConfig =
+            serde_json5::from_str(&serialized).expect("serialized ServicesConfig reparses");
+        let instance = &reparsed.nix_cache.expect("nix_cache survives round trip")[0];
+        assert_eq!(instance.instance_name, "public");
+        assert_eq!(instance.path.as_deref(), Some("/nix/public"));
+        assert_eq!(instance.priority, 30);
+        assert!(!instance.want_mass_query);
+        assert_eq!(
+            instance.signing_key_files,
+            vec!["/etc/nix/keys/nix-cache.example.org-1.key".to_string()]
+        );
+        assert!(instance.read_only);
+        assert_eq!(instance.serve_compression.as_deref(), Some("zstd"));
+        assert_eq!(instance.compression_level, Some(19));
+        assert_eq!(instance.max_nar_size_bytes, 8_000_000_000);
+        assert_eq!(instance.max_concurrent_nar_streams, 512);
+        assert_eq!(instance.max_concurrent_transcodes, 4);
+        assert_eq!(instance.nar_upload_idle_timeout_s, 120);
+        assert_eq!(instance.upstream_caches.len(), 1);
+        assert_eq!(instance.upstream_caches[0].url, "https://cache.nixos.org");
+        assert_eq!(instance.upstream_caches[0].trusted_public_keys.len(), 1);
+        assert_eq!(instance.upstream_negative_ttl_s, 10);
+        assert_eq!(instance.upstream_timeout_s, 5);
+    }
+
+    #[test]
+    fn nix_cache_rejects_unknown_fields() {
+        let result: Result<NixCacheConfig, _> = serde_json5::from_str(
+            r#"{
+                cas_store: "NIX_NAR_STORE",
+                path_info_store: "NIX_PATH_INFO_STORE",
+                alias_store: "NIX_ALIAS_STORE",
+                narinfo_compression: "xz",
+            }"#,
+        );
+        assert!(result.is_err(), "unknown fields must be rejected");
+    }
+
+    #[test]
+    fn nix_cache_missing_store_ref_is_rejected() {
+        let result: Result<ServicesConfig, _> = serde_json5::from_str(
+            r#"{
+                nix_cache: [{
+                    cas_store: "NIX_NAR_STORE",
+                    path_info_store: "NIX_PATH_INFO_STORE",
+                }],
+            }"#,
+        );
+        assert!(result.is_err(), "alias_store is required");
+    }
+
+    #[test]
+    fn nix_cache_accepts_legacy_map_format() {
+        let services = parse_services(
+            r#"{
+                nix_cache: {
+                    "main": {
+                        cas_store: "NIX_NAR_STORE",
+                        path_info_store: "NIX_PATH_INFO_STORE",
+                        alias_store: "NIX_ALIAS_STORE",
+                    },
+                },
+            }"#,
+        );
+        let nix_cache = services.nix_cache.expect("nix_cache service is configured");
+        assert_eq!(nix_cache.len(), 1);
+        assert_eq!(nix_cache[0].instance_name, "main");
+        assert_eq!(nix_cache[0].cas_store, "NIX_NAR_STORE");
     }
 }

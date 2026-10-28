@@ -599,3 +599,32 @@ Both paths must be on the same tmpfs mount:
 </details>
 
 <img referrerpolicy="no-referrer-when-downgrade" src="https://nativelink.matomo.cloud/matomo.php?idsite=2&amp;rec=1&amp;action_name=nativelink-config%20examples%20Readme.md" style="border:0" alt="" />
+
+### Nix Binary Cache Service
+
+The optional `nix_cache` service serves the Nix HTTP binary-cache
+(substituter) protocol so `nix` clients can push and pull store paths.
+It mounts an HTTP router at `path` (default `/nix/<instance_name>`) on the
+**same** listener as the gRPC services, so it coexists with a full
+remote-execution/cache deployment on one port. Its `cas_store` (NAR blobs,
+digest-keyed by `sha256`) may reuse the same store as the gRPC CAS; its
+`path_info_store` and `alias_store` are string-keyed and must be separate
+stores (see the field docs on `NixCacheConfig`).
+
+```json5
+"nix_cache": [{
+  "instance_name": "main",
+  "cas_store": "NIX_NAR_STORE",         // may reuse the gRPC CAS store
+  "path_info_store": "NIX_PATH_INFO_STORE",
+  "alias_store": "NIX_ALIAS_STORE",
+  "store_dir": "/nix/store",
+  "priority": 40,
+  "signing_key_files": ["/etc/nativelink/nix-cache.key"], // [] = unsigned
+}]
+```
+
+For a complete deployment that adds a Nix cache to the full RBE stack on one
+listener, see [basic_cas_with_nix.json5](basic_cas_with_nix.json5); for a
+standalone cache and a read-through cache in front of `cache.nixos.org`, see
+[nix_cache.json5](nix_cache.json5) and
+[nix_cache_readthrough.json5](nix_cache_readthrough.json5).

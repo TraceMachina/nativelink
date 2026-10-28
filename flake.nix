@@ -255,6 +255,19 @@
 
         nativelink-is-executable-test = pkgs.callPackage ./tools/nativelink-is-executable-test.nix {inherit nativelink;};
 
+        # The Nix cache client and watch-store daemon (`nl-nix`,
+        # `nl-watch-store`) from the `nativelink-nix-client` workspace crate.
+        # Built for the host, not musl-cross: it links sqlite and is run on
+        # build machines, not shipped in the server image.
+        nativelink-nix-client = (craneLibFor pkgs).buildPackage {
+          inherit src;
+          pname = "nativelink-nix-client";
+          version = "1.8.1";
+          strictDeps = true;
+          doCheck = false;
+          cargoExtraArgs = "--locked -p nativelink-nix-client";
+        };
+
         generate-toolchains = pkgs.callPackage ./tools/generate-toolchains.nix {};
 
         build-chromium-tests =
@@ -461,6 +474,14 @@
             type = "app";
             program = "${nativelink}/bin/nativelink";
           };
+          nl-nix = {
+            type = "app";
+            program = "${nativelink-nix-client}/bin/nl-nix";
+          };
+          nl-watch-store = {
+            type = "app";
+            program = "${nativelink-nix-client}/bin/nl-watch-store";
+          };
         };
         packages =
           rec {
@@ -472,6 +493,7 @@
               nativelink-image-for-aarch64
               nativelink-image-for-x64
               nativelink-is-executable-test
+              nativelink-nix-client
               nativelink-worker-init
               nativelink-init-for-x64
               nativelink-init-for-aarch64
@@ -519,6 +541,14 @@
             };
             generate-bazel-rc = pkgs.callPackage tools/generate-bazel-rc/build.nix {craneLib = craneLibFor pkgs;};
             generate-stores-config = pkgs.callPackage nativelink-config/generate-stores-config/build.nix {craneLib = craneLibFor pkgs;};
+          }
+          // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+            # End-to-end round trip: a real `nix` client against a running
+            # nativelink `nix_cache` service in a NixOS VM, including
+            # read-through from a second instance. Needs KVM, so Linux only.
+            nix-substituter-e2e = pkgs.callPackage ./tools/checks/nix-substituter-vm-test.nix {
+              inherit nativelink;
+            };
           }
           // (
             # It's not possible to crosscompile to darwin, not even between
