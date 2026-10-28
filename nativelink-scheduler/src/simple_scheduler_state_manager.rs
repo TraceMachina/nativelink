@@ -28,7 +28,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::AttemptEndReason;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
-    OperationId, WorkerId,
+    OperationId, STORE_UNREACHABLE_ERROR_TIP, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
@@ -1336,13 +1336,14 @@ where
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
                     let due_to_backpressure = err.code == Code::ResourceExhausted;
-                    // Nor a store the worker could not reach. A CAS pod being
-                    // replaced refuses every action staged against its shard
-                    // on the spot, and three such refusals within one second
-                    // used to cancel the build. It spends the lost worker's
-                    // budget instead, which still ends an action whose inputs
-                    // live on a store that never comes back.
-                    let store_unreachable = err.code == Code::Unavailable;
+                    // Nor a store the worker could not reach once its retries
+                    // ran out: a CAS pod being replaced is not the action's
+                    // doing. The worker marks those; a bare Unavailable is
+                    // also what this scheduler raises for a lost result, which
+                    // must keep spending max_job_retries. A store that never
+                    // comes back is bounded like a lost worker.
+                    let store_unreachable =
+                        err.message_string().contains(STORE_UNREACHABLE_ERROR_TIP);
                     if store_unreachable {
                         awaited_action.store_losses += 1;
                     } else if !due_to_backpressure {

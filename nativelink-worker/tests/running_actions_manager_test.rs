@@ -77,6 +77,7 @@ mod tests {
     use nativelink_util::action_messages::SymlinkInfo;
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+        STORE_UNREACHABLE_ERROR_TIP,
     };
     #[cfg(target_family = "unix")]
     use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -5229,6 +5230,10 @@ exit 0
             "{err}"
         );
         assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "the scheduler is told the store was down: {err}"
+        );
+        assert!(
             started.elapsed() < Duration::from_secs(5),
             "{:?}",
             started.elapsed()
@@ -5512,6 +5517,10 @@ exit 0
         assert_eq!(store.reads(), 3, "{err:?}");
         assert_ne!(err.code, Code::DeadlineExceeded, "{err:?}");
         assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "{err:?}"
+        );
         assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
         action.cleanup().await?;
         assert!(
