@@ -461,3 +461,42 @@ async fn a_read_given_the_retired_original_does_not_recreate_it() -> Result<(), 
     assert_eq!(action_keys(&url).await, keys);
     Ok(())
 }
+
+#[nativelink_test]
+async fn a_full_redis_waits_and_keeps_every_action() -> Result<(), Error> {
+    let Some(url) = test_url() else { return Ok(()) };
+    let (original, keys) = inherited_queue(&url).await?;
+    let db = open_db(&url, true).await?;
+
+    // At maxmemory under noeviction, as a Redis whose temporary indexes
+    // have filled it is: writes, FT.CREATE among them, are refused.
+    let info: String = cmd(&url, &["INFO", "memory"]).await.unwrap();
+    let used: u64 = info
+        .lines()
+        .find_map(|line| line.strip_prefix("used_memory:"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let _: () = cmd(&url, &["CONFIG", "SET", "maxmemory-policy", "noeviction"])
+        .await
+        .unwrap();
+    let _: () = cmd(
+        &url,
+        &["CONFIG", "SET", "maxmemory", &(used / 2).to_string()],
+    )
+    .await
+    .unwrap();
+    let full = queued(&db).await;
+    let state = state_indexes(&url).await;
+    let _: () = cmd(&url, &["CONFIG", "SET", "maxmemory", "0"])
+        .await
+        .unwrap();
+
+    // Reads still see the whole queue, nothing was built or dropped.
+    assert_eq!(full?, EXPECTED);
+    assert_eq!(state, vec![original.clone()]);
+    assert!(ttl(&url, &original).await.is_some());
+    assert_eq!(action_keys(&url).await, keys);
+    Ok(())
+}
