@@ -69,7 +69,8 @@ use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
 use crate::redis_utils::index_migration::{
-    self, IndexKind, Replacement, Step, drop_keeping_documents, index_kind, migrated_name,
+    self, IndexKind, Replacement, Step, drop_keeping_documents, index_kind, is_out_of_memory,
+    migrated_name,
 };
 use crate::redis_utils::sorted_index::{self, SortedIndexState, SortedRead};
 use crate::redis_utils::{
@@ -2734,6 +2735,17 @@ where
                         info!(%original, %replacement, "Building a persistent index to replace a temporary one");
                     }
                     Err(err) if is_index_already_exists(&err) => {}
+                    Err(err) if is_out_of_memory(&err) => {
+                        error!(
+                            %original,
+                            %replacement,
+                            "Redis is at maxmemory, so the persistent index that replaces the \
+                             temporary one cannot be built; reads stay on the temporary index. \
+                             Raise maxmemory, or restart Redis: a restart rebuilds the temporary \
+                             index without its dead entries, which frees most of the memory"
+                        );
+                        return Ok((original.to_string(), INDEX_MIGRATION_RECHECK));
+                    }
                     Err(err) => return Err(err.into()),
                 }
                 Ok((original.to_string(), INDEX_MIGRATION_POLL))

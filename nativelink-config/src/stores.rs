@@ -2027,6 +2027,13 @@ pub struct RedisSpec {
     /// retired and the ones with it retire it again. No key is lost, but each
     /// round costs a backfill.
     ///
+    /// Building the replacement needs free memory below `maxmemory`, about
+    /// what a clean index of the live keys takes. A Redis already full of
+    /// dead entries refuses it; the migration then waits, logs an error and
+    /// leaves everything in place. Restarting Redis frees that memory: it
+    /// rebuilds every index from the keys, without the dead entries, though
+    /// a temporary index stays temporary and fills up again.
+    ///
     /// Default: false
     #[serde(default)]
     pub migrate_temporary_indexes: bool,

@@ -104,6 +104,13 @@ fn error_text(err: &RedisError) -> String {
     text.to_ascii_lowercase()
 }
 
+/// Redis refused a write because it is at `maxmemory` under `noeviction`.
+/// Building the replacement is a write, so a full Redis cannot start the
+/// migration; dropping an index is still allowed there.
+pub(crate) fn is_out_of_memory(err: &RedisError) -> bool {
+    error_text(err).contains("oom command not allowed")
+}
+
 fn classify_error(text: &str) -> Option<IndexKind> {
     if text.contains("not temporary") {
         Some(IndexKind::Persistent)
