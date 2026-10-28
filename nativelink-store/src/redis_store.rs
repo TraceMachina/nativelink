@@ -2502,7 +2502,7 @@ fn index_definition<K: SchedulerIndexProvider>() -> (FtCreateOptions, Vec<Search
 /// failed check is trusted as long, so a server that refuses the check
 /// (some managed Redis refuse `FT.DEBUG`) is asked once a minute, not on
 /// every read.
-const INDEX_MIGRATION_RECHECK: Duration = Duration::from_secs(60);
+const INDEX_MIGRATION_RECHECK: Duration = Duration::from_mins(1);
 
 /// How long an answer that holds only while a replacement backfills is
 /// trusted, so concurrent reads do not each repeat the check.
@@ -2512,7 +2512,7 @@ const INDEX_MIGRATION_POLL: Duration = Duration::from_secs(1);
 /// there is no original left to read meanwhile. Reads normally stay on the
 /// original while the replacement fills, so this is only hit if the
 /// original was removed some other way.
-const MIGRATION_READY_TIMEOUT: Duration = Duration::from_secs(600);
+const MIGRATION_READY_TIMEOUT: Duration = Duration::from_mins(10);
 
 impl<C, M> RedisStore<C, M>
 where
