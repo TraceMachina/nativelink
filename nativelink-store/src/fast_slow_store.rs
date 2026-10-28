@@ -408,7 +408,7 @@ impl FastSlowStore {
                 Err(slow_err) if matches!(slow_err.code, Code::NotFound | Code::DataLoss) => {
                     Err(name_missing_digest(slow_err, &key))
                 }
-                _ => fast_res.merge(slow_res).merge(Err(err)),
+                _ => slow_res.merge(fast_res).merge(Err(err)),
             },
         }
     }
@@ -1061,13 +1061,69 @@ impl StoreDriver for FastSlowStore {
                 );
         }
 
-        // If we didn't stream then re-enter which will stream from the fast
-        // store, or retry the download.  We should not get in a loop here
-        // because OnceCell has the good sense to retry for all callers so in
-        // order to get here the fast store will have been populated.  There's
-        // an outside chance it was evicted, but that's slim.
+        // Follower: `populate_and_maybe_stream` already finished, so the entry
+        // is normally in the fast store now. If another concurrent fill already
+        // evicted it from a small fast cache, fall back to the slow store
+        // directly instead of recursing unboundedly.
         if let Some(writer) = writer.take() {
-            self.get_part(key, writer, offset, length).await
+            if self.fast_store.has(key.borrow()).await?.is_some() {
+                let bytes_before = writer.get_bytes_written();
+                match self
+                    .fast_store
+                    .get_part(key.borrow(), writer.borrow_mut(), offset, length)
+                    .await
+                {
+                    Ok(()) => {
+                        self.metrics
+                            .fast_store_hit_count
+                            .fetch_add(1, Ordering::Acquire);
+                        self.metrics
+                            .fast_store_downloaded_bytes
+                            .fetch_add(writer.get_bytes_written(), Ordering::Acquire);
+                        record_store_tier_read("fast", "hit");
+                        record_store_tier_io("fast", "read", writer.get_bytes_written());
+                        return Ok(());
+                    }
+                    Err(e)
+                        if e.code == Code::NotFound
+                            && writer.get_bytes_written() == bytes_before =>
+                    {
+                        self.metrics
+                            .fast_store_stale_map_falls_through
+                            .fetch_add(1, Ordering::Acquire);
+                        record_store_tier_read("fast", "stale");
+                        warn!(%key, ?e, "Stale fast-store map entry after leader populate; falling through to slow store");
+                    }
+                    Err(e) if e.code == Code::NotFound && matches!(key, StoreKey::Digest(_)) => {
+                        let sent = writer.get_bytes_written() - bytes_before;
+                        if let Some(wanted) = length {
+                            let rest = wanted.saturating_sub(sent);
+                            if rest == 0 {
+                                return Ok(());
+                            }
+                            length = Some(rest);
+                        }
+                        offset += sent;
+                        self.metrics
+                            .fast_store_short_reads_resumed
+                            .fetch_add(1, Ordering::Acquire);
+                        record_store_tier_read("fast", "short");
+                        warn!(
+                            %key,
+                            sent,
+                            ?e,
+                            "Fast store ended short after leader populate; resuming from the slow store"
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            self.slow_store
+                .get_part(key, writer, offset, length)
+                .await
+                .err_tip(
+                    || "In FastSlowStore::get_part slow_store fallback after fast-tier eviction",
+                )
         } else {
             // This was the thread that did the streaming already, lucky duck.
             Ok(())
