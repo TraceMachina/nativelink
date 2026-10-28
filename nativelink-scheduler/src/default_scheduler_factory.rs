@@ -27,6 +27,7 @@ use nativelink_store::store_manager::StoreManager;
 use nativelink_util::instant_wrapper::InstantWrapper;
 use redis::aio::ConnectionManager;
 use tokio::sync::{Notify, mpsc};
+use tracing::warn;
 
 use crate::cache_lookup_scheduler::CacheLookupScheduler;
 use crate::grpc_scheduler::GrpcScheduler;
@@ -144,33 +145,50 @@ async fn inner_scheduler_factory(
                     }
                 }
             }
-            // The sketch outlives this layer's construction: the worker
+            // When learning is enabled, the worker
             // scheduler below feeds it, this layer reads it, and the admin
             // API lists it. A snapshot in the named store is what a restart
             // starts from; the hints file only seeds an empty sketch.
             let sketch = Arc::new(HistoricalResourceScheduler::sketch_from_spec(spec));
-            let snapshot_store = match &spec.snapshot_store {
-                Some(name) => Some(
-                    store_manager
-                        .get_store(name)
-                        .err_tip(|| format!("'snapshot_store': '{name}' does not exist"))?,
-                ),
-                None => None,
+            let mut snapshot_store = match (&spec.snapshot_store, spec.learn_from_workers) {
+                (Some(name), true) => {
+                    let store = store_manager.get_store(name);
+                    if store.is_none() {
+                        warn!(
+                            snapshot_store = name,
+                            "Historical resource snapshot store is not defined in this scheduler's stores; continuing with memory-only learning until restart"
+                        );
+                    }
+                    store
+                }
+                _ => None,
             };
-            let snapshot_key = snapshot_key(&replica_id());
+            let snapshot_key = snapshot_key(&replica_id(&spec.replica_id));
             if let Some(store) = &snapshot_store {
-                HistoricalResourceScheduler::probe_snapshot_store(
+                match HistoricalResourceScheduler::probe_snapshot_store(
                     store,
                     spec.snapshot_store.as_deref().unwrap_or_default(),
                 )
-                .await?;
-                HistoricalResourceScheduler::load_snapshots(&sketch, store, &snapshot_key).await;
+                .await
+                {
+                    Ok(()) => {
+                        HistoricalResourceScheduler::load_snapshots(&sketch, store, &snapshot_key)
+                            .await;
+                    }
+                    Err(error) => {
+                        warn!(
+                            ?error,
+                            "Historical resource snapshot store probe failed; continuing with memory-only learning until restart"
+                        );
+                        snapshot_store = None;
+                    }
+                }
             }
             let (action_scheduler, worker_scheduler, _) = Box::pin(inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
-                Some(sketch.clone()),
+                spec.learn_from_workers.then(|| sketch.clone()),
             ))
             .await
             .err_tip(|| "In nested HistoricalResourceScheduler construction")?;
@@ -179,16 +197,18 @@ async fn inner_scheduler_factory(
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
                 sketch.clone(),
             ));
-            HistoricalResourceScheduler::spawn_snapshot_writer(
-                sketch.clone(),
-                snapshot_store,
-                Duration::from_secs(spec.snapshot_interval_s),
-                snapshot_key,
-            );
+            if spec.learn_from_workers {
+                HistoricalResourceScheduler::spawn_snapshot_writer(
+                    sketch.clone(),
+                    snapshot_store,
+                    Duration::from_secs(spec.snapshot_interval_s),
+                    snapshot_key,
+                );
+            }
             (
                 Some(historical_resource_scheduler),
                 worker_scheduler,
-                Some(sketch),
+                spec.learn_from_workers.then_some(sketch),
             )
         }
     };
