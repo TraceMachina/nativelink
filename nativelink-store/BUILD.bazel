@@ -61,6 +61,7 @@ rust_library(
         "src/redis_utils/ft_search_count.rs",
         "src/redis_utils/index_migration.rs",
         "src/redis_utils/mod.rs",
+        "src/redis_utils/sorted_index.rs",
         "src/ref_store.rs",
         "src/s3_store.rs",
         "src/shard_store.rs",

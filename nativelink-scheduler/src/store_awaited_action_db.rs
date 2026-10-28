@@ -34,7 +34,7 @@ use nativelink_util::spawn;
 use nativelink_util::store_trait::{
     FalseValue, SchedulerCurrentVersionProvider, SchedulerIndexProvider, SchedulerStore,
     SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    SchedulerSubscription, SchedulerSubscriptionManager, StoreKey, TrueValue,
+    SchedulerSubscription, SchedulerSubscriptionManager, SortedIndex, StoreKey, TrueValue,
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::KeyValue;
@@ -777,6 +777,11 @@ impl SchedulerStoreDataProvider for UpdateOperationIdToAwaitedAction {
             ));
         }
         Ok(output)
+    }
+    fn sorted_index(&self) -> Option<SortedIndex> {
+        // The index the matcher reads the queue through, so the store keeps
+        // the same order a sorted read of it returns.
+        SortedIndex::of::<SearchStateToAwaitedAction>()
     }
 }
 

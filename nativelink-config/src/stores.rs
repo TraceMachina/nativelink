@@ -2025,6 +2025,57 @@ pub struct RedisSpec {
     /// Default: false
     #[serde(default)]
     pub migrate_temporary_indexes: bool,
+    /// Experimental. Keeps the scheduler's queue in Redis sorted sets as
+    /// actions are written, so a match pass reads it by key range rather
+    /// than sorting the whole queue through `RediSearch`, and has no
+    /// server-side cursor to expire. Present, writes maintain the sets;
+    /// reads use them only once `read` is set.
+    ///
+    /// Not supported in cluster mode.
+    ///
+    /// Default: (unset, the queue is read through `RediSearch` only)
+    #[serde(default)]
+    pub experimental_sorted_index: Option<RedisSortedIndexSpec>,
+}
+
+/// See [`RedisSpec::experimental_sorted_index`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct RedisSortedIndexSpec {
+    /// Index values kept in a sorted set. A write that carries an expiry
+    /// is never added, since Redis would expire the key under its member.
+    ///
+    /// Default: `["queued"]`
+    #[serde(default = "default_sorted_index_values")]
+    pub values: Vec<String>,
+
+    /// Serve reads of `values` from the sorted sets. Set this only once
+    /// every process writing this store maintains them: an action written
+    /// by one that does not is missing from the sets until the next
+    /// reconcile.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub read: bool,
+
+    /// Seconds between reconcile walks, which add every indexed key to its
+    /// set. The first read in a process reconciles before it reads.
+    ///
+    /// Default: 300
+    #[serde(
+        default = "default_sorted_index_reconcile_interval_s",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub reconcile_interval_s: u64,
+}
+
+fn default_sorted_index_values() -> Vec<String> {
+    vec!["queued".to_string()]
+}
+
+const fn default_sorted_index_reconcile_interval_s() -> u64 {
+    300
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

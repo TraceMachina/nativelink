@@ -1052,6 +1052,37 @@ pub trait SchedulerStoreDataProvider {
     fn get_indexes(&self) -> Result<Vec<(&'static str, Bytes)>, Error> {
         Ok(Vec::new())
     }
+
+    /// The index among [`Self::get_indexes`] that a store may also keep in
+    /// sort order as the data is written, if any. Stores without such a
+    /// structure ignore it.
+    fn sorted_index(&self) -> Option<SortedIndex> {
+        None
+    }
+}
+
+/// Names an index and its sort key, as a [`SchedulerIndexProvider`] does,
+/// so a writer can tell the store which of its indexes a reader sorts by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortedIndex {
+    pub key_prefix: &'static str,
+    pub index_name: &'static str,
+    pub sort_key: &'static str,
+}
+
+impl SortedIndex {
+    /// The sorted index `K` reads, or `None` when `K` reads unsorted.
+    #[must_use]
+    pub const fn of<K: SchedulerIndexProvider>() -> Option<Self> {
+        match K::MAYBE_SORT_KEY {
+            Some(sort_key) => Some(Self {
+                key_prefix: K::KEY_PREFIX,
+                index_name: K::INDEX_NAME,
+                sort_key,
+            }),
+            None => None,
+        }
+    }
 }
 
 /// Provides the current version of the data in the store.

@@ -30,7 +30,7 @@ use const_format::formatcp;
 use futures::stream::FuturesUnordered;
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt, future};
 use itertools::izip;
-use nativelink_config::stores::{RedisMode, RedisSpec};
+use nativelink_config::stores::{RedisMode, RedisSortedIndexSpec, RedisSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_redis_tester::SubscriptionManagerNotify;
@@ -41,7 +41,8 @@ use nativelink_util::metrics::{record_connection_acquired, record_connection_rec
 use nativelink_util::store_trait::{
     BoolValue, RemoveCallback, SchedulerCurrentVersionProvider, SchedulerIndexProvider,
     SchedulerStore, SchedulerStoreDataProvider, SchedulerStoreDecodeTo, SchedulerStoreKeyProvider,
-    SchedulerSubscription, SchedulerSubscriptionManager, StoreDriver, StoreKey, UploadSizeInfo,
+    SchedulerSubscription, SchedulerSubscriptionManager, SortedIndex, StoreDriver, StoreKey,
+    UploadSizeInfo,
 };
 use nativelink_util::task::JoinHandleDropGuard;
 use nativelink_util::{background_spawn, spawn};
@@ -70,6 +71,7 @@ use crate::cas_utils::is_zero_digest;
 use crate::redis_utils::index_migration::{
     self, IndexKind, Step, drop_keeping_documents, index_kind, migrated_name,
 };
+use crate::redis_utils::sorted_index::{self, SortedIndexState, SortedRead};
 use crate::redis_utils::{
     FtAggregateCursor, FtAggregateOptions, FtCreateOptions, SearchSchema, ft_aggregate, ft_create,
     ft_info_indexing, ft_search_count,
@@ -465,6 +467,13 @@ where
     /// decided. Rechecked after `INDEX_MIGRATION_RECHECK`, so an original
     /// that a process without the migration recreates is retired again.
     index_names: Mutex<HashMap<String, (String, Instant)>>,
+    /// See [`RedisSpec::experimental_sorted_index`]. `None` leaves every
+    /// read and write exactly as without it.
+    sorted_index: Option<SortedIndexState>,
+
+    /// [`LUA_VERSION_SET_SORTED_SCRIPT`], invoked only with `sorted_index`.
+    /// Loaded on first use (`EVALSHA` falls back to loading it).
+    sorted_script: Script,
 
     /// A manager for subscriptions to keys in Redis.
     subscription_manager: Arc<RedisSubscriptionManager>,
@@ -609,6 +618,8 @@ where
             max_count_per_cursor,
             migrate_temporary_indexes: false,
             index_names: Mutex::new(HashMap::new()),
+            sorted_index: None,
+            sorted_script: Script::new(LUA_VERSION_SET_SORTED_SCRIPT),
             health_check_timeout,
             key_ttl,
             has_remove_callback_subscribe: OnceCell::const_new(),
@@ -621,6 +632,15 @@ where
     pub fn with_temporary_index_migration(mut self) -> Self {
         info!("Redis temporary-index migration enabled");
         self.migrate_temporary_indexes = true;
+        self
+    }
+
+    /// Turns on [`RedisSpec::experimental_sorted_index`]. Not for Cluster:
+    /// the write script reaches a set it cannot declare as a key.
+    #[must_use]
+    pub fn with_sorted_index(mut self, spec: &RedisSortedIndexSpec) -> Self {
+        info!(?spec, "Redis experimental sorted index enabled");
+        self.sorted_index = Some(SortedIndexState::new(spec));
         self
     }
 
@@ -762,6 +782,12 @@ where
 
 impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
     pub async fn new_cluster(mut spec: RedisSpec) -> Result<Arc<Self>, Error> {
+        if spec.experimental_sorted_index.is_some() {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "experimental_sorted_index is not supported in cluster mode"
+            ));
+        }
         let migrate_temporary_indexes = spec.migrate_temporary_indexes;
         if spec.mode != RedisMode::Cluster {
             return Err(Error::new(
@@ -934,6 +960,7 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
 
         let (tx, subscriber_channel) = unbounded_channel();
         let migrate_temporary_indexes = spec.migrate_temporary_indexes;
+        let sorted_index = spec.experimental_sorted_index.clone();
 
         Self::new_from_builder_and_parts(
             spec.experimental_pub_sub_channel.clone(),
@@ -954,10 +981,14 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
         )
         .await
         .map(|store| {
-            if migrate_temporary_indexes {
+            let store = if migrate_temporary_indexes {
                 store.with_temporary_index_migration()
             } else {
                 store
+            };
+            match &sorted_index {
+                Some(sorted_index) => store.with_sorted_index(sorted_index),
+                None => store,
             }
         })
         .map(Arc::new)
@@ -1990,9 +2021,9 @@ where
 /// The time in milliseconds that a redis cursor can be idle before it is closed.
 const CURSOR_IDLE_MS: u64 = 30_000;
 /// The name of the field in the Redis hash that stores the data.
-const DATA_FIELD_NAME: &str = "data";
+pub(crate) const DATA_FIELD_NAME: &str = "data";
 /// The name of the field in the Redis hash that stores the version.
-const VERSION_FIELD_NAME: &str = "version";
+pub(crate) const VERSION_FIELD_NAME: &str = "version";
 
 #[allow(rustdoc::broken_intra_doc_links)]
 /// Lua script to set a key if the version matches.
@@ -2043,6 +2074,74 @@ redis.call('HSET', key, '{DATA_FIELD_NAME}', new_data, '{VERSION_FIELD_NAME}', n
 
 if ttl ~= 0 then
     redis.call('EXPIRE', key, ttl)
+end
+return {{ 1, new_version }}
+"
+);
+
+#[allow(rustdoc::broken_intra_doc_links)]
+/// [`LUA_VERSION_SET_SCRIPT`], also keeping the key's sorted-index member
+/// in step (see `redis_utils::sorted_index`). Used only when
+/// `experimental_sorted_index` is configured, so the plain script stays
+/// what every other deployment runs.
+///
+/// The old member is found from the hash before it is rewritten, so the
+/// script touches a set it was not given as a key. That is fine on a
+/// standalone or Sentinel server and wrong on Cluster, which is why the
+/// store refuses the sorted index in Cluster mode.
+/// Args:
+///   KEYS[1]: The key where the version is stored.
+///   ARGV[1]: The expected version.
+///   ARGV[2]: TTL in seconds, or 0 for forever
+///   ARGV[3]: The new data.
+///   ARGV[4]: Set name prefix; the old member leaves `prefix .. old value`.
+///   ARGV[5]: The indexed field naming the set.
+///   ARGV[6]: The sort field.
+///   ARGV[7]: The set to add the new member to, or empty for none.
+///   ARGV[8]: The new member.
+///   ARGV[9*]: Key-value pairs of additional data to include.
+/// Returns:
+///   As [`LUA_VERSION_SET_SCRIPT`].
+pub const LUA_VERSION_SET_SORTED_SCRIPT: &str = formatcp!(
+    r"
+local key = KEYS[1]
+local expected_version = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local new_data = ARGV[3]
+local set_prefix = ARGV[4]
+local index_field = ARGV[5]
+local sort_field = ARGV[6]
+local new_set = ARGV[7]
+local new_member = ARGV[8]
+local new_version = redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', 1)
+local i
+local indexes = {{}}
+
+if new_version-1 ~= expected_version then
+    local reverted = redis.call('HINCRBY', key, '{VERSION_FIELD_NAME}', -1)
+    if reverted == 0 and redis.call('HEXISTS', key, '{DATA_FIELD_NAME}') == 0 then
+        redis.call('DEL', key)
+    end
+    return {{ 0, new_version-1 }}
+end
+for i=9, #ARGV do
+    indexes[i-8] = ARGV[i]
+end
+
+local old_value = redis.call('HGET', key, index_field)
+local old_sort = redis.call('HGET', key, sort_field)
+if old_value and old_sort then
+    redis.call('ZREM', set_prefix .. old_value, old_sort .. ':' .. key)
+end
+
+redis.call('DEL', key)
+redis.call('HSET', key, '{DATA_FIELD_NAME}', new_data, '{VERSION_FIELD_NAME}', new_version, unpack(indexes))
+
+if ttl ~= 0 then
+    redis.call('EXPIRE', key, ttl)
+end
+if new_set ~= '' then
+    redis.call('ZADD', new_set, 0, new_member)
 end
 return {{ 1, new_version }}
 "
@@ -2612,6 +2711,120 @@ where
             }
         }
     }
+
+    /// The sorted-set read of `K` for `index_value`, when this store serves
+    /// it from one: configured to, reconciled at least once in this
+    /// process, and its first page readable. `None` means read through
+    /// `RediSearch` as without the sorted index.
+    async fn sorted_read<K>(&self, index_value: &str) -> Option<SortedRead<C, K>>
+    where
+        K: SchedulerIndexProvider + SchedulerStoreDecodeTo,
+        <K as SchedulerStoreDecodeTo>::DecodeOutput: Send,
+    {
+        let sorted_index = self.sorted_index.as_ref()?;
+        let set = sorted_index.readable_set::<K>(&self.key_prefix, index_value)?;
+        self.reconcile_sorted::<K>(sorted_index, &set, index_value)
+            .await;
+        if !sorted_index.has_reconciled(&set) {
+            return None;
+        }
+        let connection = match self.connection_manager.get_connection().await {
+            Ok((connection, _)) => connection,
+            Err(err) => {
+                warn!(%set, ?err, "No connection for a sorted-index read; reading through RediSearch");
+                return None;
+            }
+        };
+        let mut read = SortedRead::new(
+            connection,
+            set,
+            index_value.to_string(),
+            self.max_count_per_cursor,
+            K::SORT_DESCENDING,
+        );
+        // The first page is read here, so a set that cannot be read sends
+        // this call to RediSearch instead of failing the caller's pass.
+        match read.fetch_page().await {
+            Ok(()) => Some(read),
+            Err(err) => {
+                warn!(?err, "Sorted-index read failed; reading through RediSearch");
+                None
+            }
+        }
+    }
+
+    /// Reconciles `set` when it is due. See `sorted_index::reconcile`.
+    async fn reconcile_sorted<K: SchedulerIndexProvider>(
+        &self,
+        sorted_index: &SortedIndexState,
+        set: &str,
+        index_value: &str,
+    ) {
+        let Some(index) = SortedIndex::of::<K>() else {
+            return;
+        };
+        if !sorted_index.claim_reconcile(set) {
+            return;
+        }
+        let started = Instant::now();
+        let result = async {
+            let (mut connection, _) = self.connection_manager.get_connection().await?;
+            let ft_index = self.count_index_name::<K>();
+            // Serving reads from the set takes them off the index, and a
+            // temporary index that goes unqueried expires, deleting every
+            // hash it covers. A set that never reconciles is never read.
+            if let Ok(IndexKind::Temporary(_)) = index_kind(&mut connection, &ft_index).await {
+                return Err(make_err!(
+                    Code::FailedPrecondition,
+                    "{ft_index} is a temporary index: set migrate_temporary_indexes and let it \
+                     finish before the sorted index is read"
+                ));
+            }
+            sorted_index::reconcile(
+                connection,
+                ft_index,
+                format!("@{}:{{ {} }}", K::INDEX_NAME, index_value),
+                set,
+                &index,
+                self.max_count_per_cursor,
+            )
+            .await
+        }
+        .await;
+        match result {
+            Ok(added) => {
+                info!(%set, added, elapsed = ?started.elapsed(), "Reconciled the sorted index");
+                sorted_index.finish_reconcile(set, true);
+            }
+            Err(err) => {
+                warn!(%set, ?err, "Sorted-index reconcile failed; retrying shortly");
+                sorted_index.finish_reconcile(set, false);
+            }
+        }
+    }
+
+    /// `ZCARD` of the set a count of `K` for `index_value` would be served
+    /// from, when there is one. Counts members a read has not yet found
+    /// stale, which only a write that bypassed the script leaves.
+    async fn sorted_count<K: SchedulerIndexProvider>(&self, index_value: &str) -> Option<u64> {
+        let sorted_index = self.sorted_index.as_ref()?;
+        let set = sorted_index.readable_set::<K>(&self.key_prefix, index_value)?;
+        if !sorted_index.has_reconciled(&set) {
+            return None;
+        }
+        let (mut connection, _) = self.connection_manager.get_connection().await.ok()?;
+        match redis::cmd("ZCARD")
+            .arg(&set)
+            .query_async::<u64>(&mut connection)
+            .await
+        {
+            Ok(count) => Some(count),
+            Err(err) => {
+                warn!(%set, ?err, "Sorted-index count failed; counting through RediSearch");
+                None
+            }
+        }
+    }
 }
 
 impl<C, M> SchedulerStore for RedisStore<C, M>
@@ -2648,14 +2861,39 @@ where
         })?;
         if <T as SchedulerStoreKeyProvider>::Versioned::VALUE {
             let current_version = data.current_version();
+            let sorted_write =
+                self.sorted_index
+                    .as_ref()
+                    .zip(data.sorted_index())
+                    .map(|(sorted_index, index)| {
+                        sorted_index.write_args(
+                            &self.key_prefix,
+                            &index,
+                            &maybe_index,
+                            redis_key.as_ref(),
+                            expiry.is_some(),
+                        )
+                    });
             let data = data.try_into_bytes().err_tip(|| {
                 format!("Could not convert value to bytes in RedisStore::update_data::versioned for {redis_key}")
             })?;
-            let mut script = self.connection_manager.update_script(redis_key.as_ref());
+            let mut script = if sorted_write.is_some() {
+                self.sorted_script.key(redis_key.as_ref())
+            } else {
+                self.connection_manager.update_script(redis_key.as_ref())
+            };
             let mut script_invocation = script
                 .arg(format!("{current_version}"))
                 .arg(expiry.unwrap_or(Duration::ZERO).as_secs())
                 .arg(data.to_vec());
+            if let Some(sorted_write) = &sorted_write {
+                script_invocation = script_invocation
+                    .arg(&sorted_write.set_prefix)
+                    .arg(sorted_write.index_field)
+                    .arg(sorted_write.sort_field)
+                    .arg(&sorted_write.new_set)
+                    .arg(&sorted_write.new_member);
+            }
             for (name, value) in maybe_index {
                 script_invocation = script_invocation.arg(name).arg(value.to_vec());
             }
@@ -2797,6 +3035,7 @@ where
     >
     where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
+        <K as SchedulerStoreDecodeTo>::DecodeOutput: Send,
     {
         let index_value = index.index_value();
         try_sanitize(index_value.as_ref())
@@ -2804,6 +3043,9 @@ where
             .err_tip(|| {
                 format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
+        if let Some(read) = self.sorted_read::<K>(index_value.as_ref()).await {
+            return Ok(read.into_stream().left_stream());
+        }
         let index_name = self.read_index_name::<K>().await;
         let run_ft_aggregate = |connection_manager: C| async {
             ft_aggregate(
@@ -2907,92 +3149,97 @@ where
             Ok(stream) => Ok(stream),
         }?;
 
-        Ok(stream.filter_map(|result| async move {
-            let raw_redis_map = match result {
-                Ok(v) => v,
-                Err(e) => {
-                    return Some(
-                        Err(Error::from(e))
-                            .err_tip(|| "Error in stream of in RedisStore::search_by_index_prefix"),
-                    );
+        Ok(stream
+            .filter_map(|result| async move {
+                let raw_redis_map = match result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return Some(Err(Error::from(e)).err_tip(
+                            || "Error in stream of in RedisStore::search_by_index_prefix",
+                        ));
+                    }
+                };
+
+                if matches!(raw_redis_map, Value::Int(_)) {
+                    return None;
                 }
-            };
 
-            if matches!(raw_redis_map, Value::Int(_)) {
-                return None;
-            }
-
-            let Some(redis_map) = raw_redis_map.as_sequence() else {
-                return Some(Err(Error::new(
-                    Code::Internal,
-                    format!("Non-array from ft_aggregate: {raw_redis_map:?}"),
-                )));
-            };
-            let mut redis_map_iter = redis_map.iter();
-            let mut bytes_data: Option<Bytes> = None;
-            let mut version: Option<i64> = None;
-            while let Some(key) = redis_map_iter.next() {
-                let value = redis_map_iter.next().unwrap();
-                let Value::BulkString(k) = key else {
+                let Some(redis_map) = raw_redis_map.as_sequence() else {
                     return Some(Err(Error::new(
                         Code::Internal,
-                        format!("Non-BulkString key from ft_aggregate: {key:?}"),
+                        format!("Non-array from ft_aggregate: {raw_redis_map:?}"),
                     )));
                 };
-                let Ok(str_key) = str::from_utf8(k) else {
-                    return Some(Err(Error::new(
-                        Code::Internal,
-                        format!("Non-utf8 key from ft_aggregate: {key:?}"),
-                    )));
-                };
-                let Value::BulkString(v) = value else {
-                    return Some(Err(Error::new(
-                        Code::Internal,
-                        format!("Non-BulkString value from ft_aggregate: {key:?}"),
-                    )));
-                };
-                match str_key {
-                    DATA_FIELD_NAME => {
-                        bytes_data = Some(v.clone().into());
-                    }
-                    VERSION_FIELD_NAME => {
-                        let Ok(str_v) = str::from_utf8(v) else {
-                            return Some(Err(Error::new(
-                                Code::Internal,
-                                format!("Non-utf8 version value from ft_aggregate: {v:?}"),
-                            )));
-                        };
-                        let Ok(raw_version) = str_v.parse::<i64>() else {
-                            return Some(Err(Error::new(
-                                Code::Internal,
-                                format!("Non-integer version value from ft_aggregate: {str_v:?}"),
-                            )));
-                        };
-                        version = Some(raw_version);
-                    }
-                    other => {
-                        if K::MAYBE_SORT_KEY == Some(other) {
-                            // ignore sort keys
-                        } else {
-                            return Some(Err(Error::new(
-                                Code::Internal,
-                                format!("Extra keys from ft_aggregate: {other}"),
-                            )));
+                let mut redis_map_iter = redis_map.iter();
+                let mut bytes_data: Option<Bytes> = None;
+                let mut version: Option<i64> = None;
+                while let Some(key) = redis_map_iter.next() {
+                    let value = redis_map_iter.next().unwrap();
+                    let Value::BulkString(k) = key else {
+                        return Some(Err(Error::new(
+                            Code::Internal,
+                            format!("Non-BulkString key from ft_aggregate: {key:?}"),
+                        )));
+                    };
+                    let Ok(str_key) = str::from_utf8(k) else {
+                        return Some(Err(Error::new(
+                            Code::Internal,
+                            format!("Non-utf8 key from ft_aggregate: {key:?}"),
+                        )));
+                    };
+                    let Value::BulkString(v) = value else {
+                        return Some(Err(Error::new(
+                            Code::Internal,
+                            format!("Non-BulkString value from ft_aggregate: {key:?}"),
+                        )));
+                    };
+                    match str_key {
+                        DATA_FIELD_NAME => {
+                            bytes_data = Some(v.clone().into());
+                        }
+                        VERSION_FIELD_NAME => {
+                            let Ok(str_v) = str::from_utf8(v) else {
+                                return Some(Err(Error::new(
+                                    Code::Internal,
+                                    format!("Non-utf8 version value from ft_aggregate: {v:?}"),
+                                )));
+                            };
+                            let Ok(raw_version) = str_v.parse::<i64>() else {
+                                return Some(Err(Error::new(
+                                    Code::Internal,
+                                    format!(
+                                        "Non-integer version value from ft_aggregate: {str_v:?}"
+                                    ),
+                                )));
+                            };
+                            version = Some(raw_version);
+                        }
+                        other => {
+                            if K::MAYBE_SORT_KEY == Some(other) {
+                                // ignore sort keys
+                            } else {
+                                return Some(Err(Error::new(
+                                    Code::Internal,
+                                    format!("Extra keys from ft_aggregate: {other}"),
+                                )));
+                            }
                         }
                     }
                 }
-            }
-            let Some(found_bytes_data) = bytes_data else {
-                return Some(Err(Error::new(
-                    Code::Internal,
-                    format!("Missing '{DATA_FIELD_NAME}' in ft_aggregate, got: {raw_redis_map:?}"),
-                )));
-            };
-            Some(
-                K::decode(version.unwrap_or(0), found_bytes_data)
-                    .err_tip(|| "In RedisStore::search_by_index_prefix::decode"),
-            )
-        }))
+                let Some(found_bytes_data) = bytes_data else {
+                    return Some(Err(Error::new(
+                        Code::Internal,
+                        format!(
+                            "Missing '{DATA_FIELD_NAME}' in ft_aggregate, got: {raw_redis_map:?}"
+                        ),
+                    )));
+                };
+                Some(
+                    K::decode(version.unwrap_or(0), found_bytes_data)
+                        .err_tip(|| "In RedisStore::search_by_index_prefix::decode"),
+                )
+            })
+            .right_stream())
     }
 
     async fn count_by_index_prefix<K>(&self, index: K) -> Result<u64, Error>
@@ -3005,6 +3252,9 @@ where
             .err_tip(|| {
                 format!("In RedisStore::count_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
+        if let Some(count) = self.sorted_count::<K>(index_value.as_ref()).await {
+            return Ok(count);
+        }
         let index_name = self.count_index_name::<K>();
         let query = if index_value.is_empty() {
             "*".to_string()

@@ -86,6 +86,7 @@ rust_test_suite(
         "tests/platform_property_manager_test.rs",
         "tests/property_modifier_scheduler_test.rs",
         "tests/queue_order_test.rs",
+        "tests/redis_sorted_index_test.rs",
         "tests/redis_store_awaited_action_db_test.rs",
         "tests/redis_temporary_index_test.rs",
         "tests/remote_exec_scheduling_test.rs",
