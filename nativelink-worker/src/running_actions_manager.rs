@@ -64,7 +64,7 @@ use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemSto
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
-    SymlinkInfo, to_execute_response,
+    STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, to_execute_response,
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
@@ -3052,11 +3052,13 @@ impl RunningActionImpl {
             let pause = prepare_retry_pause(attempt, &self.action_info.input_root_digest);
             if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
                 retries.settle("exhausted");
-                return Err(err.append(format!(
-                    "Input fetch of operation {} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
-                    self.operation_id,
-                    started.elapsed().as_secs()
-                )));
+                return Err(err
+                    .append(format!(
+                        "Input fetch of operation {} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
+                        self.operation_id,
+                        started.elapsed().as_secs()
+                    ))
+                    .append(STORE_UNREACHABLE_ERROR_TIP));
             }
             warn!(
                 operation_id = %self.operation_id,
@@ -5815,6 +5817,64 @@ impl RunningActionsManagerImpl {
         })
     }
 
+    /// Reads the Action, again after a transient store failure while
+    /// `max_download_timeout` leaves room for another attempt. It is the one
+    /// store read before `prepare_action`'s own retries: a CAS pod being
+    /// replaced refused it on the first attempt, the action failed on the
+    /// spot, and the scheduler counted that against the action's retries.
+    async fn fetch_action_with_retry(&self, action_digest: DigestInfo) -> Result<Action, Error> {
+        let started = Instant::now();
+        let deadline = started.checked_add(self.max_download_timeout);
+        let mut attempt: u32 = 1;
+        let mut retries = PrepareRetries::new(record_prepare_outcome);
+        loop {
+            let err = match get_and_decode_digest::<Action>(
+                self.cas_store.as_ref(),
+                action_digest.into(),
+            )
+            .await
+            {
+                Ok(action) => {
+                    if attempt > 1 {
+                        info!(
+                            %action_digest,
+                            attempt,
+                            elapsed_s = started.elapsed().as_secs(),
+                            "start_action: action read recovered"
+                        );
+                    }
+                    retries.settle("recovered");
+                    return Ok(action);
+                }
+                Err(err) if is_transient_fetch_error(&err) => err,
+                Err(err) => {
+                    retries.settle("failed");
+                    return Err(err);
+                }
+            };
+            let pause = prepare_retry_pause(attempt, &action_digest);
+            if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
+                retries.settle("exhausted");
+                return Err(err
+                    .append(format!(
+                        "Reading action {action_digest} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
+                        started.elapsed().as_secs()
+                    ))
+                    .append(STORE_UNREACHABLE_ERROR_TIP));
+            }
+            warn!(
+                %action_digest,
+                attempt,
+                wait_ms = pause.as_millis(),
+                error = %err,
+                "start_action: action read failed, retrying"
+            );
+            retries.retried();
+            tokio::time::sleep(pause).await;
+            attempt += 1;
+        }
+    }
+
     fn create_action_info(
         &self,
         start_execute: StartExecute,
@@ -5830,11 +5890,11 @@ impl RunningActionsManagerImpl {
                 .err_tip(|| "Expected action_digest to exist on StartExecute")?
                 .try_into()?;
             let load_start_timestamp = (self.callbacks.now_fn)();
-            let action =
-                get_and_decode_digest::<Action>(self.cas_store.as_ref(), action_digest.into())
-                    .await
-                    .err_tip(|| "During start_action")
-                    .map_err(tag_missing_input)?;
+            let action = self
+                .fetch_action_with_retry(action_digest)
+                .await
+                .err_tip(|| "During start_action")
+                .map_err(tag_missing_input)?;
             let mut action_info = ActionInfo::try_from_action_and_execute_request(
                 execute_request,
                 action,

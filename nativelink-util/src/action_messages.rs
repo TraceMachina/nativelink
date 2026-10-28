@@ -51,6 +51,12 @@ use crate::digest_hasher::DigestHasherFunc;
 /// `FAILED_PRECONDITION` result the worker turns that into.
 pub const MISSING_INPUT_ERROR_TIP: &str = "action input missing from CAS";
 
+/// Appended when the worker gave up reading the action or its inputs after
+/// its store retries ran out, so the scheduler can tell a store that was
+/// down from a failure of the action without reading a store's wording or
+/// trusting a bare `Unavailable`, which the scheduler raises itself.
+pub const STORE_UNREACHABLE_ERROR_TIP: &str = "worker could not reach its store";
+
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 
