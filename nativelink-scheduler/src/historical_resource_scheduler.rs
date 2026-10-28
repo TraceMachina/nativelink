@@ -571,7 +571,7 @@ impl HistoricalResourceScheduler {
     ) {
         let write = store.filter(|_| !interval.is_zero());
         let tick = if interval.is_zero() {
-            Duration::from_secs(60)
+            Duration::from_mins(1)
         } else {
             interval
         };
