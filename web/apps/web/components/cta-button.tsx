@@ -8,10 +8,16 @@ interface CtaButtonProps extends Pick<ButtonProps, "variant" | "size" | "classNa
   children?: ReactNode;
 }
 
-/** A `Button` rendered from one of the canonical CTAs in `lib/cta.ts`. */
-export function CtaButton({ cta, variant, size = "lg", className, children }: CtaButtonProps) {
+/**
+ * A `Button` rendered from one of the canonical CTAs in `lib/cta.ts`.
+ *
+ * Defaults to the large size, except for the link variant: a text link takes
+ * no size, otherwise the size's padding would offset it from the buttons.
+ */
+export function CtaButton({ cta, variant, size, className, children }: CtaButtonProps) {
+  const resolvedSize = size ?? (variant === "link" ? undefined : "lg");
   return (
-    <Button asChild variant={variant} size={size} className={className}>
+    <Button asChild variant={variant} size={resolvedSize} className={className}>
       <a
         href={cta.href}
         target={cta.external ? "_blank" : undefined}

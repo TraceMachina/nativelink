@@ -1,4 +1,5 @@
-import { isCurrentNavHref } from "@nativelink/ui";
+// The subpath keeps this data module (and its test) off the full component barrel.
+import { isCurrentNavHref } from "@nativelink/ui/nav";
 
 /**
  * The marketing site's canonical calls to action.

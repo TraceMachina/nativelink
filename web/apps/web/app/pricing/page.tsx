@@ -18,7 +18,7 @@ interface Tier {
   tagline: string;
   features: string[];
   cta: Cta;
-  secondary?: { label: string; href: string };
+  secondary?: Cta;
 }
 
 const tiers: Tier[] = [
@@ -53,6 +53,7 @@ const tiers: Tier[] = [
     secondary: {
       label: "Already have a quote? Buy a licence on the Enterprise portal",
       href: "https://enterprise.nativelink.com",
+      external: true,
     },
   },
 ];
@@ -206,8 +207,8 @@ export default function PricingPage() {
                     <p className="mt-3 text-center text-sm text-muted-foreground">
                       <a
                         href={tier.secondary.href}
-                        target="_blank"
-                        rel="noreferrer"
+                        target={tier.secondary.external ? "_blank" : undefined}
+                        rel={tier.secondary.external ? "noreferrer" : undefined}
                         className="text-brand underline-offset-4 hover:underline"
                       >
                         {tier.secondary.label}
