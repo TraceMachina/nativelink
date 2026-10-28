@@ -2,9 +2,10 @@
 name: CI / Bazel
 
 on:
-  # Keep Bazel 8 compatibility and Redis topology checks as specialized
-  # cross-checks. The project-pinned Bazel suite runs on the warm cluster
-  # through CI / NativeLink, instead of a second hosted build.
+  # Check Bazel 8 compatibility and Redis topologies before merging.
+  # CI / NativeLink runs the project-pinned Bazel suite separately.
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   schedule:
