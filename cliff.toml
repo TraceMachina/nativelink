@@ -86,6 +86,7 @@ commit_parsers = [
   { message = "fix Clippy and Redis failures and restore Bazel PR checks", group = "<!-- 4 -->🧪 Testing & CI" },
   { message = "give the community page's offline contributor fallback real counts", group = "<!-- 6 -->⚙️ Miscellaneous" },
   { message = "restore broken /resources/oreilly-bazel-book page", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "retry the action read at start", group = "<!-- 2 -->🐛 Bug Fixes" },
   { message = "size actions from the usage its workers report", group = "<!-- 1 -->⛰️  Features" },
   { message = "worker tests: import Semaphore on every platform", group = "<!-- 4 -->🧪 Testing & CI" },
 

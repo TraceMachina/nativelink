@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
+- retry the action read at start; a store the worker cannot reach does not spend the action's retries ([#3075](https://github.com/TraceMachina/nativelink/issues/3075)) - ([6fd7af8](https://github.com/TraceMachina/nativelink/commit/6fd7af8d6e0f4dc4a962648c185dd1ac15f29fc1))
 - Fix learned resource sizing regressions on main ([#3070](https://github.com/TraceMachina/nativelink/issues/3070)) - ([73df5dd](https://github.com/TraceMachina/nativelink/commit/73df5dd6b5c9bea499afc79149e29fe0986b620e))
 - Redis store: bound the temp key of every upload ([#3065](https://github.com/TraceMachina/nativelink/issues/3065)) - ([b57a164](https://github.com/TraceMachina/nativelink/commit/b57a1645db966d446779c08173b49336afb77642))
 - Avoid embedding the Cargo manifest path ([#3064](https://github.com/TraceMachina/nativelink/issues/3064)) - ([76aabfd](https://github.com/TraceMachina/nativelink/commit/76aabfdf00b5b5e7176c6049a545cb294e9551e2))
