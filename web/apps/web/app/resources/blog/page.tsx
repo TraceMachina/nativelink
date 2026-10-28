@@ -1,4 +1,4 @@
-import { Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { Breadcrumbs, Eyebrow, Reveal, Section } from "@nativelink/ui";
 import { getAllPosts } from "../../../lib/posts";
 import { PostSection, postToCard } from "../post-sections";
 
@@ -21,6 +21,10 @@ export default function BlogIndexPage() {
         <Section width="default" className="pt-24 pb-14 md:pt-32">
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
+              <Breadcrumbs
+                className="mb-6 justify-center"
+                items={[{ label: "Resources", href: "/resources" }, { label: "Blog" }]}
+              />
               <Eyebrow className="mb-5">Blog</Eyebrow>
               <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-[56px]">
                 Writing from the team
