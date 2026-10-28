@@ -104,7 +104,6 @@ mod tests {
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
-    #[cfg(target_family = "unix")]
     use tokio::sync::Semaphore;
     use tokio::sync::oneshot;
     #[cfg(target_family = "unix")]
