@@ -2601,6 +2601,140 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     Ok(())
 }
 
+/// A worker that cannot reach its store (`Unavailable`: a CAS pod being
+/// replaced) does not spend the action's `max_job_retries`; three such
+/// refusals within one second used to cancel the build. It spends the lost
+/// worker's budget instead, so an action whose store never comes back still
+/// ends, with a code the client does not retry.
+#[nativelink_test]
+async fn store_unavailable_errors_spend_the_worker_loss_budget_test() -> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+
+    let task_change_notify = Arc::new(Notify::new());
+    let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec {
+            max_job_retries: 1,
+            max_worker_loss_retries: 2,
+            ..Default::default()
+        },
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        None,
+    );
+    let action_digest = DigestInfo::new([99u8; 32], 512);
+
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let mut action_listener = setup_action(
+        &scheduler,
+        action_digest,
+        HashMap::new(),
+        make_system_time(1),
+    )
+    .await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(exec)) => {
+            OperationId::from(exec.operation_id.as_str())
+        }
+        v => panic!("Expected StartAction, got : {v:?}"),
+    };
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // Two store refusals: each requeues the action, neither is an attempt.
+    for _ in 0..2 {
+        drop(
+            scheduler
+                .update_action(
+                    &worker_id,
+                    &operation_id,
+                    UpdateOperationType::UpdateWithError(make_err!(
+                        Code::Unavailable,
+                        "tcp connect error"
+                    )),
+                )
+                .await,
+        );
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Queued
+        );
+        rx_from_worker =
+            setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+        match rx_from_worker.recv().await.unwrap().update {
+            Some(update_for_worker::Update::StartAction(_)) => {}
+            v => panic!("Expected StartAction, got : {v:?}"),
+        }
+        assert_eq!(
+            action_listener.changed().await.unwrap().0.stage,
+            ActionStage::Executing
+        );
+    }
+
+    // The action's own first failure still has its whole retry budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "Some error")),
+            )
+            .await,
+    );
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Queued
+    );
+    rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    match rx_from_worker.recv().await.unwrap().update {
+        Some(update_for_worker::Update::StartAction(_)) => {}
+        v => panic!("Expected StartAction, got : {v:?}"),
+    }
+    assert_eq!(
+        action_listener.changed().await.unwrap().0.stage,
+        ActionStage::Executing
+    );
+
+    // The third store refusal is over the worker-loss budget.
+    drop(
+        scheduler
+            .update_action(
+                &worker_id,
+                &operation_id,
+                UpdateOperationType::UpdateWithError(make_err!(
+                    Code::Unavailable,
+                    "tcp connect error"
+                )),
+            )
+            .await,
+    );
+    let (action_state, _maybe_origin_metadata) = action_listener.changed().await.unwrap();
+    match &action_state.stage {
+        ActionStage::Completed(result) => {
+            let err = result.error.as_ref().expect("the cancel carries an error");
+            assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+            assert!(
+                err.to_string().contains(
+                    "could not reach its store 3 times, more than max_worker_loss_retries (2)"
+                ),
+                "{err}"
+            );
+        }
+        stage => panic!("Expected Completed, got : {stage:?}"),
+    }
+
+    Ok(())
+}
+
 /// Worker crash-loop regression: an action whose worker keeps disconnecting
 /// (e.g. `OOMKill`) used to bypass `max_job_retries` because
 /// `UpdateWithDisconnect` requeued without counting as an attempt. The build
