@@ -110,6 +110,104 @@ capabilities: [
 
 <SourceLink file="nativelink-config/src/cas_server.rs" symbol="ServicesConfig" />
 
+## Download remote assets on a cache miss [#fetch-downloader]
+
+In development builds, `fetch` can download HTTP and HTTPS assets when a URI mapping
+is missing or its CAS blob has been evicted. This supports a shared dependency
+downloader for short-lived CI clients, as discussed in
+[issue #2770](https://github.com/TraceMachina/nativelink/issues/2770).
+Omitting `downloader` keeps the existing lookup-only behavior.
+
+```json5
+fetch: [{
+  instance_name: "main",
+  fetch_store: "DOWNLOAD_INDEX",
+  downloader: {
+    cas_store: "CAS_MAIN_STORE",
+    http_proxy_secret_file: "/run/secrets/fetch-proxy-url",
+    no_proxy: ["localhost", "127.0.0.1", ".example.internal"],
+    max_size_bytes: 0, // No size limit; set a positive value to enforce one.
+    max_concurrent_downloads: 4,
+    timeout_s: "300s",
+  },
+}],
+```
+
+`cas_store` must be the CAS exposed to the same client instance. The mapping
+store is a dedicated download index: it contains URI/qualifier metadata, not
+artifact bytes. Do not share this index with a Push service.
+A cache hit checks CAS availability before returning the digest; a missing
+blob triggers another download. The existing mapping expiry is also checked.
+
+Configure either `http_proxy` (an HTTP and HTTPS forward proxy URL) or
+`http_proxy_secret_file` (a file containing that URL). The file is read once
+at startup and surrounding whitespace is removed. The default HTTP client
+connects directly. An explicit proxy adds a concurrent attempt; the first fully verified CAS upload
+wins, and a failing path does not cancel the other path. This preserves
+availability when only one network path can reach an origin. `no_proxy`
+controls the configured proxy's exceptions; an empty list bypasses no hosts.
+Proxy settings come only from configuration: `HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY` and `NO_PROXY` environment variables (including lowercase variants)
+are ignored. Clients, limits and timeouts belong to each Fetch instance.
+HTTPS origins use the forward proxy's CONNECT support.
+
+The downloader tries candidate URIs in order. `checksum.sri` is verified using
+its declared algorithm. The existing digest implementations support `sha256-`
+and `blake3-` values; unsupported algorithms are rejected.
+Duplicate or malformed checksum values are rejected before cache lookup.
+Requests without a checksum are allowed by default, matching Bazel's optional
+`sha256` and `integrity` attributes. Set `require_checksum: true` to require one.
+
+`bazel.canonical_id` is accepted as URL-index identity metadata. Other qualifiers
+are accepted as opaque URL-index metadata by default; their semantics are not
+applied to the HTTP request. In particular, accepting `http_header:` or `http_header_url:` does not
+forward those headers or credentials. Set `allow_unknown_qualifiers: false` to
+reject unrecognized qualifiers, including header qualifiers whose semantics are not implemented. This
+switch is independent of `require_checksum` and also applies on cache hits.
+
+The index is keyed by URI plus qualifiers and stores a complete digest,
+including its size. Different URI/qualifier keys have independent mappings.
+When none of the supplied URIs has a usable mapping, the selected candidate is
+downloaded even if its checksum matches bytes already in CAS; only that URI is
+registered. Repeating the same URI and qualifiers reuses its record when the
+mapping is unexpired and the CAS blob is still present. New download records
+include `fetched_at`, the time origin retrieval started. When a request supplies
+`oldest_content_accepted`, reuse also requires `fetched_at` to be at or after that
+time. Older records without a timestamp remain usable for requests without a
+freshness constraint; constrained requests download again and update the record.
+Bazel requests without a checksum can deliberately require a future timestamp
+to prevent cache reuse.
+Checksum verification protects integrity during download; it does not perform
+hash-only CAS lookup or create mappings for other mirror URLs.
+
+The CAS digest follows the requested digest function, falling back to the server's
+default when none is specified. When the checksum uses the same algorithm, one
+hash calculation serves both purposes; a different checksum algorithm is computed
+separately. HTTP errors, oversized bodies and checksum mismatches are not
+published to CAS. Empty bodies are valid blobs.
+
+Each active download spools to an anonymous temporary file before publishing
+verified bytes in bounded chunks to CAS. File size is unlimited by default:
+`max_size_bytes: 0` disables the size limit. Set a positive value to reject larger
+objects, including responses without Content-Length. The concurrency limit bounds
+active requests, but temporary disk usage has no fixed size bound unless an
+object limit is configured. A request may run two concurrent attempts when a proxy
+is configured, so with an object limit the disk bound is twice that limit times
+the active request limit. Timeouts cover waiting for a download slot,
+all URI attempts and CAS publication. A caller timeout is clamped to the
+configured maximum. Cancellation releases the file and slot. No detached
+background fetch continues after RPC cancellation.
+
+Enabling downloads grants callers access to the server's outbound HTTP and HTTPS
+network, including redirects. Use trusted clients and network egress rules to
+restrict reachable destinations; this downloader is not an SSRF filter.
+The default path remains eligible even when an explicit proxy is configured;
+this configuration is not an enforced outbound-proxy boundary.
+See the [configuration reference](/reference/nativelink-config/main) for the
+fields and defaults.
+
+[Development implementation](https://github.com/zpzjzj/nativelink/blob/ca364fbc0e2b9298a950bda4a8b1b4fd46a78dc3/nativelink-service/src/fetch_server.rs).
+
 ## Instance names [#instance-names]
 
 Most services are declared as an **array**, and each element carries an

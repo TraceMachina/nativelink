@@ -1533,6 +1533,7 @@ eternal 3600 s), so this maps them to classes without a CAS fetch.
 | --- | --- | --- | --- | --- |
 | `instance_name` | string | — | `""` | Used when the config references `instance_name` in the protocol. |
 | `fetch_store` | string | Yes | — | The store name referenced in the `stores` map in the main config. This store name referenced here may be reused multiple times. |
+| `downloader` | [FetchDownloaderConfig](#fetchdownloaderconfig) | — | — | Optional HTTP and HTTPS downloader. Omitted means lookup-only, with no origin access. |
 
 ## PushServiceConfig
 
@@ -1726,6 +1727,22 @@ specified.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `scheduler` | string | Yes | — | Scheduler used to configure the capabilities of remote execution. |
+
+## FetchDownloaderConfig
+
+Opt-in origin retrieval for the Remote Asset Fetch service.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `cas_store` | string | Yes | — | CAS used by this instance's CAS and `ByteStream` services. |
+| `http_proxy` | string | — | — | Explicit HTTP forward proxy URL, optionally including credentials. Prefer `http_proxy_secret_file` for credentials. Setting both is invalid. The default HTTP client connects directly and ignores proxy environment variables. An explicit proxy adds a concurrent alternative; the first successful transfer wins. |
+| `http_proxy_secret_file` | string | — | — | File containing the proxy URL. Whitespace is trimmed; read once at startup. |
+| `no_proxy` | array of string | — | — | Hosts bypassing the explicit proxy, using `reqwest` matching rules. Only applies to the configured proxy; an empty list bypasses no hosts. Proxy environment variables are not consulted. |
+| `require_checksum` | boolean | — | false | Reject downloads without a supported checksum. |
+| `allow_unknown_qualifiers` | boolean | — | true | Accept unrecognized qualifiers as opaque cache-key metadata without applying their semantics. Set false to reject them. `bazel.canonical_id` is recognized as cache identity metadata. |
+| `max_size_bytes` | integer (uint64) | — | `0` | Maximum downloaded object size, checked even without Content-Length. Zero means no size limit (the default). |
+| `max_concurrent_downloads` | integer (uint) | — | `0` | Maximum simultaneous download requests per instance, including CAS publication. Zero selects the default: 4. Each request can race two attempts when a proxy is configured. A positive `max_size_bytes` also bounds each attempt's spool. |
+| `timeout_s` | integer (uint64) | — | `0` | Total origin retrieval timeout across all candidate URIs, including CAS writes. Request timeouts are clamped to this limit. Zero selects the default: 300 seconds. |
 
 ## HttpCompressionAlgorithm
 
