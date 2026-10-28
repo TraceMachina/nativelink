@@ -688,12 +688,14 @@ where
                     // Through the error path, so the loss spends one of the
                     // action's `max_job_retries` and a result the store keeps
                     // refusing ends in a failure the client sees, not a loop.
+                    // This is a lost execution result, not a worker-reported
+                    // Unavailable store read that uses the store-loss budget.
                     match self
                         .inner_update_operation(
                             &operation_id,
                             Some(worker_id),
                             UpdateOperationType::UpdateWithError(make_err!(
-                                Code::Unavailable,
+                                Code::Internal,
                                 "The worker finished this operation but its result never reached the scheduler"
                             )),
                         )
