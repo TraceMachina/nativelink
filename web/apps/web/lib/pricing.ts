@@ -1,4 +1,16 @@
-export type ComparisonValue = string | boolean;
+/** The self-serve licence portal. */
+export const ENTERPRISE_URL = "https://enterprise.nativelink.com";
+
+/** A table cell that links somewhere, such as the Enterprise hosting entry. */
+export interface ComparisonLink {
+  text: string;
+  href: string;
+}
+
+export type ComparisonValue = string | boolean | ComparisonLink;
+
+/** The tiers the comparison columns are keyed by, in display order. */
+export type TierKey = "oss" | "ent";
 
 export interface ComparisonRow {
   label: string;
@@ -16,7 +28,11 @@ export const comparison: ComparisonGroup[] = [
   {
     section: "Platform",
     rows: [
-      { label: "Hosting", oss: "Self-hosted", ent: "On-prem or managed" },
+      {
+        label: "Hosting",
+        oss: "Self-hosted",
+        ent: { text: "On-prem or managed", href: ENTERPRISE_URL },
+      },
       { label: "Distributed scheduler", oss: true, ent: true },
       { label: "Remote caching", oss: true, ent: true },
       { label: "Remote execution", oss: true, ent: true },

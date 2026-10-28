@@ -18,6 +18,18 @@ test("features every tier includes leave the comparison rows", () => {
   }
 });
 
+test("every remaining row really differs between the tiers", () => {
+  // The table intro says every row below the summary marks a difference.
+  // isUniversal only collapses true/true, so keep the data honest here: no row
+  // may show the same text or the same "not included" mark in both columns.
+  const { differentiators } = collapseUniversalRows(comparison);
+  for (const group of differentiators) {
+    for (const row of group.rows) {
+      expect(JSON.stringify(row.oss)).not.toBe(JSON.stringify(row.ent));
+    }
+  }
+});
+
 test("the live table keeps every section, in order", () => {
   const { differentiators } = collapseUniversalRows(comparison);
   expect(differentiators.map((g) => g.section)).toEqual([
@@ -39,7 +51,9 @@ test("a section left with no differentiators is dropped", () => {
   ]);
 });
 
-test("text values are differentiators even when they match", () => {
+test("text and link values are never collapsed, even when they match", () => {
   expect(isUniversal({ label: "Build systems", oss: "All", ent: "All" })).toBe(false);
   expect(isUniversal({ label: "Autoscaling", oss: false, ent: true })).toBe(false);
+  const link = { text: "Portal", href: "https://example.com" };
+  expect(isUniversal({ label: "Hosting", oss: link, ent: link })).toBe(false);
 });
