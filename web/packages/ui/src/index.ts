@@ -11,6 +11,7 @@ export { SiteFooter } from "./components/site-footer";
 export { Eyebrow } from "./components/eyebrow";
 export { Stat, StatGrid } from "./components/stat";
 export { VideoEmbed, YouTubeEmbed } from "./components/video-embed";
+export { VideoFacade } from "./components/video-facade";
 export { FinalCTA } from "./components/final-cta";
 export { FAQ, type FAQItem } from "./components/faq";
 export { Reveal } from "./components/reveal";

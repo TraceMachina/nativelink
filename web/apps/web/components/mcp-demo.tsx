@@ -1,6 +1,7 @@
 "use client";
 
-import { AnimatePresence, motion } from "motion/react";
+import { cn } from "@nativelink/ui";
+import { AnimatePresence, motion, useInView } from "motion/react";
 import * as React from "react";
 
 type Line = { text: string; tone?: "muted" | "brand" | "default" | "comment" };
@@ -46,7 +47,10 @@ const tools: Tool[] = [
       { text: "## Cost Optimization", tone: "brand" },
       { text: "   - Use --remote_download_minimal", tone: "muted" },
       { text: "   - Enable --experimental_remote_cache_compression", tone: "muted" },
-      { text: "categories: setup · migration · optimization · troubleshooting · api", tone: "comment" },
+      {
+        text: "categories: setup · migration · optimization · troubleshooting · api",
+        tone: "comment",
+      },
     ],
   },
   {
@@ -89,8 +93,14 @@ const tools: Tool[] = [
     output: [
       { text: "# Recent builds (last 10) for account: <redacted>", tone: "comment" },
       { text: "[" },
-      { text: '  { "invocationId": "…", "command": "bazel test //…", "exitCode": … },', tone: "muted" },
-      { text: '  { "invocationId": "…", "command": "bazel build //…", "exitCode": … },', tone: "muted" },
+      {
+        text: '  { "invocationId": "…", "command": "bazel test //…", "exitCode": … },',
+        tone: "muted",
+      },
+      {
+        text: '  { "invocationId": "…", "command": "bazel build //…", "exitCode": … },',
+        tone: "muted",
+      },
       { text: "  …" },
       { text: "]" },
       { text: "# Streamed from the Build Event Protocol", tone: "comment" },
@@ -105,11 +115,24 @@ const toneClass: Record<NonNullable<Line["tone"]>, string> = {
   comment: "text-muted-foreground/70",
 };
 
-function useTypewriter(text: string, active: boolean, speed = 28) {
-  const [out, setOut] = React.useState("");
+/**
+ * "wait": the demo is not on screen yet, show nothing.
+ * "type": first look at this tool, type the prompt out.
+ * "instant": the visitor has seen this tool before, show it whole.
+ */
+type TypingMode = "wait" | "type" | "instant";
+
+function useTypewriter(text: string, mode: TypingMode, speed = 28) {
+  const [out, setOut] = React.useState(mode === "instant" ? text : "");
   React.useEffect(() => {
-    if (!active) return;
+    if (mode === "instant") {
+      setOut(text);
+      return;
+    }
     setOut("");
+    if (mode === "wait") {
+      return;
+    }
     let i = 0;
     const id = setInterval(() => {
       i += 1;
@@ -117,43 +140,99 @@ function useTypewriter(text: string, active: boolean, speed = 28) {
       if (i >= text.length) clearInterval(id);
     }, speed);
     return () => clearInterval(id);
-  }, [text, active, speed]);
+  }, [text, mode, speed]);
   return out;
 }
 
 export function McpDemo() {
   const [active, setActive] = React.useState(0);
-  const tool: Tool = tools[active] ?? tools[0]!;
-  const typed = useTypewriter(tool.prompt, true);
+  // Tools the visitor has already looked at: they render whole, no retyping.
+  const [seen, setSeen] = React.useState<ReadonlySet<string>>(() => new Set());
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const inView = useInView(rootRef, { once: true, margin: "-80px" });
+
+  const tool = tools[active] ?? (tools[0] as Tool);
+  const mode: TypingMode = seen.has(tool.id) ? "instant" : inView ? "type" : "wait";
+  const typed = useTypewriter(tool.prompt, mode);
   const done = typed.length >= tool.prompt.length;
+  const instant = mode === "instant";
+
+  const select = (next: number) => {
+    const index = (next + tools.length) % tools.length;
+    setSeen((prev) => (prev.has(tool.id) ? prev : new Set(prev).add(tool.id)));
+    setActive(index);
+    document.getElementById(`mcp-tab-${tools[index]?.id}`)?.focus();
+  };
+
+  const onTabKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      select(active + 1);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      select(active - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      select(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      select(tools.length - 1);
+    }
+  };
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-[0_30px_80px_-30px_rgb(0_0_0_/_0.3)]">
+    <div
+      ref={rootRef}
+      className="overflow-hidden rounded-2xl border border-border bg-surface shadow-[0_30px_80px_-30px_rgb(0_0_0_/_0.3)]"
+    >
       <div className="flex items-center gap-2 border-b border-border bg-surface-elevated/60 px-4 py-3">
         <span className="h-3 w-3 rounded-full bg-border-strong" />
         <span className="h-3 w-3 rounded-full bg-border-strong" />
         <span className="h-3 w-3 rounded-full bg-border-strong" />
         <span className="ml-3 font-mono text-[11px] text-muted">nativelink-mcp · 5 tools</span>
+        <span className="ml-auto hidden font-mono text-[11px] text-muted-foreground sm:inline">
+          Pick a tool to see what it returns
+        </span>
       </div>
 
-      <div className="flex flex-wrap gap-1 border-b border-border px-3 pt-3">
-        {tools.map((t, i) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setActive(i)}
-            className={`rounded-t-md px-3 py-2 font-mono text-[12px] transition-colors ${
-              i === active
-                ? "bg-background text-brand"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {t.tab}
-          </button>
-        ))}
+      <div
+        role="tablist"
+        aria-label="NativeLink MCP tools"
+        onKeyDown={onTabKeyDown}
+        className="flex flex-wrap gap-1.5 border-b border-border px-3 py-3"
+      >
+        {tools.map((t, i) => {
+          const selected = i === active;
+          return (
+            <button
+              key={t.id}
+              id={`mcp-tab-${t.id}`}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              aria-controls={`mcp-panel-${t.id}`}
+              tabIndex={selected ? 0 : -1}
+              onClick={() => select(i)}
+              className={cn(
+                "inline-flex min-h-[36px] cursor-pointer items-center rounded-full border px-3.5 font-mono text-[12px] transition-colors",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60",
+                selected
+                  ? "border-brand/40 bg-brand-soft text-brand"
+                  : "border-border bg-surface text-muted-foreground hover:border-border-strong hover:bg-surface-elevated hover:text-foreground",
+              )}
+            >
+              {t.tab}
+            </button>
+          );
+        })}
       </div>
 
-      <div className="bg-background p-5 font-mono text-[13px] leading-relaxed md:p-6">
+      <div
+        role="tabpanel"
+        id={`mcp-panel-${tool.id}`}
+        aria-labelledby={`mcp-tab-${tool.id}`}
+        className="bg-background p-5 font-mono text-[13px] leading-relaxed md:p-6"
+      >
         <p className="mb-1 text-[11px] uppercase tracking-[0.14em] text-muted-foreground/70">
           {tool.name}
         </p>
@@ -161,7 +240,9 @@ export function McpDemo() {
           <span className="select-none text-brand">›</span>
           <span>
             {typed}
-            {!done && <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-brand align-middle" />}
+            {!done && (
+              <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-brand align-middle" />
+            )}
           </span>
         </div>
 
@@ -182,7 +263,7 @@ export function McpDemo() {
                   }}
                   initial="hidden"
                   animate="visible"
-                  transition={{ delay: i * 0.05, duration: 0.25 }}
+                  transition={instant ? { duration: 0 } : { delay: i * 0.05, duration: 0.25 }}
                   className={`whitespace-pre-wrap break-words ${toneClass[line.tone ?? "default"]}`}
                 >
                   {line.text}

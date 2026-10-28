@@ -33,7 +33,8 @@
     "./site-footer": "./src/components/site-footer.tsx",
     "./site-header": "./src/components/site-header.tsx",
     "./stat": "./src/components/stat.tsx",
-    "./video-embed": "./src/components/video-embed.tsx"
+    "./video-embed": "./src/components/video-embed.tsx",
+    "./video-facade": "./src/components/video-facade.tsx"
   },
   "peerDependencies": {
     "react": "^19.0.0",

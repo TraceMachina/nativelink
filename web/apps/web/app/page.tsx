@@ -8,7 +8,16 @@ import {
   ThirdWaveLogo,
 } from "@/components/customer-logos";
 import { McpDemo } from "@/components/mcp-demo";
-import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
+import {
+  Badge,
+  Button,
+  Eyebrow,
+  HeroVisual,
+  Marquee,
+  Reveal,
+  Section,
+  VideoFacade,
+} from "@nativelink/ui";
 
 export const metadata = {
   title: "NativeLink — Build infrastructure for the agentic era",
@@ -193,17 +202,12 @@ export default function HomePage() {
             </Reveal>
 
             <Reveal delay={0.15}>
-              <div className="relative w-full overflow-hidden rounded-2xl border border-border shadow-[0_30px_80px_-25px_rgb(0_0_0_/_0.25)]">
-                <iframe
-                  className="aspect-video w-full"
-                  src="https://www.youtube.com/embed/WLpqFuyLMUQ?si=ZIqaR3taGNgXEyE_"
-                  title="YouTube video player"
-                  frameBorder="0"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  referrerPolicy="strict-origin-when-cross-origin"
-                  allowFullScreen
-                />
-              </div>
+              <VideoFacade
+                youtubeId="WLpqFuyLMUQ"
+                title="NativeLink, explained in 90 seconds"
+                subtitle="What a remote build cache does, and why agents make it urgent."
+                duration="1:30"
+              />
             </Reveal>
           </div>
         </Section>
@@ -254,6 +258,15 @@ export default function HomePage() {
         <Reveal delay={0.08}>
           <div className="mx-auto max-w-[820px]">
             <McpDemo />
+            <div className="mt-6 flex flex-col items-center justify-between gap-4 rounded-2xl border border-border bg-surface px-6 py-5 text-center sm:flex-row sm:text-left">
+              <p className="text-[15px] leading-relaxed text-muted-foreground">
+                Add <span className="font-mono text-foreground">nativelink-mcp</span> to Claude
+                Code, Cursor or Codex. It ships with NativeLink Enterprise.
+              </p>
+              <Button variant="outline" asChild className="shrink-0">
+                <a href="/contact">Talk to us</a>
+              </Button>
+            </div>
           </div>
         </Reveal>
       </Section>
