@@ -293,8 +293,9 @@ async fn inner_main(
 
     let mut action_schedulers = HashMap::new();
     let mut worker_schedulers = HashMap::new();
+    let mut resource_sketches = HashMap::new();
     for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
-        let (maybe_action_scheduler, maybe_worker_scheduler) =
+        let (maybe_action_scheduler, maybe_worker_scheduler, maybe_resource_sketch) =
             scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
                 .await
                 .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
@@ -303,6 +304,9 @@ async fn inner_main(
         }
         if let Some(worker_scheduler) = maybe_worker_scheduler {
             worker_schedulers.insert(name.clone(), worker_scheduler.clone());
+        }
+        if let Some(resource_sketch) = maybe_resource_sketch {
+            resource_sketches.insert(name.clone(), resource_sketch);
         }
     }
 
@@ -463,6 +467,7 @@ async fn inner_main(
             let worker_schedulers = Arc::new(worker_schedulers.clone());
             let listing_worker_schedulers = worker_schedulers.clone();
             let listing_action_schedulers = Arc::new(action_schedulers.clone());
+            let listing_resource_sketches = Arc::new(resource_sketches.clone());
             // Read-only views for the provisioner and operators: what the
             // scheduler has connected and what it has queued, with the
             // reservations the queued actions carry.
@@ -502,6 +507,40 @@ async fn inner_main(
                                 (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:?}"))
                             })
                     }),
+                )
+                // What the scheduler reserves for each kind of action it has
+                // measured, in the hints-file shape, so the UI shows what the
+                // scheduler uses and a new fleet can be seeded from an old one.
+                // `family=target|mnemonic|command` and `limit=N` narrow it.
+                .route(
+                    "/scheduler/{instance_name}/hints",
+                    axum::routing::get(
+                        move |params: axum::extract::Path<String>,
+                              axum::extract::RawQuery(query): axum::extract::RawQuery| async move {
+                            let instance_name = params.0;
+                            // Two plain parameters; no need for the query feature.
+                            let param = |name: &str| -> Option<String> {
+                                query.as_deref()?.split('&').find_map(|pair| {
+                                    let (key, value) = pair.split_once('=')?;
+                                    (key == name).then(|| value.to_string())
+                                })
+                            };
+                            let Some(sketch) = listing_resource_sketches.get(&instance_name)
+                            else {
+                                return Err((
+                                    StatusCode::NOT_FOUND,
+                                    format!("No historical_resource scheduler named '{instance_name}'"),
+                                ));
+                            };
+                            nativelink_scheduler::admin::hints_json(
+                                sketch,
+                                param("family").as_deref(),
+                                param("limit").and_then(|limit| limit.parse().ok()),
+                            )
+                            .map(json_response)
+                            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Error: {e:?}")))
+                        },
+                    ),
                 );
             svc = svc.nest_service(
                 path,

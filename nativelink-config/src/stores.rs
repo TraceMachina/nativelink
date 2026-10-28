@@ -2018,8 +2018,13 @@ pub struct RedisSpec {
     /// This trades data for a bound. Anything not consumed within the window
     /// is deleted, so the value has to exceed the longest consumer outage you
     /// intend to survive, and it must also exceed how long a single upload can
-    /// take: the temp key an upload builds carries this same TTL, so a value
-    /// below the upload duration would expire the write in flight.
+    /// take: the temp key an upload builds carries this same TTL, and an
+    /// upload that outlives it fails rather than publishing a key that was
+    /// recreated without its first chunks.
+    ///
+    /// Unset, the temp key still expires, after an hour, so an upload that
+    /// stops part way (its client gone, the process gone) never leaves a key
+    /// behind for good. Nothing else cleans those up.
     ///
     /// Zero disables expiry. One second is the smallest value that enables it,
     /// and any value that small is almost certainly a mistake.

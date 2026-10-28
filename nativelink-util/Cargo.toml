@@ -36,7 +36,6 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
   "metrics",
   "tls-ring",
   "trace",
-  "zstd-tonic",
 ] }
 opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false, features = [
   "default",
@@ -97,7 +96,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
 ] }
 walkdir = { version = "2.5.0", default-features = false }
 wincode = { version = "0.5.4", default-features = false, features = ["derive"] }
-zstd = { version = "0.13.3", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 
 [dev-dependencies]
 anyhow = { version = "1.0.103", default-features = false }

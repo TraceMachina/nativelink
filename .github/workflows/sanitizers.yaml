@@ -41,6 +41,9 @@ jobs:
         uses: >- # v6.0.2
           actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
       - name: Free disk space
         uses: ./.github/actions/free-disk
 

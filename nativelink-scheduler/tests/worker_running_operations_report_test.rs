@@ -116,6 +116,7 @@ async fn dispatched() -> Result<Fixture, Error> {
         0,
         Arc::new(WorkerRegistry::new()),
         None,
+        None,
         false,
         Duration::from_secs(15),
         "scheduler".to_string(),

@@ -86,7 +86,7 @@ bounding how much work you can have in flight.
 | `connection_timeout_ms` | 3000 | Ceiling on establishing a connection |
 | `health_check_timeout_ms` | 4000 | Ceiling on the health-check `PING` |
 | `scan_count` | 10000 | `COUNT` hint per `SCAN` iteration |
-| `key_ttl_s` | 0 (never) | Expiry set on every key this store writes; must exceed the longest upload |
+| `key_ttl_s` | 0 (never) | Expiry set on every key this store writes; must exceed the longest gap between two chunks of an upload. Unset, only an upload's temp key expires, an hour after its last chunk |
 
 `max_client_permits` is the most useful lever. It exists precisely to stop
 timeouts caused by many, many inflight actions: when the ceiling is reached,
@@ -229,7 +229,11 @@ size.
 NativeLink does not evict from Redis; that's the instance's `maxmemory` and
 `maxmemory-policy`. The one knob on this side is `key_ttl_s`, which puts an
 expiry on every key the store writes (meant for stores whose consumer can
-stop, not for scheduler state). Set the Redis-side limits, and reconsider
+stop, not for scheduler state). An upload's `temp-*` key always has one,
+`key_ttl_s` or an hour, armed again by every chunk and deleted when the
+upload fails or its client goes away, so abandoned uploads do not
+accumulate; an upload that sends nothing for that long is refused and the
+client sends it again. Set the Redis-side limits, and reconsider
 whether the bulk CAS should live here at all. For large blobs, a filesystem or object store tier is both
 cheaper and better suited.
 

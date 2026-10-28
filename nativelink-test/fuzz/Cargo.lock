@@ -1070,6 +1070,8 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "nativelink-config",
+ "nativelink-proto",
+ "prost",
  "serde_json5",
 ]
 

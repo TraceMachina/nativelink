@@ -200,6 +200,7 @@ async fn setup_api_server_with(
         dispatch_ack_timeout_s,
         worker_registry,
         None,
+        None,                    // resource_sketch
         false,                   // has_peers
         Duration::from_secs(15), // record_ttl (unused while has_peers = false)
         "scheduler".to_string(),
