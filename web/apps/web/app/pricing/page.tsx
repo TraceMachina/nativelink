@@ -76,7 +76,7 @@ function Cell({ value }: { value: ComparisonValue }) {
         href={value.href}
         target="_blank"
         rel="noreferrer"
-        className="font-mono text-sm text-brand underline-offset-4 hover:underline"
+        className="font-mono text-xs text-brand underline-offset-4 hover:underline sm:text-sm"
       >
         {value.text}
       </a>
@@ -95,7 +95,7 @@ function Cell({ value }: { value: ComparisonValue }) {
       </span>
     );
   }
-  return <span className="font-mono text-sm text-foreground">{value}</span>;
+  return <span className="font-mono text-xs text-foreground sm:text-sm">{value}</span>;
 }
 
 export default function PricingPage() {
@@ -218,7 +218,7 @@ export default function PricingPage() {
                 <tr>
                   <th
                     scope="col"
-                    className="sticky top-16 z-10 w-[40%] border-b border-border bg-surface-elevated px-4 sm:px-6 py-4 text-left align-bottom font-mono text-[10px] uppercase tracking-widest text-muted"
+                    className="sticky top-16 z-10 w-[40%] border-b border-border bg-surface-elevated px-3 sm:px-6 py-4 text-left align-bottom font-mono text-[10px] uppercase tracking-widest text-muted"
                   >
                     Feature
                   </th>
@@ -226,7 +226,7 @@ export default function PricingPage() {
                     <th
                       key={tier.key}
                       scope="col"
-                      className="sticky top-16 z-10 border-b border-border bg-surface-elevated px-4 sm:px-6 py-4 text-left align-bottom"
+                      className="sticky top-16 z-10 border-b border-border bg-surface-elevated px-3 sm:px-6 py-4 text-left align-bottom"
                     >
                       <span className="block font-mono text-[10px] uppercase tracking-widest text-muted">
                         {tier.name}
@@ -244,7 +244,7 @@ export default function PricingPage() {
               <tbody>
                 {universal.length > 0 ? (
                   <tr className="bg-brand-soft/30">
-                    <td className="border-b border-border px-4 sm:px-6 py-4 align-top">
+                    <td className="border-b border-border px-3 sm:px-6 py-4 align-top">
                       <span className="block text-[15px] font-medium text-foreground">
                         Core platform, included in every tier
                       </span>
@@ -255,7 +255,7 @@ export default function PricingPage() {
                     {tiers.map((tier) => (
                       <td
                         key={tier.key}
-                        className="border-b border-border px-4 sm:px-6 py-4 align-top"
+                        className="border-b border-border px-3 sm:px-6 py-4 align-top"
                       >
                         <Cell value={true} />
                       </td>
@@ -267,18 +267,18 @@ export default function PricingPage() {
                     <tr>
                       <td
                         colSpan={tiers.length + 1}
-                        className="border-b border-border bg-foreground/[0.015] px-4 sm:px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+                        className="border-b border-border bg-foreground/[0.015] px-3 sm:px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
                       >
                         {group.section}
                       </td>
                     </tr>
                     {group.rows.map((row) => (
                       <tr key={row.label}>
-                        <td className="border-b border-border px-4 sm:px-6 py-4 text-[15px] text-foreground">
+                        <td className="border-b border-border px-3 sm:px-6 py-4 text-sm text-foreground sm:text-[15px]">
                           {row.label}
                         </td>
                         {tiers.map((tier) => (
-                          <td key={tier.key} className="border-b border-border px-4 sm:px-6 py-4">
+                          <td key={tier.key} className="border-b border-border px-3 sm:px-6 py-4">
                             <Cell value={row[tier.key]} />
                           </td>
                         ))}
@@ -289,11 +289,11 @@ export default function PricingPage() {
               </tbody>
               <tfoot>
                 <tr>
-                  <td className="px-4 sm:px-6 py-5 font-mono text-[10px] uppercase tracking-widest text-muted">
+                  <td className="px-3 sm:px-6 py-5 font-mono text-[10px] uppercase tracking-widest text-muted">
                     Next step
                   </td>
                   {tiers.map((tier) => (
-                    <td key={tier.key} className="px-4 sm:px-6 py-5 align-top">
+                    <td key={tier.key} className="px-3 sm:px-6 py-5 align-top">
                       {/* Wrapping label and full width: a no-wrap button is wider than a
                           phone-width column and the clipped wrapper would cut it off. */}
                       <Button
