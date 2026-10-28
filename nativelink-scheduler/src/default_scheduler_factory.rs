@@ -144,18 +144,18 @@ async fn inner_scheduler_factory(
                     }
                 }
             }
-            // The sketch outlives this layer's construction: the worker
+            // When learning is enabled, the worker
             // scheduler below feeds it, this layer reads it, and the admin
             // API lists it. A snapshot in the named store is what a restart
             // starts from; the hints file only seeds an empty sketch.
             let sketch = Arc::new(HistoricalResourceScheduler::sketch_from_spec(spec));
-            let snapshot_store = match &spec.snapshot_store {
-                Some(name) => Some(
+            let snapshot_store = match (&spec.snapshot_store, spec.learn_from_workers) {
+                (Some(name), true) => Some(
                     store_manager
                         .get_store(name)
                         .err_tip(|| format!("'snapshot_store': '{name}' does not exist"))?,
                 ),
-                None => None,
+                _ => None,
             };
             let snapshot_key = snapshot_key(&replica_id());
             if let Some(store) = &snapshot_store {
@@ -170,7 +170,7 @@ async fn inner_scheduler_factory(
                 &spec.scheduler,
                 store_manager,
                 maybe_origin_event_tx,
-                Some(sketch.clone()),
+                spec.learn_from_workers.then(|| sketch.clone()),
             ))
             .await
             .err_tip(|| "In nested HistoricalResourceScheduler construction")?;
@@ -179,16 +179,18 @@ async fn inner_scheduler_factory(
                 action_scheduler.err_tip(|| "Nested scheduler is not an action scheduler")?,
                 sketch.clone(),
             ));
-            HistoricalResourceScheduler::spawn_snapshot_writer(
-                sketch.clone(),
-                snapshot_store,
-                Duration::from_secs(spec.snapshot_interval_s),
-                snapshot_key,
-            );
+            if spec.learn_from_workers {
+                HistoricalResourceScheduler::spawn_snapshot_writer(
+                    sketch.clone(),
+                    snapshot_store,
+                    Duration::from_secs(spec.snapshot_interval_s),
+                    snapshot_key,
+                );
+            }
             (
                 Some(historical_resource_scheduler),
                 worker_scheduler,
-                Some(sketch),
+                spec.learn_from_workers.then_some(sketch),
             )
         }
     };

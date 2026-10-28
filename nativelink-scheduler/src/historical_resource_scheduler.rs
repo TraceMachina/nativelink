@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Sizes actions from what the scheduler itself measured. Every sampled
-//! usage report the workers send lands in a [`ResourceSketch`]; an action
+//! Sizes actions from a periodically refreshed hints file by default.
+//! With learning enabled, sampled worker usage lands in a [`ResourceSketch`]; an action
 //! is reserved what the sketch has learned for its key, shaped with the
 //! headroom and the ladder configured here, or by the cold-start policy
 //! when the sketch has nothing. The sketch is written to a store so a
@@ -33,7 +33,6 @@ use nativelink_metric::{
     MetricFieldData, MetricKind, MetricPublishKnownKindData, MetricsComponent, RootMetricsComponent,
 };
 use nativelink_util::action_messages::{ActionInfo, OperationId};
-use nativelink_util::background_spawn;
 use nativelink_util::metrics::{
     record_hint_resolution, record_hints_family, record_hints_snapshot,
     record_hints_snapshot_failure,
@@ -43,6 +42,7 @@ use nativelink_util::operation_state_manager::{
 };
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_from_baggage};
 use nativelink_util::store_trait::{Store, StoreKey, StoreLike};
+use nativelink_util::{background_spawn, spawn_blocking};
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::Context;
 use parking_lot::Mutex;
@@ -59,9 +59,6 @@ use crate::resource_sketch::{
 /// one key per scheduler replica; see [`snapshot_key`].
 pub const SNAPSHOT_KEY_PREFIX: &str = "historical_resource_sketch/";
 
-/// The first string past every key under the prefix, for a listing.
-const SNAPSHOT_KEY_PREFIX_END: &str = "historical_resource_sketch0";
-
 /// The key the store is probed with at start; outside the prefix, so a
 /// listing never reads it as a snapshot.
 const SNAPSHOT_PROBE_KEY: &str = "historical_resource_sketch.probe";
@@ -74,7 +71,7 @@ pub fn snapshot_key(replica: &str) -> String {
 
 /// The replica this process writes its snapshot as: the pod's hostname,
 /// else a fresh id. Every replica sees the usage of the workers connected
-/// to it and no other, so each writes its own key and a start merges them.
+/// to it and no other, so each writes and restores only its own key.
 #[must_use]
 pub fn replica_id() -> String {
     std::env::var("HOSTNAME")
@@ -94,10 +91,8 @@ struct HistoricalResourceHint {
     action_mnemonic: Option<String>,
     #[serde(default)]
     command_digest: Option<String>,
-    /// Accepted from older files; the sketch has no family for it, so a
-    /// hint with nothing else is skipped.
+    /// Used by file-backed hints. Learning keys by command instead.
     #[serde(default)]
-    #[expect(dead_code, reason = "accepted from older files; not a sketch key")]
     action_digest: Option<String>,
     #[serde(default)]
     cpu_count: Option<u64>,
@@ -120,7 +115,45 @@ fn normalize_digest_key(digest: &str) -> String {
     digest.trim().replace('/', "-")
 }
 
+#[derive(Clone, Debug, Default, Hash, PartialEq, Eq)]
+struct HintKey {
+    target_id: Option<String>,
+    action_mnemonic: Option<String>,
+    command_digest: Option<String>,
+    action_digest: Option<String>,
+}
+
 impl HistoricalResourceHint {
+    fn keys(&self) -> Vec<HintKey> {
+        let mut keys = Vec::new();
+        if self.target_id.is_some() || self.action_mnemonic.is_some() {
+            keys.push(HintKey {
+                target_id: self.target_id.clone(),
+                action_mnemonic: self.action_mnemonic.clone(),
+                ..HintKey::default()
+            });
+        }
+        for (digest, action) in [
+            (self.action_digest.as_deref(), true),
+            (self.command_digest.as_deref(), false),
+        ] {
+            if let Some(digest) = digest.map(normalize_digest_key).filter(|d| !d.is_empty()) {
+                keys.push(if action {
+                    HintKey {
+                        action_digest: Some(digest),
+                        ..HintKey::default()
+                    }
+                } else {
+                    HintKey {
+                        command_digest: Some(digest),
+                        ..HintKey::default()
+                    }
+                });
+            }
+        }
+        keys
+    }
+
     fn memory_kb(&self) -> Option<u64> {
         self.memory_kb.or_else(|| {
             self.memory_mib
@@ -240,6 +273,130 @@ fn now_s() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// A complete file generation is swapped under one short lock. File reads,
+/// parsing and disposal of the old generation happen outside Execute.
+struct FileHints {
+    path: String,
+    classes: Vec<SizeClassSpec>,
+    reserved: Reserved,
+    hints: Mutex<HashMap<HintKey, Numbers>>,
+}
+
+impl FileHints {
+    fn refresh(&self) {
+        let parsed = fs::read_to_string(&self.path)
+            .map_err(|e| e.to_string())
+            .and_then(|contents| {
+                serde_json::from_str::<HistoricalResourceHintFile>(&contents)
+                    .map_err(|e| e.to_string())
+            });
+        let mut hints = match parsed {
+            Ok(file) => file.into_hints(),
+            Err(error) => {
+                warn!(%error, "Could not refresh resource hints; keeping previous generation");
+                return;
+            }
+        };
+        hints.sort_by_key(|hint| core::cmp::Reverse(hint.keys().len()));
+        let mut next = HashMap::new();
+        for hint in hints {
+            let class = hint
+                .class
+                .as_ref()
+                .and_then(|name| self.classes.iter().find(|c| &c.name == name))
+                .map_or_else(Numbers::default, Numbers::from);
+            let numbers = Numbers {
+                cpu_count: if self.reserved.cpu {
+                    hint.cpu_count.unwrap_or(class.cpu_count)
+                } else {
+                    0
+                },
+                memory_kb: if self.reserved.memory {
+                    hint.memory_kb().unwrap_or(class.memory_kb)
+                } else {
+                    0
+                },
+                disk_kb: if self.reserved.disk {
+                    hint.disk_kb.unwrap_or(class.disk_kb)
+                } else {
+                    0
+                },
+            };
+            for key in hint.keys() {
+                next.insert(key, numbers);
+            }
+        }
+        let old = { core::mem::replace(&mut *self.hints.lock(), next) };
+        drop(old);
+    }
+
+    fn new(spec: &HistoricalResourceSpec) -> Arc<Self> {
+        let this = Arc::new(Self {
+            path: spec.hints_file.clone(),
+            classes: spec.classes.clone(),
+            reserved: Reserved::from_spec(spec),
+            hints: Mutex::new(HashMap::new()),
+        });
+        if this.path.is_empty() {
+            return this;
+        }
+        this.refresh();
+        if spec.refresh_interval_s > 0 {
+            let weak = Arc::downgrade(&this);
+            let interval = Duration::from_secs(spec.refresh_interval_s);
+            background_spawn!("historical_resource_file_refresh", async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let Some(this) = weak.upgrade() else {
+                        break;
+                    };
+                    if let Err(error) =
+                        spawn_blocking!("refresh_resource_hints", move || this.refresh()).await
+                    {
+                        warn!(?error, "Resource hints refresh task failed");
+                    }
+                }
+            });
+        }
+        this
+    }
+
+    fn lookup(
+        &self,
+        action: &ActionInfo,
+        target: Option<&String>,
+        mnemonic: Option<&String>,
+    ) -> Option<Numbers> {
+        let keys = [
+            target.zip(mnemonic).map(|(t, m)| HintKey {
+                target_id: Some(t.clone()),
+                action_mnemonic: Some(m.clone()),
+                ..HintKey::default()
+            }),
+            target.map(|t| HintKey {
+                target_id: Some(t.clone()),
+                ..HintKey::default()
+            }),
+            Some(HintKey {
+                action_digest: Some(action.digest().to_string()),
+                ..HintKey::default()
+            }),
+            Some(HintKey {
+                command_digest: Some(action.command_digest.to_string()),
+                ..HintKey::default()
+            }),
+            mnemonic.map(|m| HintKey {
+                action_mnemonic: Some(m.clone()),
+                ..HintKey::default()
+            }),
+        ];
+        let hints = self.hints.lock();
+        keys.iter()
+            .flatten()
+            .find_map(|key| hints.get(key).copied())
+    }
+}
+
 pub struct HistoricalResourceScheduler {
     cpu_property_name: String,
     memory_property_name: String,
@@ -252,6 +409,7 @@ pub struct HistoricalResourceScheduler {
     scheduler: Option<Arc<dyn KnownPlatformPropertyProvider>>,
     known_properties: Mutex<HashMap<String, Vec<String>>>,
     sketch: Arc<ResourceSketch>,
+    file_hints: Option<Arc<FileHints>>,
 }
 
 impl core::fmt::Debug for HistoricalResourceScheduler {
@@ -315,8 +473,9 @@ impl HistoricalResourceScheduler {
             scheduler: Some(scheduler),
             known_properties: Mutex::new(HashMap::new()),
             sketch,
+            file_hints: (!spec.learn_from_workers).then(|| FileHints::new(spec)),
         };
-        if !spec.hints_file.is_empty() {
+        if spec.learn_from_workers && !spec.hints_file.is_empty() {
             let stats = this.sketch.stats();
             if stats.entries.iter().sum::<usize>() == 0 {
                 this.seed_from_file(&spec.hints_file);
@@ -367,80 +526,40 @@ impl HistoricalResourceScheduler {
         Ok(())
     }
 
-    /// Loads every snapshot under [`SNAPSHOT_KEY_PREFIX`] in `store` into
-    /// `sketch`, merged: each scheduler replica writes what the workers
-    /// connected to it reported, and a start wants all of it. A store that
-    /// cannot list keys yields this replica's own snapshot only. No
-    /// snapshot, an unreadable one and one of another sampler generation
-    /// are logged and skipped; the seed, if any, follows an empty sketch.
+    /// Restore only this replica's own observations. Loading every replica
+    /// then publishing that merged view double-counts history on the next
+    /// rolling restart. Cross-replica history needs provenance before it can
+    /// be persisted safely; replica replacement currently starts from its seed.
     pub async fn load_snapshots(sketch: &ResourceSketch, store: &Store, own_key: &str) {
-        let mut keys: Vec<String> = Vec::new();
-        let listed = store
-            .list(
-                StoreKey::Str(SNAPSHOT_KEY_PREFIX.into())
-                    ..StoreKey::Str(SNAPSHOT_KEY_PREFIX_END.into()),
-                |key| {
-                    if let StoreKey::Str(name) = key {
-                        keys.push(name.to_string());
-                    }
-                    true
-                },
+        let bytes = match store
+            .get_part_unchunked(
+                StoreKey::Str(own_key.into()),
+                0,
+                Some(sketch.snapshot_byte_limit()),
             )
-            .await;
-        match listed {
-            Ok(_) => {}
-            Err(err) if err.code == Code::Unimplemented => {
-                info!("The snapshot store cannot list keys; only this replica's snapshot is read");
-                keys.clear();
-            }
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(err) if err.code == Code::NotFound => return,
             Err(err) => {
                 warn!(
                     ?err,
-                    "Could not list the resource sketch snapshots; only this replica's is read"
+                    "Could not read this replica's resource sketch; using seed"
                 );
-                keys.clear();
+                return;
             }
-        }
-        if !keys.iter().any(|key| key == own_key) {
-            keys.push(own_key.to_string());
-        }
-        let now = now_s();
-        let (mut snapshots, mut loaded) = (0usize, 0usize);
-        for key in keys {
-            let bytes = match store
-                .get_part_unchunked(StoreKey::Str(key.as_str().into()), 0, None)
-                .await
-            {
-                Ok(bytes) => bytes,
-                Err(err) if err.code == Code::NotFound => continue,
-                Err(err) => {
-                    warn!(
-                        ?err,
-                        key, "Could not read a resource sketch snapshot; skipped"
-                    );
-                    continue;
-                }
-            };
-            match Snapshot::decode(&bytes).and_then(|snapshot| {
-                let age_s = now.saturating_sub(snapshot.written_at_s);
-                sketch.load(snapshot, now).map(|entries| (entries, age_s))
-            }) {
-                Ok((entries, age_s)) => {
-                    debug!(key, entries, age_s, "Loaded a resource sketch snapshot");
-                    snapshots += 1;
-                    loaded += entries;
-                }
-                Err(err) => warn!(?err, key, "Resource sketch snapshot not loaded; skipped"),
-            }
-        }
-        if snapshots == 0 {
-            debug!("No resource sketch snapshot; the sketch starts empty");
-        } else {
-            info!(snapshots, loaded, "Loaded the resource sketch snapshots");
+        };
+        let budget = sketch.budget();
+        let max_entries = budget.target + budget.mnemonic + budget.command;
+        match Snapshot::decode(&bytes, max_entries)
+            .and_then(|snapshot| sketch.load(snapshot, now_s()))
+        {
+            Ok(entries) => info!(entries, "Restored this replica's resource sketch"),
+            Err(err) => warn!(?err, "Resource sketch not loaded; using seed"),
         }
     }
 
-    /// Every `interval`: ages the sketch (the window and the daily decay
+    /// Every `interval`: ages the sketch (the two half-windows
     /// are enforced here, store or not), writes it to `store` under `key`
     /// when there is one, and reports its size. Without a store, or with
     /// an interval of zero, the tick is a minute and the write is skipped.
@@ -470,7 +589,7 @@ impl HistoricalResourceScheduler {
                     );
                 }
                 if let Some(store) = &write {
-                    let bytes = sketch.snapshot(now).encode();
+                    let bytes = sketch.encode_snapshot(now);
                     let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
                     match store
                         .update_oneshot(StoreKey::Str(key.as_str().into()), Bytes::from(bytes))
@@ -829,12 +948,18 @@ impl ClientStateManager for HistoricalResourceScheduler {
         // An entry that shapes to all zero (nothing measured on a dimension
         // the fleet reserves) reserves nothing, so it is no hint: the
         // cold-start policy applies and the metric says so.
-        let hint = self
-            .hint_for_action(&action_info, target_id.as_ref(), action_mnemonic.as_ref())
-            .map(|(entry, source)| (self.sketch.shape(&entry), source))
-            .filter(|(shaped, _)| !shaped.is_empty());
+        let hint = if let Some(file) = &self.file_hints {
+            file.lookup(&action_info, target_id.as_ref(), action_mnemonic.as_ref())
+                .map(|numbers| (numbers, "file"))
+        } else {
+            self.hint_for_action(&action_info, target_id.as_ref(), action_mnemonic.as_ref())
+                .map(|(entry, source)| (self.sketch.shape(&entry), source))
+                .filter(|(shaped, _)| !shaped.is_empty())
+                .map(|(shaped, source)| (Numbers::from(&shaped), source))
+        }
+        .filter(|(numbers, _)| *numbers != Numbers::default());
         if let Some((shaped, source)) = hint {
-            self.apply_minimums(Arc::make_mut(&mut action_info), Numbers::from(&shaped));
+            self.apply_minimums(Arc::make_mut(&mut action_info), shaped);
             record_hint_resolution(source);
         } else {
             let numbers = self.cold_start_numbers(&action_info, action_mnemonic.as_ref());

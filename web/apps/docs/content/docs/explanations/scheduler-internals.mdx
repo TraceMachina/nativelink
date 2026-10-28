@@ -229,8 +229,14 @@ and do not spend `max_job_retries`. The execution histograms carry an
 `execution.outcome` attribute so the killed samples can be told from the
 completed ones.
 
-The `historical_resource` scheduler that fills reservations sizes an action
-from what the scheduler itself measured. Every sampled usage report a worker
+The `historical_resource` scheduler uses `hints_file` by default. It loads the
+file at startup and refreshes it in the background at `refresh_interval_s`
+(zero means once), preserving the last usable generation after a failed read.
+An existing configuration does not switch to learning automatically.
+
+Set `learn_from_workers: true` to size actions from worker measurements.
+In this mode the file is only a seed for an empty sketch, and its first real
+sample replaces each seeded entry. Every sampled usage report a worker
 sends lands in a bounded sketch: one entry per key with 25-bucket log2
 histograms of peak memory, CPU and disk, the exact maxima, the reservation
 the action was last killed at, and when it was last seen. The key is the
@@ -243,9 +249,10 @@ that names both is recorded under its mnemonic as well, so a target the
 sketch has never seen is sized from its kind of action rather than the cold
 start. A lookup walks that ladder most specific first and reserves the 95th
 percentile bucket's upper bound, capped by the exact maximum, plus
-`headroom_percent`, never at or below the kill. Within the window a sample
-weighs half as much each day, so what a key used last week stops shaping
-it, and a kill floor expires with the window. **`classes`** on the same scheduler defines the
+`headroom_percent`, never at or below the kill. Two half-window histograms
+retain samples for between half and one full `window_days` window, and a
+kill floor expires with the window. Wide histogram counters preserve the
+relative weights of common and rare observations. **`classes`** on the same scheduler defines the
 fleet's size ladder: named points with `cpu_count`, `memory_kb` and
 `disk_kb`, listed ascending, and a hint takes the smallest class that holds
 its numbers on every dimension the class names. An action the sketch has
@@ -256,18 +263,30 @@ nothing for takes the class picked by `class_by_mnemonic`, then
 kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
 
-The sketch lives within `memory_budget_bytes` (keys the fleet has not run
-for `window_days` are forgotten, and a full family evicts its least
-recently seen key), split over shards by key hash so a snapshot never holds
-up the Execute path. Each scheduler replica sees only the workers connected
-to it, so each writes its own snapshot to `snapshot_store` every
-`snapshot_interval_s` under `historical_resource_sketch/<hostname>`, and a
-start reads every replica's snapshot and merges them; the store must take a
-string key, which the start probes. The admin API's
-`/scheduler/{instance}/hints` lists what it reserves for every key in the
-`hints_file` shape, which is how a new fleet is seeded from an old one: the
-file is read once into an empty sketch and a seeded hint stands until the
-first real sample of its key replaces it.
+The `memory_budget_bytes` accounting includes entry storage, variable-length
+keys, map bookkeeping, probation and reserved snapshot working memory. One
+quarter funds resident data; the remainder reserves space for snapshot encoding
+and loading. Long keys reduce the number of entries that fit. This accounting
+is not a total process RSS limit. Old keys expire after `window_days`, and full
+families evict their least recently used entries. The writer encodes directly
+from one shard at a time instead of cloning the entire sketch; lock contention
+and snapshot latency still need workload measurements.
+
+Each scheduler replica writes and restores only its own
+`snapshot_store` key, `historical_resource_sketch/<hostname>`, every
+`snapshot_interval_s`. It does not merge other replicas' snapshots, because
+republishing a merged history double-counts it at the next restart. Use stable
+replica identities and a separate snapshot store/prefix for each logical
+scheduler. A replacement with a new identity starts from its seed. Snapshot
+version 3 uses wide counters; older snapshots are skipped with a warning,
+so rolling back the binary does not preserve new learned history. Snapshot
+reads are bounded before decoding. Retired replica keys need store eviction
+or a TTL. Zero disables periodic writes; shutdown does not flush them.
+
+In learning mode the admin API's `/scheduler/{instance}/hints` exports the
+current shaped reservations as a hints file. Switching back to file-backed
+mode restores the configured file and refresh interval, not the learned state.
+Preserve the last known-good file as the rollback source.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 

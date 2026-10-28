@@ -721,7 +721,15 @@ pub struct TimeoutClassSpec {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HistoricalResourceSpec {
-    /// Optional JSON file of hints to seed the scheduler's sketch from, read
+    /// Opt in to learning reservations from worker measurements. Defaults to
+    /// false: existing configurations keep using `hints_file` and its refresh
+    /// interval. In learning mode the file is only a startup seed.
+    #[serde(default)]
+    pub learn_from_workers: bool,
+
+    /// JSON hints file. With learning disabled, reload it at `refresh_interval_s`
+    /// and preserve the last usable hints if a reload fails. In learning mode,
+    /// seed the scheduler's sketch from it, read
     /// once at start when no snapshot is loaded. The scheduler learns what
     /// every kind of action uses from the usage its workers report, so a
     /// file is only worth having for a fresh fleet that inherits another's
@@ -741,9 +749,9 @@ pub struct HistoricalResourceSpec {
     #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub hints_file: String,
 
-    /// Ignored. The file is a one-time seed, not a live source; the
-    /// scheduler keeps its own measurements. Accepted so a configuration
-    /// written for an earlier release still loads.
+    /// Reload interval for `hints_file` when `learn_from_workers` is false.
+    /// Zero reads once. Refresh happens in the background, outside Execute.
+    /// Ignored only when learning is explicitly enabled. Default: 30 seconds.
     #[serde(
         default = "default_historical_resource_refresh_interval_s",
         deserialize_with = "convert_duration_with_shellexpand"
@@ -760,8 +768,8 @@ pub struct HistoricalResourceSpec {
     pub headroom_percent: u64,
 
     /// A key not measured for this many days is forgotten. Within the
-    /// window a sample weighs half as much each day, so what a key used
-    /// last week stops shaping it, and a memory kill stops lifting the
+    /// window, two half-window histograms retain each sample for between
+    /// half and one full window. A memory kill stops lifting the
     /// key's reservation this many days after it.
     /// Default: 7
     #[serde(
@@ -770,35 +778,32 @@ pub struct HistoricalResourceSpec {
     )]
     pub window_days: u64,
 
-    /// Memory the sketch may use for what it has learned, in bytes. About
-    /// 400 bytes a key, split across keys by target, by mnemonic and by
-    /// command digest (80%, 10% and 10%); the least recently seen key
-    /// of a full family goes first. The default holds about 300k keys,
-    /// more than the largest installation seen has distinct targets times
-    /// mnemonics in a week.
-    /// Default: 134217728 (128 MiB)
+    /// Accounting budget for the learned sketch, including keys, map and
+    /// probation storage and reserved snapshot working memory. One quarter
+    /// funds resident entries; the remainder allows encoding/loading snapshots.
+    /// Long keys reduce the number of retained entries. This is conservative
+    /// allocation accounting, not a process RSS limit (allocator overhead and
+    /// other scheduler data are separate). Default: 128 MiB.
     #[serde(
         default = "default_historical_resource_memory_budget_bytes",
         deserialize_with = "convert_data_size_with_shellexpand"
     )]
     pub memory_budget_bytes: u64,
 
-    /// Name of the store each scheduler replica writes its sketch to, under
-    /// its own key (`historical_resource_sketch/<hostname>`), so a restart
-    /// keeps what the schedulers learned: a start reads every replica's
-    /// snapshot and merges them, since each replica sees only the workers
-    /// connected to it (a store that cannot list keys yields this replica's
-    /// own). The store must take a string key: `memory`, `filesystem`,
-    /// `redis`, `s3`, `gcs` or `azure`, or `verify`, `compression`, `shard`
-    /// and `fast_slow` over one, not `size_partitioning`; the start probes
-    /// it and refuses to start otherwise. Give it eviction or a key TTL, so the snapshot of a
-    /// replica that is gone does not stay forever. Unset, the sketch lives
-    /// in memory only and a restart starts from `hints_file`, if any.
+    /// Store for this replica's learned sketch. Each replica writes and
+    /// restores only its own key (historical_resource_sketch/<hostname>).
+    /// Keep replica identities stable to preserve history; a replacement with
+    /// a new identity starts from its seed. Cross-replica snapshot merging is
+    /// disabled because re-persisting merged history double-counts samples.
+    /// Version 3 snapshots use wide histogram counters; older snapshots are
+    /// skipped with a warning. Give the store eviction or a TTL for retired
+    /// replica keys. It must support string keys; startup probes write/read.
+    /// Ignored when `learn_from_workers` is false. Unset means memory only.
     #[serde(default)]
     pub snapshot_store: Option<String>,
 
     /// How often the snapshot is written. Zero turns the periodic write
-    /// off; the write at shutdown stays.
+    /// off. Writes happen on the periodic tick; shutdown does not flush.
     /// Default: 60 seconds
     #[serde(
         default = "default_historical_resource_snapshot_interval_s",

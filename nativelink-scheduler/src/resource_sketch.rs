@@ -45,9 +45,21 @@ pub const HIST_BUCKETS: usize = 25;
 /// another generation is dropped at load and the sketch starts empty.
 pub const SAMPLER_GENERATION: u32 = 1;
 
-/// Memory one entry costs, with its key and the map's bookkeeping. The
-/// budget divides by this.
-pub const ENTRY_BYTES: u64 = 400;
+/// Fixed charge for an entry and its map/Arc bookkeeping. Key contents are
+/// charged separately. The allowance also covers its largest encoded form.
+pub const ENTRY_BYTES: u64 = (size_of::<Entry>() + size_of::<SketchKey>() + 160 + 256) as u64;
+/// Conservative allowance for a probation node, its Arc header and hash slot.
+pub const PROBATION_ENTRY_BYTES: u64 = 256;
+/// Reserved hash-table storage per configured slot, even when the LRU is empty.
+const HASH_SLOT_BYTES: u64 = 64;
+/// The maps, mutexes, sketch and two sentinel nodes allocated by each LRU,
+/// even when empty. Hash slots allow for table rounding and spare capacity.
+const FIXED_BYTES: u64 = (SHARDS
+    * (size_of::<Mutex<Inner>>()
+        + 6 * (size_of::<Entry>() + size_of::<SketchKey>() + 32)
+        + 2 * 128)
+    + size_of::<ResourceSketch>()
+    + 1024) as u64;
 
 /// Shards the families are split over by key hash. A lookup or a usage
 /// report locks one; a snapshot and an age-out lock one at a time, so at
@@ -141,10 +153,10 @@ impl Family {
 
 /// A log2 histogram with the rollup's buckets, so a snapshot and a rollup
 /// row say the same thing about the same samples. Counts saturate at
-/// `u16::MAX`: a key with more samples than that in half a window is sized
-/// the same either way, and the entry stays within its budget.
+/// `u64::MAX` is only a defensive limit; ordinary workloads must not saturate
+/// individual buckets and change their relative weights.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Hist(pub [u16; HIST_BUCKETS]);
+pub struct Hist(pub [u64; HIST_BUCKETS]);
 
 impl Hist {
     /// The bucket a value falls in.
@@ -162,7 +174,7 @@ impl Hist {
     }
 
     pub fn total(&self) -> u64 {
-        self.0.iter().map(|&n| u64::from(n)).sum()
+        self.0.iter().fold(0u64, |sum, &n| sum.saturating_add(n))
     }
 
     /// Upper bound of the bucket the 95th percentile sample falls in; zero
@@ -175,25 +187,24 @@ impl Hist {
 
     /// The same over the samples of `self` and `other` together.
     pub fn p95_upper_with(&self, other: &Self) -> u64 {
-        let total = self.total() + other.total();
+        let total: u128 = self
+            .0
+            .iter()
+            .chain(other.0.iter())
+            .map(|&n| u128::from(n))
+            .sum();
         if total == 0 {
             return 0;
         }
         let target = (total * 95).div_ceil(100);
-        let mut seen = 0u64;
+        let mut seen = 0u128;
         for (i, (&a, &b)) in self.0.iter().zip(other.0.iter()).enumerate() {
-            seen += u64::from(a) + u64::from(b);
+            seen += u128::from(a) + u128::from(b);
             if seen >= target {
                 return 1000u64 << i;
             }
         }
         0
-    }
-
-    fn add_all(&mut self, other: &Self) {
-        for (mine, theirs) in self.0.iter_mut().zip(other.0.iter()) {
-            *mine = mine.saturating_add(*theirs);
-        }
     }
 }
 
@@ -209,17 +220,6 @@ pub struct Half {
     pub max_memory_kb: u64,
     pub max_cpu_millicores: u64,
     pub max_disk_kb: u64,
-}
-
-impl Half {
-    fn add_all(&mut self, other: &Self) {
-        self.memory.add_all(&other.memory);
-        self.cpu.add_all(&other.cpu);
-        self.disk.add_all(&other.disk);
-        self.max_memory_kb = self.max_memory_kb.max(other.max_memory_kb);
-        self.max_cpu_millicores = self.max_cpu_millicores.max(other.max_cpu_millicores);
-        self.max_disk_kb = self.max_disk_kb.max(other.max_disk_kb);
-    }
 }
 
 /// What the sketch knows about one key.
@@ -292,8 +292,9 @@ pub struct Policy {
     pub reserve_disk: bool,
 }
 
-/// Entries per family from the byte budget, split 80/10/10, with ten
-/// probation slots per command entry (each costs a tenth of an entry).
+/// Reserve three quarters for snapshot encoding/loading and transient storage.
+/// Of the resident quarter, 10% funds probation and the remaining
+/// entries split 80/10/10. Variable-length keys consume the same byte budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
     pub target: usize,
@@ -304,13 +305,17 @@ pub struct Budget {
 
 impl Budget {
     pub fn from_bytes(bytes: u64) -> Self {
-        let entries = usize::try_from(bytes / ENTRY_BYTES).unwrap_or(usize::MAX);
+        let resident = bytes.saturating_sub(FIXED_BYTES) / 4;
+        let probation = resident / 10;
+        let entries = usize::try_from((resident - probation) / ENTRY_BYTES).unwrap_or(usize::MAX);
         let tenth = entries / 10;
         Self {
             target: (entries - 2 * tenth).max(1),
             mnemonic: tenth.max(1),
             command: tenth.max(1),
-            probation: (tenth * 10).max(1),
+            probation: usize::try_from(probation / PROBATION_ENTRY_BYTES)
+                .unwrap_or(usize::MAX)
+                .max(1),
         }
     }
 }
@@ -330,6 +335,67 @@ struct Inner {
     probation: LruCache<Arc<str>, ()>,
     evictions: [u64; 3],
     samples: [u64; 3],
+    bytes: [u64; 3],
+    probation_bytes: u64,
+}
+
+fn key_bytes(key: &SketchKey) -> u64 {
+    match key {
+        SketchKey::Target { target, mnemonic } => {
+            (target.len() + mnemonic.as_ref().map_or(0, |m| m.len())) as u64
+        }
+        SketchKey::Mnemonic { mnemonic } => mnemonic.len() as u64,
+        SketchKey::Command { digest } => digest.len() as u64,
+    }
+}
+
+fn entry_charge(key: &SketchKey) -> u64 {
+    ENTRY_BYTES - HASH_SLOT_BYTES - 256 + key_bytes(key)
+}
+
+const fn probation_charge(digest: &str) -> u64 {
+    PROBATION_ENTRY_BYTES - HASH_SLOT_BYTES - 128 + digest.len() as u64
+}
+
+impl Inner {
+    fn insert(&mut self, key: SketchKey, entry: Entry) -> bool {
+        let i = key.family().index();
+        let map = &mut self.families[i];
+        let allowance = map.cap().get() as u64 * (ENTRY_BYTES - HASH_SLOT_BYTES);
+        let charge = entry_charge(&key);
+        if charge > allowance {
+            return false;
+        }
+        while self.bytes[i] + charge > allowance || map.len() == map.cap().get() {
+            let Some((removed, _)) = map.pop_lru() else {
+                break;
+            };
+            self.bytes[i] -= entry_charge(&removed);
+            self.evictions[i] += 1;
+        }
+        map.put(key, entry);
+        self.bytes[i] += charge;
+        true
+    }
+
+    fn remember_probation(&mut self, digest: Arc<str>) {
+        let allowance =
+            self.probation.cap().get() as u64 * (PROBATION_ENTRY_BYTES - HASH_SLOT_BYTES);
+        let charge = probation_charge(&digest);
+        if charge > allowance {
+            return;
+        }
+        while self.probation_bytes + charge > allowance
+            || self.probation.len() == self.probation.cap().get()
+        {
+            let Some((removed, ())) = self.probation.pop_lru() else {
+                break;
+            };
+            self.probation_bytes -= probation_charge(&removed);
+        }
+        self.probation.put(digest, ());
+        self.probation_bytes += charge;
+    }
 }
 
 /// The sketch: three LRU families per shard, each shard under its own lock
@@ -366,21 +432,33 @@ impl ResourceSketch {
     /// order passes one. A family's capacity is spread over the shards by
     /// key hash, so it evicts a little before the whole budget is full.
     pub fn with_shards(policy: Policy, budget: Budget, window: Duration, shards: usize) -> Self {
-        let shards = shards.max(1);
-        let per = |capacity: usize| capacity.div_ceil(shards).max(1);
+        let shards = shards.clamp(1, SHARDS).min(
+            budget
+                .target
+                .min(budget.mnemonic)
+                .min(budget.command)
+                .min(budget.probation)
+                .max(1),
+        );
+        let per = |capacity: usize, shard: usize| {
+            (capacity / shards + usize::from(shard < capacity % shards)).max(1)
+        };
         let inners = (0..shards)
-            .map(|_| {
+            .map(|shard| {
                 Mutex::new(Inner {
                     families: [
-                        cache(per(budget.target)),
-                        cache(per(budget.mnemonic)),
-                        cache(per(budget.command)),
+                        cache(per(budget.target, shard)),
+                        cache(per(budget.mnemonic, shard)),
+                        cache(per(budget.command, shard)),
                     ],
                     probation: LruCache::new(
-                        NonZeroUsize::new(per(budget.probation)).unwrap_or(NonZeroUsize::MIN),
+                        NonZeroUsize::new(per(budget.probation, shard))
+                            .unwrap_or(NonZeroUsize::MIN),
                     ),
                     evictions: [0; 3],
                     samples: [0; 3],
+                    bytes: [0; 3],
+                    probation_bytes: 0,
                 })
             })
             .collect();
@@ -448,8 +526,10 @@ impl ResourceSketch {
             let SketchKey::Command { digest } = &key else {
                 unreachable!("family Command is a Command key");
             };
-            if inner.probation.pop(digest).is_none() {
-                inner.probation.put(digest.clone(), ());
+            if inner.probation.pop(digest).is_some() {
+                inner.probation_bytes -= probation_charge(digest);
+            } else {
+                inner.remember_probation(digest.clone());
                 return false;
             }
         }
@@ -461,10 +541,7 @@ impl ResourceSketch {
         }
         let mut entry = Entry::default();
         entry.record(observation, window_s);
-        if let Some((_evicted_key, _)) = map.push(key, entry) {
-            inner.evictions[family.index()] += 1;
-        }
-        true
+        inner.insert(key, entry)
     }
 
     /// Inserts a seeded entry when the key has none. Seeds never replace
@@ -476,10 +553,7 @@ impl ResourceSketch {
         if map.contains(&key) {
             return false;
         }
-        if map.push(key, entry).is_some() {
-            inner.evictions[family.index()] += 1;
-        }
-        true
+        inner.insert(key, entry)
     }
 
     /// The entry under `key`, promoted to recently used. A key not seen
@@ -493,6 +567,7 @@ impl ResourceSketch {
         let entry = map.get(key)?;
         if !entry.seeded && entry.last_seen_s < cutoff {
             map.pop(key);
+            inner.bytes[key.family().index()] -= entry_charge(key);
             return None;
         }
         Some(entry.clone())
@@ -541,9 +616,11 @@ impl ResourceSketch {
                     }
                 }
                 dropped += stale.len();
+                let reclaimed = stale.iter().map(entry_charge).sum::<u64>();
                 for key in stale {
                     map.pop(&key);
                 }
+                inner.bytes[family.index()] -= reclaimed;
             }
         }
         dropped
@@ -576,11 +653,57 @@ impl ResourceSketch {
         }
     }
 
-    /// Loads a snapshot into the sketch, merging a key the sketch already
-    /// holds (another replica's view of the same key: counts add, maxima
-    /// keep the larger) and skipping a key not seen for the window as of
-    /// `now_s`. A snapshot of another sampler generation is refused.
-    /// Returns the entries loaded or merged.
+    /// Maximum snapshot payload, including its header, within the reserved
+    /// transient part of the budget. Also bounds reads before decoding.
+    pub const fn snapshot_byte_limit(&self) -> u64 {
+        25 + (self.budget.target + self.budget.mnemonic + self.budget.command) as u64 * ENTRY_BYTES
+    }
+
+    /// Encode directly under one shard lock at a time. Reserve the output
+    /// once, so map cloning and buffer growth cannot multiply peak memory.
+    pub fn encode_snapshot(&self, now_s: u64) -> Vec<u8> {
+        let limit = self.snapshot_byte_limit();
+        let mut bytes = Vec::with_capacity(usize::try_from(limit).unwrap_or(usize::MAX));
+        let header = Snapshot {
+            sampler_generation: SAMPLER_GENERATION,
+            written_at_s: now_s,
+            entries: Vec::new(),
+        }
+        .encode();
+        bytes.extend_from_slice(&header);
+        let cutoff = now_s.saturating_sub(self.window_s());
+        let mut count = 0u64;
+        for shard in &self.shards {
+            let inner = shard.lock();
+            for map in &inner.families {
+                for (key, entry) in map.iter().rev() {
+                    if entry.seeded || entry.last_seen_s >= cutoff {
+                        encode_entry(&mut bytes, key, entry);
+                        count += 1;
+                    }
+                }
+            }
+        }
+        bytes[17..25].copy_from_slice(&count.to_le_bytes());
+        bytes
+    }
+
+    /// Conservative charged resident allocation, including unused hash slots.
+    pub fn charged_bytes(&self) -> u64 {
+        let mut bytes = FIXED_BYTES;
+        for shard in &self.shards {
+            let inner = shard.lock();
+            bytes += inner.bytes.iter().sum::<u64>() + inner.probation_bytes;
+            bytes += (inner.families.iter().map(|m| m.cap().get()).sum::<usize>()
+                + inner.probation.cap().get()) as u64
+                * HASH_SLOT_BYTES;
+        }
+        bytes
+    }
+
+    /// Restore a replica's snapshot at startup. Existing entries are left
+    /// alone, making replay idempotent and preserving newer local observations.
+    /// Skip expired keys and refuse an incompatible sampler generation.
     pub fn load(&self, snapshot: Snapshot, now_s: u64) -> Result<usize, Error> {
         if snapshot.sampler_generation != SAMPLER_GENERATION {
             return Err(make_err!(
@@ -590,8 +713,7 @@ impl ResourceSketch {
                 SAMPLER_GENERATION
             ));
         }
-        let window_s = self.window_s();
-        let cutoff = now_s.saturating_sub(window_s);
+        let cutoff = now_s.saturating_sub(self.window_s());
         let mut loaded = 0usize;
         for (key, entry) in snapshot.entries {
             if !entry.seeded && entry.last_seen_s < cutoff {
@@ -600,10 +722,8 @@ impl ResourceSketch {
             let family = key.family();
             let mut inner = self.shard(&key).lock();
             let map = &mut inner.families[family.index()];
-            if let Some(existing) = map.get_mut(&key) {
-                existing.merge(&entry, window_s);
-            } else if map.push(key, entry).is_some() {
-                inner.evictions[family.index()] += 1;
+            if map.contains(&key) || !inner.insert(key, entry) {
+                continue;
             }
             loaded += 1;
         }
@@ -677,7 +797,10 @@ impl Entry {
 
     /// Every sample of the key still counted, both halves together.
     pub fn memory_samples(&self) -> u64 {
-        self.current.memory.total() + self.previous.memory.total()
+        self.current
+            .memory
+            .total()
+            .saturating_add(self.previous.memory.total())
     }
 
     fn half_s(window_s: u64) -> u64 {
@@ -744,32 +867,6 @@ impl Entry {
             self.killed_at_s = observation.now_s;
         }
         self.seeded = false;
-    }
-
-    /// Folds `other`, another replica's view of the same key, into this
-    /// entry: both are aged to the later of the two, counts add half by
-    /// half, the maxima and the kill floor keep the larger. A measured
-    /// entry wins over a seed.
-    fn merge(&mut self, other: &Self, window_s: u64) {
-        if other.seeded {
-            return;
-        }
-        if self.seeded {
-            *self = other.clone();
-            return;
-        }
-        let now_s = self.last_seen_s.max(other.last_seen_s);
-        let mut other = other.clone();
-        self.settle(now_s, window_s);
-        other.settle(now_s, window_s);
-        self.samples = self.samples.saturating_add(other.samples);
-        self.current.add_all(&other.current);
-        self.previous.add_all(&other.previous);
-        if other.killed_at_kb > self.killed_at_kb {
-            self.killed_at_kb = other.killed_at_kb;
-            self.killed_at_s = other.killed_at_s;
-        }
-        self.last_seen_s = now_s;
     }
 
     /// An entry standing in for a hint from a file: one sample at each
@@ -912,7 +1009,7 @@ fn shape(policy: &Policy, entry: &Entry) -> Shaped {
 }
 
 /// What each replica writes every `snapshot_interval_s` under its own key
-/// and a start reads from every replica, merged.
+/// and restores on restart. History from other replicas is not merged.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub sampler_generation: u32,
@@ -923,7 +1020,7 @@ pub struct Snapshot {
 }
 
 const SNAPSHOT_MAGIC: &[u8; 4] = b"NLHS";
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 impl Snapshot {
     /// A compact binary form: histograms as their non-zero buckets, since
@@ -941,54 +1038,15 @@ impl Snapshot {
                 .to_le_bytes(),
         );
         for (key, entry) in &self.entries {
-            match key {
-                SketchKey::Target { target, mnemonic } => {
-                    out.push(0);
-                    put_str(&mut out, target);
-                    match mnemonic {
-                        Some(mnemonic) => {
-                            out.push(1);
-                            put_str(&mut out, mnemonic);
-                        }
-                        None => out.push(0),
-                    }
-                }
-                SketchKey::Mnemonic { mnemonic } => {
-                    out.push(1);
-                    put_str(&mut out, mnemonic);
-                }
-                SketchKey::Command { digest } => {
-                    out.push(2);
-                    put_str(&mut out, digest);
-                }
-            }
-            out.extend_from_slice(&entry.samples.to_le_bytes());
-            for half in [&entry.current, &entry.previous] {
-                for hist in [&half.memory, &half.cpu, &half.disk] {
-                    put_hist(&mut out, hist);
-                }
-                for value in [
-                    half.max_memory_kb,
-                    half.max_cpu_millicores,
-                    half.max_disk_kb,
-                ] {
-                    out.extend_from_slice(&value.to_le_bytes());
-                }
-            }
-            for value in [
-                entry.killed_at_kb,
-                entry.killed_at_s,
-                entry.last_seen_s,
-                entry.period,
-            ] {
-                out.extend_from_slice(&value.to_le_bytes());
-            }
-            out.push(u8::from(entry.seeded));
+            encode_entry(&mut out, key, entry);
         }
         out
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+    /// Bound the decoded entries as well as the encoded bytes: sparse
+    /// histograms occupy much more memory when expanded than on disk.
+    pub fn decode(bytes: &[u8], max_entries: usize) -> Result<Self, Error> {
+        const MIN_ENTRY_BYTES: usize = 96;
         let mut r = Reader { bytes, at: 0 };
         if r.take(4)? != SNAPSHOT_MAGIC {
             return Err(make_err!(
@@ -1007,7 +1065,13 @@ impl Snapshot {
         let written_at_s = r.u64()?;
         let count = usize::try_from(r.u64()?)
             .map_err(|_| make_err!(Code::InvalidArgument, "resource sketch snapshot: count"))?;
-        let mut entries = Vec::with_capacity(count.min(1 << 20));
+        if count > max_entries || count > (bytes.len() - r.at) / MIN_ENTRY_BYTES {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "resource sketch snapshot: entry count exceeds budget or payload"
+            ));
+        }
+        let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
             let key = match r.u8()? {
                 0 => {
@@ -1062,9 +1126,9 @@ impl Snapshot {
 }
 
 fn put_str(out: &mut Vec<u8>, s: &str) {
-    let len = u16::try_from(s.len()).unwrap_or(u16::MAX);
+    let len = u32::try_from(s.len()).expect("key fits within the sketch budget");
     out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(&s.as_bytes()[..usize::from(len)]);
+    out.extend_from_slice(&s.as_bytes()[..len as usize]);
 }
 
 fn put_hist(out: &mut Vec<u8>, hist: &Hist) {
@@ -1105,11 +1169,6 @@ impl<'a> Reader<'a> {
         Ok(self.take(1)?[0])
     }
 
-    fn u16(&mut self) -> Result<u16, Error> {
-        let b = self.take(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-
     fn u32(&mut self) -> Result<u32, Error> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -1123,7 +1182,7 @@ impl<'a> Reader<'a> {
     }
 
     fn str(&mut self) -> Result<Arc<str>, Error> {
-        let len = usize::from(self.u16()?);
+        let len = self.u32()? as usize;
         let b = self.take(len)?;
         core::str::from_utf8(b)
             .map(Arc::from)
@@ -1152,7 +1211,7 @@ impl<'a> Reader<'a> {
         let mut hist = Hist::default();
         for _ in 0..nonzero {
             let i = usize::from(self.u8()?);
-            let n = self.u16()?;
+            let n = self.u64()?;
             if i >= HIST_BUCKETS {
                 return Err(make_err!(
                     Code::InvalidArgument,
@@ -1163,4 +1222,50 @@ impl<'a> Reader<'a> {
         }
         Ok(hist)
     }
+}
+
+fn encode_entry(out: &mut Vec<u8>, key: &SketchKey, entry: &Entry) {
+    match key {
+        SketchKey::Target { target, mnemonic } => {
+            out.push(0);
+            put_str(out, target);
+            match mnemonic {
+                Some(mnemonic) => {
+                    out.push(1);
+                    put_str(out, mnemonic);
+                }
+                None => out.push(0),
+            }
+        }
+        SketchKey::Mnemonic { mnemonic } => {
+            out.push(1);
+            put_str(out, mnemonic);
+        }
+        SketchKey::Command { digest } => {
+            out.push(2);
+            put_str(out, digest);
+        }
+    }
+    out.extend_from_slice(&entry.samples.to_le_bytes());
+    for half in [&entry.current, &entry.previous] {
+        for hist in [&half.memory, &half.cpu, &half.disk] {
+            put_hist(out, hist);
+        }
+        for value in [
+            half.max_memory_kb,
+            half.max_cpu_millicores,
+            half.max_disk_kb,
+        ] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    for value in [
+        entry.killed_at_kb,
+        entry.killed_at_s,
+        entry.last_seen_s,
+        entry.period,
+    ] {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.push(u8::from(entry.seeded));
 }
