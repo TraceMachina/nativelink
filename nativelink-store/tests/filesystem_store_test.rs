@@ -2929,8 +2929,10 @@ async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error>
     .await?;
     assert_entries_readable(&store).await?;
     let after_upgrade = list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?;
+    // Another test may keep a file open throughout these restarts.
+    // Restarting this store must not wait for the process-wide counter.
+    let unrelated_permit = fs::get_permit().await;
     drop(store);
-    wait_for_no_open_files().await?;
 
     for restart in 1..=2 {
         let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
@@ -2957,9 +2959,9 @@ async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error>
             vec![format!("{digest}-0")],
         );
         drop(store);
-        wait_for_no_open_files().await?;
     }
 
+    drop(unrelated_permit);
     Ok(())
 }
 
