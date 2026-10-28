@@ -64,7 +64,7 @@ use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemSto
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
-    SymlinkInfo, to_execute_response,
+    STORE_UNREACHABLE_ERROR_TIP, SymlinkInfo, to_execute_response,
 };
 use nativelink_util::common::{DigestInfo, fs};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
@@ -3052,11 +3052,13 @@ impl RunningActionImpl {
             let pause = prepare_retry_pause(attempt, &self.action_info.input_root_digest);
             if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
                 retries.settle("exhausted");
-                return Err(err.append(format!(
-                    "Input fetch of operation {} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
-                    self.operation_id,
-                    started.elapsed().as_secs()
-                )));
+                return Err(err
+                    .append(format!(
+                        "Input fetch of operation {} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
+                        self.operation_id,
+                        started.elapsed().as_secs()
+                    ))
+                    .append(STORE_UNREACHABLE_ERROR_TIP));
             }
             warn!(
                 operation_id = %self.operation_id,
@@ -5853,10 +5855,12 @@ impl RunningActionsManagerImpl {
             let pause = prepare_retry_pause(attempt, &action_digest);
             if deadline.is_some_and(|deadline| Instant::now() + pause >= deadline) {
                 retries.settle("exhausted");
-                return Err(err.append(format!(
-                    "Reading action {action_digest} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
-                    started.elapsed().as_secs()
-                )));
+                return Err(err
+                    .append(format!(
+                        "Reading action {action_digest} failed {attempt} time(s) over {}s; the next retry would start after max_download_timeout",
+                        started.elapsed().as_secs()
+                    ))
+                    .append(STORE_UNREACHABLE_ERROR_TIP));
             }
             warn!(
                 %action_digest,
