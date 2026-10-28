@@ -27,7 +27,10 @@
 //! 1. a persistent index is created beside it under [`migrated_name`];
 //! 2. reads stay on the old one while the new one backfills, which also
 //!    keeps the old one's idle timer from firing;
-//! 3. once the new one has every key, reads move to it;
+//! 3. once the new one has every key, reads move to it. "Every key" is
+//!    checked, not assumed from the scan having ended: a scan that runs out
+//!    of memory stops with keys missing, and dropping the old index then
+//!    would leave reads on an index without them;
 //! 4. the old one is dropped with `_FORCEKEEPDOCS`, by whichever process
 //!    gets there first.
 //!
@@ -37,6 +40,8 @@
 
 use redis::aio::ConnectionLike;
 use redis::{RedisError, Value};
+
+use super::FtInfo;
 
 /// The suffix of the persistent index that replaces a temporary one.
 const MIGRATED_SUFFIX: &str = "_p";
@@ -130,9 +135,46 @@ where
     }
 }
 
+/// Where the persistent replacement stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Replacement {
+    /// The background scan is still running.
+    Backfilling,
+    /// The scan finished and the index holds as many keys as the original.
+    Complete,
+    /// The scan finished without every key: some failed to index, or it
+    /// holds fewer keys than the original.
+    Incomplete,
+}
+
+/// Judges a replacement that `FT.INFO` describes as `info` against the
+/// original's key count (`None` when there is no original to compare with).
+/// Actions deleted between the two `FT.INFO` calls can leave the
+/// replacement a little short, so a shortfall of 1% plus two is allowed; a
+/// scan that stopped early is short by far more. A false alarm only delays
+/// the cutover to the next check.
+pub(crate) const fn replacement_state(info: FtInfo, original_docs: Option<u64>) -> Replacement {
+    if info.indexing {
+        return Replacement::Backfilling;
+    }
+    if info.hash_indexing_failures > 0 {
+        return Replacement::Incomplete;
+    }
+    match original_docs {
+        Some(original) => {
+            let slack = original / 100 + 2;
+            if info.num_docs.saturating_add(slack) < original {
+                Replacement::Incomplete
+            } else {
+                Replacement::Complete
+            }
+        }
+        None => Replacement::Complete,
+    }
+}
+
 /// What a read should do, from the state of the original index and of its
-/// persistent replacement (`None` when the replacement does not exist,
-/// `Some(true)` while it is still backfilling).
+/// persistent replacement (`None` when the replacement does not exist).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
     /// Use the original, which is persistent: nothing to migrate.
@@ -147,22 +189,37 @@ pub(crate) enum Step {
     /// The replacement is complete: read it, retiring the original first
     /// when it is still there.
     UseReplacement { retire_original: bool },
+    /// The replacement finished without every key: keep reading the
+    /// original, which still has them, and leave both in place. Dropping
+    /// the replacement (`_FORCEKEEPDOCS`) makes the next read build it again.
+    KeepOriginal,
 }
 
-pub(crate) const fn plan(original: IndexKind, replacement_backfilling: Option<bool>) -> Step {
-    match (original, replacement_backfilling) {
+pub(crate) const fn plan(original: IndexKind, replacement: Option<Replacement>) -> Step {
+    match (original, replacement) {
         // Nothing to migrate. A missing original is created persistent by
         // the ordinary path, under its ordinary name.
         (IndexKind::Persistent | IndexKind::Missing, None) => Step::UseOriginal,
         (IndexKind::Temporary(_), None) => Step::CreateReplacement,
-        (IndexKind::Temporary(_) | IndexKind::Persistent, Some(true)) => Step::WaitOnOriginal,
-        (IndexKind::Missing, Some(true)) => Step::WaitForReplacement,
-        (IndexKind::Missing, Some(false)) => Step::UseReplacement {
-            retire_original: false,
-        },
-        (IndexKind::Temporary(_) | IndexKind::Persistent, Some(false)) => Step::UseReplacement {
-            retire_original: true,
-        },
+        (IndexKind::Temporary(_) | IndexKind::Persistent, Some(Replacement::Backfilling)) => {
+            Step::WaitOnOriginal
+        }
+        (IndexKind::Temporary(_) | IndexKind::Persistent, Some(Replacement::Incomplete)) => {
+            Step::KeepOriginal
+        }
+        (IndexKind::Missing, Some(Replacement::Backfilling)) => Step::WaitForReplacement,
+        // With no original, the replacement is the only index there is,
+        // whole or not.
+        (IndexKind::Missing, Some(Replacement::Complete | Replacement::Incomplete)) => {
+            Step::UseReplacement {
+                retire_original: false,
+            }
+        }
+        (IndexKind::Temporary(_) | IndexKind::Persistent, Some(Replacement::Complete)) => {
+            Step::UseReplacement {
+                retire_original: true,
+            }
+        }
     }
 }
 
@@ -201,9 +258,12 @@ mod tests {
     fn a_temporary_index_is_read_until_its_replacement_is_complete() {
         let temporary = IndexKind::Temporary(86_399);
         assert_eq!(plan(temporary, None), Step::CreateReplacement);
-        assert_eq!(plan(temporary, Some(true)), Step::WaitOnOriginal);
         assert_eq!(
-            plan(temporary, Some(false)),
+            plan(temporary, Some(Replacement::Backfilling)),
+            Step::WaitOnOriginal
+        );
+        assert_eq!(
+            plan(temporary, Some(Replacement::Complete)),
             Step::UseReplacement {
                 retire_original: true
             }
@@ -215,13 +275,13 @@ mod tests {
         // A release without the migration recreates the original under its
         // old name; it is persistent then, and dropping it keeps the hashes.
         assert_eq!(
-            plan(IndexKind::Persistent, Some(false)),
+            plan(IndexKind::Persistent, Some(Replacement::Complete)),
             Step::UseReplacement {
                 retire_original: true
             }
         );
         assert_eq!(
-            plan(IndexKind::Persistent, Some(true)),
+            plan(IndexKind::Persistent, Some(Replacement::Backfilling)),
             Step::WaitOnOriginal
         );
     }
@@ -229,11 +289,64 @@ mod tests {
     #[test]
     fn without_an_original_the_replacement_is_waited_for() {
         assert_eq!(
-            plan(IndexKind::Missing, Some(true)),
+            plan(IndexKind::Missing, Some(Replacement::Backfilling)),
             Step::WaitForReplacement
         );
         assert_eq!(
-            plan(IndexKind::Missing, Some(false)),
+            plan(IndexKind::Missing, Some(Replacement::Complete)),
+            Step::UseReplacement {
+                retire_original: false
+            }
+        );
+    }
+
+    #[test]
+    fn an_incomplete_replacement_never_retires_the_original() {
+        let complete = FtInfo {
+            indexing: false,
+            num_docs: 26_150,
+            hash_indexing_failures: 0,
+        };
+        assert_eq!(
+            replacement_state(complete, Some(26_150)),
+            Replacement::Complete
+        );
+        // A write or two between the FT.INFO calls is not a shortfall.
+        assert_eq!(
+            replacement_state(complete, Some(26_170)),
+            Replacement::Complete
+        );
+        // A scan that stopped early is.
+        assert_eq!(
+            replacement_state(complete, Some(30_000)),
+            Replacement::Incomplete
+        );
+        let failed = FtInfo {
+            hash_indexing_failures: 1,
+            ..complete
+        };
+        assert_eq!(
+            replacement_state(failed, Some(26_150)),
+            Replacement::Incomplete
+        );
+        let scanning = FtInfo {
+            indexing: true,
+            num_docs: 0,
+            ..complete
+        };
+        assert_eq!(
+            replacement_state(scanning, Some(26_150)),
+            Replacement::Backfilling
+        );
+
+        for original in [IndexKind::Temporary(86_399), IndexKind::Persistent] {
+            assert_eq!(
+                plan(original, Some(Replacement::Incomplete)),
+                Step::KeepOriginal
+            );
+        }
+        assert_eq!(
+            plan(IndexKind::Missing, Some(Replacement::Incomplete)),
             Step::UseReplacement {
                 retire_original: false
             }

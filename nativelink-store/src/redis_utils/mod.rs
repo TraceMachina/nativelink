@@ -22,5 +22,5 @@ pub(crate) mod index_migration;
 pub(crate) mod sorted_index;
 pub(crate) use ft_aggregate::{FtAggregateCursor, FtAggregateOptions, ft_aggregate};
 pub(crate) use ft_create::{FtCreateOptions, SearchSchema, ft_create};
-pub(crate) use ft_info::ft_info_indexing;
+pub(crate) use ft_info::{FtInfo, ft_info, ft_info_indexing};
 pub(crate) use ft_search_count::ft_search_count;

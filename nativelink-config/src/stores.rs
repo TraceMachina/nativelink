@@ -2016,11 +2016,16 @@ pub struct RedisSpec {
     /// every query walks every dead entry it has collected, and dropping one
     /// the ordinary way deletes the hashes it covers (so does its idle
     /// expiry). With this set, a persistent index is built beside each
-    /// temporary one, reads move to it once it holds every key, and the old
-    /// one is removed with the keys left in place.
+    /// temporary one, reads move to it once it holds every key (the scan
+    /// finished, nothing failed to index, and it counts as many keys as the
+    /// old one), and the old one is removed with the keys left in place.
     ///
     /// Set it only once no process older than v1.8.1 writes this store: those
-    /// create the index temporary again.
+    /// create the index temporary again. Turn it on for every process that
+    /// reads the store together where possible: during a rolling restart,
+    /// the processes without it recreate the old index each time it is
+    /// retired and the ones with it retire it again. No key is lost, but each
+    /// round costs a backfill.
     ///
     /// Default: false
     #[serde(default)]

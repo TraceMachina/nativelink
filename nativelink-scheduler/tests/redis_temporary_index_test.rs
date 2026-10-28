@@ -196,6 +196,12 @@ async fn wait_backfilled(url: &str, index: &str) {
     panic!("{index} never finished backfilling");
 }
 
+/// Waits out the store's short trust in an answer that holds only while a
+/// replacement backfills, so the next read checks the migration again.
+async fn settle() {
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+}
+
 async fn open_db(url: &str, migrate: bool) -> Result<impl AwaitedActionDb, Error> {
     let spec = RedisSpec {
         addresses: vec![url.to_string()],
@@ -311,6 +317,7 @@ async fn a_temporary_index_is_replaced_and_every_action_kept() -> Result<(), Err
         vec![original.clone(), replacement.clone()]
     );
     wait_backfilled(&url, &replacement).await;
+    settle().await;
 
     // The next read moves to the replacement and retires the original.
     assert_eq!(queued(&db).await?, EXPECTED);
@@ -377,9 +384,79 @@ async fn two_processes_migrating_at_once_keep_every_action() -> Result<(), Error
     let (ra, rb) = tokio::join!(queued(&a), queued(&b));
     assert_eq!((ra?, rb?), (EXPECTED.to_vec(), EXPECTED.to_vec()));
     wait_backfilled(&url, &replacement).await;
+    settle().await;
     let (ra, rb) = tokio::join!(queued(&a), queued(&b));
     assert_eq!((ra?, rb?), (EXPECTED.to_vec(), EXPECTED.to_vec()));
 
+    assert_eq!(state_indexes(&url).await, vec![replacement]);
+    assert_eq!(action_keys(&url).await, keys);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn an_incomplete_replacement_never_retires_the_original() -> Result<(), Error> {
+    let Some(url) = test_url() else { return Ok(()) };
+    let (original, keys) = inherited_queue(&url).await?;
+    let replacement = format!("{original}_p");
+    // A replacement whose scan finished without the keys, as one that ran
+    // out of memory would: persistent, done indexing, and holding nothing.
+    let _: () = cmd(
+        &url,
+        &[
+            "FT.CREATE",
+            &replacement,
+            "ON",
+            "HASH",
+            "PREFIX",
+            "1",
+            "aa_no_such_prefix_",
+            "SCHEMA",
+            "state",
+            "TAG",
+            "sort_key",
+            "TAG",
+            "SORTABLE",
+        ],
+    )
+    .await
+    .unwrap();
+    wait_backfilled(&url, &replacement).await;
+
+    let db = open_db(&url, true).await?;
+    assert_eq!(queued(&db).await?, EXPECTED);
+    settle().await;
+    assert_eq!(queued(&db).await?, EXPECTED);
+    assert_eq!(
+        state_indexes(&url).await,
+        vec![original.clone(), replacement],
+        "the original was retired for a replacement without its keys"
+    );
+    assert!(ttl(&url, &original).await.is_some());
+    assert_eq!(action_keys(&url).await, keys);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_read_given_the_retired_original_does_not_recreate_it() -> Result<(), Error> {
+    let Some(url) = test_url() else { return Ok(()) };
+    let (original, keys) = inherited_queue(&url).await?;
+    let replacement = format!("{original}_p");
+    let (a, b) = (open_db(&url, true).await?, open_db(&url, true).await?);
+
+    // `a` builds the replacement and is told to read the original for now.
+    let started = std::time::Instant::now();
+    assert_eq!(queued(&a).await?, EXPECTED);
+    wait_backfilled(&url, &replacement).await;
+    // `b` finds the replacement complete and retires the original.
+    assert_eq!(queued(&b).await?, EXPECTED);
+    assert_eq!(state_indexes(&url).await, vec![replacement.clone()]);
+    // `a` still holds "read the original"; its read must move, not create
+    // the original again.
+    assert_eq!(queued(&a).await?, EXPECTED);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "setup: too slow to exercise a stale answer"
+    );
     assert_eq!(state_indexes(&url).await, vec![replacement]);
     assert_eq!(action_keys(&url).await, keys);
     Ok(())
