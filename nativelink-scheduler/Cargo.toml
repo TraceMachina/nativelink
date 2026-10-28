@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-scheduler"
-version = "1.8.0"
+version = "1.8.2"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -33,7 +33,7 @@ scopeguard = { version = "1.2.0", default-features = false }
 serde = { version = "1.0.219", features = ["rc"], default-features = false }
 serde_json = { version = "1.0.140", default-features = false }
 static_assertions = { version = "1.1.0", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "fs",
   "io-util",
   "rt-multi-thread",
@@ -59,7 +59,7 @@ nativelink-redis-tester = { path = "../nativelink-redis-tester" }
 pretty_assertions = { version = "1.4.1", features = [
   "std",
 ], default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "test-util",
 ], default-features = false }
 tracing-test = { version = "0.2.5", default-features = false, features = [

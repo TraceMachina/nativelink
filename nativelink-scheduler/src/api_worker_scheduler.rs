@@ -18,7 +18,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -37,9 +37,11 @@ use nativelink_proto::com::github::trace_machina::nativelink::events::{
     Event, OriginEvent, ResponseEvent, event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ResourceOutcome, WorkerLoad,
+    ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ResourceOutcome, WorkerLoad,
 };
-use nativelink_util::action_messages::{ActionStage, ActionUniqueQualifier, OperationId, WorkerId};
+use nativelink_util::action_messages::{
+    ActionStage, ActionUniqueQualifier, MISSING_INPUT_ERROR_TIP, OperationId, WorkerId,
+};
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
     record_execution_peak_memory, record_held_workers, record_worker_connected,
@@ -55,6 +57,127 @@ use nativelink_util::shutdown_guard::ShutdownGuard;
 use tokio::sync::{Notify, mpsc};
 use tonic::async_trait;
 use tracing::{debug, error, info, trace, warn};
+
+/// Why an update ends the attempt it is about, and the error behind it;
+/// `None` for an update that keeps or completes the attempt.
+fn attempt_end_reason(update: &UpdateOperationType) -> Option<(AttemptEndReason, String)> {
+    match update {
+        UpdateOperationType::UpdateWithDisconnect => {
+            Some((AttemptEndReason::WorkerLost, String::new()))
+        }
+        UpdateOperationType::UpdateWithEscalation(escalation) => Some((
+            AttemptEndReason::OutOfMemory,
+            escalation.reason.message_string(),
+        )),
+        UpdateOperationType::UpdateWithDecline(_) => {
+            Some((AttemptEndReason::Declined, String::new()))
+        }
+        UpdateOperationType::UpdateWithError(err) => {
+            let reason = match err.code {
+                Code::ResourceExhausted => AttemptEndReason::Backpressure,
+                // A command past its timeout comes back as a result; an error
+                // with this code is the input fetch past max_download_timeout.
+                Code::DeadlineExceeded => AttemptEndReason::InputFetchTimeout,
+                _ => AttemptEndReason::WorkerError,
+            };
+            Some((reason, err.message_string()))
+        }
+        // The worker turns an input missing from the CAS into a result with
+        // FAILED_PRECONDITION, which the client answers by uploading it and
+        // asking again.
+        UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(result)) => result
+            .error
+            .as_ref()
+            .filter(|err| err.code == Code::FailedPrecondition)
+            .map(Error::message_string)
+            .filter(|message| message.contains(MISSING_INPUT_ERROR_TIP))
+            .map(|message| (AttemptEndReason::MissingInput, message)),
+        UpdateOperationType::UpdateWithActionStage(_)
+        | UpdateOperationType::KeepAlive
+        | UpdateOperationType::ExecutionComplete => None,
+    }
+}
+
+/// Publishes that an attempt ended, as a child of its start event, so the
+/// telemetry can say why an action ran more than once. Called once the
+/// state manager took the update, so a rejected one reports nothing.
+/// `try_send`: this runs under the scheduler's lock, and a full queue must
+/// not stall scheduling for a report; a dropped one is logged.
+fn publish_attempt_ended(
+    tx: Option<&mpsc::Sender<OriginEvent>>,
+    action_info: &ActionInfoWithProps,
+    worker_id: &WorkerId,
+    operation_id: &OperationId,
+    reason: AttemptEndReason,
+    detail: String,
+) {
+    let Some(tx) = tx else {
+        return;
+    };
+    let event = Event {
+        event: Some(event::Event::Response(ResponseEvent {
+            event: Some(response_event::Event::ActionAttemptEnded(
+                ActionAttemptEnded {
+                    operation_id: operation_id.to_string(),
+                    worker_id: worker_id.to_string(),
+                    reason: reason.into(),
+                    detail,
+                },
+            )),
+        })),
+    };
+    let origin_event = OriginEvent {
+        version: 0,
+        event_id: Uuid::now_v6(&get_node_id(Some(&event)))
+            .hyphenated()
+            .to_string(),
+        parent_event_id: action_info
+            .scheduler_start_execute_event_id
+            .clone()
+            .unwrap_or_default(),
+        bazel_request_metadata: action_info.origin_metadata.bazel_metadata.clone(),
+        identity: action_info.origin_metadata.identity.clone(),
+        event: Some(event),
+    };
+    if let Err(err) = tx.try_send(origin_event) {
+        warn!(%operation_id, ?reason, ?err, "Dropped an attempt-ended origin event");
+    }
+}
+
+/// How many refused results `LostResults` keeps; past it the oldest goes, and
+/// its requeue is not reported.
+const MAX_LOST_RESULTS: usize = 4096;
+
+/// The starts of attempts whose result the state manager refused, oldest
+/// first, so a store that refuses everything cannot grow it without bound.
+#[derive(Debug, Default)]
+struct LostResults {
+    by_operation: HashMap<OperationId, ActionInfoWithProps>,
+    order: VecDeque<OperationId>,
+}
+
+impl LostResults {
+    fn insert(&mut self, operation_id: OperationId, action_info: ActionInfoWithProps) {
+        if self
+            .by_operation
+            .insert(operation_id.clone(), action_info)
+            .is_none()
+        {
+            self.order.push_back(operation_id);
+        }
+        while self.order.len() > MAX_LOST_RESULTS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.by_operation.remove(&oldest);
+            }
+        }
+    }
+
+    fn take(&mut self, operation_id: &OperationId) -> Option<ActionInfoWithProps> {
+        let action_info = self.by_operation.remove(operation_id)?;
+        self.order.retain(|id| id != operation_id);
+        Some(action_info)
+    }
+}
 
 /// How many state-manager lookups `kill_revoked_operations` has in flight
 /// at once while checking which running operations were revoked.
@@ -144,6 +267,7 @@ use crate::match_outcome::{
     MatchOutcome, PropertyShape, UnsatisfiableReason, explain_unsatisfiable,
 };
 use crate::platform_property_manager::PlatformPropertyManager;
+use crate::resource_sketch::{Observation, ResourceSketch, SketchKey};
 use crate::worker::{ActionInfoWithProps, Worker, WorkerTimestamp, WorkerUpdate};
 use crate::worker_capability_index::WorkerCapabilityIndex;
 use crate::worker_registry::SharedWorkerRegistry;
@@ -293,6 +417,11 @@ struct ApiWorkerSchedulerImpl {
     /// How a queued action that keeps finding no room gets a worker held
     /// for it; unset means never.
     reservation_hold: Option<ReservationHoldSpec>,
+    /// Where attempt-ended origin events go; unset publishes none.
+    attempt_events: Option<mpsc::Sender<OriginEvent>>,
+    /// Attempts whose result the state manager refused, by operation, for
+    /// the executing sweep to report when it requeues them.
+    lost_results: LostResults,
     /// Workers held for one queued action each, by worker, and the same
     /// holds by action. A held worker is offered nothing but its action.
     holds: HashMap<WorkerId, Hold>,
@@ -1584,6 +1713,31 @@ impl ApiWorkerSchedulerImpl {
             }
         };
 
+        let attempt_ended = if worker.is_kill_requested(operation_id) {
+            None
+        } else {
+            attempt_end_reason(&update).zip(
+                worker
+                    .running_action_infos
+                    .get(operation_id)
+                    .map(|pending| pending.action_info.clone()),
+            )
+        };
+        // A result the store refuses leaves the record Executing, and the
+        // executing sweep requeues it once this worker no longer runs it; by
+        // then the worker has forgotten the attempt, so its start is kept here.
+        let lost_result = matches!(
+            &update,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(_))
+        )
+        .then(|| {
+            worker
+                .running_action_infos
+                .get(operation_id)
+                .map(|pending| pending.action_info.clone())
+        })
+        .flatten();
+
         // Update the operation in the worker state manager.
         let update_operation_res = if worker.is_kill_requested(operation_id) {
             debug!(
@@ -1598,13 +1752,30 @@ impl ApiWorkerSchedulerImpl {
                 .update_operation(operation_id, worker_id, update)
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
-            if let Err(err) = &update_operation_res {
-                error!(
-                    %operation_id,
-                    ?worker_id,
-                    ?err,
-                    "Failed to update_operation on update_action"
-                );
+            match &update_operation_res {
+                Ok(()) => {
+                    if let Some(((reason, detail), action_info)) = attempt_ended {
+                        publish_attempt_ended(
+                            self.attempt_events.as_ref(),
+                            &action_info,
+                            worker_id,
+                            operation_id,
+                            reason,
+                            detail,
+                        );
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        %operation_id,
+                        ?worker_id,
+                        ?err,
+                        "Failed to update_operation on update_action"
+                    );
+                    if let Some(action_info) = lost_result {
+                        self.lost_results.insert(operation_id.clone(), action_info);
+                    }
+                }
             }
             update_operation_res
         };
@@ -2024,12 +2195,35 @@ impl ApiWorkerSchedulerImpl {
             // action running on it did nothing wrong: it is a worker loss
             // with its own budget, not an attempt the action spent.
             let update = UpdateOperationType::UpdateWithDisconnect;
-            for (operation_id, _) in worker.running_action_infos.drain() {
-                result = result.merge(
+            for (operation_id, pending) in worker.running_action_infos.drain() {
+                // The worker can still hold an operation the executing sweep
+                // already timed out or that finished; that attempt was
+                // reported where it ended.
+                if matches!(
                     self.worker_state_manager
-                        .update_operation(&operation_id, worker_id, update.clone())
+                        .is_executing_on_worker(&operation_id, worker_id)
                         .await,
-                );
+                    Ok(false)
+                ) {
+                    continue;
+                }
+                let update_res = self
+                    .worker_state_manager
+                    .update_operation(&operation_id, worker_id, update.clone())
+                    .await;
+                // An operation the worker was told to kill was already
+                // given up on; its loss is not a lost attempt.
+                if update_res.is_ok() && pending.kill_requested_at.is_none() {
+                    publish_attempt_ended(
+                        self.attempt_events.as_ref(),
+                        &pending.action_info,
+                        worker_id,
+                        &operation_id,
+                        AttemptEndReason::WorkerLost,
+                        err.message_string(),
+                    );
+                }
+                result = result.merge(update_res);
             }
         }
         // Note: Calling this many time is very cheap, it'll only trigger `do_try_match` once.
@@ -2073,6 +2267,14 @@ pub struct ApiWorkerScheduler {
     /// resource usage. `None` when origin events are disabled.
     maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
 
+    /// Where a `historical_resource` parent keeps what each kind of action
+    /// used; every sampled usage report goes in. `None` without one.
+    resource_sketch: Option<Arc<ResourceSketch>>,
+
+    /// The memory property the escalation policy reads, so a kill at a
+    /// reservation the worker did not echo can still be filed at it.
+    memory_property: Option<String>,
+
     /// Woken when a worker joins or leaves this scheduler.
     local_fleet_change_notify: Arc<Notify>,
 }
@@ -2092,6 +2294,36 @@ impl ApiWorkerScheduler {
             .map(|worker| worker.running_action_infos.contains_key(operation_id))
     }
 
+    /// Reports an attempt the executing sweep ended on `worker_id`: timed out
+    /// while the worker still held it, or requeued after the state manager
+    /// refused its result. Nothing is published when the attempt's start is
+    /// no longer known, as for a peer's worker.
+    pub async fn report_swept_attempt(
+        &self,
+        worker_id: &WorkerId,
+        operation_id: &OperationId,
+        reason: AttemptEndReason,
+        detail: String,
+    ) {
+        let mut inner = self.inner.lock().await;
+        let held = inner
+            .workers
+            .peek(worker_id)
+            .and_then(|worker| worker.running_action_infos.get(operation_id))
+            .map(|pending| pending.action_info.clone());
+        let Some(action_info) = held.or_else(|| inner.lost_results.take(operation_id)) else {
+            return;
+        };
+        publish_attempt_ended(
+            inner.attempt_events.as_ref(),
+            &action_info,
+            worker_id,
+            operation_id,
+            reason,
+            detail,
+        );
+    }
+
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         worker_state_manager: Arc<dyn WorkerStateManager>,
@@ -2106,6 +2338,7 @@ impl ApiWorkerScheduler {
         dispatch_ack_timeout_s: u64,
         worker_registry: SharedWorkerRegistry,
         maybe_origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+        resource_sketch: Option<Arc<ResourceSketch>>,
         has_peers: bool,
         record_ttl: Duration,
         scheduler_id: String,
@@ -2120,6 +2353,9 @@ impl ApiWorkerScheduler {
         );
         let local_fleet_change_notify = Arc::new(Notify::new());
         let capacity_generation = Arc::new(AtomicU64::new(0));
+        let memory_property = memory_escalation
+            .as_ref()
+            .map(|policy| policy.property.clone());
         Arc::new(Self {
             inner: Mutex::new(ApiWorkerSchedulerImpl {
                 workers: Workers(LruCache::unbounded()),
@@ -2128,6 +2364,8 @@ impl ApiWorkerScheduler {
                 live_memory_veto,
                 memory_escalation,
                 reservation_hold,
+                attempt_events: maybe_origin_event_tx.clone(),
+                lost_results: LostResults::default(),
                 holds: HashMap::new(),
                 holds_by_action: HashMap::new(),
                 hold_cooldowns: HashMap::new(),
@@ -2157,6 +2395,8 @@ impl ApiWorkerScheduler {
             worker_registry,
             metrics: Arc::new(SchedulerMetrics::default()),
             maybe_origin_event_tx,
+            resource_sketch,
+            memory_property,
             local_fleet_change_notify,
             capacity_generation,
             scheduler_id,
@@ -2484,6 +2724,55 @@ impl WorkerScheduler for ApiWorkerScheduler {
                     outcome.as_str_name(),
                 );
             }
+        }
+
+        // What the scheduler learns from: outside the `inner` lock, the
+        // sketch has its own.
+        if let (Some(sketch), Some(action_info), true) = (
+            self.resource_sketch.as_ref(),
+            maybe_action_info.as_ref(),
+            resource_usage.sampled,
+        ) {
+            let metadata = action_info.origin_metadata.bazel_metadata.as_ref();
+            let key = SketchKey::for_attempt(
+                metadata.map(|m| m.target_id.as_str()),
+                metadata.map(|m| m.action_mnemonic.as_str()),
+                &action_info.inner.command_digest.to_string(),
+            );
+            let killed = outcome == ResourceOutcome::KilledMemory;
+            // What it ran under: the worker's echo, else what the scheduler
+            // sent, the same two sources the escalation reads.
+            let killed_at_kb = killed
+                .then(|| {
+                    resource_usage
+                        .reserved
+                        .map(|r| r.memory_kb)
+                        .filter(|kb| *kb > 0)
+                        .or_else(|| {
+                            let property = self.memory_property.as_deref()?;
+                            match action_info.platform_properties.properties.get(property) {
+                                Some(PlatformPropertyValue::Minimum(kb)) => Some(*kb),
+                                _ => None,
+                            }
+                        })
+                })
+                .flatten();
+            let observation = Observation {
+                peak_memory_kb: resource_usage.peak_memory_kb,
+                cpu_millicores: (resource_usage.wall_time_ms > 0).then(|| {
+                    resource_usage.cpu_time_ms.saturating_mul(1000) / resource_usage.wall_time_ms
+                }),
+                peak_disk_kb: resource_usage.peak_disk_kb,
+                killed_at_kb,
+                killed: !matches!(
+                    outcome,
+                    ResourceOutcome::Unknown | ResourceOutcome::Completed
+                ),
+                now_s: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            };
+            sketch.observe(key, &observation);
         }
 
         let Some(origin_event_tx) = self.maybe_origin_event_tx.as_ref() else {

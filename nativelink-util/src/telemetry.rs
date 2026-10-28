@@ -662,12 +662,26 @@ pub fn forward_client_headers<T>(request: &mut tonic::Request<T>, names: &[Strin
         return;
     };
     for name in names {
-        if let Some(value) = client_headers.0.get(&name.to_lowercase())
-            && let (Ok(k), Ok(v)) = (
-                tonic::metadata::MetadataKey::from_bytes(name.as_bytes()),
-                tonic::metadata::MetadataValue::try_from(value.as_str()),
-            )
-        {
+        let Some(value) = client_headers.0.get(&name.to_lowercase()) else {
+            continue;
+        };
+        // Tonic rejects a `-bin` name as an ASCII key, so a binary header such
+        // as Bazel's request metadata needs the binary API.
+        if name.to_lowercase().ends_with("-bin") {
+            if let (Ok(k), Ok(bytes)) = (
+                tonic::metadata::MetadataKey::<tonic::metadata::Binary>::from_bytes(
+                    name.as_bytes(),
+                ),
+                BASE64_STANDARD_NO_PAD.decode(value.trim_end_matches('=')),
+            ) {
+                request
+                    .metadata_mut()
+                    .insert_bin(k, tonic::metadata::MetadataValue::from_bytes(&bytes));
+            }
+        } else if let (Ok(k), Ok(v)) = (
+            tonic::metadata::MetadataKey::from_bytes(name.as_bytes()),
+            tonic::metadata::MetadataValue::try_from(value.as_str()),
+        ) {
             request.metadata_mut().insert(k, v);
         }
     }
@@ -1167,5 +1181,29 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(baggage.contains("enduser.id=alice"), "{baggage}");
+    }
+
+    #[test]
+    fn forward_client_headers_forwards_binary_header() {
+        let name = BAZEL_REQUESTMETADATA_HEADER;
+        let metadata = RequestMetadata {
+            tool_invocation_id: "inv-1".to_string(),
+            ..Default::default()
+        };
+        let encoded = BASE64_STANDARD_NO_PAD.encode(metadata.encode_to_vec());
+        let headers = ClientHeaders(Arc::new(HashMap::from([(name.to_string(), encoded)])));
+        let _guard = opentelemetry::Context::new().with_value(headers).attach();
+
+        let mut request = tonic::Request::new(());
+        forward_client_headers(&mut request, &[name.to_string()]);
+
+        let value = request
+            .metadata()
+            .get_bin(name)
+            .expect("the binary header is forwarded")
+            .to_bytes()
+            .unwrap();
+        let forwarded = RequestMetadata::decode(value.as_ref()).unwrap();
+        assert_eq!(forwarded.tool_invocation_id, "inv-1");
     }
 }

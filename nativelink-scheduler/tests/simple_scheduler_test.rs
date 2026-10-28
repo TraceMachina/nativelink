@@ -33,11 +33,11 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ExecuteRequest, Platform, RequestMetadata, digest_function, platform,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::events::{
-    event, request_event, response_event,
+    OriginEvent, event, request_event, response_event,
 };
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ActionResourceUsage, ConnectionResult, KillOperationRequest, StartExecute, UpdateForWorker,
-    WorkerLoad, update_for_worker,
+    ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
+    KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
@@ -49,7 +49,8 @@ use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, DirectoryInfo, ExecutionMetadata, FileInfo,
-    INTERNAL_ERROR_EXIT_CODE, NameOrPath, OperationId, SymlinkInfo, WorkerId,
+    INTERNAL_ERROR_EXIT_CODE, MISSING_INPUT_ERROR_TIP, NameOrPath, OperationId, SymlinkInfo,
+    WorkerId,
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
@@ -346,6 +347,164 @@ async fn scheduler_start_execute_origin_event_includes_resource_hints() -> Resul
     assert_eq!(resource_usage.peak_memory_kb, 12_345);
     assert!(resource_usage.sampled);
 
+    Ok(())
+}
+
+/// Starts one action on a fresh worker with origin events on, and returns
+/// the worker scheduler, the operation the worker was told to run, the
+/// start event's id, and the event receiver.
+async fn start_one_action_with_origin_events() -> Result<
+    (
+        Arc<SimpleScheduler>,
+        Arc<dyn WorkerScheduler>,
+        WorkerId,
+        OperationId,
+        String,
+        mpsc::Receiver<OriginEvent>,
+        mpsc::Receiver<UpdateForWorker>,
+    ),
+    Error,
+> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let task_change_notify = Arc::new(Notify::new());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(8);
+    let (scheduler, worker_scheduler) = SimpleScheduler::new_with_callback(
+        &SimpleSpec::default(),
+        memory_awaited_action_db_factory(
+            0,
+            &task_change_notify.clone(),
+            MockInstantWrapped::default,
+        ),
+        || async move {},
+        task_change_notify,
+        MockInstantWrapped::default,
+        Some(origin_event_tx),
+    );
+    let mut rx_from_worker =
+        setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
+    let action_info = make_base_action_info(make_system_time(2), DigestInfo::new([43u8; 32], 512));
+    let _listener = scheduler
+        .add_action(OperationId::from("client-op"), action_info)
+        .await?;
+    tokio::task::yield_now().await;
+    scheduler.do_try_match_for_test().await?;
+    let operation_id = match rx_from_worker.recv().await.unwrap().update.unwrap() {
+        update_for_worker::Update::StartAction(start) => {
+            OperationId::from(start.operation_id.as_str())
+        }
+        update => panic!("Unexpected worker update: {update:?}"),
+    };
+    let start_event_id = origin_event_rx.recv().await.unwrap().event_id;
+    Ok((
+        scheduler,
+        worker_scheduler,
+        worker_id,
+        operation_id,
+        start_event_id,
+        origin_event_rx,
+        rx_from_worker,
+    ))
+}
+
+fn attempt_ended(event: OriginEvent) -> ActionAttemptEnded {
+    match event.event.unwrap().event.unwrap() {
+        event::Event::Response(response) => match response.event.unwrap() {
+            response_event::Event::ActionAttemptEnded(ended) => ended,
+            other => panic!("Unexpected response event: {other:?}"),
+        },
+        other => panic!("Unexpected origin event: {other:?}"),
+    }
+}
+
+// An input fetch the worker reports as past its deadline is published as
+// ended for that, as a child of its start event, once the requeue is stored.
+#[nativelink_test]
+async fn attempt_ended_event_names_an_input_fetch_timeout() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(
+                Code::DeadlineExceeded,
+                "ran past its deadline"
+            )),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    let ended = attempt_ended(event);
+    assert_eq!(ended.reason, i32::from(AttemptEndReason::InputFetchTimeout));
+    assert_eq!(ended.operation_id, operation_id.to_string());
+    assert_eq!(ended.worker_id, "worker_id");
+    assert!(
+        ended.detail.contains("ran past its deadline"),
+        "{}",
+        ended.detail
+    );
+    Ok(())
+}
+
+// The worker hands a missing CAS input back as a FAILED_PRECONDITION result,
+// not an error; that result is what names the attempt as missing an input.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_missing_input() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(ActionResult {
+                error: Some(make_err!(
+                    Code::FailedPrecondition,
+                    "Object not found : {MISSING_INPUT_ERROR_TIP}"
+                )),
+                ..ActionResult::default()
+            })),
+        )
+        .await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::MissingInput)
+    );
+    Ok(())
+}
+
+// Any other NotFound the worker reports is its own error, not a missing input.
+#[nativelink_test]
+async fn attempt_ended_event_names_other_not_found_a_worker_error() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, operation_id, _start, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler
+        .update_action(
+            &worker_id,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(Code::NotFound, "no such directory")),
+        )
+        .await?;
+    assert_eq!(
+        attempt_ended(rx.recv().await.unwrap()).reason,
+        i32::from(AttemptEndReason::WorkerError)
+    );
+    Ok(())
+}
+
+// A worker that goes away ends the attempts it held as worker lost.
+#[nativelink_test]
+async fn attempt_ended_event_names_a_lost_worker() -> Result<(), Error> {
+    let (_scheduler, worker_scheduler, worker_id, _operation_id, start_event_id, mut rx, _w) =
+        start_one_action_with_origin_events().await?;
+    worker_scheduler.remove_worker(&worker_id).await?;
+    let event = rx.recv().await.unwrap();
+    assert_eq!(event.parent_event_id, start_event_id);
+    assert_eq!(
+        attempt_ended(event).reason,
+        i32::from(AttemptEndReason::WorkerLost)
+    );
     Ok(())
 }
 
@@ -3393,7 +3552,9 @@ async fn failed_final_update_does_not_leak_worker_capacity() -> Result<(), Error
 /// which a client-timeout sweep then finishes server-side while the worker
 /// still holds it. Returns the scheduler, the worker's channel and the
 /// operation id the worker was given.
-async fn setup_worker_holding_a_finished_operation() -> Result<
+async fn setup_worker_holding_a_finished_operation(
+    origin_event_tx: Option<mpsc::Sender<OriginEvent>>,
+) -> Result<
     (
         Arc<SimpleScheduler>,
         mpsc::Receiver<UpdateForWorker>,
@@ -3423,7 +3584,7 @@ async fn setup_worker_holding_a_finished_operation() -> Result<
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
-        None,
+        origin_event_tx,
     );
 
     let mut rx_from_worker = setup_new_worker(
@@ -3479,7 +3640,7 @@ async fn setup_worker_holding_a_finished_operation() -> Result<
 async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
     let (scheduler, mut rx_from_worker, operation_id, action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
     assert!(logs_contain(
         "Operation timed out having no more clients listening"
     ));
@@ -3555,7 +3716,7 @@ async fn revoked_operation_is_killed_once_and_its_report_frees_the_slot() -> Res
 #[nativelink_test]
 async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), Error> {
     let (scheduler, rx_from_worker, _operation_id, _action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
 
     // The worker's connection is gone, so the kill cannot be delivered.
     drop(rx_from_worker);
@@ -3569,11 +3730,68 @@ async fn unreachable_worker_is_evicted_when_kill_cannot_be_sent() -> Result<(), 
     Ok(())
 }
 
+// An operation the worker was told to kill was already given up on: evicting
+// the worker for not acknowledging the kill reports no lost attempt.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_it_was_told_to_kill()
+-> Result<(), Error> {
+    let worker_id = WorkerId("worker_id".to_string());
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    scheduler.kill_revoked_operations().await?;
+    match rx_from_worker.try_recv().unwrap().update {
+        Some(update_for_worker::Update::KillOperationRequest(_)) => {}
+        v => panic!("Expected KillOperationRequest, got : {v:?}"),
+    }
+    scheduler
+        .worker_keep_alive_received(&worker_id, NOW_TIME + 61, None)
+        .await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 61).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+// The worker can still hold an operation that ended elsewhere before the
+// kill goes out; evicting it then reports no lost attempt either.
+#[nativelink_test]
+async fn evicting_a_worker_reports_no_attempt_for_an_operation_that_ended_elsewhere()
+-> Result<(), Error> {
+    let (origin_event_tx, mut origin_event_rx) = mpsc::channel(16);
+    let (scheduler, _rx_from_worker, _operation_id, _action1_listener) =
+        setup_worker_holding_a_finished_operation(Some(origin_event_tx)).await?;
+    drop(scheduler.remove_timedout_workers(NOW_TIME + 1_000).await);
+    assert!(logs_contain("Evicting worker from pool"));
+    while let Ok(event) = origin_event_rx.try_recv() {
+        if let Some(event::Event::Response(response)) = event.event.and_then(|e| e.event) {
+            assert!(
+                !matches!(
+                    response.event,
+                    Some(response_event::Event::ActionAttemptEnded(_))
+                ),
+                "{response:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn live_worker_that_never_acknowledges_a_kill_is_evicted() -> Result<(), Error> {
     let worker_id = WorkerId("worker_id".to_string());
     let (scheduler, mut rx_from_worker, _operation_id, _action1_listener) =
-        setup_worker_holding_a_finished_operation().await?;
+        setup_worker_holding_a_finished_operation(None).await?;
 
     // The kill is delivered, but the worker is wedged (nativelink#2672): it
     // keeps its keepalives up and never reports the operation.

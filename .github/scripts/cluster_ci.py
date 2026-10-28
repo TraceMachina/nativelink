@@ -75,6 +75,7 @@ def payload(environ, repetitions, task='bazel'):
     if task == 'nix':
         names = ('GITHUB_SHA', 'BENCHMARK_STARTED')
     return {**{name: environ[name] for name in names}, "NL_PERSISTENT_CACHE": "/workspace",
+            "CI_BAZEL_METADATA": environ.get("CI_BAZEL_METADATA", "{}"),
             "NL_REPETITIONS": str(repetitions), 'NL_TASK': task,
             "NL_SUMMARY_DIRECTORY": "/workspace/ci-results/" + run}
 

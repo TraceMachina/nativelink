@@ -2,26 +2,17 @@
 name: CI / Fuzz
 
 on:
+  # Fuzzing is expensive and does not gate merge. It runs nightly against
+  # every target, on a release pull request (head branch `release/vX.Y.Z`,
+  # as in #3028), when a release is published, and on demand. Ordinary
+  # pull requests do not run it.
+  schedule:
+    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+  release:
+    types: [published]
   pull_request:
-    branches:
-      - main
-    paths:
-      - ".clusterfuzzlite/**"
-      - "nativelink-test/fuzz/**"
-      - "nativelink-config/**"
-      - "nativelink-error/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-  push:
-    branches:
-      - main
-    paths:
-      - ".clusterfuzzlite/**"
-      - "nativelink-test/fuzz/**"
-      - "nativelink-config/**"
-      - "nativelink-error/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
+    branches: [main]
+  workflow_dispatch:
 
 permissions: read-all
 
@@ -30,9 +21,17 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  fuzz:
-    name: Fuzz
+  discover:
+    # `branches` above filters the base. The head check keeps this off
+    # ordinary pull requests. Other events always run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      startsWith(github.head_ref, 'release/') ||
+      startsWith(github.event.pull_request.title, 'Release NativeLink')
+    name: Discover targets
     runs-on: ubuntu-24.04
+    outputs:
+      targets: ${{ steps.targets.outputs.targets }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -40,19 +39,51 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build fuzzers
-        id: build
+      - name: Discover fuzz targets
+        id: targets
+        run: |
+          targets="$(
+            awk '
+              /^\[\[bin\]\]$/ { in_bin = 1; next }
+              in_bin && /^name = / {
+                gsub(/"/, "", $3)
+                print $3
+                in_bin = 0
+              }
+            ' nativelink-test/fuzz/Cargo.toml |
+              jq -Rsc 'split("\n") | map(select(length > 0))'
+          )"
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: discover
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.discover.outputs.targets) }}
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    env:
+      CFL_EXTRA_FUZZ_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Build fuzzer
         uses: >- # v1
           google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
         with:
           language: rust
           sanitizer: address
 
-      - name: Run fuzzers
+      - name: Run fuzzer
         uses: >- # v1
           google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 600
-          mode: code-change
+          mode: batch
           sanitizer: address

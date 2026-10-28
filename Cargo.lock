@@ -1409,9 +1409,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -1595,7 +1595,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1649,7 +1649,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2318,7 +2318,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -2994,7 +2994,7 @@ checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
 name = "nativelink"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "async-lock",
  "axum",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-config"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "byte-unit",
  "humantime",
@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-error"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "base64 0.22.1",
  "mongodb",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-macro"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3077,7 +3077,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "async-lock",
  "nativelink-metric-macro-derive",
@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-metric-macro-derive"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3097,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-proto"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "derive_more 2.1.0",
  "prost",
@@ -3109,7 +3109,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-redis-tester"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "either",
  "nativelink-util",
@@ -3122,7 +3122,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-scheduler"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-service"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3203,7 +3203,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-store"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3285,7 +3285,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-util"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3348,7 +3348,7 @@ dependencies = [
 
 [[package]]
 name = "nativelink-worker"
-version = "1.8.0"
+version = "1.8.2"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -3424,7 +3424,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4323,7 +4323,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4380,7 +4380,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4814,7 +4814,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4969,7 +4969,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5097,9 +5097,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.52.3"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -5188,7 +5188,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "zstd",
 ]
 
 [[package]]
@@ -5781,9 +5780,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.3"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05d651ec480de84b762e7be71e6efa7461699c19d9e2c272c8d93455f567786e"
+checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -5827,7 +5826,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6442,27 +6441,27 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zstd"
-version = "0.13.3"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
 dependencies = [
  "zstd-safe",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "7.2.4"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.0.16+zstd.1.5.7"
+version = "2.1.2+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",

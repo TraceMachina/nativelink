@@ -78,6 +78,32 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.8.2: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Bound the requests an Azure store keeps in flight", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Declare macOS rustc dylibs and rust-objcopy as lre-rs toolchain inputs", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Finish an upload's commit on its own task when the client leaves after its last byte", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Forward binary headers in forward_headers", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Give a namespaced action a /proc that matches its PID namespace", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Grow the compression store's block index as blocks are written", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Keep coverage publication independent of cache uploads", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Report action phases, transfer bytes and why an attempt ended in origin events", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Sample and kill an action across its whole process tree", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Stop the existence cache vouching for a blob once it is found missing", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Update five dependencies with OSV advisories", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "run AddressSanitizer and fuzzing nightly", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "verify's repair no longer deletes the durable filesystem copy", group = "<!-- 2 -->🐛 Bug Fixes" },
+
+  # v1.8.1: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Compare the webpki root store with assert_ne", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Create the scheduler index persistent", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Export telemetry over TLS to an https OTLP collector", group = "<!-- 1 -->⛰️  Features" },
+  { message = "Read a filter pass's listed records one at a time again", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Read the listed records of a filter pass 64 at a time", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Refresh ca-certificates apt pin in Compose image", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "Replay a reset buf_channel stream on every retry", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Report content length from filesystem store", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "read the memory store's listing whole", group = "<!-- 2 -->🐛 Bug Fixes" },
+
   # v1.8.0: pinned by subject, since their bodies trip the generic word rules.
   { message = "Bound a worker's input fetches with one pool across the actions it stages", group = "<!-- 1 -->⛰️  Features" },
   { message = "Bound object store reads with an adaptive permit pool", group = "<!-- 1 -->⛰️  Features" },

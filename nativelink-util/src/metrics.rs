@@ -1277,6 +1277,48 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             )
             .with_unit("{action}")
             .build(),
+
+        hints_entries: meter
+            .u64_gauge("scheduler.hints.entries")
+            .with_description("Keys the scheduler holds a measured resource profile for, by family")
+            .with_unit("{key}")
+            .build(),
+
+        hints_capacity: meter
+            .u64_gauge("scheduler.hints.capacity")
+            .with_description("Keys a family can hold before it evicts the least recently seen")
+            .with_unit("{key}")
+            .build(),
+
+        hints_evictions: meter
+            .u64_counter("scheduler.hints.evictions")
+            .with_description("Keys evicted from a full family; climbing means the budget is too small or a client puts something unbounded in target_id")
+            .with_unit("{key}")
+            .build(),
+
+        hints_samples: meter
+            .u64_counter("scheduler.hints.samples")
+            .with_description("Sampled usage reports the sketch recorded, by family")
+            .with_unit("{sample}")
+            .build(),
+
+        hints_snapshot_bytes: meter
+            .u64_gauge("scheduler.hints.snapshot.bytes")
+            .with_description("Size of the last sketch snapshot written")
+            .with_unit("By")
+            .build(),
+
+        hints_snapshot_age: meter
+            .u64_gauge("scheduler.hints.snapshot.age")
+            .with_description("Seconds since the sketch was last snapshotted; zero before the first write")
+            .with_unit("s")
+            .build(),
+
+        hints_snapshot_failures: meter
+            .u64_counter("scheduler.hints.snapshot.failures")
+            .with_description("Sketch snapshot writes that failed; the sketch in memory is unaffected")
+            .with_unit("{write}")
+            .build(),
     }
 });
 
@@ -1325,6 +1367,54 @@ pub struct SchedulerOtlpMetrics {
     pub sweep_failures: metrics::Counter<u64>,
     /// Actions sized by the historical resource scheduler, by source.
     pub hint_resolutions: metrics::Counter<u64>,
+    /// Keys the scheduler's resource sketch holds, by family.
+    pub hints_entries: metrics::Gauge<u64>,
+    /// Keys a sketch family can hold, by family.
+    pub hints_capacity: metrics::Gauge<u64>,
+    /// Keys evicted from a full sketch family, by family.
+    pub hints_evictions: metrics::Counter<u64>,
+    /// Usage reports the sketch recorded, by family.
+    pub hints_samples: metrics::Counter<u64>,
+    /// Bytes of the last sketch snapshot.
+    pub hints_snapshot_bytes: metrics::Gauge<u64>,
+    /// Seconds since the last sketch snapshot.
+    pub hints_snapshot_age: metrics::Gauge<u64>,
+    /// Sketch snapshot writes that failed.
+    pub hints_snapshot_failures: metrics::Counter<u64>,
+}
+
+/// Records the sketch's size for one family: what it holds, what it can
+/// hold, and the running totals of evictions and samples since start
+/// (counters take the delta from the last report).
+pub fn record_hints_family(
+    family: &'static str,
+    entries: u64,
+    capacity: u64,
+    evictions_delta: u64,
+    samples_delta: u64,
+) {
+    let attrs = [KeyValue::new("family", family)];
+    SCHEDULER_METRICS.hints_entries.record(entries, &attrs);
+    SCHEDULER_METRICS.hints_capacity.record(capacity, &attrs);
+    if evictions_delta > 0 {
+        SCHEDULER_METRICS
+            .hints_evictions
+            .add(evictions_delta, &attrs);
+    }
+    if samples_delta > 0 {
+        SCHEDULER_METRICS.hints_samples.add(samples_delta, &attrs);
+    }
+}
+
+/// Records a sketch snapshot write.
+pub fn record_hints_snapshot(bytes: u64, age_s: u64) {
+    SCHEDULER_METRICS.hints_snapshot_bytes.record(bytes, &[]);
+    SCHEDULER_METRICS.hints_snapshot_age.record(age_s, &[]);
+}
+
+/// Records a sketch snapshot write that failed.
+pub fn record_hints_snapshot_failure() {
+    SCHEDULER_METRICS.hints_snapshot_failures.add(1, &[]);
 }
 
 /// Records a completed matching pass.
@@ -1527,6 +1617,12 @@ pub static STORE_METRICS: LazyLock<StoreMetrics> = LazyLock::new(|| {
             .with_description("Object store reads that found every read permit taken and waited for one, by provider")
             .with_unit("{request}")
             .build(),
+
+        object_request_waits: meter
+            .u64_counter("store.object.request_waits")
+            .with_description("Object store requests of any kind that found every request permit taken (max_concurrent_requests) and waited for one, by provider")
+            .with_unit("{request}")
+            .build(),
     }
 });
 
@@ -1539,6 +1635,8 @@ pub struct StoreMetrics {
     pub object_read_limit: metrics::Gauge<u64>,
     /// Reads that waited for a read permit, by provider.
     pub object_read_waits: metrics::Counter<u64>,
+    /// Requests that waited for a request permit, by provider.
+    pub object_request_waits: metrics::Counter<u64>,
 }
 
 /// Records the read limit an object store's permit pool settled on.
@@ -1553,6 +1651,13 @@ pub fn record_object_store_read_limit(provider: &'static str, limit: usize) {
 pub fn record_object_store_read_wait(provider: &'static str) {
     STORE_METRICS
         .object_read_waits
+        .add(1, &[KeyValue::new(STORE_OBJECT_PROVIDER, provider)]);
+}
+
+/// Records a request that found no request permit free and waited for one.
+pub fn record_object_store_request_wait(provider: &'static str) {
+    STORE_METRICS
+        .object_request_waits
         .add(1, &[KeyValue::new(STORE_OBJECT_PROVIDER, provider)]);
 }
 

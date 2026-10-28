@@ -57,7 +57,7 @@ use tracing::{Level, debug, error, event, info, info_span, instrument, trace, wa
 use crate::running_actions_manager::{
     ExecutionConfiguration, MISSING_INPUT_ERROR_TIP, Metrics as RunningActionManagerMetrics,
     ResourceEnforcement, RunningAction, RunningActionsManager, RunningActionsManagerArgs,
-    RunningActionsManagerImpl,
+    RunningActionsManagerImpl, with_phases,
 };
 use crate::worker_api_client_wrapper::{WorkerApiClientTrait, WorkerApiClientWrapper};
 use crate::worker_utils::make_connect_worker_request;
@@ -738,12 +738,13 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                         "Error saving action in store",
                                                     );
                                                 }
-                                            let action_stage = ActionStage::Completed(action_result);
                                             let resource_usage = resource_usage.map(|mut resource_usage| {
                                                 resource_usage.operation_id.clone_from(&operation_id);
                                                 resource_usage.worker_id.clone_from(&worker_id);
+                                                with_phases(&mut resource_usage, &action_result);
                                                 resource_usage
                                             });
+                                            let action_stage = ActionStage::Completed(action_result);
                                             grpc_client.execution_response(
                                                 ExecuteResult{
                                                     instance_name,
@@ -1182,6 +1183,10 @@ pub async fn new_local_worker(
             {
                 return Err(make_err!(Code::Unavailable, "Namespaces not supported"));
             }
+            // Warns when it cannot; the action then sees the host's /proc.
+            if *use_namespaces {
+                crate::namespace_utils::fresh_proc_supported();
+            }
             if !*use_namespaces {
                 crate::running_actions_manager::UseNamespaces::No
             } else if use_mount_namespace {
@@ -1261,10 +1266,28 @@ pub async fn new_local_worker(
                 buck2_file_capture: config.experimental_buck2_file_capture.clone(),
                 entrypoint,
                 additional_environment: config.additional_environment.clone(),
-                resource_enforcement: config
-                    .resource_enforcement
-                    .as_ref()
-                    .and_then(ResourceEnforcement::from_config),
+                resource_enforcement: config.resource_enforcement.as_ref().and_then(
+                    |enforcement| {
+                        let mut resource_enforcement =
+                            ResourceEnforcement::from_config(enforcement)?;
+                        if let Some(pressure_kill) = &mut resource_enforcement.pressure_kill {
+                            pressure_kill.largest_reservation_kb =
+                                crate::capacity::advertised_memory_kb(
+                                    config.capacity.as_ref(),
+                                    config.capacity.as_ref().map_or(0, |capacity| {
+                                        crate::capacity::memory_headroom_percent(
+                                            capacity,
+                                            Some(enforcement),
+                                        )
+                                    }),
+                                    crate::capacity::observe_cgroup(),
+                                    &config.platform_properties,
+                                    &enforcement.memory_property_name,
+                                );
+                        }
+                        Some(resource_enforcement)
+                    },
+                ),
             },
             cas_store: fast_slow_store,
             ac_store,

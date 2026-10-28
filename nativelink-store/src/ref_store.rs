@@ -116,6 +116,13 @@ impl StoreDriver for RefStore {
         self.get_store()?.as_store_driver_pin().remove(key).await
     }
 
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        self.get_store()?
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         keys: &[StoreKey<'_>],

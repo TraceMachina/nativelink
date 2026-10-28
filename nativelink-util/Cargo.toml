@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-util"
-version = "1.8.0"
+version = "1.8.2"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -36,7 +36,6 @@ opentelemetry-otlp = { version = "0.32.0", default-features = false, features = 
   "metrics",
   "tls-ring",
   "trace",
-  "zstd-tonic",
 ] }
 opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false, features = [
   "default",
@@ -60,7 +59,7 @@ rlimit = { version = "0.10.2", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 sha2 = { version = "0.10.8", default-features = false }
 tempfile = { version = "3.20.0", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "fs",
   "io-util",
   "rt-multi-thread",
@@ -97,7 +96,7 @@ uuid = { version = "1.16.0", default-features = false, features = [
 ] }
 walkdir = { version = "2.5.0", default-features = false }
 wincode = { version = "0.5.4", default-features = false, features = ["derive"] }
-zstd = { version = "0.13.3", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 
 [dev-dependencies]
 anyhow = { version = "1.0.103", default-features = false }
@@ -119,7 +118,7 @@ rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
 serde_json = { version = "1.0.140", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "test-util",
 ], default-features = false }
 tonic-prost = { version = "0.14.6", default-features = false }
