@@ -14,12 +14,15 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Bug Fixes
 
+- Fix learned resource sizing regressions on main ([#3070](https://github.com/TraceMachina/nativelink/issues/3070)) - ([73df5dd](https://github.com/TraceMachina/nativelink/commit/73df5dd6b5c9bea499afc79149e29fe0986b620e))
 - Redis store: bound the temp key of every upload ([#3065](https://github.com/TraceMachina/nativelink/issues/3065)) - ([b57a164](https://github.com/TraceMachina/nativelink/commit/b57a1645db966d446779c08173b49336afb77642))
 - Avoid embedding the Cargo manifest path ([#3064](https://github.com/TraceMachina/nativelink/issues/3064)) - ([76aabfd](https://github.com/TraceMachina/nativelink/commit/76aabfdf00b5b5e7176c6049a545cb294e9551e2))
 - restore broken /resources/oreilly-bazel-book page ([#3042](https://github.com/TraceMachina/nativelink/issues/3042)) - ([cfc0b95](https://github.com/TraceMachina/nativelink/commit/cfc0b959b50239c10d67c15d6784b8bedc6726f8))
 
 ### 🧪 Testing & CI
 
+- *(ci)* fix Clippy and Redis failures and restore Bazel PR checks ([#3069](https://github.com/TraceMachina/nativelink/issues/3069)) - ([9577afb](https://github.com/TraceMachina/nativelink/commit/9577afbd08ca8c6fa90f97195bb7d38fd2a02f0e))
+- worker tests: import Semaphore on every platform ([#3074](https://github.com/TraceMachina/nativelink/issues/3074)) - ([a421953](https://github.com/TraceMachina/nativelink/commit/a421953eaa9b0e1df51a5a6eceffb341ed6074bb))
 - Add REAPI protobuf fuzz target ([#3057](https://github.com/TraceMachina/nativelink/issues/3057)) - ([dbcc0e5](https://github.com/TraceMachina/nativelink/commit/dbcc0e56e27549a24991192dbecdbba385f45bf9))
 
 ### ⚙️ Miscellaneous

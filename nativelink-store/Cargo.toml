@@ -90,7 +90,9 @@ prost = { version = "0.14.4", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
-redis = { version = "1.0.0", default-features = false, features = [
+# 1.0.2 fixes async cluster transaction replies used to publish uploads atomically.
+# https://github.com/redis-rs/redis-rs/pull/1901
+redis = { version = "1.0.2", default-features = false, features = [
   "ahash",
   "cluster-async",
   "connection-manager",
