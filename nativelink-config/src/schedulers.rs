@@ -263,6 +263,13 @@ pub struct SimpleSpec {
     /// above the typical queue wait. Only properties listed in
     /// `supported_platform_properties` are enforced strictly; a property
     /// that is not listed does not restrict workers that do not declare it.
+    /// The memory backend knows only workers connected to this scheduler.
+    /// A learned size class is not a promise that its pool is online: a pod
+    /// being created or Pending does not stop this clock. For pools that
+    /// scale from zero, leave this at 0 or allow the entire cold start through
+    /// worker registration, including node creation and image downloads.
+    /// Redis peer exchange below also describes connected workers, not
+    /// provisioner pool templates. It does not solve this cold-start gap.
     ///
     /// When several schedulers share one Redis backend, each publishes what
     /// its workers can run whenever a worker joins or leaves and at least
@@ -536,7 +543,7 @@ const fn default_historical_resource_window_days() -> u64 {
 }
 
 const fn default_historical_resource_memory_budget_bytes() -> u64 {
-    128 * 1024 * 1024
+    512 * 1024 * 1024
 }
 
 const fn default_historical_resource_snapshot_interval_s() -> u64 {
@@ -783,24 +790,38 @@ pub struct HistoricalResourceSpec {
     /// funds resident entries; the remainder allows encoding/loading snapshots.
     /// Long keys reduce the number of retained entries. This is conservative
     /// allocation accounting, not a process RSS limit (allocator overhead and
-    /// other scheduler data are separate). Default: 128 MiB.
+    /// other scheduler data are separate). Default: 512 MiB, holding roughly
+    /// 55,000 target keys plus mnemonic and command families with short keys.
+    /// An explicitly configured budget is unchanged. Size the process memory
+    /// limit above this budget plus the scheduler's other allocations.
     #[serde(
         default = "default_historical_resource_memory_budget_bytes",
         deserialize_with = "convert_data_size_with_shellexpand"
     )]
     pub memory_budget_bytes: u64,
 
-    /// Store for this replica's learned sketch. Each replica writes and
-    /// restores only its own key (historical_resource_sketch/<hostname>).
-    /// Keep replica identities stable to preserve history; a replacement with
-    /// a new identity starts from its seed. Cross-replica snapshot merging is
-    /// disabled because re-persisting merged history double-counts samples.
+    /// Store for this replica's learned sketch. This must name a store in this
+    /// scheduler process's own top-level `stores`, not in another CAS process.
+    /// A missing name or failed startup probe logs a warning and disables
+    /// persistence until restart; scheduling and in-memory learning continue.
+    /// Each replica prefers its own key (historical_resource_sketch/<replica_id>).
+    /// When that key is missing, it restores the newest compatible snapshot
+    /// under the prefix if the store supports listing. Only one history is
+    /// restored, never merged. Use a separate store prefix for each logical
+    /// scheduler. Fallback scans at most 128 keys; retire old keys with a TTL.
     /// Version 3 snapshots use wide histogram counters; older snapshots are
     /// skipped with a warning. Give the store eviction or a TTL for retired
     /// replica keys. It must support string keys; startup probes write/read.
     /// Ignored when `learn_from_workers` is false. Unset means memory only.
     #[serde(default)]
     pub snapshot_store: Option<String>,
+
+    /// Stable snapshot identity, unique among concurrent writers sharing the
+    /// snapshot store. Empty uses `HOSTNAME`, or a random ID if unset. A stable
+    /// identity avoids snapshot discovery on restart; Deployment pods whose
+    /// names change can use the newest-snapshot fallback. Maximum: 256 bytes.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub replica_id: String,
 
     /// How often the snapshot is written. Zero turns the periodic write
     /// off. Writes happen on the periodic tick; shutdown does not flush.

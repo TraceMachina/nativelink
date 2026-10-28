@@ -1043,11 +1043,10 @@ impl Snapshot {
         out
     }
 
-    /// Bound the decoded entries as well as the encoded bytes: sparse
-    /// histograms occupy much more memory when expanded than on disk.
-    pub fn decode(bytes: &[u8], max_entries: usize) -> Result<Self, Error> {
-        const MIN_ENTRY_BYTES: usize = 96;
-        let mut r = Reader { bytes, at: 0 };
+    /// Header bytes needed to select a restart snapshot without reading its payload.
+    pub const HEADER_BYTES: u64 = 17;
+
+    fn read_header(r: &mut Reader<'_>) -> Result<(u32, u64), Error> {
         if r.take(4)? != SNAPSHOT_MAGIC {
             return Err(make_err!(
                 Code::InvalidArgument,
@@ -1061,8 +1060,28 @@ impl Snapshot {
                 "resource sketch snapshot: version {version}, this build reads {SNAPSHOT_VERSION}"
             ));
         }
-        let sampler_generation = r.u32()?;
-        let written_at_s = r.u64()?;
+        Ok((r.u32()?, r.u64()?))
+    }
+
+    /// The write time only when this build understands the snapshot's format
+    /// and sampler. Discovery never needs to allocate full histogram entries.
+    pub fn compatible_written_at(bytes: &[u8]) -> Result<u64, Error> {
+        let (generation, written_at) = Self::read_header(&mut Reader { bytes, at: 0 })?;
+        if generation != SAMPLER_GENERATION {
+            return Err(make_err!(
+                Code::FailedPrecondition,
+                "resource sketch snapshot: incompatible sampler generation {generation}"
+            ));
+        }
+        Ok(written_at)
+    }
+
+    /// Bound the decoded entries as well as the encoded bytes: sparse
+    /// histograms occupy much more memory when expanded than on disk.
+    pub fn decode(bytes: &[u8], max_entries: usize) -> Result<Self, Error> {
+        const MIN_ENTRY_BYTES: usize = 96;
+        let mut r = Reader { bytes, at: 0 };
+        let (sampler_generation, written_at_s) = Self::read_header(&mut r)?;
         let count = usize::try_from(r.u64()?)
             .map_err(|_| make_err!(Code::InvalidArgument, "resource sketch snapshot: count"))?;
         if count > max_entries || count > (bytes.len() - r.at) / MIN_ENTRY_BYTES {

@@ -20,7 +20,7 @@
 //! restart keeps it; a hints file seeds an empty sketch once.
 
 use core::time::Duration;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -58,6 +58,9 @@ use crate::resource_sketch::{
 /// The prefix the sketch snapshots are written under in `snapshot_store`,
 /// one key per scheduler replica; see [`snapshot_key`].
 pub const SNAPSHOT_KEY_PREFIX: &str = "historical_resource_sketch/";
+const SNAPSHOT_KEY_PREFIX_END: &str = "historical_resource_sketch0";
+const MAX_SNAPSHOT_CANDIDATES: usize = 128;
+const MAX_REPLICA_ID_BYTES: usize = 256;
 
 /// The key the store is probed with at start; outside the prefix, so a
 /// listing never reads it as a snapshot.
@@ -71,9 +74,12 @@ pub fn snapshot_key(replica: &str) -> String {
 
 /// The replica this process writes its snapshot as: the pod's hostname,
 /// else a fresh id. Every replica sees the usage of the workers connected
-/// to it and no other, so each writes and restores only its own key.
+/// to it and no other. A configured identity takes precedence over the hostname.
 #[must_use]
-pub fn replica_id() -> String {
+pub fn replica_id(configured: &str) -> String {
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
     std::env::var("HOSTNAME")
         .ok()
         .filter(|name| !name.is_empty())
@@ -440,7 +446,18 @@ impl HistoricalResourceScheduler {
                 reserve_memory: reserved.memory,
                 reserve_disk: reserved.disk,
             },
-            Budget::from_bytes(spec.memory_budget_bytes),
+            if spec.learn_from_workers {
+                Budget::from_bytes(spec.memory_budget_bytes)
+            } else {
+                // File-backed mode never receives worker samples. Do not
+                // preallocate the learned cache when learning is disabled.
+                Budget {
+                    target: 1,
+                    mnemonic: 1,
+                    command: 1,
+                    probation: 1,
+                }
+            },
             Duration::from_secs(spec.window_days.saturating_mul(86_400)),
         )
     }
@@ -526,36 +543,112 @@ impl HistoricalResourceScheduler {
         Ok(())
     }
 
-    /// Restore only this replica's own observations. Loading every replica
-    /// then publishing that merged view double-counts history on the next
-    /// rolling restart. Cross-replica history needs provenance before it can
-    /// be persisted safely; replica replacement currently starts from its seed.
-    pub async fn load_snapshots(sketch: &ResourceSketch, store: &Store, own_key: &str) {
-        let bytes = match store
+    async fn read_snapshot(
+        sketch: &ResourceSketch,
+        store: &Store,
+        key: &str,
+    ) -> Result<Snapshot, Error> {
+        let bytes = store
             .get_part_unchunked(
-                StoreKey::Str(own_key.into()),
+                StoreKey::Str(key.into()),
                 0,
                 Some(sketch.snapshot_byte_limit()),
             )
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(err) if err.code == Code::NotFound => return,
-            Err(err) => {
+            .await?;
+        let budget = sketch.budget();
+        Snapshot::decode(&bytes, budget.target + budget.mnemonic + budget.command)
+    }
+
+    /// Prefer this replica's snapshot. A Deployment replacement has a new
+    /// hostname: when its key is absent, restore one newest compatible history
+    /// from the same store prefix. Never merge or add together replicas' samples.
+    pub async fn load_snapshots(sketch: &ResourceSketch, store: &Store, own_key: &str) {
+        match Self::read_snapshot(sketch, store, own_key).await {
+            Ok(snapshot) => {
+                match sketch.load(snapshot, now_s()) {
+                    Ok(entries) => info!(entries, "Restored this replica's resource sketch"),
+                    Err(error) => warn!(?error, "Resource sketch not loaded; using seed"),
+                }
+                return;
+            }
+            Err(error) if error.code == Code::NotFound => {}
+            Err(error) => {
                 warn!(
-                    ?err,
+                    ?error,
                     "Could not read this replica's resource sketch; using seed"
                 );
                 return;
             }
-        };
-        let budget = sketch.budget();
-        let max_entries = budget.target + budget.mnemonic + budget.command;
-        match Snapshot::decode(&bytes, max_entries)
-            .and_then(|snapshot| sketch.load(snapshot, now_s()))
-        {
-            Ok(entries) => info!(entries, "Restored this replica's resource sketch"),
-            Err(err) => warn!(?err, "Resource sketch not loaded; using seed"),
+        }
+
+        // Limit both the number and length of retained keys. Redis SCAN may
+        // repeat keys, so duplicates must not consume the discovery allowance.
+        let mut keys = BTreeSet::new();
+        let mut overflow = false;
+        let listed = store
+            .list(
+                StoreKey::Str(SNAPSHOT_KEY_PREFIX.into())
+                    ..StoreKey::Str(SNAPSHOT_KEY_PREFIX_END.into()),
+                |key| {
+                    if let StoreKey::Str(key) = key
+                        && key.len() <= SNAPSHOT_KEY_PREFIX.len() + MAX_REPLICA_ID_BYTES
+                    {
+                        keys.insert(key.to_string());
+                        if keys.len() > MAX_SNAPSHOT_CANDIDATES {
+                            overflow = true;
+                            return false;
+                        }
+                    }
+                    true
+                },
+            )
+            .await;
+        if let Err(error) = listed {
+            warn!(
+                ?error,
+                "Cannot discover resource snapshots; use a stable replica_id on stores without listing support. Using seed"
+            );
+            return;
+        }
+        if overflow {
+            warn!(
+                "Too many resource snapshots to discover safely; set a stable replica_id or retire old snapshot keys. Using seed"
+            );
+            return;
+        }
+        let mut candidates = Vec::new();
+        for key in keys {
+            if let Ok(header) = store
+                .get_part_unchunked(
+                    StoreKey::Str(key.as_str().into()),
+                    0,
+                    Some(Snapshot::HEADER_BYTES),
+                )
+                .await
+                && let Ok(written_at) = Snapshot::compatible_written_at(&header)
+            {
+                candidates.push((written_at, key));
+            }
+        }
+        candidates.sort_unstable();
+        for (_, key) in candidates.into_iter().rev() {
+            let loaded = Self::read_snapshot(sketch, store, &key)
+                .await
+                .and_then(|snapshot| sketch.load(snapshot, now_s()));
+            match loaded {
+                Ok(entries) => {
+                    info!(
+                        entries,
+                        snapshot_key = key,
+                        "Restored newest compatible resource sketch after replica replacement"
+                    );
+                    return;
+                }
+                Err(error) => warn!(
+                    ?error,
+                    "Restart snapshot was unreadable; trying the next newest"
+                ),
+            }
         }
     }
 
@@ -818,6 +911,11 @@ impl HistoricalResourceScheduler {
     /// ladder, or the action they were written for gets nothing. The budget
     /// must hold at least a few keys.
     pub fn validate(spec: &HistoricalResourceSpec) -> Result<(), Error> {
+        if spec.replica_id.len() > MAX_REPLICA_ID_BYTES {
+            return Err(make_input_err!(
+                "historical_resource.replica_id must be at most {MAX_REPLICA_ID_BYTES} bytes"
+            ));
+        }
         let known = |name: &str| spec.classes.iter().any(|class| class.name == name);
         let mut rules = spec
             .class_by_mnemonic

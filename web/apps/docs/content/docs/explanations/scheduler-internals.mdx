@@ -130,7 +130,10 @@ A client waiting to observe `CacheCheck` will wait forever.
 The matching engine walks the queue in sort order, and for each action looks
 for the first worker that satisfies the action's platform properties. The
 source still carries an `O(n*m)` TODO in
-<SourceLink file="nativelink-scheduler/src/simple_scheduler.rs" symbol="SimpleScheduler" />,
+<SourceLink
+  file="nativelink-scheduler/src/simple_scheduler.rs"
+  symbol="SimpleScheduler"
+/>,
 but the walk is narrowed first: a `WorkerCapabilityIndex` (an inverted index
 over `Exact` and `Priority` properties) produces the candidate set, and only
 that set is scanned in LRU order, checking availability and `Minimum`
@@ -264,29 +267,90 @@ kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
 
 The `memory_budget_bytes` accounting includes entry storage, variable-length
-keys, map bookkeeping, probation and reserved snapshot working memory. One
-quarter funds resident data; the remainder reserves space for snapshot encoding
-and loading. Long keys reduce the number of entries that fit. This accounting
-is not a total process RSS limit. Old keys expire after `window_days`, and full
-families evict their least recently used entries. The writer encodes directly
-from one shard at a time instead of cloning the entire sketch; lock contention
-and snapshot latency still need workload measurements.
+keys, map bookkeeping, probation and reserved snapshot working memory. The
+**512 MiB default** holds roughly 55,000 target keys plus mnemonic and command
+families with short keys; long labels reduce that capacity. Explicitly configured
+budgets keep their value. One quarter funds resident data and the remainder
+reserves space for snapshot encoding and loading. Size the process memory limit
+above the budget plus the scheduler's other allocations: this is not a total
+process RSS limit. File-backed mode does not allocate the learned cache in advance.
+Old keys expire after `window_days`, and full families evict their least recently
+used entries. Monitor capacity and evictions as the number of distinct keys grows.
+The writer encodes one shard at a time without cloning the entire sketch;
+lock contention and snapshot latency still need workload measurements.
 
-Each scheduler replica writes and restores only its own
-`snapshot_store` key, `historical_resource_sketch/<hostname>`, every
-`snapshot_interval_s`. It does not merge other replicas' snapshots, because
-republishing a merged history double-counts it at the next restart. Use stable
-replica identities and a separate snapshot store/prefix for each logical
-scheduler. A replacement with a new identity starts from its seed. Snapshot
-version 3 uses wide counters; older snapshots are skipped with a warning,
-so rolling back the binary does not preserve new learned history. Snapshot
-reads are bounded before decoding. Retired replica keys need store eviction
-or a TTL. Zero disables periodic writes; shutdown does not flush them.
+Each replica writes `historical_resource_sketch/<replica_id>` in `snapshot_store`
+every `snapshot_interval_s`. Set `replica_id` to a stable identity unique among
+concurrent writers, or leave it empty to use the pod's hostname. On startup the
+scheduler prefers its own snapshot. A replacement pod whose key is missing
+restores the newest compatible snapshot under the same prefix, **without merging
+histories**. Discovery reads small headers and retains at most 128 candidate keys;
+if that limit is exceeded, it warns and uses the hints file. Keep retired keys
+under a TTL, and use a separate store prefix for each logical scheduler. Stores
+without listing support need a stable replica ID to restore after a roll.
 
-In learning mode the admin API's `/scheduler/{instance}/hints` exports the
-current shaped reservations as a hints file. Switching back to file-backed
-mode restores the configured file and refresh interval, not the learned state.
-Preserve the last known-good file as the rollback source.
+Snapshot version 3 uses wide counters; older snapshots are skipped with a warning.
+Reads and decoded entry counts are bounded. Zero disables periodic writes;
+shutdown does not flush them. In learning mode the admin API's
+`/scheduler/{instance}/hints` exports shaped reservations as a hints file.
+Switching back to file-backed mode restores the configured file and refresh
+interval, not the learned state. Preserve the last known-good file for rollback.
+
+#### Choosing a snapshot store [#choosing-a-snapshot-store]
+
+`snapshot_store` names an entry in **this scheduler process's top-level `stores`**.
+It does not create a store or reference another CAS process's configuration. A
+missing name or failed startup write/read probe warns and leaves learning in
+memory for that process's lifetime. Fix the configuration or backend and restart
+to enable persistence; unsaved measurements are lost on restart.
+
+Names are user-defined in NativeLink. For the enterprise chart's standard names,
+check the rendered scheduler config:
+
+| Scheduler backend | Available standard snapshot-store names |
+| --- | --- |
+| Redis | `SCHEDULER_STORE`; also `ORIGIN_EVENT_STORE` when `cas.originEvents.enabled=true` |
+| Memory | `ORIGIN_EVENT_STORE` only when `cas.originEvents.enabled=true`; `SCHEDULER_STORE` is absent |
+
+If neither store is rendered, leave `snapshot_store` unset or define a dedicated
+store in the scheduler's own config. The chart may reject an invalid store name
+earlier during rendering; the server's fallback does not override chart checks.
+
+#### Waiting for an autoscaled size class [#waiting-for-an-autoscaled-size-class]
+
+Learned sizing selects from the configured class ladder, including a class whose
+pool currently has no connected workers. The retry escalator separately caps its
+memory ceiling at the largest connected worker advertisement; a size class is not
+an inventory of pools that can be provisioned. Capping learned hints to currently connected
+workers would prevent scale-from-zero and could repeat memory kills on a small
+worker.
+
+The memory scheduler sees only its own connected workers. Redis peer exchange
+adds other schedulers' **connected** workers, not pool templates awaiting startup. A pod
+created by the provisioner does not satisfy an action until the worker registers.
+A 60-second `unsatisfiable_action_timeout_s` can therefore fail a valid large-class
+action while its node or image is still starting.
+
+For autoscaling, initially leave that timeout at `0`, or set it above the measured
+worst-case time through worker registration, including node and image startup.
+For example, if that bound is below ten minutes, the nested `simple` scheduler can
+use:
+
+```json5
+{
+  simple: {
+    unsatisfiable_action_timeout_s: 600,
+    no_worker_action_timeout_s: 600,
+  },
+}
+```
+
+The second timeout covers a completely empty connected fleet; it does not replace
+the first when small workers are still connected. Zero disables the respective
+failure deadline, so monitor queued demand and provisioning failures. These
+settings preserve the requested reservation while the larger pool starts; they
+do not create workers themselves. With the memory backend, provisioner demand
+must come from the scheduler admin API rather than nonexistent Redis queue records.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 
