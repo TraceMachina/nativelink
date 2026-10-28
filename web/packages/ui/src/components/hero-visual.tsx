@@ -23,6 +23,56 @@ const days = [
   { label: "Sun", fresh: 38, cached: 9 },
 ];
 
+/** One invocation, summarised the way a build UI would, so the panel reads as a build tool's view. */
+const invocation = [
+  { label: "actions", value: "8,912" },
+  { label: "cache hits", value: "8,217" },
+  { label: "remote", value: "695" },
+  { label: "wall time", value: "2m 04s" },
+];
+
+const tabs = ["Targets", "Timing", "Cache", "Executions"];
+
+/** Recent activity, including the misses: a dashboard that only shows green is not a dashboard. */
+const activity = [
+  {
+    kind: "cache hit",
+    dot: "bg-success",
+    command: "bazel build //src/...",
+    detail: "",
+    time: "4.2s",
+  },
+  {
+    kind: "remote exec",
+    dot: "bg-brand",
+    command: "cargo test --release",
+    detail: "48 workers",
+    time: "12.8s",
+  },
+  {
+    kind: "cache miss",
+    dot: "bg-foreground/35",
+    command: "//compiler:parser_test",
+    detail: "recompiled",
+    time: "31.4s",
+  },
+  { kind: "cache hit", dot: "bg-success", command: "buck2 build :app", detail: "", time: "0.9s" },
+  {
+    kind: "remote exec",
+    dot: "bg-brand",
+    command: "siso ninja -C out/Default",
+    detail: "212 workers",
+    time: "3m 10s",
+  },
+  {
+    kind: "cache hit",
+    dot: "bg-success",
+    command: "recc clang++ -c main.cc",
+    detail: "",
+    time: "0.3s",
+  },
+];
+
 export function HeroVisual({ className }: HeroVisualProps) {
   return (
     <div className={cn("relative w-full", className)}>
@@ -40,13 +90,41 @@ export function HeroVisual({ className }: HeroVisualProps) {
           </div>
           <div className="ml-3 flex items-center gap-2 rounded-md bg-background/70 px-3 py-1 font-mono text-[11px] text-muted-foreground">
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
-            nativelink.cloud / dashboard
+            NativeLink · build events
           </div>
           <div className="ml-auto flex items-center gap-1">
             <span className="rounded-md bg-foreground/5 px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
-              live
+              sample data
             </span>
           </div>
+        </div>
+
+        {/* Invocation summary + tab strip: the chrome of a build UI, drawn not shot */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border/70 px-5 py-3 font-mono text-[11px]">
+          <span className="text-foreground">{"bazel test //..."}</span>
+          {invocation.map((item) => (
+            <span key={item.label} className="flex items-center gap-1 text-muted-foreground">
+              <span className="font-semibold text-foreground">{item.value}</span>
+              {item.label}
+            </span>
+          ))}
+          <span className="ml-auto flex items-center gap-1.5 text-success">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
+            succeeded
+          </span>
+        </div>
+        <div className="flex gap-1 border-b border-border/70 px-4 pt-2" aria-hidden="true">
+          {tabs.map((tab) => (
+            <span
+              key={tab}
+              className={cn(
+                "rounded-t-md px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider",
+                tab === "Cache" ? "border-b-2 border-brand text-brand" : "text-muted-foreground",
+              )}
+            >
+              {tab}
+            </span>
+          ))}
         </div>
 
         {/* Body */}
@@ -93,7 +171,7 @@ export function HeroVisual({ className }: HeroVisualProps) {
           <div className="flex flex-col rounded-xl border border-border bg-surface-elevated p-4">
             <div className="mb-3 flex items-center justify-between">
               <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                Build wall-time · 7d
+                Build wall-time · minutes · 7d
               </p>
               <div className="flex items-center gap-3 font-mono text-[10px]">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
@@ -110,9 +188,14 @@ export function HeroVisual({ className }: HeroVisualProps) {
             {/* Bar chart: one group per day label, two bars per group. */}
             <div
               role="img"
-              aria-label="Build wall-time over seven days: cached builds take roughly a third of the time of fresh builds every day."
-              className="flex min-h-[148px] flex-1 items-end gap-2"
+              aria-label="Sample chart of build wall-time in minutes over seven days: cached builds take roughly a third of the time of fresh builds every day."
+              className="flex min-h-[148px] flex-1 gap-2"
             >
+              <div className="flex h-full flex-col justify-between pb-0.5 font-mono text-[9px] text-muted">
+                <span>40</span>
+                <span>20</span>
+                <span>0</span>
+              </div>
               {days.map((day, i) => (
                 <div key={day.label} className="flex h-full flex-1 items-end justify-center gap-1">
                   <motion.div
@@ -134,7 +217,7 @@ export function HeroVisual({ className }: HeroVisualProps) {
             </div>
 
             {/* X-axis: one label under each group */}
-            <div className="mt-2 flex gap-2 font-mono text-[9px] text-muted-foreground">
+            <div className="mt-2 flex gap-2 pl-5 font-mono text-[9px] text-muted-foreground">
               {days.map((day) => (
                 <span key={day.label} className="flex-1 text-center">
                   {day.label}
@@ -150,42 +233,24 @@ export function HeroVisual({ className }: HeroVisualProps) {
             Live activity
           </p>
           <div className="space-y-1.5 font-mono text-[11px] text-muted-foreground">
-            <motion.div
-              initial={{ opacity: 0, x: -8 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              viewport={{ once: true }}
-              transition={{ delay: 0.7 }}
-              className="flex items-center gap-2"
-            >
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
-              <span>cache hit</span>
-              <span className="text-muted-foreground">bazel build //src/...</span>
-              <span className="ml-auto text-muted">4.2s</span>
-            </motion.div>
-            <motion.div
-              initial={{ opacity: 0, x: -8 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              viewport={{ once: true }}
-              transition={{ delay: 0.85 }}
-              className="flex items-center gap-2"
-            >
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand" />
-              <span>remote exec</span>
-              <span className="text-muted-foreground">cargo test --release</span>
-              <span className="ml-auto text-muted">12.8s</span>
-            </motion.div>
-            <motion.div
-              initial={{ opacity: 0, x: -8 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              viewport={{ once: true }}
-              transition={{ delay: 1.0 }}
-              className="flex items-center gap-2"
-            >
-              <span className="inline-block h-1.5 w-1.5 rounded-full bg-success" />
-              <span>cache hit</span>
-              <span className="text-muted-foreground">buck2 build :app</span>
-              <span className="ml-auto text-muted">0.9s</span>
-            </motion.div>
+            {activity.map((row, i) => (
+              <motion.div
+                key={`${row.command}-${i}`}
+                initial={{ opacity: 0, x: -8 }}
+                whileInView={{ opacity: 1, x: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: 0.7 + i * 0.12 }}
+                className="flex items-center gap-2"
+              >
+                <span className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", row.dot)} />
+                <span className="w-[5.5rem] shrink-0">{row.kind}</span>
+                <span className="truncate text-foreground/80">{row.command}</span>
+                {row.detail ? (
+                  <span className="hidden text-muted sm:inline">· {row.detail}</span>
+                ) : null}
+                <span className="ml-auto shrink-0 text-muted">{row.time}</span>
+              </motion.div>
+            ))}
           </div>
         </div>
       </div>
