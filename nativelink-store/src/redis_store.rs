@@ -20,7 +20,7 @@ use core::pin::Pin;
 use core::str::FromStr;
 use core::time::Duration;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
@@ -67,6 +67,9 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
+use crate::redis_utils::index_migration::{
+    self, IndexKind, Step, drop_keeping_documents, index_kind, migrated_name,
+};
 use crate::redis_utils::{
     FtAggregateCursor, FtAggregateOptions, FtCreateOptions, SearchSchema, ft_aggregate, ft_create,
     ft_info_indexing, ft_search_count,
@@ -455,6 +458,14 @@ where
     #[metric(help = "The maximum number of results to return per cursor")]
     max_count_per_cursor: u64,
 
+    /// See [`RedisSpec::migrate_temporary_indexes`].
+    migrate_temporary_indexes: bool,
+
+    /// For each scheduler index, the name reads use and when that was last
+    /// decided. Rechecked after `INDEX_MIGRATION_RECHECK`, so an original
+    /// that a process without the migration recreates is retired again.
+    index_names: Mutex<HashMap<String, (String, Instant)>>,
+
     /// A manager for subscriptions to keys in Redis.
     subscription_manager: Arc<RedisSubscriptionManager>,
 
@@ -596,11 +607,21 @@ where
             subscription_manager,
             client_permits: Arc::new(Semaphore::new(max_client_permits)),
             max_count_per_cursor,
+            migrate_temporary_indexes: false,
+            index_names: Mutex::new(HashMap::new()),
             health_check_timeout,
             key_ttl,
             has_remove_callback_subscribe: OnceCell::const_new(),
             remove_callbacks,
         })
+    }
+
+    /// Turns on [`RedisSpec::migrate_temporary_indexes`].
+    #[must_use]
+    pub fn with_temporary_index_migration(mut self) -> Self {
+        info!("Redis temporary-index migration enabled");
+        self.migrate_temporary_indexes = true;
+        self
     }
 
     /// `STRLEN` of a key, retried on a transient error like the reads are.
@@ -741,6 +762,7 @@ where
 
 impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
     pub async fn new_cluster(mut spec: RedisSpec) -> Result<Arc<Self>, Error> {
+        let migrate_temporary_indexes = spec.migrate_temporary_indexes;
         if spec.mode != RedisMode::Cluster {
             return Err(Error::new(
                 Code::InvalidArgument,
@@ -792,6 +814,13 @@ impl RedisStore<ClusterConnection, ClusterRedisManager<ClusterConnection>> {
             ClusterRedisManager::new(client.get_async_connection().await?).await?,
         )
         .await
+        .map(|store| {
+            if migrate_temporary_indexes {
+                store.with_temporary_index_migration()
+            } else {
+                store
+            }
+        })
         .map(Arc::new)
     }
 }
@@ -904,6 +933,7 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
         }
 
         let (tx, subscriber_channel) = unbounded_channel();
+        let migrate_temporary_indexes = spec.migrate_temporary_indexes;
 
         Self::new_from_builder_and_parts(
             spec.experimental_pub_sub_channel.clone(),
@@ -923,6 +953,13 @@ impl RedisStore<ConnectionManager, StandardRedisManager<ConnectionManager>> {
             .await?,
         )
         .await
+        .map(|store| {
+            if migrate_temporary_indexes {
+                store.with_temporary_index_migration()
+            } else {
+                store
+            }
+        })
         .map(Arc::new)
     }
 }
@@ -2019,7 +2056,24 @@ const INDEX_READY_POLL: Duration = Duration::from_millis(50);
 /// Polls `FT.INFO` until the index reports `indexing 0`, the timeout
 /// passes, or the call fails; none of those stops the caller, which reads
 /// the index either way.
+/// `FT.CREATE` of an index that exists: `RediSearch` answers an `Index`
+/// extension error saying so, which a create that races another node gets.
+fn is_index_already_exists(err: &redis::RedisError) -> bool {
+    err.kind() == redis::ErrorKind::Extension
+        && err.code() == Some("Index")
+        && err
+            .detail()
+            .is_some_and(|d| d.to_ascii_lowercase().contains("already exists"))
+}
+
 async fn wait_for_index_ready<C>(connection_manager: C, index: &str)
+where
+    C: ConnectionLike + Send + Clone,
+{
+    wait_for_index_ready_within(connection_manager, index, INDEX_READY_TIMEOUT).await;
+}
+
+async fn wait_for_index_ready_within<C>(connection_manager: C, index: &str, timeout: Duration)
 where
     C: ConnectionLike + Send + Clone,
 {
@@ -2036,10 +2090,10 @@ where
                 return;
             }
         }
-        if started.elapsed() >= INDEX_READY_TIMEOUT {
+        if started.elapsed() >= timeout {
             warn!(
                 index,
-                "Index still backfilling after {INDEX_READY_TIMEOUT:?}; reading it now"
+                "Index still backfilling after {timeout:?}; reading it now"
             );
             return;
         }
@@ -2414,6 +2468,152 @@ impl SchedulerSubscriptionManager for RedisSubscriptionManager {
     }
 }
 
+/// How the scheduler's index for `K` is created: never `TEMPORARY`, since
+/// `RediSearch` 2.10 never collects a temporary index and every update of an
+/// indexed hash leaves a dead entry behind for good. A persistent index is
+/// collected. An index an older release created temporary must not be
+/// dropped the ordinary way, which deletes its hashes: see
+/// `redis_utils::index_migration`.
+fn index_definition<K: SchedulerIndexProvider>() -> (FtCreateOptions, Vec<SearchSchema>) {
+    let mut schema = vec![SearchSchema {
+        field_name: K::INDEX_NAME.into(),
+        sortable: false,
+    }];
+    if let Some(sort_key) = K::MAYBE_SORT_KEY {
+        schema.push(SearchSchema {
+            field_name: sort_key.into(),
+            sortable: true,
+        });
+    }
+    let create_options = FtCreateOptions {
+        prefixes: vec![K::KEY_PREFIX.into()],
+        nohl: true,
+        nofields: true,
+        nofreqs: true,
+        nooffsets: true,
+        temporary: None,
+    };
+    (create_options, schema)
+}
+
+/// How long a decided index name is trusted before it is checked again.
+const INDEX_MIGRATION_RECHECK: Duration = Duration::from_secs(60);
+
+/// How long a read waits for a replacement index to finish backfilling when
+/// there is no original left to read meanwhile. Reads normally stay on the
+/// original while the replacement fills, so this is only hit if the
+/// original was removed some other way.
+const MIGRATION_READY_TIMEOUT: Duration = Duration::from_secs(600);
+
+impl<C, M> RedisStore<C, M>
+where
+    C: Clone + ConnectionLike + Sync + Send + 'static,
+    M: RedisManager<C> + Sync + Send + 'static,
+{
+    /// The index a read of `K` uses, advancing the migration of an inherited
+    /// temporary index by one step when `migrate_temporary_indexes` is set.
+    /// Any failure reads the original, which is what reads did before.
+    async fn read_index_name<K: SchedulerIndexProvider>(&self) -> String {
+        let original = format!(
+            "{}",
+            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+        );
+        if !self.migrate_temporary_indexes {
+            return original;
+        }
+        if let Some((name, at)) = self.index_names.lock().get(&original)
+            && at.elapsed() < INDEX_MIGRATION_RECHECK
+        {
+            return name.clone();
+        }
+        match self.migration_step::<K>(&original).await {
+            Ok((name, settled)) => {
+                if settled {
+                    self.index_names
+                        .lock()
+                        .insert(original, (name.clone(), Instant::now()));
+                }
+                name
+            }
+            Err(err) => {
+                warn!(index = %original, ?err, "Could not check the index for migration; reading it");
+                original
+            }
+        }
+    }
+
+    /// The index a count of `K` uses. Counting never migrates: it follows
+    /// what reads decided.
+    fn count_index_name<K: SchedulerIndexProvider>(&self) -> String {
+        let original = format!(
+            "{}",
+            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
+        );
+        self.index_names
+            .lock()
+            .get(&original)
+            .map_or(original, |(name, _)| name.clone())
+    }
+
+    /// One step of `redis_utils::index_migration`. Returns the index to read
+    /// and whether that answer is settled (worth caching) rather than one
+    /// that holds only until the replacement finishes.
+    async fn migration_step<K: SchedulerIndexProvider>(
+        &self,
+        original: &str,
+    ) -> Result<(String, bool), Error> {
+        let replacement = migrated_name(original);
+        let (mut connection, _) = self.connection_manager.get_connection().await?;
+        let original_kind = index_kind(&mut connection, original).await?;
+        let replacement_backfilling = match index_kind(&mut connection, &replacement).await? {
+            IndexKind::Missing => None,
+            IndexKind::Persistent => {
+                Some(ft_info_indexing(connection.clone(), &replacement).await?)
+            }
+            IndexKind::Temporary(_) => {
+                return Err(make_err!(
+                    Code::Internal,
+                    "Replacement index {replacement} is temporary; it was not created by this code"
+                ));
+            }
+        };
+        match index_migration::plan(original_kind, replacement_backfilling) {
+            Step::UseOriginal => Ok((original.to_string(), original_kind == IndexKind::Persistent)),
+            Step::CreateReplacement => {
+                let (create_options, schema) = index_definition::<K>();
+                match ft_create(
+                    connection.clone(),
+                    replacement.clone(),
+                    create_options,
+                    schema,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        info!(%original, %replacement, "Building a persistent index to replace a temporary one");
+                    }
+                    Err(err) if is_index_already_exists(&err) => {}
+                    Err(err) => return Err(err.into()),
+                }
+                Ok((original.to_string(), false))
+            }
+            Step::WaitOnOriginal => Ok((original.to_string(), false)),
+            Step::WaitForReplacement => {
+                wait_for_index_ready_within(connection, &replacement, MIGRATION_READY_TIMEOUT)
+                    .await;
+                Ok((replacement, false))
+            }
+            Step::UseReplacement { retire_original } => {
+                if retire_original {
+                    drop_keeping_documents(&mut connection, original).await?;
+                    info!(%original, %replacement, "Retired the temporary index, keeping its keys");
+                }
+                Ok((replacement, true))
+            }
+        }
+    }
+}
+
 impl<C, M> SchedulerStore for RedisStore<C, M>
 where
     C: Clone + ConnectionLike + Sync + Send + 'static,
@@ -2604,13 +2804,11 @@ where
             .err_tip(|| {
                 format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
+        let index_name = self.read_index_name::<K>().await;
         let run_ft_aggregate = |connection_manager: C| async {
             ft_aggregate(
                 connection_manager,
-                format!(
-                    "{}",
-                    get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                ),
+                index_name.clone(),
                 if index_value.is_empty() {
                     "*".to_string()
                 } else {
@@ -2629,39 +2827,14 @@ where
             .await
         };
         let run_ft_create = |connection_manager: C| async {
-            let mut schema = vec![SearchSchema {
-                field_name: K::INDEX_NAME.into(),
-                sortable: false,
-            }];
-            if let Some(sort_key) = K::MAYBE_SORT_KEY {
-                schema.push(SearchSchema {
-                    field_name: sort_key.into(),
-                    sortable: true,
-                });
-            }
-            let create_options = FtCreateOptions {
-                prefixes: vec![K::KEY_PREFIX.into()],
-                nohl: true,
-                nofields: true,
-                nofreqs: true,
-                nooffsets: true,
-                // Never TEMPORARY. RediSearch 2.10 does not garbage collect a
-                // temporary index (forcing its collector segfaults the server),
-                // so every update of an indexed hash leaves a dead entry
-                // behind for good, and the cost of every query over the index
-                // grows with them: a scheduler Redis that had run for days
-                // answered a count of an empty queue in 100 to 200 ms, and its
-                // own listings and the provisioner's reads then saturated the
-                // one Redis thread. A persistent index is collected. An index
-                // created temporary by an older release stays so until it is
-                // dropped (`FT.DROPINDEX`, without DD); this code recreates it.
-                temporary: None,
-            };
-            let index = format!(
-                "{}",
-                get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-            );
-            ft_create(connection_manager, index, create_options, schema).await
+            let (create_options, schema) = index_definition::<K>();
+            ft_create(
+                connection_manager,
+                index_name.clone(),
+                create_options,
+                schema,
+            )
+            .await
         };
 
         let (connection_manager, connect_id) = self.connection_manager.get_connection().await?;
@@ -2677,8 +2850,7 @@ where
                     self.connection_manager.reconnect(connect_id).await?;
                 run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(
-                        "Error with reconnected ft_aggregate in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                        "Error with reconnected ft_aggregate in RedisStore::search_by_index_prefix({index_name})"
                     )
                 })
             }
@@ -2700,17 +2872,12 @@ where
                 // and detail along the lines of "Index already exists" when
                 // FT.CREATE races with another node.
                 let create_result = result.or_else(|e| {
-                    let is_already_exists = e.kind() == redis::ErrorKind::Extension
-                        && e.code() == Some("Index")
-                        && e.detail()
-                            .is_some_and(|d| d.to_ascii_lowercase().contains("already exists"));
-                    if is_already_exists {
+                    if is_index_already_exists(&e) {
                         Ok(())
                     } else {
                         Err(e).err_tip(|| {
                             format!(
-                                "Error with ft_create in RedisStore::search_by_index_prefix({})",
-                                get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                                "Error with ft_create in RedisStore::search_by_index_prefix({index_name})"
                             )
                         })
                     }
@@ -2724,20 +2891,12 @@ where
                 // is bounded; past it the aggregate runs anyway and the next
                 // pass re-reads.
                 if create_result.is_ok() {
-                    wait_for_index_ready(
-                        connection_manager.clone(),
-                        &format!(
-                            "{}",
-                            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-                        ),
-                    )
-                    .await;
+                    wait_for_index_ready(connection_manager.clone(), &index_name).await;
                 }
 
                 let run_result = run_ft_aggregate(connection_manager).await.err_tip(|| {
                     format!(
-                        "Error with second ft_aggregate in RedisStore::search_by_index_prefix({})",
-                        get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY),
+                        "Error with second ft_aggregate in RedisStore::search_by_index_prefix({index_name})"
                     )
                 });
 
@@ -2846,10 +3005,7 @@ where
             .err_tip(|| {
                 format!("In RedisStore::count_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
-        let index_name = format!(
-            "{}",
-            get_index_name!(K::KEY_PREFIX, K::INDEX_NAME, K::MAYBE_SORT_KEY)
-        );
+        let index_name = self.count_index_name::<K>();
         let query = if index_value.is_empty() {
             "*".to_string()
         } else {
