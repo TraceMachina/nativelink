@@ -31,13 +31,15 @@ use nativelink_config::stores::{MemorySpec, SizePartitioningSpec, StoreSpec};
 use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::RequestMetadata;
+use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
 use nativelink_scheduler::historical_resource_scheduler::{
-    HistoricalResourceScheduler, snapshot_key,
+    HistoricalResourceScheduler, replica_id, snapshot_key,
 };
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_scheduler::resource_sketch::{Observation, SketchKey};
 use nativelink_store::memory_store::MemoryStore;
 use nativelink_store::size_partitioning_store::SizePartitioningStore;
+use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{ActionStage, ActionState, OperationId};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::operation_state_manager::ClientStateManager;
@@ -74,11 +76,13 @@ fn base_spec(hints_file: String, cold_start: Option<ColdStartSpec>) -> Historica
     HistoricalResourceSpec {
         hints_file,
         refresh_interval_s: 0,
+        learn_from_workers: true,
         // No headroom, so a seeded number comes back as stated.
         headroom_percent: 0,
         window_days: 7,
         memory_budget_bytes: 16 << 20,
         snapshot_store: None,
+        replica_id: String::new(),
         snapshot_interval_s: 0,
         cpu_property_name: "cpu_count".to_string(),
         memory_property_name: "memory_kb".to_string(),
@@ -285,18 +289,14 @@ async fn a_new_target_is_sized_from_its_mnemonic() -> Result<(), Error> {
     Ok(())
 }
 
-/// Each replica writes its own snapshot; a start reads every replica's and
-/// merges them, so a restarted replica sees what the whole fleet learned.
-/// The store is probed for a string key first.
+/// Rolling restarts must not publish another replica's measurements again.
 #[nativelink_test]
-async fn snapshots_are_per_replica_and_merged_at_start() -> Result<(), Error> {
+async fn repeated_replica_restarts_preserve_disjoint_history() -> Result<(), Error> {
     let store = Store::new(MemoryStore::new(&MemorySpec::default()));
-    HistoricalResourceScheduler::probe_snapshot_store(&store, "memory").await?;
-    let hints_file = write_hints_file("[]");
-    let spec = base_spec(hints_file.clone(), None);
+    let spec = base_spec(String::new(), None);
     let key = SketchKey::for_attempt(Some("//pkg:t"), Some("Genrule"), "unused");
     let now = now_s();
-    for (replica, peak) in [("cas-0", 1_000_000u64), ("cas-1", 3_000_000)] {
+    for (replica, peak) in [("replica-a", 1000), ("replica-b", 8_000_000)] {
         let sketch = HistoricalResourceScheduler::sketch_from_spec(&spec);
         sketch.observe(
             key.clone(),
@@ -309,18 +309,38 @@ async fn snapshots_are_per_replica_and_merged_at_start() -> Result<(), Error> {
         store
             .update_oneshot(
                 StoreKey::Str(snapshot_key(replica).into()),
-                sketch.snapshot(now).encode().into(),
+                sketch.encode_snapshot(now).into(),
             )
             .await?;
     }
-    let sketch = HistoricalResourceScheduler::sketch_from_spec(&spec);
-    HistoricalResourceScheduler::load_snapshots(&sketch, &store, &snapshot_key("cas-2")).await;
-    let entry = sketch.lookup(&key, now).unwrap();
-    assert_eq!(entry.samples, 2, "both replicas' samples");
-    assert_eq!(entry.max_memory_kb(), 3_000_000);
-    assert_eq!(entry.memory_samples(), 2);
-    assert_eq!(sketch.stats().entries, [1, 1, 0]);
-    drop(fs::remove_file(hints_file));
+    for _ in 0..4 {
+        for (replica, peak) in [("replica-a", 1000), ("replica-b", 8_000_000)] {
+            let sketch = HistoricalResourceScheduler::sketch_from_spec(&spec);
+            HistoricalResourceScheduler::load_snapshots(&sketch, &store, &snapshot_key(replica))
+                .await;
+            let entry = sketch.lookup(&key, now).unwrap();
+            assert_eq!(entry.memory_samples(), 1);
+            assert_eq!(entry.max_memory_kb(), peak);
+            assert_eq!(sketch.shape(&entry).memory_kb, peak);
+            store
+                .update_oneshot(
+                    StoreKey::Str(snapshot_key(replica).into()),
+                    sketch.encode_snapshot(now).into(),
+                )
+                .await?;
+        }
+    }
+    let replacement = HistoricalResourceScheduler::sketch_from_spec(&spec);
+    HistoricalResourceScheduler::load_snapshots(&replacement, &store, &snapshot_key("new-replica"))
+        .await;
+    let restored = replacement.lookup(&key, now).unwrap();
+    assert_eq!(
+        restored.memory_samples(),
+        1,
+        "only one snapshot is restored"
+    );
+    assert_eq!(restored.max_memory_kb(), 8_000_000);
+
     Ok(())
 }
 
@@ -343,6 +363,18 @@ async fn a_store_that_refuses_string_keys_fails_the_probe() -> Result<(), Error>
     assert!(
         err.to_string().contains("must take a string key"),
         "{err:?}"
+    );
+    let stores = StoreManager::new();
+    stores.add_store("split", store)?;
+    let mut spec = base_spec(String::new(), None);
+    spec.snapshot_store = Some("split".to_string());
+    let (action, worker, sketch) =
+        scheduler_factory(&SchedulerSpec::HistoricalResource(spec), &stores, None).await?;
+    assert!(action.is_some());
+    assert!(worker.is_some());
+    assert!(
+        sketch.is_some(),
+        "a failed probe must leave in-memory learning available"
     );
     Ok(())
 }
@@ -712,5 +744,285 @@ async fn a_rule_naming_no_class_is_refused_and_the_default_class_stands_in() -> 
         "the default class, not nothing"
     );
     drop(fs::remove_file(hints_file));
+    Ok(())
+}
+
+/// Old configurations remain file-backed unless learning is explicitly enabled.
+#[nativelink_test]
+async fn file_hints_refresh_and_keep_last_good_generation() -> Result<(), Error> {
+    let path = write_hints_file(r#"[{"target_id":"//file:t","memory_kb":1000}]"#);
+    let mut spec = base_spec(path.clone(), None);
+    spec.learn_from_workers = false;
+    spec.refresh_interval_s = 1;
+    spec.headroom_percent = 20;
+    let (mock, scheduler) = make_scheduler_with_spec(&spec);
+    let action = make_base_action_info(UNIX_EPOCH, DigestInfo::zero_digest());
+    let read = || properties_after_add(&scheduler, &mock, action.clone(), Some(("//file:t", "X")));
+    assert_eq!(
+        read().await?["memory_kb"],
+        "1000",
+        "static hints are not shaped again"
+    );
+    scheduler.sketch().observe(
+        SketchKey::for_attempt(Some("//file:t"), Some("X"), "unused"),
+        &Observation {
+            peak_memory_kb: 1,
+            now_s: now_s(),
+            ..Observation::default()
+        },
+    );
+    assert_eq!(
+        read().await?["memory_kb"],
+        "1000",
+        "samples do not replace static hints"
+    );
+    fs::write(&path, r#"[{"target_id":"//file:t","memory_kb":8000}]"#)?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if read().await?["memory_kb"] == "8000" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "file did not refresh"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    fs::write(&path, "invalid JSON")?;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(
+        read().await?["memory_kb"],
+        "8000",
+        "failed refresh retains the previous generation"
+    );
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn static_file_preserves_action_digest_lookup_and_read_once() -> Result<(), Error> {
+    let digest = DigestInfo::new([9; 32], 42);
+    let path = write_hints_file(&format!(
+        r#"[{{"action_digest":"{digest}","memory_kb":7000}}]"#
+    ));
+    let mut spec = base_spec(path.clone(), None);
+    spec.learn_from_workers = false;
+    let (mock, scheduler) = make_scheduler_with_spec(&spec);
+    let action = make_base_action_info(UNIX_EPOCH, digest);
+    fs::write(&path, "[]")?;
+    let properties = properties_after_add(&scheduler, &mock, action, None).await?;
+    assert_eq!(properties["memory_kb"], "7000");
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+#[test]
+fn existing_configuration_does_not_enable_learning() {
+    let spec: HistoricalResourceSpec = serde_json::from_value(serde_json::json!({
+        "hints_file": "hints.json", "refresh_interval_s": 30, "scheduler": {"simple": {}}
+    }))
+    .unwrap();
+    assert!(!spec.learn_from_workers);
+    assert_eq!(spec.refresh_interval_s, 30);
+    let empty = HistoricalResourceScheduler::sketch_from_spec(&spec);
+    assert!(
+        empty.charged_bytes() < 1 << 20,
+        "static mode must not preallocate the learned cache"
+    );
+}
+
+#[nativelink_test]
+async fn factory_only_exposes_learning_and_uses_snapshot_store_when_enabled() -> Result<(), Error> {
+    let stores = StoreManager::new();
+    for (learning, snapshot_store) in [
+        (false, Some("missing-store")),
+        (true, Some("missing-store")),
+        (true, None),
+    ] {
+        let mut spec = base_spec(String::new(), None);
+        spec.learn_from_workers = learning;
+        spec.snapshot_store = snapshot_store.map(str::to_string);
+        let result =
+            scheduler_factory(&SchedulerSpec::HistoricalResource(spec), &stores, None).await;
+        let (action, worker, sketch) = result?;
+        assert!(
+            action.is_some(),
+            "optional persistence must not prevent startup"
+        );
+        assert!(worker.is_some());
+        assert_eq!(sketch.is_some(), learning);
+    }
+    Ok(())
+}
+
+/// The default must leave room for learning after loading a realistic seed.
+#[nativelink_test]
+async fn default_budget_keeps_seed_and_new_target_history() -> Result<(), Error> {
+    let label = |kind: &str, i: usize| {
+        format!(
+            "//{kind}/{}/component_{i}:integration_test",
+            "package/".repeat(20)
+        )
+    };
+    let hints = (0..10_208)
+        .map(|i| {
+            serde_json::json!({
+                "target_id": label("seed", i), "action_mnemonic": "TestRunner", "memory_kb": 4096,
+            })
+        })
+        .collect::<Vec<_>>();
+    let path = write_hints_file(&serde_json::to_string(&hints).unwrap());
+    let spec: HistoricalResourceSpec = serde_json::from_value(serde_json::json!({
+        "learn_from_workers": true, "hints_file": path, "scheduler": {"simple": {}},
+    }))
+    .unwrap();
+    let (_mock, scheduler) = make_scheduler_with_spec(&spec);
+    let sketch = scheduler.sketch();
+    let now = now_s();
+    for i in 0..20_000 {
+        sketch.observe(
+            SketchKey::for_attempt(Some(&label("learned", i)), Some("TestRunner"), "unused"),
+            &Observation {
+                peak_memory_kb: 8192,
+                now_s: now,
+                ..Observation::default()
+            },
+        );
+    }
+    assert_eq!(sketch.stats().entries[0], 30_208);
+    assert_eq!(sketch.stats().evictions, [0, 0, 0]);
+    assert!(sketch.stats().capacity[0] >= 50_000);
+    for i in 0..10_208 {
+        let key = SketchKey::for_attempt(Some(&label("seed", i)), Some("TestRunner"), "unused");
+        assert!(sketch.lookup(&key, now).unwrap().seeded);
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn configured_replica_identity_restores_without_hostname_dependency() -> Result<(), Error> {
+    let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let mut spec = base_spec(String::new(), None);
+    spec.snapshot_store = Some("snapshots".to_string());
+    spec.replica_id = "stable-scheduler".to_string();
+    assert_eq!(replica_id(&spec.replica_id), "stable-scheduler");
+    let now = now_s();
+    let key = SketchKey::for_attempt(Some("//restored:t"), Some("TestRunner"), "unused");
+    let old = HistoricalResourceScheduler::sketch_from_spec(&spec);
+    old.observe(
+        key.clone(),
+        &Observation {
+            peak_memory_kb: 4096,
+            now_s: now,
+            ..Observation::default()
+        },
+    );
+    store
+        .update_oneshot(
+            StoreKey::Str(snapshot_key(&spec.replica_id).into()),
+            old.encode_snapshot(now).into(),
+        )
+        .await?;
+    let stores = StoreManager::new();
+    stores.add_store("snapshots", store)?;
+    let (_, _, restored) =
+        scheduler_factory(&SchedulerSpec::HistoricalResource(spec), &stores, None).await?;
+    assert_eq!(
+        restored
+            .unwrap()
+            .lookup(&key, now)
+            .unwrap()
+            .memory_samples(),
+        1
+    );
+    let mut invalid = base_spec(String::new(), None);
+    invalid.replica_id = "x".repeat(257);
+    assert!(HistoricalResourceScheduler::validate(&invalid).is_err());
+    Ok(())
+}
+
+#[nativelink_test]
+async fn replacement_restores_newest_usable_snapshot_without_merging() -> Result<(), Error> {
+    let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let spec = base_spec(String::new(), None);
+    let now = now_s();
+    let key = SketchKey::for_attempt(Some("//restored:t"), Some("TestRunner"), "unused");
+    for (name, age, peak) in [
+        ("old", 30, 1024),
+        ("recent", 20, 8192),
+        ("truncated", 10, 16384),
+        ("wrong-sampler", 0, 32768),
+    ] {
+        let sketch = HistoricalResourceScheduler::sketch_from_spec(&spec);
+        sketch.observe(
+            key.clone(),
+            &Observation {
+                peak_memory_kb: peak,
+                now_s: now,
+                ..Observation::default()
+            },
+        );
+        let mut bytes = sketch.encode_snapshot(now - age);
+        if name == "truncated" {
+            bytes.pop();
+        }
+        if name == "wrong-sampler" {
+            bytes[5..9].copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        store
+            .update_oneshot(StoreKey::Str(snapshot_key(name).into()), bytes.into())
+            .await?;
+    }
+    for i in 0..4 {
+        let sketch = HistoricalResourceScheduler::sketch_from_spec(&spec);
+        let own_key = snapshot_key(&format!("replacement-{i}"));
+        HistoricalResourceScheduler::load_snapshots(&sketch, &store, &own_key).await;
+        let entry = sketch.lookup(&key, now).unwrap();
+        assert_eq!(entry.max_memory_kb(), 8192);
+        assert_eq!(
+            entry.memory_samples(),
+            1,
+            "replacement must never add histories together"
+        );
+        store
+            .update_oneshot(
+                StoreKey::Str(own_key.into()),
+                sketch.encode_snapshot(now).into(),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn snapshot_discovery_is_bounded_but_owned_restore_still_works() -> Result<(), Error> {
+    let store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let spec = base_spec(String::new(), None);
+    let now = now_s();
+    let key = SketchKey::for_attempt(Some("//restored:t"), Some("TestRunner"), "unused");
+    let original = HistoricalResourceScheduler::sketch_from_spec(&spec);
+    original.observe(
+        key.clone(),
+        &Observation {
+            peak_memory_kb: 4096,
+            now_s: now,
+            ..Observation::default()
+        },
+    );
+    let bytes = bytes::Bytes::from(original.encode_snapshot(now));
+    for i in 0..129 {
+        store
+            .update_oneshot(
+                StoreKey::Str(snapshot_key(&format!("retired-{i}")).into()),
+                bytes.clone(),
+            )
+            .await?;
+    }
+    let fresh = HistoricalResourceScheduler::sketch_from_spec(&spec);
+    HistoricalResourceScheduler::load_snapshots(&fresh, &store, &snapshot_key("new-id")).await;
+    assert_eq!(fresh.stats().entries, [0, 0, 0]);
+    HistoricalResourceScheduler::load_snapshots(&fresh, &store, &snapshot_key("retired-0")).await;
+    assert_eq!(fresh.lookup(&key, now).unwrap().memory_samples(), 1);
     Ok(())
 }
