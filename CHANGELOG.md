@@ -3,6 +3,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.3](https://github.com/TraceMachina/nativelink/compare/v1.8.2..v1.8.3) - 2026-10-28
+
+
+
+### ⛰️  Features
+
+- size actions from the usage its workers report ([#3066](https://github.com/TraceMachina/nativelink/issues/3066)) - ([9aa8c8e](https://github.com/TraceMachina/nativelink/commit/9aa8c8e1452cf4e719eaf3deb355e8e13ca73f71))
+- Add GitHub job metadata to Bazel build events ([#3067](https://github.com/TraceMachina/nativelink/issues/3067)) - ([bda7d91](https://github.com/TraceMachina/nativelink/commit/bda7d91cf6c43b3c512ae5a16654e8c839d34e98))
+
+### 🐛 Bug Fixes
+
+- Redis store: bound the temp key of every upload ([#3065](https://github.com/TraceMachina/nativelink/issues/3065)) - ([b57a164](https://github.com/TraceMachina/nativelink/commit/b57a1645db966d446779c08173b49336afb77642))
+- Avoid embedding the Cargo manifest path ([#3064](https://github.com/TraceMachina/nativelink/issues/3064)) - ([76aabfd](https://github.com/TraceMachina/nativelink/commit/76aabfdf00b5b5e7176c6049a545cb294e9551e2))
+- restore broken /resources/oreilly-bazel-book page ([#3042](https://github.com/TraceMachina/nativelink/issues/3042)) - ([cfc0b95](https://github.com/TraceMachina/nativelink/commit/cfc0b959b50239c10d67c15d6784b8bedc6726f8))
+
+### 🧪 Testing & CI
+
+- Add REAPI protobuf fuzz target ([#3057](https://github.com/TraceMachina/nativelink/issues/3057)) - ([dbcc0e5](https://github.com/TraceMachina/nativelink/commit/dbcc0e56e27549a24991192dbecdbba385f45bf9))
+
+### ⚙️ Miscellaneous
+
+- give the community page's offline contributor fallback real counts ([#3060](https://github.com/TraceMachina/nativelink/issues/3060)) - ([3155e49](https://github.com/TraceMachina/nativelink/commit/3155e498156ccb5700a5675c132c95b90da3bfbf))
+- refresh the community page's fallback stats and hide a departed account ([#3059](https://github.com/TraceMachina/nativelink/issues/3059)) - ([69cfd7d](https://github.com/TraceMachina/nativelink/commit/69cfd7d7c9f0b249d2d75d1615477ee92fab8fe9))
+
+### ⬆️ Bumps & Version Updates
+
+- Remove the vulnerable zstd line that survived the 0.14.3 bump ([#3061](https://github.com/TraceMachina/nativelink/issues/3061)) - ([cebd484](https://github.com/TraceMachina/nativelink/commit/cebd48406c61901e4c2b82d92b5d0a104e5b960b))
+- Update Rust crate zstd to 0.14.0 [SECURITY] ([#3056](https://github.com/TraceMachina/nativelink/issues/3056)) - ([fd11dc1](https://github.com/TraceMachina/nativelink/commit/fd11dc172e2f25a71126d611cc60ac569198d474))
+
 ## [1.8.2](https://github.com/TraceMachina/nativelink/compare/v1.8.1..v1.8.2) - 2026-10-26
 
 
