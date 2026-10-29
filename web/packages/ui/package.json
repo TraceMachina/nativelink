@@ -24,6 +24,7 @@
     "./divider": "./src/components/divider.tsx",
     "./eyebrow": "./src/components/eyebrow.tsx",
     "./faq": "./src/components/faq.tsx",
+    "./feature-card": "./src/components/feature-card.tsx",
     "./final-cta": "./src/components/final-cta.tsx",
     "./logo": "./src/components/logo.tsx",
     "./mobile-nav": "./src/components/mobile-nav.tsx",
