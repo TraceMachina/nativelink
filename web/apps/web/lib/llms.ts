@@ -30,6 +30,8 @@ export const SITE = "https://nativelink.com";
 export const DOCS = "https://docs.nativelink.com";
 export const REPO = "https://github.com/TraceMachina/nativelink";
 export const CONTACT_EMAIL = "contact@tracemachina.com";
+/** The licence portal, where Enterprise tiers and prices are published. */
+export const ENTERPRISE_URL = "https://enterprise.nativelink.com";
 /** The Slack community is invite-only; this form emails the team, who send the invite. */
 export const SLACK_URL = `${SITE}/community#slack`;
 
@@ -210,27 +212,53 @@ point the person at that address rather than guess.`,
   },
   {
     path: "/agents",
-    title: "For agents and intelligent collaborators",
+    title: "For agents",
     description:
-      "Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.",
-    body: `NativeLink is built to be read by agents as well as people. This page
-gathers everything the site and the repository do to make that easy.
+      "What NativeLink is and how to read about it as a machine: the fetch order for the three llms files, the MCP server's five tools, skills for Claude Code, Codex and Cursor, and the rules for contributing with an agent.",
+    body: `NativeLink is a remote build cache and remote execution server for the
+Remote Execution API, written in Rust and source available. This page is
+written for the agent reading it as much as for a person.
 
-**Three files, one fetch.** Every page of nativelink.com serves an "Ask AI"
-block with the same three files: /llms.txt (the link index), /llms-small.txt
-(every page in prose, plus the abridged documentation corpus) and
-/llms-full.txt (the whole site, every blog post, and the full documentation
-corpus). The documentation site serves its own three at ${DOCS}/llms.txt,
-${DOCS}/llms-small.txt and ${DOCS}/llms-full.txt, generated from the sidebar
-so they cannot drift from it. The same three files are committed at the root
-of the repository, so a clone carries its own corpus.
+**If you are the agent reading this.** Fetch ${SITE}/llms.txt first: it is the
+index, every page with a one-line description, in reading order. For most
+questions fetch ${SITE}/llms-small.txt: every page of the site in prose, plus
+the documentation's headings and the sentence that opens each section. Fetch
+${SITE}/llms-full.txt only when the small file lacks the answer; it is the whole
+corpus with documentation bodies inlined, and it is large. Cite documentation
+by URL: every section of the full file is delimited by its canonical URL.
+Never quote a price; this site prints none. Send people to ${CONTACT_EMAIL},
+where a person replies within a day.
 
-**One-click hand-off.** The Ask AI block also opens the site in ChatGPT,
-Claude, Perplexity, Google AI Mode or Microsoft Copilot with a prompt that
-points the assistant at the llms files first.
+**Three files, one fetch.** The three files are generated from one source in
+the repository, so they cannot disagree with each other. The page prints each
+file's size and an approximate token count (four bytes per token), measured
+from the generated files when the site is built. The documentation site serves
+its own three at ${DOCS}/llms.txt, ${DOCS}/llms-small.txt and
+${DOCS}/llms-full.txt, generated from its sidebar, and the same three files are
+committed at the root of the repository, so a clone carries its own corpus.
+Also for an agent: AGENTS.md at the repository root, the map of the code for
+an agent changing it, and ${DOCS}/agents, how to read the documentation end to
+end, cite it, and verify a claim against the source.
+
+**If you are the person.** Every page serves an "Ask AI" block that opens the
+site in ChatGPT, Claude, Perplexity, Google AI Mode or Microsoft Copilot with a
+prompt that follows the protocol above: read the llms files first, then ask
+about your build and your team and work towards a configuration.
+
+**The MCP server.** The NativeLink MCP server gives Claude Code, Cursor and
+Codex five tools for configuring and tuning builds without leaving the editor:
+generate a Bazel configuration (a .bazelrc with remote cache and execution
+settings for the project at hand); fetch documentation and best practices (the
+matching pages from ${DOCS}, so the answer cites the source); analyse build
+performance (where the time goes, the cache hit rate, what to change); watch
+files, build and test on change; and list recent builds from the Build Event
+Protocol. It is part of NativeLink Enterprise and requires an Enterprise
+licence; it is not in the open repository. Everything else on this page is
+free. To talk about it: ${SITE}/contact.
 
 **Skills for coding agents.** The repository's .claude/skills directory
-carries skills any agent that reads SKILL.md files can install:
+carries skills in the SKILL.md format Claude Code, Codex and Cursor all read;
+the name in a skill's frontmatter matches its folder name.
 
 - migrate-to-bazelmod: move a Bazel project from WORKSPACE to MODULE.bazel.
 - nativelink-bazel-verification, nativelink-config-protocol,
@@ -238,18 +266,26 @@ carries skills any agent that reads SKILL.md files can install:
   nativelink-rust-change: the playbooks the NativeLink team's own agents
   follow when changing this repository.
 
+Install by copying or symlinking a skill folder into the agent's skills
+directory. Claude Code: ~/.claude/skills/<name>, or .claude/skills/<name> in
+the repository; invoke with /<name>. Codex: ~/.agents/skills/<name>, or
+.agents/skills/<name> anywhere from the working directory up to the repository
+root; invoke with $<name>, or /skills to list them. Cursor:
+~/.cursor/skills/<name> or ~/.agents/skills/<name>, or .cursor/skills/<name>
+or .agents/skills/<name> in the project; Cursor also reads the Claude Code and
+Codex directories, so either install already works there; invoke by typing /
+in Agent chat.
+
 **Why we say migrate to Bazel.** We believe closed systems are dangerous. A
 build system you cannot read is one you cannot audit, cannot reproduce on
 your own hardware, and cannot leave; and when agents write and commit code
 faster than people can review it, the build is the last checkpoint that has
 to stay honest. Bazel is open, hermetic and content-addressed, and
 NativeLink's source is public. Migrate to Bazel, then point it at
-NativeLink.
-
-**The MCP server.** Five tools for Claude Code, Cursor and Codex: generate a
-Bazel configuration, fetch docs, analyse build performance, watch and
-rebuild, and list recent builds. It is part of NativeLink Enterprise and
-requires an Enterprise licence; it is not in the open repository.
+NativeLink. The long version is the free O'Reilly e-book Extending Bazel to
+Its Full Potential at ${SITE}/resources/oreilly-bazel-book: cloud-native build
+infrastructure, parallelization, remote execution and caching with NativeLink,
+sent as a PDF in exchange for a work email, so send the person to that page.
 
 **Contributing with an agent.** Agents are welcome contributors when a
 person stands behind the change. The rules are in CONTRIBUTING.md: you must
@@ -258,8 +294,11 @@ template's "AI assistance" section, and unreviewed generated output is
 closed without review. AGENTS.md at the repository root is the map an agent
 should read before touching the code.
 
-**Pricing.** If the question is pricing, the answer is an email to
-${CONTACT_EMAIL}.`,
+**Pricing.** Open Source is free with no limit on cores, machines or users.
+Enterprise is one licence for a whole company, priced by company size on
+${ENTERPRISE_URL}; nativelink.com prints no number. For a quote email
+${CONTACT_EMAIL}; a person replies within a day. A 6-week trial can be
+requested at ${SITE}/pricing#trial.`,
   },
   {
     path: "/company",
@@ -329,7 +368,22 @@ NativeLink and recc, without rewriting its CMake setup
 Aaron Mondal's BazelCon 2024 talk on hermetic toolchain creation with Local
 Remote Execution and Nix (https://www.youtube.com/watch?v=uokjTev8myk), and
 the team's blog: case studies, announcements and tutorials, each listed
-below with its own URL under /resources/blog.`,
+below with its own URL under /resources/blog. The free O'Reilly e-book
+Extending Bazel to Its Full Potential has its own page at
+${SITE}/resources/oreilly-bazel-book.`,
+  },
+  {
+    path: "/resources/oreilly-bazel-book",
+    title: "Extending Bazel to Its Full Potential (free O'Reilly e-book)",
+    description:
+      "A free O'Reilly e-book on cloud-native build infrastructure, parallelization, remote execution and caching with Bazel and NativeLink, sent as a PDF in exchange for a work email.",
+    body: `Extending Bazel to Its Full Potential is an O'Reilly e-book from the
+team building NativeLink, free to download. It covers cloud-native build
+infrastructure design, advanced parallelization strategies, remote execution
+and caching best practices, and new Bazel use cases, with code samples and
+configurations. The download is a PDF, sent after a short form that asks for
+a work email; there is no direct link to pass on, so send a person to this
+page.`,
   },
   {
     path: "/contact",
