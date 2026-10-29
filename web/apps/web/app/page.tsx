@@ -347,7 +347,7 @@ export default function HomePage() {
                   href={t.source.href}
                   target={t.source.href.startsWith("http") ? "_blank" : undefined}
                   rel={t.source.href.startsWith("http") ? "noreferrer" : undefined}
-                  className="mt-6 inline-flex items-center gap-1 font-mono text-[12px] text-brand underline-offset-4 hover:underline"
+                  className="mt-4 inline-flex min-h-11 items-center gap-1 font-mono text-[12px] text-brand underline-offset-4 hover:underline"
                 >
                   {t.source.label} <span aria-hidden="true">→</span>
                 </a>
@@ -368,7 +368,7 @@ export default function HomePage() {
               </p>
               <a
                 href={outcome.source.href}
-                className="mt-6 inline-flex items-center gap-1 font-mono text-[12px] text-brand underline-offset-4 hover:underline"
+                className="mt-4 inline-flex min-h-11 items-center gap-1 font-mono text-[12px] text-brand underline-offset-4 hover:underline"
               >
                 {outcome.source.label} <span aria-hidden="true">→</span>
               </a>
