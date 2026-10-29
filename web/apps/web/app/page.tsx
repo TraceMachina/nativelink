@@ -356,7 +356,7 @@ export default function HomePage() {
               <Badge variant="brand" className="self-start">
                 Secure by default
               </Badge>
-              <h3 className="mt-6 text-3xl font-semibold leading-tight tracking-tight text-foreground md:text-4xl">
+              <h3 className="mt-6 text-2xl font-semibold leading-tight tracking-tight text-foreground">
                 {securityFeature.title}
               </h3>
               <p className="mt-4 text-base leading-relaxed text-muted-foreground md:text-lg">
