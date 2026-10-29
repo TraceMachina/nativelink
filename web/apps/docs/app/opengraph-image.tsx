@@ -80,6 +80,8 @@ export default async function OpenGraphImage() {
       <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 24, position: "relative", zIndex: 1 }}>
         <div
           style={{
+            display: "flex",
+            flexDirection: "column",
             fontSize: 78,
             fontWeight: 600,
             letterSpacing: "-0.04em",
@@ -87,7 +89,7 @@ export default async function OpenGraphImage() {
             maxWidth: 1000,
           }}
         >
-          Documentation for{" "}
+          <span>Documentation for</span>
           <span
             style={{
               background: "linear-gradient(90deg, #9C7CFF 0%, #BCA2FF 100%)",
