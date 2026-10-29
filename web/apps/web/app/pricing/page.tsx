@@ -239,7 +239,7 @@ export default function PricingPage() {
                           href={ENTERPRISE_URL}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-brand underline-offset-4 hover:underline"
+                          className="inline-flex min-h-11 items-center text-brand underline-offset-4 hover:underline"
                         >
                           {tier.enterprise.portalLabel}
                         </a>
