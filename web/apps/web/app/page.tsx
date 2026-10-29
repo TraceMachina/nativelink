@@ -318,7 +318,9 @@ export default function HomePage() {
         </Reveal>
       </Section>
 
-      <Section width="default" className="py-28">
+      {/* overflow-x-clip: the dashboard panel's glow halo reaches 32px past the panel, which is
+          wider than the page padding on a phone. */}
+      <Section width="default" className="overflow-x-clip py-28">
         <Reveal>
           <div className="mx-auto mb-14 max-w-[720px] text-center">
             <Eyebrow className="mb-4">What you get</Eyebrow>
