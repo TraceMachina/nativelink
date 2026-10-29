@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isCurrentNavHref, normalizeNavPath } from "../src/lib/nav";
+import { isCurrentNavHref, leavesSite, normalizeNavPath } from "../src/lib/nav";
 
 test("normalizeNavPath strips query, hash, and trailing slashes", () => {
   expect(normalizeNavPath("/product/")).toBe("/product");
@@ -26,4 +26,16 @@ test("external and missing paths never match", () => {
   expect(isCurrentNavHref("https://enterprise.nativelink.com", "/")).toBe(false);
   expect(isCurrentNavHref("/docs", undefined)).toBe(false);
   expect(isCurrentNavHref("mailto:hello@nativelink.com", "/")).toBe(false);
+});
+
+test("leavesSite marks absolute URLs and the docs app, nothing else", () => {
+  expect(leavesSite("https://enterprise.nativelink.com")).toBe(true);
+  expect(leavesSite("http://example.com/x")).toBe(true);
+  expect(leavesSite("/docs")).toBe(true);
+  expect(leavesSite("/docs/")).toBe(true);
+  expect(leavesSite("/docs/getting-started?x=1")).toBe(true);
+  expect(leavesSite("/product")).toBe(false);
+  expect(leavesSite("/documents")).toBe(false);
+  expect(leavesSite("/")).toBe(false);
+  expect(leavesSite("mailto:hello@nativelink.com")).toBe(false);
 });

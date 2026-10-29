@@ -3,8 +3,9 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { cn } from "../lib/cn";
-import { isCurrentNavHref } from "../lib/nav";
+import { isCurrentNavHref, leavesSite } from "../lib/nav";
 import { Button } from "./button";
+import { ExternalLinkIcon } from "./external-link-icon";
 import { Logo } from "./logo";
 import type { NavLink } from "./site-header";
 import { ThemeToggle } from "./theme-toggle";
@@ -16,13 +17,6 @@ interface MobileNavProps {
   githubHref?: string;
   currentPath?: string;
 }
-
-const opensInNewTab = (label: string, href: string) =>
-  label === "Docs" ||
-  label === "Get started" ||
-  label === "Start free" ||
-  href === "/docs" ||
-  href.startsWith("http");
 
 export function MobileNav({
   links,
@@ -162,6 +156,7 @@ export function MobileNav({
                 <ul className="flex flex-col gap-1 px-6 py-8">
                   {links.map((link, i) => {
                     const current = isCurrentNavHref(link.href, currentPath);
+                    const external = leavesSite(link.href);
                     return (
                       <li
                         key={link.href}
@@ -173,8 +168,8 @@ export function MobileNav({
                       >
                         <a
                           href={link.href}
-                          target={opensInNewTab(link.label, link.href) ? "_blank" : undefined}
-                          rel={opensInNewTab(link.label, link.href) ? "noreferrer" : undefined}
+                          target={external ? "_blank" : undefined}
+                          rel={external ? "noreferrer" : undefined}
                           aria-current={current ? "page" : undefined}
                           onClick={() => setOpen(false)}
                           className={cn(
@@ -185,12 +180,18 @@ export function MobileNav({
                           )}
                         >
                           <span>{link.label}</span>
-                          <span
-                            aria-hidden="true"
-                            className="text-base text-muted transition-all group-hover:translate-x-1 group-hover:text-brand"
-                          >
-                            →
-                          </span>
+                          {external ? (
+                            <span className="inline-flex text-muted transition-colors group-hover:text-brand">
+                              <ExternalLinkIcon className="h-4 w-4 opacity-100" />
+                            </span>
+                          ) : (
+                            <span
+                              aria-hidden="true"
+                              className="text-base text-muted transition-all group-hover:translate-x-1 group-hover:text-brand"
+                            >
+                              →
+                            </span>
+                          )}
                         </a>
                       </li>
                     );
@@ -202,11 +203,12 @@ export function MobileNav({
                   <Button asChild size="lg" className="w-full">
                     <a
                       href={ctaHref}
-                      target={opensInNewTab(ctaLabel, ctaHref) ? "_blank" : undefined}
-                      rel={opensInNewTab(ctaLabel, ctaHref) ? "noreferrer" : undefined}
+                      target={leavesSite(ctaHref) ? "_blank" : undefined}
+                      rel={leavesSite(ctaHref) ? "noreferrer" : undefined}
                       onClick={() => setOpen(false)}
                     >
                       {ctaLabel}
+                      {leavesSite(ctaHref) ? <ExternalLinkIcon className="opacity-90" /> : null}
                     </a>
                   </Button>
                   <div className="mt-4 flex items-center justify-center gap-2">
