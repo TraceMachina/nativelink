@@ -288,13 +288,25 @@ export default function ProductPage() {
                 doubly. NativeLink makes every input explicit and every output verifiable.
               </p>
             </div>
-            {/* Compliance status lives here, apart from the capabilities, so a status never reads as a feature. */}
-            <div className="flex items-center gap-3 lg:shrink-0">
+            {/* Compliance lives here, apart from the capabilities, so a certification never reads
+                as a feature. The Security page holds the detail and the report requests. */}
+            <a
+              href="/security"
+              className="group/compliance flex items-center gap-3 lg:shrink-0"
+              aria-label="SOC 2 and ISO 27001 certified. Read the security program."
+            >
               <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-                Compliance
+                Certified
               </span>
-              <Badge variant="success">SOC 2 in progress</Badge>
-            </div>
+              <Badge variant="success">SOC 2</Badge>
+              <Badge variant="success">ISO 27001</Badge>
+              <span
+                aria-hidden="true"
+                className="font-mono text-[12px] text-brand transition-transform group-hover/compliance:translate-x-0.5"
+              >
+                →
+              </span>
+            </a>
           </div>
         </Reveal>
 
