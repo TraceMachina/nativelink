@@ -245,7 +245,8 @@ export default function HomePage() {
               The MCP server is part of NativeLink Enterprise and requires an Enterprise licence.
             </p>
             <div className="mt-6 flex flex-wrap justify-center gap-3">
-              <Button variant="link" asChild>
+              {/* whitespace-normal: the Button base is nowrap, and this label is wider than a phone. */}
+              <Button variant="link" asChild className="whitespace-normal text-center">
                 <a href="/agents">
                   Everything we offer agents: llms.txt, skills, and how to contribute{" "}
                   <span aria-hidden="true">→</span>
