@@ -136,7 +136,7 @@ export default function PricingPage() {
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
               <Eyebrow className="mb-5">Pricing</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[68px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 Built to{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   scale with your infrastructure

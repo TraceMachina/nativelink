@@ -7,16 +7,20 @@
   --nl-font-mono: var(--font-geist-mono, ui-monospace, "SF Mono", Menlo, Monaco,
     Consolas, "Liberation Mono", "Courier New", monospace);
 
-  /* Type scale — 1.333 (perfect fourth) starting from 16px base.
-   * Sans is the default; mono is used for code, eyebrows, terminals, badges. */
+  /* Type scale, anchored to the hierarchy the pages use.
+   * h1 is 44px on phones and 68px (6xl) from md; h2 is 4xl then 5xl; card
+   * headings are 2xl; proof numbers are 3xl. Every step is smaller than the
+   * one above it at every breakpoint, so a section heading never outranks
+   * the page title. Sans is the default; mono is for code, eyebrows,
+   * terminals and badges. */
   --nl-text-xs:   0.75rem;     /* 12px */
   --nl-text-sm:   0.875rem;    /* 14px */
   --nl-text-base: 1rem;        /* 16px */
   --nl-text-lg:   1.25rem;     /* 20px */
   --nl-text-xl:   1.5rem;      /* 24px */
-  --nl-text-2xl:  1.875rem;    /* 30px — h5 */
-  --nl-text-3xl:  2.53125rem;  /* 40.5px — h4 */
-  --nl-text-4xl:  3.375rem;    /* 54px — h3 */
-  --nl-text-5xl:  4.5rem;      /* 72px — h2 */
-  --nl-text-6xl:  6rem;        /* 96px — h1 desktop */
+  --nl-text-2xl:  1.875rem;    /* 30px — card and list headings (h3) */
+  --nl-text-3xl:  2.25rem;     /* 36px — proof numbers, compact h2 */
+  --nl-text-4xl:  2.5rem;      /* 40px — h2 on phones */
+  --nl-text-5xl:  3.5rem;      /* 56px — h2 from md */
+  --nl-text-6xl:  4.25rem;     /* 68px — h1 from md */
 }

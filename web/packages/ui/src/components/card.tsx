@@ -10,7 +10,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
     <div
       ref={ref}
       className={cn(
-        "rounded-xl p-7 transition-colors",
+        "rounded-2xl p-8 transition-colors",
         variant === "default" &&
           "border border-border bg-surface/70 hover:border-border-strong",
         variant === "featured" &&

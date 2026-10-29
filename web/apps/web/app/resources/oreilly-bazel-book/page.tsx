@@ -55,7 +55,7 @@ export default function OreillyBazelBookPage() {
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
               <Eyebrow className="mb-5">Free O'Reilly e-book</Eyebrow>
-              <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-[64px]">
+              <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-6xl">
                 Extending Bazel to Its Full Potential
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">

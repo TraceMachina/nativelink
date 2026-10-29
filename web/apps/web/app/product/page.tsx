@@ -130,7 +130,7 @@ export default function ProductPage() {
           <Reveal>
             <div className="mx-auto max-w-[900px] text-center">
               <Eyebrow className="mb-5">Product</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[68px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 One platform.{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   Every build. Every machine.
@@ -286,7 +286,7 @@ export default function ProductPage() {
         <Section width="narrow" className="py-28 text-center">
           <Reveal>
             <Eyebrow className="mb-5">Proof at scale</Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               LLVM builds <span className="text-brand">4× faster</span> on NativeLink.
             </h2>
             <p className="mx-auto mt-6 max-w-[620px] text-base leading-relaxed text-muted-foreground md:text-lg">
