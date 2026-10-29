@@ -186,9 +186,9 @@ export default function PricingPage() {
                     : "border-border bg-surface",
                 )}
               >
-                <h3 className="font-mono text-xs uppercase tracking-[0.18em] text-muted">
+                <h2 className="font-mono text-xs uppercase tracking-[0.18em] text-muted">
                   {tier.name}
-                </h3>
+                </h2>
                 <div className="mt-5 flex items-baseline gap-2">
                   <span className="text-[40px] font-semibold leading-none tracking-tight text-foreground">
                     {tier.price}
