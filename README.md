@@ -92,16 +92,16 @@ for how to build the images yourself.
 **Linux x86_64**
 
 ```bash
-curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5
+NATIVELINK_VERSION=1.8.3
 
-# See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
-# to find the latest tag
-docker run \
-    -v $(pwd)/basic_cas.json5:/config \
+curl -fsSLO \
+    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5"
+
+docker run --rm -it \
+    -v "$(pwd)/basic_cas.json5:/config:ro" \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v1.4.0 \
-    config
+    "ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION}" \
+    /config
 ```
 
 **Windows x86_64**
@@ -109,7 +109,7 @@ docker run \
 ```powershell
 # Download the configuration file
 Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5" `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.8.3/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
 # Run the Docker container
@@ -117,7 +117,7 @@ Invoke-WebRequest `
 docker run `
     -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v1.4.0 `
+    ghcr.io/tracemachina/nativelink:v1.8.3 `
     config
 ```
 
