@@ -27,6 +27,7 @@
     "./final-cta": "./src/components/final-cta.tsx",
     "./logo": "./src/components/logo.tsx",
     "./mobile-nav": "./src/components/mobile-nav.tsx",
+    "./nav": "./src/lib/nav.ts",
     "./prose": "./src/components/prose.tsx",
     "./reveal": "./src/components/reveal.tsx",
     "./section": "./src/components/section.tsx",
