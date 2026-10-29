@@ -324,7 +324,7 @@ export default function HomePage() {
             <Reveal key={t.name} delay={i * 0.06}>
               <figure className="flex h-full flex-col rounded-2xl border border-border bg-surface p-8">
                 <blockquote className="flex-1 text-balance text-xl font-semibold leading-[1.35] tracking-[-0.02em] text-foreground md:text-2xl">
-                  "{t.quote}"
+                  “{t.quote}”
                 </blockquote>
                 <figcaption className="mt-8 flex items-center gap-4">
                   <span
