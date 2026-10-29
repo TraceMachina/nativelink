@@ -1,6 +1,7 @@
+import { SlackJoinForm } from "@/components/slack-join-form";
+import { getContributors, getRepoStats } from "@/lib/github";
 import { Badge, Button, Counter, Eyebrow, Reveal, Section } from "@nativelink/ui";
 import Image from "next/image";
-import { getContributors, getRepoStats } from "@/lib/github";
 
 export const metadata = { title: "Community" };
 
@@ -12,8 +13,17 @@ const channels = [
     label: "Open docs",
     accent: "default" as const,
     icon: (
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-        <path d="M4 4h10a2 2 0 0 1 2 2v14H6a2 2 0 0 1-2-2V4Z M16 6h4v14h-12" strokeLinejoin="round" />
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        aria-hidden="true"
+      >
+        <path
+          d="M4 4h10a2 2 0 0 1 2 2v14H6a2 2 0 0 1-2-2V4Z M16 6h4v14h-12"
+          strokeLinejoin="round"
+        />
         <path d="M8 9h6M8 13h6M8 17h4" strokeLinecap="round" />
       </svg>
     ),
@@ -21,8 +31,8 @@ const channels = [
   {
     title: "Join the Slack",
     body: "Talk to operators, share configs, and get help from the core team within hours, not days.",
-    href: "https://forms.gle/LtaWSixEC6bYi5xF7",
-    label: "Join Slack",
+    href: "#slack",
+    label: "Request an invite",
     accent: "brand" as const,
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -49,10 +59,7 @@ const channels = [
 ];
 
 export default async function CommunityPage() {
-  const [{ contributors, total }, stats] = await Promise.all([
-    getContributors(),
-    getRepoStats(),
-  ]);
+  const [{ contributors, total }, stats] = await Promise.all([getContributors(), getRepoStats()]);
   const starsK = stats.stars / 1000;
 
   return (
@@ -72,8 +79,8 @@ export default async function CommunityPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[600px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Operators, contributors, and the engineers who build NativeLink — all in
-                the same room.
+                Operators, contributors, and the engineers who build NativeLink — all in the same
+                room.
               </p>
             </div>
           </Reveal>
@@ -148,7 +155,10 @@ export default async function CommunityPage() {
                 </p>
                 <span className="mt-8 inline-flex items-center gap-1.5 font-mono text-sm text-brand">
                   {c.label}{" "}
-                  <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+                  <span
+                    aria-hidden="true"
+                    className="transition-transform group-hover:translate-x-1"
+                  >
                     →
                   </span>
                 </span>
@@ -158,18 +168,41 @@ export default async function CommunityPage() {
         </div>
       </Section>
 
+      {/* SLACK */}
+      <Section
+        id="slack"
+        width="default"
+        className="scroll-mt-20 border-y border-border/60 bg-surface-elevated/40 py-24"
+      >
+        <div className="grid items-center gap-12 lg:grid-cols-[1fr_1fr] lg:gap-16">
+          <Reveal>
+            <Eyebrow className="mb-4">Slack</Eyebrow>
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
+              Join the NativeLink Slack.
+            </h2>
+            <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
+              The workspace is invite-only. Leave your email and someone on the team sends you an
+              invite, usually within a day. Operators, contributors and the core team are all in
+              there.
+            </p>
+          </Reveal>
+          <Reveal delay={0.1}>
+            <SlackJoinForm />
+          </Reveal>
+        </div>
+      </Section>
+
       {/* CONTRIBUTORS */}
       <Section width="default" className="border-t border-border/60 py-24">
         <Reveal>
           <div className="mx-auto mb-12 max-w-[680px] text-center">
             <Eyebrow className="mb-4">Thank you</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              We love our{" "}
-              <span className="text-brand">{total} contributors</span>.
+              We love our <span className="text-brand">{total} contributors</span>.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              From kernel-level optimizations to typo fixes — every PR gets reviewed
-              and credited. Pulled live from{" "}
+              From kernel-level optimizations to typo fixes — every PR gets reviewed and credited.
+              Pulled live from{" "}
               <a
                 href="https://github.com/TraceMachina/nativelink/graphs/contributors"
                 target="_blank"
@@ -225,18 +258,12 @@ export default async function CommunityPage() {
                 Send us your handle, we'll send you swag.
               </h3>
               <p className="mx-auto mt-3 max-w-[480px] text-[15px] text-muted-foreground">
-                Merged a PR? Helped someone on Slack? Wrote a tutorial? Fill out the
-                form and our team will be in touch.
+                Merged a PR? Helped someone on Slack? Wrote a tutorial? Join the Slack and tell us
+                your handle there; our team will be in touch.
               </p>
               <div className="mt-6 flex justify-center">
                 <Button size="lg" asChild>
-                  <a
-                    href="https://forms.gle/LtaWSixEC6bYi5xF7"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Fill out the form
-                  </a>
+                  <a href="#slack">Join the Slack</a>
                 </Button>
               </div>
             </div>
