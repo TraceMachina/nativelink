@@ -26,6 +26,7 @@
     "./external-link-icon": "./src/components/external-link-icon.tsx",
     "./eyebrow": "./src/components/eyebrow.tsx",
     "./faq": "./src/components/faq.tsx",
+    "./feature-card": "./src/components/feature-card.tsx",
     "./final-cta": "./src/components/final-cta.tsx",
     "./logo": "./src/components/logo.tsx",
     "./mobile-nav": "./src/components/mobile-nav.tsx",
