@@ -16,8 +16,8 @@ use core::time::Duration;
 
 use nativelink_config::schedulers::SizeClassSpec;
 use nativelink_scheduler::resource_sketch::{
-    Budget, Entry, Family, Half, Hist, Observation, Policy, ResourceSketch, SAMPLER_GENERATION,
-    SHARDS, SketchKey, Snapshot,
+    Budget, ENTRY_BYTES, Entry, Family, Half, Hist, Observation, Policy, ResourceSketch,
+    SAMPLER_GENERATION, SketchKey, Snapshot,
 };
 use pretty_assertions::assert_eq;
 
@@ -289,7 +289,7 @@ fn a_snapshot_round_trips_and_ages_out() {
     assert_eq!(sketch.stats().entries, [1, 1, 1]);
     assert_eq!(sketch.snapshot(now), snapshot);
     let bytes = snapshot.encode();
-    let decoded = Snapshot::decode(&bytes).unwrap();
+    let decoded = Snapshot::decode(&bytes, usize::MAX).unwrap();
     assert_eq!(decoded, snapshot);
     let (_, entry) = decoded
         .entries
@@ -311,19 +311,19 @@ fn a_snapshot_round_trips_and_ages_out() {
     assert_eq!(fresh.load(decoded.clone(), now).unwrap(), 3);
     // The command key's first sighting was probation; one sample counted.
     assert_eq!(fresh.lookup(&command("cc-9"), now).unwrap().samples, 1);
-    // Loaded again (another replica's view of the same keys) the counts add.
-    assert_eq!(fresh.load(decoded, now).unwrap(), 3);
-    assert_eq!(fresh.lookup(&command("cc-9"), now).unwrap().samples, 2);
+    // Replaying the same owned snapshot does not count samples again.
+    assert_eq!(fresh.load(decoded, now).unwrap(), 0);
+    assert_eq!(fresh.lookup(&command("cc-9"), now).unwrap().samples, 1);
     assert_eq!(
         fresh
             .lookup(&target("//new", "Y"), now)
             .unwrap()
             .memory_samples(),
-        2
+        1
     );
 
     // Truncated is an error, not a partial load.
-    assert!(Snapshot::decode(&bytes[..bytes.len() - 3]).is_err());
+    assert!(Snapshot::decode(&bytes[..bytes.len() - 3], usize::MAX).is_err());
     // Another sampler generation is refused.
     let mut other = sketch.snapshot(now);
     other.sampler_generation = SAMPLER_GENERATION + 1;
@@ -368,9 +368,10 @@ fn a_seed_yields_to_the_first_sample_and_never_replaces_one() {
 #[test]
 fn the_budget_and_the_listing() {
     let budget = Budget::from_bytes(128 << 20);
-    assert_eq!(budget.target + budget.mnemonic + budget.command, 335_544);
-    assert_eq!(budget.target, 268_436);
-    assert_eq!(budget.probation, 335_540);
+    assert!(budget.target > budget.mnemonic);
+    assert_eq!(budget.mnemonic, budget.command);
+    let empty = ResourceSketch::new(policy(0, vec![]), budget, Duration::from_hours(1));
+    assert!(empty.charged_bytes() + empty.snapshot_byte_limit() * 3 <= 128 << 20);
     let sketch = sketch(
         policy(0, vec![class("s", 1000, 2_000_000, 0)]),
         small_budget(),
@@ -398,7 +399,7 @@ fn the_budget_and_the_listing() {
     assert_eq!(sketch.hints(None, 1).len(), 1);
     // The scheduler's own shard count spreads a family's capacity.
     let sharded = ResourceSketch::new(policy(0, vec![]), small_budget(), Duration::from_hours(1));
-    assert_eq!(sharded.stats().capacity, [SHARDS, SHARDS, SHARDS]);
+    assert_eq!(sharded.stats().capacity, [3, 2, 2]);
 }
 
 /// A sample counts for between half a window and a whole one, never
@@ -492,4 +493,105 @@ fn a_named_attempt_teaches_its_mnemonic() {
     sketch.observe(javac.clone(), &memory(1_000, 4));
     assert_eq!(sketch.stats().samples, [3, 3, 0]);
     assert_eq!(sketch.lookup(&javac, NOW).unwrap().samples, 3);
+}
+
+/// Independent u16 saturation previously turned a 0.4% tail into the p95.
+#[test]
+fn busy_histogram_preserves_the_distribution_and_snapshot_counts() {
+    let sketch = sketch(policy(0, vec![]), small_budget());
+    let key = target("//busy", "X");
+    for _ in 0..1_000_000 {
+        sketch.observe(key.clone(), &memory(1000, NOW));
+    }
+    for _ in 0..4000 {
+        sketch.observe(key.clone(), &memory(8_000_000, NOW));
+    }
+    let entry = sketch.lookup(&key, NOW).unwrap();
+    assert_eq!(entry.memory_samples(), 1_004_000);
+    assert_eq!(entry.memory_p95_upper(), 2000);
+    assert_eq!(sketch.shape(&entry).memory_kb, 2000);
+    let bytes = sketch.encode_snapshot(NOW);
+    let restored = self::sketch(policy(0, vec![]), small_budget());
+    restored
+        .load(Snapshot::decode(&bytes, usize::MAX).unwrap(), NOW)
+        .unwrap();
+    assert_eq!(restored.lookup(&key, NOW).unwrap(), entry);
+}
+
+/// Charge long keys and probation as well as entries. Encoding must stay
+/// within its preallocated allowance rather than cloning the full sketch.
+#[test]
+fn memory_budget_covers_long_keys_probation_and_snapshot_buffer() {
+    let limit = 1 << 20;
+    let sketch = ResourceSketch::new(
+        policy(0, vec![]),
+        Budget::from_bytes(limit),
+        Duration::from_hours(24),
+    );
+    assert!(usize::try_from(ENTRY_BYTES).unwrap() > size_of::<Entry>() + size_of::<SketchKey>());
+    for i in 0..5000 {
+        sketch.observe(
+            target(&format!("//{}:{i}", "x".repeat(2048)), "X"),
+            &memory(1000, NOW),
+        );
+        sketch.observe(
+            command(&format!("{i}-{}", "c".repeat(64))),
+            &memory(1000, NOW),
+        );
+    }
+    assert!(sketch.stats().evictions[0] > 0);
+    assert!(sketch.stats().probation > 0);
+    let bytes = sketch.encode_snapshot(NOW);
+    assert!(bytes.len() <= bytes.capacity());
+    assert_eq!(bytes.capacity() as u64, sketch.snapshot_byte_limit());
+    assert!(sketch.charged_bytes() + 3 * bytes.capacity() as u64 <= limit);
+    assert_eq!(
+        Snapshot::decode(&bytes, usize::MAX).unwrap(),
+        sketch.snapshot(NOW)
+    );
+    let too_long = target(&"x".repeat(usize::try_from(limit).unwrap()), "X");
+    assert!(!sketch.observe(too_long.clone(), &memory(1000, NOW)));
+    assert!(sketch.lookup(&too_long, NOW).is_none());
+    assert!(sketch.charged_bytes() + 3 * bytes.capacity() as u64 <= limit);
+}
+
+/// Exercise the largest serialized histograms rather than only sparse ones.
+#[test]
+fn dense_snapshot_fits_the_reserved_buffer() {
+    let sketch = sketch(policy(0, vec![]), small_budget());
+    let key = target("//dense", "X");
+    let mut entry = Entry::default();
+    entry.current.memory = Hist([u64::MAX; 25]);
+    entry.current.cpu = entry.current.memory;
+    entry.current.disk = entry.current.memory;
+    entry.previous = entry.current;
+    entry.last_seen_s = NOW;
+    assert_eq!(entry.memory_samples(), u64::MAX);
+    assert_eq!(entry.memory_p95_upper(), 1000 << 23);
+    assert!(sketch.seed(key, entry));
+    let bytes = sketch.encode_snapshot(NOW);
+    assert_eq!(bytes.capacity() as u64, sketch.snapshot_byte_limit());
+    assert_eq!(
+        Snapshot::decode(&bytes, usize::MAX).unwrap(),
+        sketch.snapshot(NOW)
+    );
+}
+
+/// Sparse encoding and an untrusted count must not allocate an unbounded
+/// array of full histograms before the receiving sketch applies its budget.
+#[test]
+fn snapshot_decode_rejects_entry_counts_above_the_budget() {
+    let sketch = sketch(policy(0, vec![]), small_budget());
+    for i in 0..3 {
+        sketch.observe(target(&format!("//target-{i}"), "X"), &memory(1000, NOW));
+    }
+    let mut bytes = sketch.encode_snapshot(NOW);
+    assert_eq!(Snapshot::decode(&bytes, 4).unwrap().entries.len(), 4);
+    assert!(Snapshot::decode(&bytes, 3).is_err());
+    // The old narrow-counter format must not be interpreted as wide counters.
+    bytes[4] = 2;
+    assert!(Snapshot::decode(&bytes, 4).is_err());
+    bytes[4] = 3;
+    bytes[17..25].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(Snapshot::decode(&bytes, usize::MAX).is_err());
 }

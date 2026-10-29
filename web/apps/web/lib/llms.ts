@@ -30,7 +30,8 @@ export const SITE = "https://nativelink.com";
 export const DOCS = "https://docs.nativelink.com";
 export const REPO = "https://github.com/TraceMachina/nativelink";
 export const CONTACT_EMAIL = "contact@tracemachina.com";
-export const SLACK_URL = "https://forms.gle/LtaWSixEC6bYi5xF7";
+/** The Slack community is invite-only; this form emails the team, who send the invite. */
+export const SLACK_URL = `${SITE}/community#slack`;
 
 export interface SitePage {
   path: string;
@@ -294,8 +295,9 @@ ${CONTACT_EMAIL}; replies usually arrive within a day.`,
 
 - **Read the docs** at ${DOCS}: setup guides, architecture deep-dives and
   reference for every supported build system.
-- **Join the Slack** (${SLACK_URL}): talk to operators, share configs, and
-  get help from the core team within hours.
+- **Join the Slack** (${SLACK_URL}): leave your email and the team sends an
+  invite, usually within a day. Then talk to operators, share configs, and
+  get help from the core team.
 - **Clone the repo** at ${REPO}: public source with module-aware licensing.
   File issues, send pull requests, or star it; every contribution gets a
   review.
@@ -617,7 +619,7 @@ export function renderIndex(docs: DocsCorpus): string {
     "",
     `- [Pricing](${SITE}/pricing): Open Source is free and self-hosted; Enterprise is custom. To discuss pricing, email ${CONTACT_EMAIL}.`,
     `- [Contact](${SITE}/contact): ${CONTACT_EMAIL} for general and sales, security@tracemachina.com for disclosures, legal@tracemachina.com for legal.`,
-    `- [Slack](${SLACK_URL}): the community workspace.`,
+    `- [Slack](${SLACK_URL}): request an invite to the community workspace.`,
     "",
     "## Optional",
     "",

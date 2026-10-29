@@ -97,6 +97,8 @@ export default async function OpenGraphImage() {
       >
         <div
           style={{
+            display: "flex",
+            flexDirection: "column",
             fontSize: 86,
             fontWeight: 600,
             letterSpacing: "-0.04em",
@@ -104,8 +106,7 @@ export default async function OpenGraphImage() {
             maxWidth: 1000,
           }}
         >
-          Builds that finish
-          <br />
+          <span>Builds that finish</span>
           <span
             style={{
               background: "linear-gradient(90deg, #9C7CFF 0%, #BCA2FF 100%)",

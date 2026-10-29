@@ -69,7 +69,7 @@ const socialLinks = [
   },
   {
     label: "Slack",
-    href: "https://forms.gle/LtaWSixEC6bYi5xF7",
+    href: "/community#slack",
     icon: (
       <>
         <rect x="3" y="11" width="6" height="2" rx="1" />
