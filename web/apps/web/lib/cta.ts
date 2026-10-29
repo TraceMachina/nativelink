@@ -5,7 +5,7 @@ import { isCurrentNavHref } from "@nativelink/ui/nav";
  * The marketing site's canonical calls to action.
  *
  * One label per destination: a reader who has seen a button once can predict
- * where every other copy of it lands (Eleken audit, slides 6, 10, 13 and 15).
+ * where every other copy of it lands (a finding of the UX audit of nativelink.com).
  * Pages compose these constants; they do not invent new labels or variants.
  */
 export interface Cta {
