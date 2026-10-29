@@ -25,7 +25,7 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::asset::v1::fetch_server::Fetch;
 use nativelink_proto::build::bazel::remote::asset::v1::{
-    FetchBlobRequest, FetchBlobResponse, Qualifier,
+    FetchBlobRequest, FetchBlobResponse, FetchDirectoryRequest, Qualifier,
 };
 use nativelink_proto::build::bazel::remote::execution::v2::Digest;
 use nativelink_proto::google::rpc::Status as GoogleStatus;
@@ -1104,4 +1104,91 @@ fn configured_default_digest_is_not_forced_to_sha256() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[nativelink_test]
+async fn fetch_logs_do_not_include_uri_or_qualifier_credentials() {
+    let markers = [
+        "fetch-user-marker",
+        "fetch-password-marker",
+        "fetch-query-marker",
+        "fetch-fragment-marker",
+        "fetch-auth-marker",
+        "fetch-cookie-marker",
+        "fetch-custom-marker",
+    ];
+    let origin = http_fixture(
+        Bytes::from_static(b"private dependency"),
+        StatusCode::OK,
+        Duration::ZERO,
+    )
+    .await;
+    let uri = origin.url.replacen(
+        "http://",
+        "http://fetch-user-marker:fetch-password-marker@",
+        1,
+    ) + "/artifact?token=fetch-query-marker#fetch-fragment-marker";
+    let (server, stores, _cas) = downloader_server(downloader_config()).await;
+    let mut request = fetch_request(&uri);
+    request.qualifiers = vec![
+        Qualifier {
+            name: "http_header:Authorization".into(),
+            value: "Bearer fetch-auth-marker".into(),
+        },
+        Qualifier {
+            name: "http_header_url:0:Cookie".into(),
+            value: "session=fetch-cookie-marker".into(),
+        },
+        Qualifier {
+            name: "custom".into(),
+            value: "fetch-custom-marker".into(),
+        },
+    ];
+    // Both the cold result and warm index result echo metadata to the caller,
+    // but neither the request nor response may be dumped into tracing.
+    for _ in 0..2 {
+        let response = fetch(&server, request.clone()).await;
+        assert_eq!(response.status.unwrap().code, 0);
+        assert_eq!(response.uri, uri);
+        assert_eq!(response.qualifiers, request.qualifiers);
+    }
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 1);
+    let lookup_only = FetchServer::new(
+        &[WithInstanceName {
+            instance_name: String::new(),
+            config: FetchConfig {
+                fetch_store: "test_fetch_store".into(),
+                downloader: None,
+            },
+        }],
+        &stores,
+    )
+    .unwrap();
+    let response = fetch(&lookup_only, request.clone()).await;
+    assert_eq!(response.qualifiers, request.qualifiers);
+    assert_eq!(response.uri, uri);
+    let directory = server
+        .fetch_directory(Request::new(FetchDirectoryRequest {
+            uris: request.uris,
+            qualifiers: request.qualifiers,
+            ..Default::default()
+        }))
+        .await;
+    assert_eq!(directory.unwrap_err().code(), tonic::Code::Unimplemented);
+    logs_assert(|lines| {
+        if !lines
+            .iter()
+            .any(|line| line.contains("Looked up fetch asset"))
+        {
+            return Err("Fetch tracing was not captured".into());
+        }
+        for marker in markers {
+            if lines.iter().any(|line| line.contains(marker)) {
+                return Err(format!(
+                    "Fetch credential marker appeared in logs: {marker}"
+                ));
+            }
+        }
+        Ok(())
+    });
 }

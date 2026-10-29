@@ -323,7 +323,6 @@ impl FetchServer {
                 .await;
 
             info!(
-                uri = uri,
                 digest = format!("{}", asset_digest),
                 "Looked up fetch asset"
             );
@@ -487,9 +486,12 @@ impl Fetch for FetchServer {
     #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err(level = Level::WARN),
-        ret(level = Level::INFO),
         skip_all,
-        fields(request = ?grpc_request.get_ref())
+        fields(
+            uri_count = grpc_request.get_ref().uris.len(),
+            qualifier_count = grpc_request.get_ref().qualifiers.len(),
+            digest_function = grpc_request.get_ref().digest_function,
+        )
     )]
     async fn fetch_blob(
         &self,
@@ -510,9 +512,12 @@ impl Fetch for FetchServer {
     #[allow(clippy::blocks_in_conditions)]
     #[instrument(
         err(level = Level::WARN),
-        ret(level = Level::INFO),
         skip_all,
-        fields(request = ?_grpc_request.get_ref())
+        fields(
+            uri_count = _grpc_request.get_ref().uris.len(),
+            qualifier_count = _grpc_request.get_ref().qualifiers.len(),
+            digest_function = _grpc_request.get_ref().digest_function,
+        )
     )]
     async fn fetch_directory(
         &self,
