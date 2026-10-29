@@ -197,7 +197,7 @@ export default async function SecurityPage() {
           <Reveal>
             <div className="mx-auto max-w-[860px] text-center">
               <Eyebrow className="mb-5">Security</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[64px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 Security you can{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   audit, not just trust

@@ -77,7 +77,7 @@ export default function AgentsPage() {
           <Reveal>
             <div className="mx-auto max-w-[900px] text-center">
               <Eyebrow className="mb-5">Intelligent collaborators</Eyebrow>
-              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-[64px]">
+              <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] md:text-6xl">
                 Built to be read by{" "}
                 <span className="bg-gradient-to-r from-brand to-brand-strong bg-clip-text text-transparent">
                   agents as well as people
@@ -244,7 +244,7 @@ export default function AgentsPage() {
         <Section width="narrow" className="py-28">
           <Reveal>
             <Eyebrow className="mb-5">Why we say migrate to Bazel</Eyebrow>
-            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[52px]">
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               We believe closed systems are dangerous.
             </h2>
             <div className="mt-6 space-y-4 text-base leading-relaxed text-muted-foreground md:text-lg">
