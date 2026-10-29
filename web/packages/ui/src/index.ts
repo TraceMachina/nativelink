@@ -10,6 +10,7 @@ export { isCurrentNavHref, normalizeNavPath } from "./lib/nav";
 export { SiteFooter } from "./components/site-footer";
 export { Eyebrow } from "./components/eyebrow";
 export { Stat, StatGrid } from "./components/stat";
+export { FeatureCard } from "./components/feature-card";
 export { VideoEmbed, YouTubeEmbed } from "./components/video-embed";
 export { FinalCTA } from "./components/final-cta";
 export { FAQ, type FAQItem } from "./components/faq";

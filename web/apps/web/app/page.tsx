@@ -8,7 +8,19 @@ import {
   ThirdWaveLogo,
 } from "@/components/customer-logos";
 import { McpDemo } from "@/components/mcp-demo";
-import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
+import { CLAIMS } from "@/lib/copy";
+import {
+  Badge,
+  Button,
+  Eyebrow,
+  FeatureCard,
+  HeroVisual,
+  Marquee,
+  Reveal,
+  Section,
+  Stat,
+  StatGrid,
+} from "@nativelink/ui";
 
 export const metadata = {
   title: "NativeLink — Build infrastructure for the agentic era",
@@ -68,26 +80,10 @@ const customerLogos = [
 ];
 
 const stats = [
-  {
-    value: "4-15×",
-    label: "faster builds",
-    body: "Demonstrated on LLVM, one of the world's largest C++ codebases.",
-  },
-  {
-    value: "10B+",
-    label: "build requests per month",
-    body: "served in production.",
-  },
-  {
-    value: "10m",
-    label: "to your first cache hit",
-    body: "from Docker startup to a reusable remote cache.",
-  },
-  {
-    value: "0",
-    label: "build-system rewrites",
-    body: "required for Bazel, Buck2, Siso, Goma, or CMake via recc or BuildStream.",
-  },
+  CLAIMS.fasterBuilds,
+  CLAIMS.requestsPerMonth,
+  CLAIMS.timeToFirstHit,
+  CLAIMS.noRewrites,
 ];
 
 const features = [
@@ -260,17 +256,11 @@ export default function HomePage() {
 
       <Section width="default" className="border-b border-border/60 py-20">
         <Reveal>
-          <div className="grid grid-cols-1 gap-x-8 gap-y-10 md:grid-cols-2 lg:grid-cols-4">
+          <StatGrid columns={4}>
             {stats.map((stat) => (
-              <div key={stat.label} className="flex flex-col gap-2">
-                <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-brand md:text-5xl">
-                  {stat.value}
-                </div>
-                <div className="text-base font-semibold text-foreground">{stat.label}</div>
-                <div className="text-sm leading-relaxed text-muted">{stat.body}</div>
-              </div>
+              <Stat key={stat.label} value={stat.value} label={stat.label} body={stat.body} />
             ))}
-          </div>
+          </StatGrid>
         </Reveal>
       </Section>
 
@@ -329,14 +319,7 @@ export default function HomePage() {
           <div className="grid gap-5">
             {features.slice(0, 2).map((feature, i) => (
               <Reveal key={feature.title} delay={i * 0.06}>
-                <article className="rounded-2xl border border-border bg-surface p-8">
-                  <h3 className="text-2xl font-semibold leading-tight tracking-tight text-foreground">
-                    {feature.title}
-                  </h3>
-                  <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
-                    {feature.body}
-                  </p>
-                </article>
+                <FeatureCard title={feature.title} body={feature.body} />
               </Reveal>
             ))}
           </div>

@@ -1,13 +1,17 @@
+import { ArchitectureDiagram } from "@/components/architecture-diagram";
+import { CLAIMS, LLVM } from "@/lib/copy";
 import {
   Badge,
   Button,
   Eyebrow,
   FAQ,
   type FAQItem,
+  FeatureCard,
   Reveal,
   Section,
+  Stat,
+  StatGrid,
 } from "@nativelink/ui";
-import { ArchitectureDiagram } from "@/components/architecture-diagram";
 
 export const metadata = { title: "Product" };
 
@@ -16,40 +20,53 @@ const pillars = [
     eyebrow: "Remote cache",
     title: "Cache once. Reuse forever.",
     body: "Content-addressable storage deduplicates every artifact your team produces. If a teammate, your CI, or an agent has already built it, you get it back in milliseconds. Drops into Bazel, Buck2, Siso, Pants, Goma — and CMake via recc.",
-    metric: "10B+",
-    metricLabel: "requests / month",
+    stat: { value: CLAIMS.requestsPerMonth.value, label: CLAIMS.requestsPerMonth.label },
     icon: (
-      <path d="M3 5C3 3 6 3 12 3C18 3 21 3 21 5V19C21 21 18 21 12 21C6 21 3 21 3 19V5Z M3 5C3 7 6 7 12 7C18 7 21 7 21 5 M3 12C3 14 6 14 12 14C18 14 21 14 21 12" strokeLinejoin="round" />
+      <path
+        d="M3 5C3 3 6 3 12 3C18 3 21 3 21 5V19C21 21 18 21 12 21C6 21 3 21 3 19V5Z M3 5C3 7 6 7 12 7C18 7 21 7 21 5 M3 12C3 14 6 14 12 14C18 14 21 14 21 12"
+        strokeLinejoin="round"
+      />
     ),
   },
   {
     eyebrow: "Remote build execution",
     title: "Distribute across every core you have.",
     body: "Offload compilation and tests to a worker fleet that scales horizontally — on AWS, GCP, or bare metal. Hermetic by design, deterministic by default. Specialized hardware (GPUs, ARM, Apple Silicon) supported natively.",
-    metric: "4-15×",
-    metricLabel: "faster builds",
+    stat: { value: CLAIMS.fasterBuilds.value, label: CLAIMS.fasterBuilds.label },
     icon: (
-      <><circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" /><path d="M9 6h6M9 18h6M6 9v6M18 9v6" /></>
+      <>
+        <circle cx="6" cy="6" r="3" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <circle cx="18" cy="18" r="3" />
+        <path d="M9 6h6M9 18h6M6 9v6M18 9v6" />
+      </>
     ),
   },
   {
     eyebrow: "Self-host",
     title: "Run it on your own infrastructure.",
     body: "Self-host the source-available release with one Docker command, and move to dedicated infrastructure when your scale demands it. Same code path. Same performance.",
-    metric: "<10m",
-    metricLabel: "time to first hit",
+    stat: { value: CLAIMS.timeToFirstHit.value, label: CLAIMS.timeToFirstHit.label },
     icon: (
-      <path d="M6 18H4C2.9 18 2 17.1 2 16C2 14.9 2.9 14 4 14H4.2C4.7 11.7 6.7 10 9 10C11.3 10 13.3 11.7 13.8 14H14C15.1 14 16 14.9 16 16C16 17.1 15.1 18 14 18H6Z M16 13L18 11L20 13M18 11V18" strokeLinejoin="round" strokeLinecap="round" />
+      <path
+        d="M6 18H4C2.9 18 2 17.1 2 16C2 14.9 2.9 14 4 14H4.2C4.7 11.7 6.7 10 9 10C11.3 10 13.3 11.7 13.8 14H14C15.1 14 16 14.9 16 16C16 17.1 15.1 18 14 18H6Z M16 13L18 11L20 13M18 11V18"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
     ),
   },
   {
     eyebrow: "Built on Rust",
     title: "Performance that doesn't stall.",
     body: "No garbage collector. No race conditions at scale. No mystery latency spikes. Memory safety without the runtime tax — which is why NativeLink can serve ten billion requests a month on infrastructure that would buckle other systems.",
-    metric: "0",
-    metricLabel: "GC pauses",
+    stat: { value: "0 GC pauses", label: "no runtime stalls" },
     icon: (
-      <path d="M12 3L4 7v6c0 4 4 7 8 8 4-1 8-4 8-8V7L12 3Z M9 12l2 2 4-4" strokeLinejoin="round" strokeLinecap="round" />
+      <path
+        d="M12 3L4 7v6c0 4 4 7 8 8 4-1 8-4 8-8V7L12 3Z M9 12l2 2 4-4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
     ),
   },
 ];
@@ -135,9 +152,9 @@ export default function ProductPage() {
                 </span>
               </h1>
               <p className="mx-auto mt-6 max-w-[700px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                NativeLink unifies remote caching, remote execution, and observability
-                into a single Rust-native platform — built to keep up with codebases
-                that grow faster than you can provision them.
+                NativeLink unifies remote caching, remote execution, and observability into a single
+                Rust-native platform — built to keep up with codebases that grow faster than you can
+                provision them.
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-3">
                 <Button size="lg" asChild>
@@ -173,32 +190,13 @@ export default function ProductPage() {
         <div className="grid gap-4 md:grid-cols-2">
           {pillars.map((p, i) => (
             <Reveal key={p.title} delay={i * 0.06}>
-              <article className="group relative h-full overflow-hidden rounded-2xl border border-border bg-surface p-8 transition-all hover:border-brand/40 hover:shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.4)]">
-                <div className="flex items-start justify-between">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-soft text-brand transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-                      {p.icon}
-                    </svg>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-mono text-2xl font-semibold tracking-tight text-foreground">
-                      {p.metric}
-                    </div>
-                    <div className="font-mono text-[10px] uppercase tracking-widest text-muted">
-                      {p.metricLabel}
-                    </div>
-                  </div>
-                </div>
-                <Eyebrow tone="muted" className="mt-6 text-[10px]">
-                  {p.eyebrow}
-                </Eyebrow>
-                <h3 className="mt-2 text-2xl font-semibold leading-tight tracking-tight text-foreground">
-                  {p.title}
-                </h3>
-                <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
-                  {p.body}
-                </p>
-              </article>
+              <FeatureCard
+                icon={p.icon}
+                eyebrow={p.eyebrow}
+                title={p.title}
+                body={p.body}
+                stat={p.stat}
+              />
             </Reveal>
           ))}
         </div>
@@ -210,13 +208,11 @@ export default function ProductPage() {
           <Reveal>
             <Eyebrow className="mb-4">Security & provenance</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              Trust at every hop.{" "}
-              <span className="text-brand">Provenance at every step.</span>
+              Trust at every hop. <span className="text-brand">Provenance at every step.</span>
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              When humans commit code, you need traceability. When agents commit code,
-              you need it doubly. NativeLink makes every input explicit and every
-              output verifiable.
+              When humans commit code, you need traceability. When agents commit code, you need it
+              doubly. NativeLink makes every input explicit and every output verifiable.
             </p>
             <div className="mt-8 flex flex-wrap gap-2">
               <Badge variant="success">SOC 2 in progress</Badge>
@@ -229,19 +225,14 @@ export default function ProductPage() {
           <Reveal delay={0.1}>
             <ul className="grid gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-2">
               {securityPoints.map((s) => (
-                <li
-                  key={s.label}
-                  className="flex flex-col gap-2 bg-surface px-6 py-5"
-                >
+                <li key={s.label} className="flex flex-col gap-2 bg-surface px-6 py-5">
                   <span className="flex items-center gap-2 font-mono text-sm font-semibold text-foreground">
                     <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-brand-soft text-[10px] text-brand">
                       ✓
                     </span>
                     {s.label}
                   </span>
-                  <span className="text-sm leading-relaxed text-muted-foreground">
-                    {s.body}
-                  </span>
+                  <span className="text-sm leading-relaxed text-muted-foreground">{s.body}</span>
                 </li>
               ))}
             </ul>
@@ -292,31 +283,28 @@ export default function ProductPage() {
               LLVM builds <span className="text-brand">4× faster</span> on NativeLink.
             </h2>
             <p className="mx-auto mt-6 max-w-[620px] text-base leading-relaxed text-muted-foreground md:text-lg">
-              LLVM contributors are using NativeLink with CMake and recc to distribute
-              builds of clang and the LLVM toolchain — cutting full-project compile
-              time from 17 minutes to 4. No build-system migration. No proprietary
-              client. Just your existing CMake setup, pointed at NativeLink.
+              LLVM contributors are using NativeLink with CMake and recc to distribute builds of
+              clang and the LLVM toolchain — cutting full-project compile time from 17 minutes to 4.
+              No build-system migration. No proprietary client. Just your existing CMake setup,
+              pointed at NativeLink.
             </p>
-            <div className="mt-10 grid grid-cols-3 gap-6">
-              <div>
-                <div className="font-mono text-3xl font-semibold tracking-tight text-brand md:text-4xl">
-                  4×
-                </div>
-                <div className="mt-1 text-xs text-muted">faster builds</div>
-              </div>
-              <div className="border-x border-border/60">
-                <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                  17m → 4m
-                </div>
-                <div className="mt-1 text-xs text-muted">full project compile</div>
-              </div>
-              <div>
-                <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                  0
-                </div>
-                <div className="mt-1 text-xs text-muted">build-system rewrite</div>
-              </div>
-            </div>
+            <StatGrid columns={3} className="mt-10 text-center md:gap-x-6">
+              <Stat
+                value={LLVM.speedup.value}
+                label={LLVM.speedup.label}
+                className="items-center"
+              />
+              <Stat
+                value={LLVM.wallTime.value}
+                label={LLVM.wallTime.label}
+                className="items-center md:border-x md:border-border/60"
+              />
+              <Stat
+                value={CLAIMS.noRewrites.value}
+                label={CLAIMS.noRewrites.label}
+                className="items-center"
+              />
+            </StatGrid>
             <div className="mt-10 flex justify-center">
               <Button variant="link" asChild>
                 <a
