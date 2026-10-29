@@ -214,7 +214,7 @@ export function McpDemo() {
               tabIndex={selected ? 0 : -1}
               onClick={() => select(i)}
               className={cn(
-                "inline-flex min-h-[36px] cursor-pointer items-center rounded-full border px-3.5 font-mono text-[12px] transition-colors",
+                "inline-flex min-h-11 cursor-pointer items-center rounded-full border px-3.5 font-mono text-[12px] transition-colors sm:min-h-9",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/60",
                 selected
                   ? "border-brand/40 bg-brand-soft text-brand"
