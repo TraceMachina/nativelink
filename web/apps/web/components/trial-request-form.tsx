@@ -119,7 +119,7 @@ export function TrialRequestForm() {
         ) : null}
 
         <Button type="submit" size="lg" className="w-full" disabled={locked}>
-          {isLoading ? "Sending..." : `Request a ${TRIAL_WEEKS}-week trial`}
+          {isLoading ? "Sending…" : `Request a ${TRIAL_WEEKS}-week trial`}
         </Button>
 
         <p className="text-center text-xs leading-relaxed text-muted">
