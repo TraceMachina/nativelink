@@ -438,11 +438,12 @@ fn start_action_resource_usage_sampler(
     pgid: u32,
     ceilings: Ceilings,
     disk_directory: Option<(PathBuf, SystemTime)>,
+    process_table: Arc<ProcessTableCache>,
 ) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory)
+        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory, process_table)
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
@@ -588,6 +589,7 @@ async fn sample_action_resource_usage(
     mut stop_rx: watch::Receiver<bool>,
     mut ceilings: Ceilings,
     disk_directory: Option<(PathBuf, SystemTime)>,
+    process_table: Arc<ProcessTableCache>,
 ) -> SampledResourceUsage {
     let mut peak_memory_kb = 0;
     let mut last_memory_kb = 0;
@@ -606,8 +608,10 @@ async fn sample_action_resource_usage(
     // served before, which is not this action's.
     let mut baseline_ticks: Option<u64> = None;
 
-    let sample = |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
-        let observed = sample_process_group(pgid, &ceilings.watch, cpu_ticks_by_pid);
+    let watch = ceilings.watch.clone();
+    let sample = async |peak_memory_kb: &mut u64, cpu_ticks_by_pid: &mut HashMap<u32, u64>| {
+        let table = process_table.current().await;
+        let observed = sample_process_group(pgid, &table, &watch, cpu_ticks_by_pid);
         if let Some(memory_kb) = observed {
             *peak_memory_kb = (*peak_memory_kb).max(memory_kb);
         }
@@ -615,7 +619,7 @@ async fn sample_action_resource_usage(
     };
 
     loop {
-        let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid);
+        let observed = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).await;
         if baseline_ticks.is_none() {
             baseline_ticks = Some(cpu_ticks_by_pid.values().sum());
         }
@@ -707,7 +711,7 @@ async fn sample_action_resource_usage(
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    if let Some(memory_kb) = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid) {
+                    if let Some(memory_kb) = sample(&mut peak_memory_kb, &mut cpu_ticks_by_pid).await {
                         last_memory_kb = memory_kb;
                     }
                     break;
@@ -856,6 +860,50 @@ fn live_process_table() -> Vec<(ProcEntry, Option<u64>)> {
         .collect()
 }
 
+/// A [`live_process_table`] snapshot shared by every action sampler on this
+/// worker.
+///
+/// Each running action samples every `RESOURCE_USAGE_SAMPLE_INTERVAL`, and
+/// finding its members means reading `/proc/<pid>/stat` for every process on
+/// the host. Scanning once per action makes the cost (running actions) x
+/// (host processes) per interval, which on a busy shared host saturates
+/// dozens of cores. Samplers instead reuse a snapshot younger than one
+/// interval, so the host is scanned at most once per interval however many
+/// actions run. Member memory is still read fresh on every sample; only
+/// membership can lag, by at most one interval, as it already could between
+/// two samples. Kills keep their own live scan ([`action_membership_live`]).
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+struct ProcessTableCache {
+    snapshot: tokio::sync::Mutex<Option<(Instant, ProcessTable)>>,
+}
+
+/// Every process with the CPU ticks it has used, as [`live_process_table`]
+/// returns it.
+#[cfg(target_os = "linux")]
+type ProcessTable = Arc<[(ProcEntry, Option<u64>)]>;
+
+#[cfg(target_os = "linux")]
+impl ProcessTableCache {
+    /// Returns a snapshot at most one sample interval old. Callers that
+    /// arrive while a scan is running wait for it rather than starting their
+    /// own.
+    async fn current(&self) -> ProcessTable {
+        let mut snapshot = self.snapshot.lock().await;
+        if let Some((taken_at, table)) = snapshot.as_ref()
+            && taken_at.elapsed() < RESOURCE_USAGE_SAMPLE_INTERVAL
+        {
+            return table.clone();
+        }
+        // The scan is thousands of blocking reads; keep it off the async workers.
+        let table: ProcessTable = spawn_blocking!("process_table_scan", live_process_table)
+            .await
+            .map_or_else(|_| Arc::from(Vec::new()), Arc::from);
+        *snapshot = Some((Instant::now(), table.clone()));
+        table
+    }
+}
+
 /// The action's members on the live system; see [`action_membership`].
 /// The kills resolve the groups to signal through this.
 #[cfg(target_os = "linux")]
@@ -881,10 +929,10 @@ fn worker_pgid() -> u32 {
 #[cfg(target_os = "linux")]
 fn sample_process_group(
     pgid: u32,
+    table: &[(ProcEntry, Option<u64>)],
     watch: &ActionMemoryWatch,
     cpu_ticks_by_pid: &mut HashMap<u32, u64>,
 ) -> Option<u64> {
-    let table = live_process_table();
     let entries: Vec<ProcEntry> = table.iter().map(|(entry, _)| *entry).collect();
     let mut seeds = watch.process_groups.lock().clone();
     seeds.push(pgid);
@@ -895,7 +943,7 @@ fn sample_process_group(
     *watch.process_groups.lock() = groups.into_iter().collect();
     let mut total_kb = 0;
     let mut found_any_process = false;
-    for (entry, ticks) in table {
+    for &(entry, ticks) in table {
         if !members.contains(&entry.pid) {
             continue;
         }
@@ -3611,6 +3659,7 @@ impl RunningActionImpl {
                                         watch: Arc::new(ActionMemoryWatch::default()),
                                     },
                                     None,
+                                    self.running_actions_manager.process_table.clone(),
                                 )
                             });
                             let dispatch_result = {
@@ -3934,6 +3983,7 @@ impl RunningActionImpl {
                     watch: self.memory_watch.clone(),
                 },
                 disk_directory,
+                self.running_actions_manager.process_table.clone(),
             )
         });
         #[cfg(not(target_os = "linux"))]
@@ -5530,6 +5580,9 @@ pub struct RunningActionsManagerImpl {
     pod_memory_limit_kb: Option<u64>,
     #[cfg(target_os = "linux")]
     use_namespaces: UseNamespaces,
+    /// The `/proc` snapshot every action's resource-usage sampler shares.
+    #[cfg(target_os = "linux")]
+    process_table: Arc<ProcessTableCache>,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     /// Set once the memory pressure monitor has been started; it starts
     /// with the first action, so a manager that never runs one never
@@ -5675,6 +5728,8 @@ impl RunningActionsManagerImpl {
             buck2_captures: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
+            #[cfg(target_os = "linux")]
+            process_table: Arc::new(ProcessTableCache::default()),
         })
     }
 
