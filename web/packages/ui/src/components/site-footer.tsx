@@ -1,5 +1,7 @@
 import { cn } from "../lib/cn";
+import { leavesSite } from "../lib/nav";
 import { AskAi, type AskAiProps } from "./ask-ai";
+import { ExternalLinkIcon } from "./external-link-icon";
 import { Logo } from "./logo";
 
 interface FooterColumn {
@@ -15,24 +17,35 @@ interface SiteFooterProps {
   askAi?: Pick<AskAiProps, "prompt" | "siteUrl"> | false;
 }
 
-const defaultColumns: FooterColumn[] = [
+/**
+ * The footer map. Every primary-nav destination appears here under the same
+ * label it has in the header (a test in `tests/nav-map.test.ts` enforces it),
+ * and Resources has its own column rather than sitting under Company.
+ */
+export const defaultFooterColumns: FooterColumn[] = [
   {
     title: "Product",
     links: [
       { label: "Product", href: "/product" },
       { label: "Pricing", href: "/pricing" },
       { label: "Docs", href: "/docs" },
-      { label: "For agents", href: "/agents" },
       { label: "Enterprise", href: "https://enterprise.nativelink.com" },
+    ],
+  },
+  {
+    title: "Resources",
+    links: [
+      { label: "Resources", href: "/resources" },
+      { label: "Blog", href: "/resources/blog" },
+      { label: "For agents", href: "/agents" },
     ],
   },
   {
     title: "Company",
     links: [
-      { label: "About", href: "/company" },
+      { label: "Company", href: "/company" },
       { label: "Careers", href: "/careers" },
       { label: "Community", href: "/community" },
-      { label: "Resources", href: "/resources" },
       { label: "Contact", href: "/contact" },
     ],
   },
@@ -56,7 +69,7 @@ const socialLinks = [
   },
   {
     label: "Slack",
-    href: "https://forms.gle/LtaWSixEC6bYi5xF7",
+    href: "/community#slack",
     icon: (
       <>
         <rect x="3" y="11" width="6" height="2" rx="1" />
@@ -82,7 +95,7 @@ const socialLinks = [
 ];
 
 export function SiteFooter({
-  columns = defaultColumns,
+  columns = defaultFooterColumns,
   tagline = "High-performance remote build cache and execution. Open source. Self-host or run on our cloud.",
   className,
   askAi = {},
@@ -90,8 +103,8 @@ export function SiteFooter({
   const year = new Date().getFullYear();
   return (
     <footer className={cn("border-t border-border/60 bg-background", className)}>
-      <div className="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-x-8 gap-y-12 px-6 py-16 sm:grid-cols-3 lg:grid-cols-[1.5fr_repeat(3,1fr)]">
-        <div className="col-span-2 flex flex-col gap-4 sm:col-span-3 lg:col-span-1">
+      <div className="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-x-8 gap-y-12 px-6 py-16 sm:grid-cols-4 lg:grid-cols-[1.5fr_repeat(4,1fr)]">
+        <div className="col-span-2 flex flex-col gap-4 sm:col-span-4 lg:col-span-1">
           <a href="/" aria-label="NativeLink — home" className="inline-flex">
             <Logo size="md" />
           </a>
@@ -104,18 +117,22 @@ export function SiteFooter({
               {col.title}
             </p>
             <ul className="flex flex-col gap-1">
-              {col.links.map((link) => (
-                <li key={link.href}>
-                  <a
-                    href={link.href}
-                    target={link.href.startsWith("http") ? "_blank" : undefined}
-                    rel={link.href.startsWith("http") ? "noreferrer" : undefined}
-                    className="inline-flex min-h-[36px] items-center text-sm text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    {link.label}
-                  </a>
-                </li>
-              ))}
+              {col.links.map((link) => {
+                const external = leavesSite(link.href);
+                return (
+                  <li key={link.href}>
+                    <a
+                      href={link.href}
+                      target={external ? "_blank" : undefined}
+                      rel={external ? "noreferrer" : undefined}
+                      className="inline-flex min-h-[36px] items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {link.label}
+                      {external ? <ExternalLinkIcon /> : null}
+                    </a>
+                  </li>
+                );
+              })}
             </ul>
           </nav>
         ))}

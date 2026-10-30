@@ -1,4 +1,5 @@
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
+import { CtaButton } from "@/components/cta-button";
 import {
   CitrixLogo,
   MenloSecurityLogo,
@@ -8,6 +9,7 @@ import {
   ThirdWaveLogo,
 } from "@/components/customer-logos";
 import { McpDemo } from "@/components/mcp-demo";
+import { CLONE_THE_REPO, GET_STARTED, TALK_TO_US } from "@/lib/cta";
 import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
@@ -207,23 +209,12 @@ export default function HomePage() {
                 production by thousands of developers.
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
-                <Button size="lg" asChild>
-                  <a
-                    href="https://github.com/TraceMachina/nativelink"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Clone the repo <span aria-hidden="true">→</span>
-                  </a>
-                </Button>
-                <Button size="lg" variant="outline" asChild>
-                  <a href="/docs" target="_blank" rel="noreferrer">
-                    Start free
-                  </a>
-                </Button>
-                <Button size="lg" variant="ghost" asChild>
-                  <a href="/contact">Talk to us</a>
-                </Button>
+                <CtaButton cta={GET_STARTED} />
+                <CtaButton cta={TALK_TO_US} variant="outline" />
+                <CtaButton cta={CLONE_THE_REPO} variant="link">
+                  {" "}
+                  <span aria-hidden="true">→</span>
+                </CtaButton>
               </div>
             </Reveal>
 

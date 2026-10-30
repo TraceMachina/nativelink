@@ -77,6 +77,7 @@ mod tests {
     use nativelink_util::action_messages::SymlinkInfo;
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+        STORE_UNREACHABLE_ERROR_TIP,
     };
     #[cfg(target_family = "unix")]
     use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -4722,7 +4723,7 @@ exit 0
     #[derive(Debug)]
     struct FlakyStore {
         inner: Store,
-        fail_on: DigestInfo,
+        fail_on: Mutex<DigestInfo>,
         failures: u64,
         code: Code,
         reads: AtomicU64,
@@ -4738,7 +4739,7 @@ exit 0
         ) -> Arc<Self> {
             Arc::new(Self {
                 inner: Store::new(inner),
-                fail_on,
+                fail_on: Mutex::new(fail_on),
                 failures,
                 code,
                 reads: AtomicU64::new(0),
@@ -4748,6 +4749,12 @@ exit 0
         /// Reads of the flaky digest so far, refused or served.
         fn reads(&self) -> u64 {
             self.reads.load(Ordering::SeqCst)
+        }
+
+        /// Makes another digest the flaky one: the Action itself, whose
+        /// digest the setup only knows once it has uploaded it.
+        fn retarget(&self, digest: DigestInfo) {
+            *self.fail_on.lock().unwrap() = digest;
         }
     }
 
@@ -4796,7 +4803,7 @@ exit 0
             offset: u64,
             length: Option<u64>,
         ) -> Result<(), Error> {
-            if key == StoreKey::Digest(self.fail_on) {
+            if key == StoreKey::Digest(*self.fail_on.lock().unwrap()) {
                 let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
                 if read <= self.failures {
                     return Err(make_err!(self.code, "flaky store refused read {read}"));
@@ -5144,6 +5151,101 @@ exit 0
         Ok(())
     }
 
+    /// The Action is read with the same retries as the inputs: a store that
+    /// refuses it twice with `Unavailable` (a CAS pod being replaced) delays
+    /// the start by 1 s then 2 s, and the action is created rather than
+    /// failed on the spot.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_retries_a_transient_action_read()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let elapsed = started.elapsed();
+        assert_eq!(
+            store.reads(),
+            3,
+            "two refused reads of the Action, then the one served"
+        );
+        assert!(elapsed > Duration::from_secs(2), "{elapsed:?}");
+        assert!(
+            elapsed <= Duration::from_secs(3) + Duration::from_millis(10),
+            "{elapsed:?}"
+        );
+        let action = action.prepare_action().await?;
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// An Action read that never recovers stops at `max_download_timeout`
+    /// and fails with the store's code, so a dead store still ends the action
+    /// and the scheduler sees why.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_stops_retrying_the_action_read_at_the_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_secs(5), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let err = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await
+            .expect_err("a store that never answers must fail the action");
+        // The fast-slow store reports a slow tier that dropped mid-read as
+        // `Internal`; the refusal itself is in the chain.
+        assert!(
+            matches!(err.code, Code::Internal | Code::Unavailable),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("flaky store refused read"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("the next retry would start after max_download_timeout"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "the scheduler is told the store was down: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            store.reads() >= 2,
+            "retried at least once: {}",
+            store.reads()
+        );
+        Ok(())
+    }
+
     /// The advice `max_concurrent_input_downloads` logs, in part.
     #[cfg(target_family = "unix")]
     const INPUT_POOL_HINT: &str = "Consider setting max_concurrent_input_downloads to 64";
@@ -5415,6 +5517,10 @@ exit 0
         assert_eq!(store.reads(), 3, "{err:?}");
         assert_ne!(err.code, Code::DeadlineExceeded, "{err:?}");
         assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "{err:?}"
+        );
         assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
         action.cleanup().await?;
         assert!(
