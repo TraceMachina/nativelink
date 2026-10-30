@@ -31,6 +31,9 @@ pub enum MatchOutcome {
     Matched(WorkerId),
     /// A worker could run the action when idle, but none has room right now.
     WaitingForCapacity,
+    /// Capacity exists outside the preferred cache-local workers; retry after
+    /// the bounded locality wait or a preferred worker gaining capacity.
+    WaitingForLocality,
     /// No workers are connected at all.
     NoWorkersConnected,
     /// No worker could run the action even when fully idle.

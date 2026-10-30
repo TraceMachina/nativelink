@@ -42,6 +42,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
 use nativelink_util::action_messages::{
     ActionStage, ActionUniqueQualifier, MISSING_INPUT_ERROR_TIP, OperationId, WorkerId,
 };
+use nativelink_util::common::DigestInfo;
 use nativelink_util::metrics::{
     WorkerDisconnectReason, record_dispatch_requeue, record_execution_cpu_time,
     record_execution_peak_memory, record_held_workers, record_worker_connected,
@@ -201,7 +202,7 @@ fn priority_matches(action: &PlatformProperties, worker: &Worker) -> usize {
 /// action, summed over the action's `minimum` properties, in thousandths.
 /// Lower is a tighter fit. An action with no numbers fits every worker
 /// equally, and a dimension the worker does not advertise is ignored.
-fn fit_leftover_permille(action: &PlatformProperties, worker: &Worker) -> u64 {
+fn fit_leftover_permille(action: &PlatformProperties, worker: &Worker, idle: bool) -> u64 {
     let mut leftover = 0u64;
     for (name, value) in &action.properties {
         let PlatformPropertyValue::Minimum(needed) = value else {
@@ -211,7 +212,11 @@ fn fit_leftover_permille(action: &PlatformProperties, worker: &Worker) -> u64 {
             Some(PlatformPropertyValue::Minimum(available)),
             Some(PlatformPropertyValue::Minimum(total)),
         ) = (
-            worker.platform_properties.properties.get(name),
+            if idle {
+                worker.total_platform_properties.properties.get(name)
+            } else {
+                worker.platform_properties.properties.get(name)
+            },
             worker.total_platform_properties.properties.get(name),
         )
         else {
@@ -354,6 +359,7 @@ fn hold_duration(spec: ReservationHoldSpec) -> Duration {
 pub struct QueuedAction<'a> {
     pub unique_qualifier: &'a ActionUniqueQualifier,
     pub insert_timestamp: SystemTime,
+    pub command_digest: DigestInfo,
 }
 
 /// Which of `owners`, sorted, distinct and not empty, holds a worker for
@@ -408,6 +414,7 @@ struct ApiWorkerSchedulerImpl {
     worker_state_manager: Arc<dyn WorkerStateManager>,
     /// The allocation strategy for workers.
     allocation_strategy: WorkerAllocationStrategy,
+    cache_affinity_wait_s: u64,
     /// The `minimum` property compared against each worker's reported free
     /// memory before placement; unset means no veto.
     live_memory_veto: Option<String>,
@@ -1233,8 +1240,9 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         candidates: &HashSet<WorkerId>,
         full_worker_logging: bool,
-        asking: Option<&ActionUniqueQualifier>,
-    ) -> Option<WorkerId> {
+        asking: Option<QueuedAction<'_>>,
+        now: SystemTime,
+    ) -> MatchOutcome {
         // Check function for availability AND dynamic Minimum property verification.
         // The index only does presence checks for Minimum properties since their
         // values change dynamically as jobs are assigned to workers.
@@ -1255,7 +1263,7 @@ impl ApiWorkerSchedulerImpl {
 
             // A held worker takes nothing but the action it is held for.
             if let Some(hold) = self.holds.get(*worker_id)
-                && asking != Some(&hold.action)
+                && asking.map(|action| action.unique_qualifier) != Some(&hold.action)
             {
                 if full_worker_logging {
                     info!("Worker {worker_id} is held for another action");
@@ -1307,11 +1315,75 @@ impl ApiWorkerSchedulerImpl {
             platform_properties.is_satisfied_by(&w.platform_properties, full_worker_logging)
         };
 
+        // Rendezvous choices do not change when unrelated workers are busy.
+        // Keep only three candidates, so this adds O(workers) time and O(1)
+        // space, with no Redis requests or per-action history to age out.
+        if matches!(
+            self.allocation_strategy,
+            WorkerAllocationStrategy::CacheAware
+        ) && let Some(action) = asking
+        {
+            let mut preferred = Vec::with_capacity(4);
+            for (worker_id, worker) in self.workers.iter() {
+                if !candidates.contains(worker_id)
+                    || worker.is_draining
+                    || worker.is_paused
+                    || !platform_properties
+                        .is_satisfied_by(&worker.total_platform_properties, false)
+                {
+                    continue;
+                }
+                let mut hash = DefaultHasher::new();
+                action.unique_qualifier.instance_name().hash(&mut hash);
+                action.unique_qualifier.digest_function().hash(&mut hash);
+                action.command_digest.hash(&mut hash);
+                worker_id.hash(&mut hash);
+                preferred.push((
+                    usize::MAX - priority_matches(platform_properties, worker),
+                    fit_leftover_permille(platform_properties, worker, true),
+                    Reverse(hash.finish()),
+                    worker_id,
+                ));
+                preferred
+                    .sort_unstable_by(|a, b| (a.0, a.1, a.2, &a.3.0).cmp(&(b.0, b.1, b.2, &b.3.0)));
+                preferred.truncate(3);
+            }
+            if let Some(worker_id) = preferred
+                .iter()
+                .filter_map(|(_, _, _, id)| self.workers.peek(id).map(|w| (*id, w)))
+                .filter(&worker_matches)
+                .min_by_key(|(_, w)| {
+                    (
+                        usize::MAX - priority_matches(platform_properties, w),
+                        fit_leftover_permille(platform_properties, w, false),
+                        w.running_action_infos.len(),
+                    )
+                })
+                .map(|(id, _)| id.clone())
+            {
+                return MatchOutcome::Matched(worker_id);
+            }
+            if !preferred.is_empty()
+                && now
+                    .duration_since(action.insert_timestamp)
+                    .unwrap_or_default()
+                    < Duration::from_secs(self.cache_affinity_wait_s)
+                && self
+                    .workers
+                    .iter()
+                    .any(|(id, w)| candidates.contains(id) && worker_matches(&(id, w)))
+            {
+                // Capacity exists elsewhere; this is a locality delay, not an
+                // unsatisfiable shape or a reason to reserve an idle worker.
+                return MatchOutcome::WaitingForLocality;
+            }
+        }
+
         // Now check constraints on filtered candidates.
         // Iterate in LRU order based on allocation strategy.
         let workers_iter = self.workers.iter();
 
-        match self.allocation_strategy {
+        let chosen = match self.allocation_strategy {
             // Use rfind to get the least recently used that satisfies the properties.
             WorkerAllocationStrategy::LeastRecentlyUsed => workers_iter
                 .rev()
@@ -1334,20 +1406,23 @@ impl ApiWorkerSchedulerImpl {
                 .min_by_key(|(_, w)| w.running_action_infos.len())
                 .map(|(_, w)| w.id.clone()),
 
-            WorkerAllocationStrategy::BestFit => workers_iter
-                .rev()
-                .filter(|(worker_id, _)| candidates.contains(worker_id))
-                .filter(&worker_matches)
-                .min_by_key(|(_, w)| {
-                    (
-                        // More matching priority properties first.
-                        usize::MAX - priority_matches(platform_properties, w),
-                        fit_leftover_permille(platform_properties, w),
-                        w.running_action_infos.len(),
-                    )
-                })
-                .map(|(_, w)| w.id.clone()),
-        }
+            WorkerAllocationStrategy::BestFit | WorkerAllocationStrategy::CacheAware => {
+                workers_iter
+                    .rev()
+                    .filter(|(worker_id, _)| candidates.contains(worker_id))
+                    .filter(&worker_matches)
+                    .min_by_key(|(_, w)| {
+                        (
+                            // More matching priority properties first.
+                            usize::MAX - priority_matches(platform_properties, w),
+                            fit_leftover_permille(platform_properties, w, false),
+                            w.running_action_infos.len(),
+                        )
+                    })
+                    .map(|(_, w)| w.id.clone())
+            }
+        };
+        chosen.map_or(MatchOutcome::WaitingForCapacity, MatchOutcome::Matched)
     }
 
     fn inner_find_worker_for_action(
@@ -1357,12 +1432,8 @@ impl ApiWorkerSchedulerImpl {
         now: SystemTime,
         asking: Option<QueuedAction<'_>>,
     ) -> MatchOutcome {
-        let outcome = self.match_worker_for_action(
-            platform_properties,
-            full_worker_logging,
-            now,
-            asking.map(|action| action.unique_qualifier),
-        );
+        let outcome =
+            self.match_worker_for_action(platform_properties, full_worker_logging, now, asking);
         if matches!(outcome, MatchOutcome::WaitingForCapacity) {
             self.consider_hold(asking, platform_properties, now, full_worker_logging);
         }
@@ -1375,10 +1446,10 @@ impl ApiWorkerSchedulerImpl {
         platform_properties: &PlatformProperties,
         full_worker_logging: bool,
         now: SystemTime,
-        asking: Option<&ActionUniqueQualifier>,
+        asking: Option<QueuedAction<'_>>,
     ) -> MatchOutcome {
         if let Some(action) = asking {
-            self.note_held_action_seen(action);
+            self.note_held_action_seen(action.unique_qualifier);
         }
         if self.workers.is_empty() {
             if full_worker_logging {
@@ -1395,13 +1466,15 @@ impl ApiWorkerSchedulerImpl {
             let candidates = self
                 .capability_index
                 .find_matching_workers(platform_properties, full_worker_logging);
-            if let Some(worker_id) = self.find_available_worker(
+            let choice = self.find_available_worker(
                 platform_properties,
                 &candidates,
                 full_worker_logging,
                 asking,
-            ) {
-                return MatchOutcome::Matched(worker_id);
+                now,
+            );
+            if !matches!(choice, MatchOutcome::WaitingForCapacity) {
+                return choice;
             }
             Some(candidates)
         } else {
@@ -2329,6 +2402,7 @@ impl ApiWorkerScheduler {
         worker_state_manager: Arc<dyn WorkerStateManager>,
         platform_property_manager: Arc<PlatformPropertyManager>,
         allocation_strategy: WorkerAllocationStrategy,
+        cache_affinity_wait_s: u64,
         live_memory_veto: Option<String>,
         memory_escalation: Option<MemoryEscalationSpec>,
         reservation_hold: Option<ReservationHoldSpec>,
@@ -2361,6 +2435,7 @@ impl ApiWorkerScheduler {
                 workers: Workers(LruCache::unbounded()),
                 worker_state_manager,
                 allocation_strategy,
+                cache_affinity_wait_s,
                 live_memory_veto,
                 memory_escalation,
                 reservation_hold,

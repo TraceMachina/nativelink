@@ -107,6 +107,7 @@ async fn dispatched() -> Result<Fixture, Error> {
         state_manager.clone(),
         Arc::new(PlatformPropertyManager::new(HashMap::new())),
         WorkerAllocationStrategy::default(),
+        0,
         None,
         None,
         None,

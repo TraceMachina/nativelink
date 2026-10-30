@@ -147,6 +147,49 @@ the next task or worker notification. See the matching loop in
 <SourceLink file="nativelink-scheduler/src/simple_scheduler.rs" symbol="SimpleScheduler" />;
 the release pinned by this link predates this change.
 
+## Cache locality and queue age [#cache-locality-and-queue-age]
+
+The experimental `cache_aware` allocation strategy prefers up to three workers
+for each instance and command digest. It uses deterministic worker ranking,
+so repeated commands can reuse disk-cached inputs without maintaining a
+worker-history database. It first prefers compatible workers whose registered
+capacity fits the action tightly, then chooses an available worker from that
+set. Historical resource hints still determine the action's reservation; this
+strategy consumes that reservation without changing the hints or their snapshots.
+
+This is a cache preference, not a guarantee that inputs are present. Workers
+always fetch and verify inputs normally. Worker replacements, scheduler replicas
+and the bounded fallback can take an action beyond three workers. Commands with
+unrelated inputs can share a preference, while a changed command digest gets a
+new preference. Do not use a mnemonic alone as an affinity key: it would gather
+unrelated actions on the same few workers.
+
+`cache_affinity_wait_s` bounds how long locality can leave usable capacity idle.
+After that queue age, placement can use any compatible available worker. Set it
+to zero for immediate fallback. Keep `fallback_match_interval_s` positive so
+expiry is revisited when there are no worker notifications. The bound applies
+to the locality preference, not to total queue time or input download time.
+
+`queue_age_priority_s` optionally trades age against action priority: at 10,
+an action waiting 60 seconds outranks a new action with five more priority
+points. Zero retains strict priority and then submission order. Retries retain
+the original submission time. This requires loading and sorting the queue
+before placement, adding temporary memory proportional to the queue length;
+it does not add store queries or change stored records. Measure match-cycle
+latency at your queue size before enabling it.
+
+Age ordering alone cannot make a partially busy worker fit a large action.
+Combine it with `reservation_hold` to let a worker drain for an old action
+rather than repeatedly filling it with fresh small actions. Neither policy
+relaxes platform requirements, live-memory checks, concurrency limits or
+worker draining.
+
+These options are experimental and introduced after the release pinned by
+<SourceLink file="nativelink-scheduler/src/api_worker_scheduler.rs" symbol="ApiWorkerScheduler" />.
+See the [development configuration reference](/reference/nativelink-config/main)
+for their configuration fields. A mixed-workload benchmark is required before
+claiming lower input traffic or better tail latency.
+
 ## Reading the scheduler's own diagnostics [#reading-the-schedulers-own-diagnostics]
 
 The scheduler has a built-in periodic dump of matching diagnostics. Since

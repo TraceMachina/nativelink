@@ -18,6 +18,7 @@ use std::time::SystemTime;
 
 use nativelink_config::schedulers::{
     ExperimentalSimpleSchedulerBackend, PropertyType, SchedulerSpec, SimpleSpec,
+    WorkerAllocationStrategy,
 };
 use nativelink_config::stores::EvictionPolicy;
 use nativelink_error::{Error, ResultExt, make_input_err};
@@ -223,6 +224,16 @@ async fn simple_scheduler_factory(
     maybe_origin_event_tx: Option<&mpsc::Sender<OriginEvent>>,
     resource_sketch: Option<Arc<ResourceSketch>>,
 ) -> Result<SchedulerFactoryResults, Error> {
+    if matches!(
+        spec.allocation_strategy,
+        WorkerAllocationStrategy::CacheAware
+    ) && spec.cache_affinity_wait_s > 0
+        && spec.fallback_match_interval_s <= 0
+    {
+        return Err(make_input_err!(
+            "cache_aware with cache_affinity_wait_s > 0 requires fallback_match_interval_s > 0 so locality waits expire without a worker notification"
+        ));
+    }
     if let Some(policy) = &spec.memory_escalation
         && policy.percent <= 100
     {
