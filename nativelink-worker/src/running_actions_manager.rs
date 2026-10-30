@@ -896,10 +896,9 @@ impl ProcessTableCache {
             return table.clone();
         }
         // The scan is thousands of blocking reads; keep it off the async workers.
-        let table: ProcessTable =
-            spawn_blocking!("process_table_scan", live_process_table)
-                .await
-                .map_or_else(|_| Arc::from(Vec::new()), Arc::from);
+        let table: ProcessTable = spawn_blocking!("process_table_scan", live_process_table)
+            .await
+            .map_or_else(|_| Arc::from(Vec::new()), Arc::from);
         *snapshot = Some((Instant::now(), table.clone()));
         table
     }
