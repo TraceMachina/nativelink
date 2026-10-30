@@ -1068,7 +1068,15 @@ async fn unsupported_or_malformed_checksums_fail_before_origin_access() {
     )
     .await;
     let (server, _stores, _cas) = downloader_server(downloader_config()).await;
-    for value in ["sha512-AAAA", "blake3-@@@", "blake3-AA==", "blake3"] {
+    for value in [
+        "",
+        " \t",
+        "sha512-AAAA",
+        "blake3-@@@",
+        "blake3-AA==",
+        "blake3",
+        "sha256-@@@ sha512-AAAA",
+    ] {
         let mut request = fetch_request(&origin.url);
         request.qualifiers = vec![Qualifier {
             name: "checksum.sri".into(),
@@ -1249,4 +1257,89 @@ async fn cache_key_collision_checks_qualifier_boundaries() {
     assert_eq!(origin.hits.load(Ordering::SeqCst), 2);
     assert_cas(&cas, &fetch(&server, second).await, &body).await;
     assert_eq!(origin.hits.load(Ordering::SeqCst), 2);
+}
+
+#[nativelink_test]
+async fn checksum_sri_accepts_supported_alternatives() {
+    for cas_function in [DigestHasherFunc::Sha256, DigestHasherFunc::Blake3] {
+        for matching_function in [DigestHasherFunc::Sha256, DigestHasherFunc::Blake3] {
+            let body = Bytes::from_static(b"checksum alternatives");
+            let origin = http_fixture(body.clone(), StatusCode::OK, Duration::ZERO).await;
+            let (server, _stores, cas) = downloader_server(downloader_config()).await;
+            let mut request = fetch_request(&origin.url);
+            request.digest_function = cas_function.proto_digest_func().into();
+            request.qualifiers = vec![Qualifier {
+                name: "checksum.sri".into(),
+                value: format!(
+                    "  {}\t{}\n{}  ",
+                    sri_with_function(b"wrong sha256", DigestHasherFunc::Sha256).value,
+                    sri_with_function(b"wrong blake3", DigestHasherFunc::Blake3).value,
+                    sri_with_function(&body, matching_function).value,
+                ),
+            }];
+            let mut hasher = cas_function.hasher();
+            hasher.update(&body);
+            let expected = hasher.finalize_digest();
+            for _ in 0..2 {
+                let response = fetch(&server, request.clone()).await;
+                assert_eq!(response.status.unwrap().code, 0);
+                assert_eq!(response.digest_function, request.digest_function);
+                assert_eq!(
+                    DigestInfo::try_from(response.blob_digest.unwrap()).unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(
+                cas.get_part_unchunked(expected, 0, None).await.unwrap(),
+                body
+            );
+            assert_eq!(origin.hits.load(Ordering::SeqCst), 1);
+        }
+    }
+}
+
+#[nativelink_test]
+async fn checksum_alternatives_must_match_before_publication() {
+    let body = Bytes::from_static(b"must remain unpublished");
+    let origin = http_fixture(body.clone(), StatusCode::OK, Duration::ZERO).await;
+    let (server, stores, cas) = downloader_server(downloader_config()).await;
+    let mut request = fetch_request(&origin.url);
+    request.qualifiers = vec![Qualifier {
+        name: "checksum.sri".into(),
+        value: format!("{} {}", sri(b"wrong one").value, sri(b"wrong two").value),
+    }];
+    let key = RemoteAssetQuery::new(origin.url.clone(), request.qualifiers.clone()).digest();
+    let response = fetch(&server, request).await;
+    assert_eq!(response.status.unwrap().code, tonic::Code::DataLoss as i32);
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    hasher.update(&body);
+    assert!(cas.has(hasher.finalize_digest()).await.unwrap().is_none());
+    assert!(
+        stores
+            .get_store("test_fetch_store")
+            .unwrap()
+            .has(key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 1);
+}
+
+#[nativelink_test]
+async fn unsupported_checksum_alternative_does_not_hide_supported_match() {
+    let body = Bytes::from_static(b"supported match");
+    let origin = http_fixture(body.clone(), StatusCode::OK, Duration::ZERO).await;
+    let (server, _stores, cas) = downloader_server(downloader_config()).await;
+    let mut request = fetch_request(&origin.url);
+    let unsupported = format!(
+        "sha512-{}",
+        base64::engine::general_purpose::STANDARD.encode([0; 64])
+    );
+    request.qualifiers = vec![Qualifier {
+        name: "checksum.sri".into(),
+        value: format!("{} {}", unsupported, sri(&body).value),
+    }];
+    assert_cas(&cas, &fetch(&server, request).await, &body).await;
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 1);
 }

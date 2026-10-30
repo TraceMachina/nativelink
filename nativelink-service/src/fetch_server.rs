@@ -143,7 +143,7 @@ impl Downloader {
     async fn download(
         &self,
         uri: &str,
-        checksum: Option<&ExpectedChecksum>,
+        checksum: Option<&[ExpectedChecksum]>,
     ) -> Result<DigestInfo, Error> {
         let default = Box::pin(self.download_with_client(&self.client, uri, checksum));
         let Some(proxy) = &self.proxy_client else {
@@ -163,7 +163,7 @@ impl Downloader {
         &self,
         client: &Client,
         uri: &str,
-        checksum: Option<&ExpectedChecksum>,
+        checksum: Option<&[ExpectedChecksum]>,
     ) -> Result<DigestInfo, Error> {
         let url = reqwest::Url::parse(uri).map_err(|_| make_input_err!("Invalid fetch URI"))?;
         if !matches!(url.scheme(), "http" | "https") {
@@ -199,9 +199,16 @@ impl Downloader {
         let mut file = tokio::fs::File::from_std(file);
         let digest_function = digest_hasher_func_from_context();
         let mut hasher = digest_function.hasher();
-        let mut checksum_hasher = checksum
-            .filter(|expected| expected.function != digest_function)
-            .map(|expected| expected.function.hasher());
+        let mut checksum_hashers = Vec::new();
+        for expected in checksum.into_iter().flatten() {
+            if expected.function != digest_function
+                && !checksum_hashers
+                    .iter()
+                    .any(|(function, _)| *function == expected.function)
+            {
+                checksum_hashers.push((expected.function, expected.function.hasher()));
+            }
+        }
         let mut size = 0_u64;
         while let Some(chunk) = response
             .chunk()
@@ -218,16 +225,31 @@ impl Downloader {
                     )
                 })?;
             hasher.update(&chunk);
-            if let Some(hasher) = &mut checksum_hasher {
+            for (_, hasher) in &mut checksum_hashers {
                 hasher.update(&chunk);
             }
             file.write_all(&chunk).await?;
         }
         let digest = hasher.finalize_digest();
-        if let Some(expected) = checksum {
-            let checksum_digest =
-                checksum_hasher.map_or(digest, |mut hasher| hasher.finalize_digest());
-            if checksum_digest.packed_hash().as_slice() != expected.hash.as_slice() {
+        if let Some(alternatives) = checksum {
+            let checksum_digests: Vec<_> = checksum_hashers
+                .into_iter()
+                .map(|(function, mut hasher)| (function, hasher.finalize_digest()))
+                .collect();
+            let matches = alternatives.iter().any(|expected| {
+                let actual = if expected.function == digest_function {
+                    Some(&digest)
+                } else {
+                    checksum_digests
+                        .iter()
+                        .find(|(function, _)| *function == expected.function)
+                        .map(|(_, digest)| digest)
+                };
+                actual.is_some_and(|actual| {
+                    actual.packed_hash().as_slice() == expected.hash.as_slice()
+                })
+            });
+            if !matches {
                 return Err(make_err!(Code::DataLoss, "Fetch checksum mismatch"));
             }
         }
@@ -399,7 +421,7 @@ impl FetchServer {
             let mut last_error = make_err!(Code::NotFound, "No downloadable URI found");
             for uri in &request.uris {
                 let fetched_at = SystemTime::now().into();
-                match downloader.download(uri, checksum.as_ref()).await {
+                match downloader.download(uri, checksum.as_deref()).await {
                     Ok(digest) => {
                         let mut artifact = RemoteAssetArtifact::new(
                             uri.clone(),
@@ -444,7 +466,7 @@ impl FetchServer {
     fn checksum(
         request: &FetchBlobRequest,
         downloader: &Downloader,
-    ) -> Result<Option<ExpectedChecksum>, Error> {
+    ) -> Result<Option<Vec<ExpectedChecksum>>, Error> {
         let mut checksum = None;
         for qualifier in &request.qualifiers {
             if qualifier.name != "checksum.sri" {
@@ -456,19 +478,30 @@ impl FetchServer {
             if checksum.is_some() {
                 return Err(make_input_err!("Duplicate checksum qualifier"));
             }
-            let (algorithm, encoded) = qualifier
-                .value
-                .split_once('-')
-                .ok_or_else(|| make_input_err!("Invalid checksum.sri format"))?;
-            let function = DigestHasherFunc::try_from(algorithm)
-                .map_err(|_| make_input_err!("Unsupported checksum.sri algorithm"))?;
-            let hash = BASE64
-                .decode(encoded)
-                .map_err(|_| make_input_err!("Invalid checksum.sri encoding"))?;
-            let hash = hash
-                .try_into()
-                .map_err(|_| make_input_err!("Invalid checksum.sri length"))?;
-            checksum = Some(ExpectedChecksum { function, hash });
+            let mut alternatives = Vec::new();
+            for token in qualifier.value.split_whitespace() {
+                let (algorithm, encoded) = token
+                    .split_once('-')
+                    .ok_or_else(|| make_input_err!("Invalid checksum.sri format"))?;
+                if algorithm.is_empty() || encoded.is_empty() {
+                    return Err(make_input_err!("Invalid checksum.sri format"));
+                }
+                let hash = BASE64
+                    .decode(encoded)
+                    .map_err(|_| make_input_err!("Invalid checksum.sri encoding"))?;
+                // Unsupported algorithms may coexist with supported alternatives.
+                let Ok(function) = DigestHasherFunc::try_from(algorithm) else {
+                    continue;
+                };
+                let hash = hash
+                    .try_into()
+                    .map_err(|_| make_input_err!("Invalid checksum.sri length"))?;
+                alternatives.push(ExpectedChecksum { function, hash });
+            }
+            if alternatives.is_empty() {
+                return Err(make_input_err!("No supported checksum.sri alternative"));
+            }
+            checksum = Some(alternatives);
         }
         if downloader.require_checksum && checksum.is_none() {
             return Err(make_input_err!("Fetch downloader requires checksum.sri"));

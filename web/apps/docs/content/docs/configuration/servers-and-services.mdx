@@ -153,8 +153,11 @@ HTTPS origins use the forward proxy's CONNECT support.
 
 The downloader tries candidate URIs in order. `checksum.sri` is verified using
 its declared algorithm. The existing digest implementations support `sha256-`
-and `blake3-` values; unsupported algorithms are rejected.
-Duplicate or malformed checksum values are rejected before cache lookup.
+and `blake3-` values.
+A `checksum.sri` value may contain whitespace-separated alternatives; at least
+one supported checksum must match. Unsupported algorithms are ignored when a
+supported alternative is present. A list with no supported algorithm, malformed
+checksums, or duplicate `checksum.sri` qualifiers is rejected before cache lookup.
 Requests without a checksum are allowed by default, matching Bazel's optional
 `sha256` and `integrity` attributes. Set `require_checksum: true` to require one.
 
@@ -182,9 +185,10 @@ hash-only CAS lookup or create mappings for other mirror URLs.
 
 The CAS digest follows the requested digest function, falling back to the server's
 default when none is specified. When the checksum uses the same algorithm, one
-hash calculation serves both purposes; a different checksum algorithm is computed
-separately. HTTP errors, oversized bodies and checksum mismatches are not
-published to CAS. Empty bodies are valid blobs.
+hash calculation serves both purposes; each different checksum algorithm is
+computed once, even when several alternatives use it. HTTP errors, oversized
+bodies and checksum mismatches are not published to CAS. Empty bodies are valid
+blobs.
 
 Each active download spools to an anonymous temporary file before publishing
 verified bytes in bounded chunks to CAS. File size is unlimited by default:
