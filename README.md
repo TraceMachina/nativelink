@@ -113,7 +113,7 @@ Invoke-WebRequest `
     -OutFile "basic_cas.json5"
 
 # Run the Docker container
-# Note: Adjust the path if the script is not run from the directory containing basic_cas.json
+# Note: Adjust the path if the script is not run from the directory containing basic_cas.json5
 docker run `
     -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
