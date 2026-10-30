@@ -436,32 +436,6 @@ export default function PricingPage() {
           </Reveal>
         </div>
       </Section>
-
-      {/* BOTTOM CONTACT */}
-      <Section
-        width="narrow"
-        className="border-t border-border/60 py-24 text-center"
-      >
-        <Reveal>
-          <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-            Want to talk it through?
-          </h2>
-          <p className="mx-auto mt-5 max-w-[560px] text-base leading-relaxed text-muted-foreground md:text-lg">
-            Email{" "}
-            <span className="font-mono text-foreground">{PRICING_EMAIL}</span>{" "}
-            and the engineers who build NativeLink will walk through the tiers
-            for your team and workload. Replies usually come within a day.
-          </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <Button size="lg" asChild>
-              <a href={PRICING_MAILTO}>Email us about pricing</a>
-            </Button>
-            <Button size="lg" variant="outline" asChild>
-              <a href="/community">Join community</a>
-            </Button>
-          </div>
-        </Reveal>
-      </Section>
     </>
   );
 }
