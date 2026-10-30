@@ -349,7 +349,11 @@ export default function PricingPage() {
                         colSpan={tiers.length + 1}
                         className="border-b border-border bg-foreground/[0.015] px-3 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:px-6"
                       >
-                        {group.section}
+                        {/* The cell spans the table, so on a phone the label would scroll out of
+                            view with the tiers and leave an empty band; pin the text instead. */}
+                        <span className="sticky left-3 inline-block sm:left-6 md:static">
+                          {group.section}
+                        </span>
                       </td>
                     </tr>
                     {group.rows.map((row) => (
