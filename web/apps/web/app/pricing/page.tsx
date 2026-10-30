@@ -285,10 +285,11 @@ export default function PricingPage() {
         <Reveal>
           {/* From md up, overflow-clip rather than overflow-hidden: hidden would turn this box into
               the sticky header's scroll container and pin it to the box instead of the viewport.
-              Below md four columns cannot fit a phone, so the box scrolls sideways instead and the
-              header stops being sticky there, which is the lesser loss. */}
+              Below md four columns cannot fit a phone, so the box scrolls sideways instead; there
+              the header is not sticky (a top offset inside a scroll box would open a blank band
+              above it) and the feature column is pinned to the left edge instead. */}
           <p className="mx-auto mb-3 max-w-[1100px] font-mono text-[11px] uppercase tracking-[0.14em] text-muted md:hidden">
-            Swipe sideways to compare the Enterprise tiers →
+            Swipe to compare the tiers →
           </p>
           <div className="mx-auto max-w-[1100px] overflow-x-auto rounded-2xl border border-border bg-surface md:overflow-clip">
             <table className="w-full min-w-[640px] border-separate border-spacing-0 text-left md:min-w-0">
@@ -296,7 +297,7 @@ export default function PricingPage() {
                 <tr>
                   <th
                     scope="col"
-                    className="sticky left-0 top-16 z-20 w-[34%] border-b border-border bg-surface-elevated px-3 py-4 text-left align-bottom font-mono text-[10px] uppercase tracking-widest text-muted sm:px-6"
+                    className="sticky left-0 z-20 w-[34%] border-b border-border bg-surface-elevated px-3 py-4 text-left align-bottom font-mono text-[10px] uppercase tracking-widest text-muted sm:px-6 md:top-16"
                   >
                     Feature
                   </th>
@@ -304,7 +305,7 @@ export default function PricingPage() {
                     <th
                       key={tier.key}
                       scope="col"
-                      className="sticky top-16 z-10 border-b border-border bg-surface-elevated px-3 py-4 text-left align-bottom sm:px-6"
+                      className="z-10 border-b border-border bg-surface-elevated px-3 py-4 text-left align-bottom sm:px-6 md:sticky md:top-16"
                     >
                       <span className="block font-mono text-[10px] uppercase tracking-widest text-muted">
                         {tier.name}
