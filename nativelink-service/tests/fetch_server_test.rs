@@ -1192,3 +1192,61 @@ async fn fetch_logs_do_not_include_uri_or_qualifier_credentials() {
         Ok(())
     });
 }
+
+#[nativelink_test]
+async fn cache_key_collision_does_not_bypass_requested_checksum() {
+    let body = Bytes::from_static(b"content that does not match the requested checksum");
+    let origin = http_fixture(body.clone(), StatusCode::OK, Duration::ZERO).await;
+    let (server, _stores, cas) = downloader_server(downloader_config()).await;
+    let qualifier = sri(b"expected content");
+    let uri = format!("{}/", origin.url);
+    let colliding_uri = format!("{}{}{}", uri, qualifier.name, qualifier.value);
+    assert_eq!(
+        RemoteAssetQuery::new(colliding_uri.clone(), vec![]).digest(),
+        RemoteAssetQuery::new(uri.clone(), vec![qualifier.clone()]).digest(),
+    );
+    let first = fetch(&server, fetch_request(&colliding_uri)).await;
+    assert_cas(&cas, &first, &body).await;
+    let mut request = fetch_request(&uri);
+    request.qualifiers = vec![qualifier];
+    let response = fetch(&server, request).await;
+    assert_eq!(response.status.unwrap().code, tonic::Code::DataLoss as i32);
+    assert!(response.blob_digest.is_none());
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 2);
+    // The original identity can still reuse its record without a checksum.
+    assert_cas(
+        &cas,
+        &fetch(&server, fetch_request(&colliding_uri)).await,
+        &body,
+    )
+    .await;
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 2);
+}
+
+#[nativelink_test]
+async fn cache_key_collision_checks_qualifier_boundaries() {
+    let body = Bytes::from_static(b"opaque qualifiers");
+    let origin = http_fixture(body.clone(), StatusCode::OK, Duration::ZERO).await;
+    let (server, _stores, cas) = downloader_server(downloader_config()).await;
+    let mut first = fetch_request(&origin.url);
+    first.qualifiers = vec![Qualifier {
+        name: "a".into(),
+        value: "bc".into(),
+    }];
+    let mut second = fetch_request(&origin.url);
+    second.qualifiers = vec![Qualifier {
+        name: "ab".into(),
+        value: "c".into(),
+    }];
+    assert_eq!(
+        RemoteAssetQuery::new(origin.url.clone(), first.qualifiers.clone()).digest(),
+        RemoteAssetQuery::new(origin.url.clone(), second.qualifiers.clone()).digest(),
+    );
+    assert_cas(&cas, &fetch(&server, first).await, &body).await;
+    let response = fetch(&server, second.clone()).await;
+    assert_eq!(response.qualifiers, second.qualifiers);
+    assert_cas(&cas, &response, &body).await;
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 2);
+    assert_cas(&cas, &fetch(&server, second).await, &body).await;
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 2);
+}

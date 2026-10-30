@@ -331,6 +331,13 @@ impl FetchServer {
                 let asset_response = RemoteAssetArtifact::decode(asset_response_raw)
                     .err_tip(|| "Failed to decode stored RemoteAssetArtifact")?;
                 if let Some(downloader) = &store_info.downloader {
+                    // Legacy index keys concatenate fields without boundaries. A matching
+                    // key alone does not prove that the record belongs to this request.
+                    if asset_response.uri != asset_request.uri
+                        || asset_response.qualifiers != asset_request.qualifiers
+                    {
+                        continue;
+                    }
                     let now: prost_types::Timestamp = SystemTime::now().into();
                     let unexpired = asset_response.expire_at.as_ref().is_none_or(|expiry| {
                         (expiry.seconds, expiry.nanos) > (now.seconds, now.nanos)
