@@ -178,6 +178,11 @@ before placement, adding temporary memory proportional to the queue length;
 it does not add store queries or change stored records. Measure match-cycle
 latency at your queue size before enabling it.
 
+Queued listings overlap up to 32 record reads while preserving their order;
+timeout updates remain sequential. This overlaps network waits for Redis
+keepalive reads, not Redis command execution. It also applies when aging is
+disabled and does not remove the full-queue sorting barrier when aging is on.
+
 Age ordering alone cannot make a partially busy worker fit a large action.
 Combine it with `reservation_hold` to let a worker drain for an old action
 rather than repeatedly filling it with fresh small actions. Neither policy

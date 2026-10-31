@@ -16,6 +16,7 @@ use core::ops::Bound;
 use core::time::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use futures::{FutureExt, Stream, StreamExt, future, stream};
@@ -724,7 +725,11 @@ async fn the_sweep_retires_queued_actions_no_client_is_waiting_on() -> Result<()
 }
 
 /// What a listing of the queue does after its first entry.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+#[expect(
+    variant_size_differences,
+    reason = "Only the read-ahead fault needs a shared probe"
+)]
 enum Fault {
     /// The listing names a second entry whose record is gone, as after an
     /// eviction: the stream yields the read error in its place. The rest of
@@ -742,18 +747,30 @@ enum Fault {
     /// does for damaged JSON: an `InvalidArgument` item between two good
     /// ones, before any subscriber exists.
     UndecodableRow,
+    /// Hold the first read while observing how far the listing reads ahead.
+    ReadAhead(Arc<ReadProbe>),
+}
+
+#[derive(Default)]
+struct ReadProbe {
+    started: AtomicUsize,
+    released: AtomicBool,
+    release: Notify,
 }
 
 /// A subscriber whose record may be unreadable.
 enum MaybeBroken<S> {
     Sound(S),
     Broken(Code),
+    Observed(S, Arc<ReadProbe>, bool),
 }
 
 impl<S: AwaitedActionSubscriber> AwaitedActionSubscriber for MaybeBroken<S> {
     async fn changed(&mut self) -> Result<AwaitedAction, Error> {
         match self {
-            Self::Sound(subscriber) => subscriber.changed().await,
+            Self::Sound(subscriber) | Self::Observed(subscriber, _, _) => {
+                subscriber.changed().await
+            }
             Self::Broken(code) => Err(make_err!(*code, "record unreadable")),
         }
     }
@@ -762,6 +779,13 @@ impl<S: AwaitedActionSubscriber> AwaitedActionSubscriber for MaybeBroken<S> {
         match self {
             Self::Sound(subscriber) => subscriber.borrow().await,
             Self::Broken(code) => Err(make_err!(*code, "record unreadable")),
+            Self::Observed(subscriber, probe, first) => {
+                probe.started.fetch_add(1, Ordering::SeqCst);
+                if *first && !probe.released.load(Ordering::SeqCst) {
+                    probe.release.notified().await;
+                }
+                subscriber.borrow().await
+            }
         }
     }
 }
@@ -791,8 +815,14 @@ impl<T: AwaitedActionDb> FaultyDb<T> {
     ) -> Vec<Result<MaybeBroken<T::Subscriber>, Error>> {
         let mut items = Vec::new();
         for (i, item) in listed.into_iter().enumerate() {
+            if let Fault::ReadAhead(probe) = &self.fault {
+                items.push(item.map(|subscriber| {
+                    MaybeBroken::Observed(subscriber, Arc::clone(probe), i == 0)
+                }));
+                continue;
+            }
             if i == 1 {
-                match self.fault {
+                match &self.fault {
                     Fault::LostRecord => {
                         items.push(Err(make_err!(Code::NotFound, "record evicted")));
                     }
@@ -807,9 +837,10 @@ impl<T: AwaitedActionDb> FaultyDb<T> {
                         break;
                     }
                     Fault::BrokenRecord(code) => {
-                        items.push(Ok(MaybeBroken::Broken(code)));
+                        items.push(Ok(MaybeBroken::Broken(*code)));
                         continue;
                     }
+                    Fault::ReadAhead(_) => unreachable!("handled before fault injection"),
                 }
             }
             items.push(item.map(MaybeBroken::Sound));
@@ -910,6 +941,50 @@ fn faulty_state_manager(
         MockInstantWrapped::default,
         Some(Arc::new(WorkerRegistry::new())),
     )
+}
+
+#[nativelink_test]
+async fn queued_reads_overlap_with_a_bound_and_preserve_priority_order() -> Result<(), Error> {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
+    let probe = Arc::new(ReadProbe::default());
+    let state_mgr = faulty_state_manager(Fault::ReadAhead(Arc::clone(&probe)));
+    let mut clients = Vec::new();
+    for priority in 0..64 {
+        let mut info = action_info(make_system_time(0));
+        info.priority = priority;
+        clients.push(
+            state_mgr
+                .add_action(OperationId::default(), Arc::new(info))
+                .await?,
+        );
+    }
+    let mut listed = MatchingEngineStateManager::filter_operations(
+        state_mgr.as_ref(),
+        OperationFilter {
+            stages: OperationStageFlags::Queued,
+            order_by_priority_direction: Some(OrderDirection::Desc),
+            ..Default::default()
+        },
+    )
+    .await?;
+    // A slow first keepalive read must not serialize every subsequent read,
+    // but faster later reads must not let lower-priority work jump ahead.
+    assert!(listed.next().now_or_never().is_none());
+    let started = probe.started.load(Ordering::SeqCst);
+    assert!(started > 1, "independent queued reads should overlap");
+    assert!(started <= 32, "prefetch must not flood the store");
+    probe.released.store(true, Ordering::SeqCst);
+    probe.release.notify_one();
+    for expected in (0..64).rev() {
+        let action = listed
+            .next()
+            .await
+            .expect("every queued action is retained");
+        assert_eq!(action.as_action_info().await?.0.priority, expected);
+    }
+    assert!(listed.next().await.is_none());
+    drop(clients);
+    Ok(())
 }
 
 /// Three abandoned actions, and the listing reports a lost record between

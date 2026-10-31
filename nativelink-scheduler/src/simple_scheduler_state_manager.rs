@@ -107,6 +107,9 @@ impl core::fmt::Display for TimeoutCause {
 /// can fail before giving up.
 const MAX_UPDATE_RETRIES: usize = 5;
 
+/// Overlap queued record/keepalive reads without an unbounded Redis fan-out.
+const MAX_QUEUED_READS: usize = 32;
+
 /// Base delay for exponential backoff on version conflicts (in ms).
 const BASE_RETRY_DELAY_MS: u64 = 10;
 
@@ -1684,6 +1687,14 @@ where
             filter.order_by_priority_direction,
             Some(OrderDirection::Desc)
         );
+        let read_concurrency = if matches!(
+            sorted_awaited_action_state,
+            SortedAwaitedActionState::Queued
+        ) {
+            MAX_QUEUED_READS
+        } else {
+            1
+        };
         let stream = self
             .action_db
             .get_range_of_actions(
@@ -1695,9 +1706,12 @@ where
             .await
             .err_tip(|| "In SimpleSchedulerStateManager::filter_operations")?
             .filter_map(|listed| async move { listed_or_lost(listed) })
-            .try_filter_map(|awaited_action_subscriber| async move {
-                borrow_listed(awaited_action_subscriber).await
-            })
+            // Listed Redis records still fetch a separate keepalive key. Do
+            // those independent reads concurrently, preserving listing order.
+            // Filtering (including timeout updates) remains sequential below.
+            .map(|listed| async move { borrow_listed(listed?).await })
+            .buffered(read_concurrency)
+            .try_filter_map(|listed| async move { Ok(listed) })
             .try_filter_map(move |(subscriber, awaited_action)| {
                 let filter = filter.clone();
                 async move {
