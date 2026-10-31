@@ -140,7 +140,16 @@ const features = [
 
 const securityFeature = {
   title: "Secure by default.",
-  body: "SSO, signed inputs, end-to-end packet integrity. Your source, your artifacts, and your supply chain stay locked down.",
+  body: "Your source, your artifacts, and your supply chain stay locked down.",
+  // The six capabilities behind the claim, the same six the Product page lists.
+  points: [
+    { label: "SSO / SAML", body: "Okta, Azure AD, Google Workspace" },
+    { label: "End-to-end TLS", body: "mTLS between every hop" },
+    { label: "Content-addressed", body: "Every artifact tamper-evident by hash" },
+    { label: "Signed inputs", body: "Worker inputs and outputs signed" },
+    { label: "Hermetic builds", body: "No surprise dependencies mid-build" },
+    { label: "Audit trails", body: "Provenance for every action result" },
+  ],
 };
 
 const benefits = [
@@ -390,7 +399,9 @@ export default function HomePage() {
         </Reveal>
       </Section>
 
-      <Section width="default" className="py-28">
+      {/* overflow-x-clip: the dashboard panel's glow halo reaches 32px past the panel, which is
+          wider than the page padding on a phone. */}
+      <Section width="default" className="overflow-x-clip py-28">
         <Reveal>
           <div className="mx-auto mb-14 max-w-[720px] text-center">
             <Eyebrow className="mb-4">What you get</Eyebrow>
@@ -422,18 +433,36 @@ export default function HomePage() {
             ))}
           </div>
           <Reveal delay={0.12}>
-            <article className="flex h-full flex-col justify-between rounded-2xl border border-brand/35 bg-brand-soft/40 p-8 shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.45)]">
+            <article className="flex h-full flex-col rounded-2xl border border-brand/35 bg-brand-soft/40 p-8 shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.45)]">
               <Badge variant="brand" className="self-start">
                 Secure by default
               </Badge>
-              <div>
-                <h3 className="mt-8 text-3xl font-semibold leading-tight tracking-tight text-foreground md:text-4xl">
-                  {securityFeature.title}
-                </h3>
-                <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-                  {securityFeature.body}
-                </p>
-              </div>
+              <h3 className="mt-6 text-2xl font-semibold leading-tight tracking-tight text-foreground">
+                {securityFeature.title}
+              </h3>
+              <p className="mt-4 text-base leading-relaxed text-muted-foreground md:text-lg">
+                {securityFeature.body}
+              </p>
+              <ul className="mt-8 grid flex-1 content-start gap-x-6 gap-y-4 sm:grid-cols-2">
+                {securityFeature.points.map((point) => (
+                  <li key={point.label} className="flex items-start gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand text-[11px] text-brand-foreground"
+                    >
+                      ✓
+                    </span>
+                    <span>
+                      <span className="block font-mono text-sm font-semibold text-foreground">
+                        {point.label}
+                      </span>
+                      <span className="block text-sm leading-relaxed text-muted-foreground">
+                        {point.body}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </article>
           </Reveal>
         </div>
