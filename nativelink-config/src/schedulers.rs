@@ -105,10 +105,6 @@ pub enum WorkerAllocationStrategy {
     CacheAware,
 }
 
-const fn default_cache_affinity_wait_s() -> u64 {
-    5
-}
-
 // Disabled by default: each log lists every queued and executing operation
 // from the scheduler's store, on every replica, which on a shared Redis is
 // a full index read per interval per replica.
@@ -348,12 +344,10 @@ pub struct SimpleSpec {
     /// outside its three preferred workers. Includes retries: requeueing must
     /// not restart the locality wait. A zero value only prefers locality when
     /// a preferred worker has capacity now. Other strategies ignore this.
-    /// Default: 5 seconds. Configure a positive `fallback_match_interval_s`
+    /// Default: 0 (immediate fallback). A positive value can leave usable
+    /// capacity idle; configure a positive `fallback_match_interval_s` as well
     /// so the scheduler rechecks expiry even without a worker notification.
-    #[serde(
-        default = "default_cache_affinity_wait_s",
-        deserialize_with = "convert_duration_with_shellexpand"
-    )]
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub cache_affinity_wait_s: u64,
 
     /// Queue age in seconds worth one priority point. For example, at 10,

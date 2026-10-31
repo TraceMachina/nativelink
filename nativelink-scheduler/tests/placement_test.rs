@@ -291,8 +291,9 @@ async fn cache_affinity_is_bounded_and_expires_without_new_capacity() -> Result<
 }
 
 #[nativelink_test]
-async fn zero_affinity_wait_uses_spare_workers_immediately() -> Result<(), Error> {
-    let scheduler = cache_scheduler(0);
+async fn cache_aware_defaults_to_immediate_fallback() -> Result<(), Error> {
+    let spec = serde_json::from_str(r#"{"allocation_strategy":"cache_aware"}"#).unwrap();
+    let scheduler = make_scheduler_with_spec(&spec);
     let mut workers = Vec::new();
     for i in 0..5 {
         workers.push(add_worker(&scheduler, &format!("worker-{i}")).await?);
@@ -540,9 +541,10 @@ async fn locality_wait_requires_a_periodic_wakeup() -> Result<(), Error> {
 
     let mut spec: SimpleSpec =
         serde_json::from_str(r#"{"allocation_strategy":"cache_aware"}"#).unwrap();
-    assert_eq!(spec.cache_affinity_wait_s, 5);
+    assert_eq!(spec.cache_affinity_wait_s, 0);
     assert_eq!(spec.queue_age_priority_s, 0);
     assert!(spec.fallback_match_interval_s > 0);
+    spec.cache_affinity_wait_s = 5;
     spec.fallback_match_interval_s = 0;
     let stores = StoreManager::new();
     let rejected = scheduler_factory(&SchedulerSpec::Simple(spec), &stores, None).await;

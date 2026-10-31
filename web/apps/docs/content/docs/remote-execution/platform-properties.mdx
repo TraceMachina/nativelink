@@ -165,10 +165,13 @@ new preference. Do not use a mnemonic alone as an affinity key: it would gather
 unrelated actions on the same few workers.
 
 `cache_affinity_wait_s` bounds how long locality can leave usable capacity idle.
-After that queue age, placement can use any compatible available worker. Set it
-to zero for immediate fallback. Keep `fallback_match_interval_s` positive so
-expiry is revisited when there are no worker notifications. The bound applies
-to the locality preference, not to total queue time or input download time.
+The default is zero: when the preferred workers are busy, placement immediately
+tries other compatible available workers. A positive value explicitly trades
+usable capacity for locality until that queue age. Keep `fallback_match_interval_s`
+positive when enabling a wait so expiry is revisited without worker notifications.
+The bound applies to the locality preference, not to total queue time or input
+download time. Immediate fallback does not by itself prove higher throughput;
+measure matching cost, input traffic, and complete-workload latency together.
 
 `queue_age_priority_s` optionally trades age against action priority: at 10,
 an action waiting 60 seconds outranks a new action with five more priority
