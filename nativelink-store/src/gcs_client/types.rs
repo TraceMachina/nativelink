@@ -19,6 +19,9 @@ pub const SIMPLE_UPLOAD_THRESHOLD: u64 = 10 * 1024 * 1024;
 pub const MIN_MULTIPART_SIZE: u64 = 5 * 1024 * 1024;
 /// Default chunk size for uploads (~2MB)
 pub const CHUNK_SIZE: usize = 2 * 1024 * 1000;
+/// GCS objects cannot be larger than this (5TiB). See:
+/// <https://cloud.google.com/storage/quotas#objects>
+pub const MAX_UPLOAD_SIZE: u64 = 5 * 1024 * 1024 * 1024 * 1024;
 
 // ----- Upload retry configuration -----
 /// Maximum number of upload retry attempts

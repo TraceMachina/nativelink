@@ -702,6 +702,9 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
     make_stores_with_lazy_slow_over(Store::new(MemoryStore::new(&MemorySpec::default())))
 }
 
+/// The object size limit the lazy slow store below advertises.
+const LAZY_SLOW_MAX_UPLOAD_SIZE: u64 = 4 * MEGABYTE_SZ as u64;
+
 fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
     #[derive(MetricsComponent)]
     struct LazyStore {
@@ -755,6 +758,10 @@ fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
                 optimization,
                 nativelink_util::store_trait::StoreOptimizations::LazyExistenceOnSync
             )
+        }
+
+        fn max_upload_size(&self) -> u64 {
+            LAZY_SLOW_MAX_UPLOAD_SIZE
         }
 
         fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
@@ -887,6 +894,98 @@ async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
     assert!(
         fast_store.has(digest).await?.is_some(),
         "Expected data to be synced to fast store"
+    );
+    Ok(())
+}
+
+/// Fast store that records the size each `update` was announced with.
+#[derive(MetricsComponent)]
+struct SizeRecordingStore {
+    inner: Arc<MemoryStore>,
+    announced_sizes: Arc<Mutex<Vec<UploadSizeInfo>>>,
+}
+
+#[async_trait]
+impl StoreDriver for SizeRecordingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(digests, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        digest: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.announced_sizes.lock().unwrap().push(size_info);
+        Pin::new(self.inner.as_ref())
+            .update(digest, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SizeRecordingStore);
+
+// With the `.has()` skipped the length is unknown, so the fast store is told
+// the most it could receive: the slow store's limit, not `u64::MAX`.
+#[nativelink_test]
+async fn lazy_slow_read_announces_the_slow_store_limit_to_the_fast_store() -> Result<(), Error> {
+    let announced_sizes = Arc::new(Mutex::new(Vec::new()));
+    let (fast_slow_store, _fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(Store::new(Arc::new(SizeRecordingStore {
+            inner: MemoryStore::new(&MemorySpec::default()),
+            announced_sizes: announced_sizes.clone(),
+        })));
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    assert_eq!(
+        *announced_sizes.lock().unwrap(),
+        vec![UploadSizeInfo::MaxSize(LAZY_SLOW_MAX_UPLOAD_SIZE)],
     );
     Ok(())
 }
