@@ -167,7 +167,7 @@ point the person at that address rather than guess.
 
 # https://nativelink.com/agents
 
-**For agents and intelligent collaborators**: Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
+**For agents**: Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
 
 NativeLink is built to be read by agents as well as people. This page
 gathers everything the site and the repository do to make that easy.
@@ -249,8 +249,9 @@ Three places to be part of NativeLink:
 
 - **Read the docs** at https://docs.nativelink.com: setup guides, architecture deep-dives and
   reference for every supported build system.
-- **Join the Slack** (https://forms.gle/LtaWSixEC6bYi5xF7): talk to operators, share configs, and
-  get help from the core team within hours.
+- **Join the Slack** (https://nativelink.com/community#slack): leave your email and the team sends an
+  invite, usually within a day. Then talk to operators, share configs, and
+  get help from the core team.
 - **Clone the repo** at https://github.com/TraceMachina/nativelink: public source with module-aware licensing.
   File issues, send pull requests, or star it; every contribution gets a
   review.
@@ -295,7 +296,7 @@ Pick a channel:
 - **Legal:** legal@tracemachina.com for contracts, licensing and legal
   enquiries.
 - **GitHub:** https://github.com/TraceMachina/nativelink.
-- **Slack:** https://forms.gle/LtaWSixEC6bYi5xF7.
+- **Slack:** https://nativelink.com/community#slack.
 - **Post:** PO Box 60676, 265 Cambridge Ave, Palo Alto, CA 94306.
 
 Office hours are Monday to Friday, 9 am to 6 pm Pacific. Outside them email
@@ -498,7 +499,7 @@ look finished and are not.
   not a number on the website, and an assistant asked about it should send
   the person there rather than estimate.
 - Security reports: security@tracemachina.com. Legal: legal@tracemachina.com.
-- Community: the NativeLink Slack, https://forms.gle/LtaWSixEC6bYi5xF7.
+- Community: the NativeLink Slack, https://nativelink.com/community#slack.
 
 
 # https://nativelink.com/resources/blog/re-api-fellow
@@ -15316,7 +15317,7 @@ each one decides where you have to point the collector:
 | Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
 | Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
 | Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes, whether it succeeded, and how many waiting actions took room that opened mid-pass ahead of newer ones |
-| Sizing | `nativelink_scheduler_hints_*` | The scheduler, with `historical_resource` configured | Actions sized, by source (`target`, `command_digest`, `mnemonic`, `seed`, `cold_start`, `none`; the `cold_start` share falls as the sketch learns), the sketch's keys and capacity by family, its evictions and samples, and the snapshot's size, age and failed writes |
+| Sizing | `nativelink_scheduler_hints_*` | The scheduler, with `historical_resource` configured | Actions sized, by source (`target`, `command_digest`, `mnemonic`, `seed`, `file`, `cold_start`, `none`; the `cold_start` share falls as the sketch learns), the sketch's keys and capacity by family, its evictions and samples, and the snapshot's size, age and failed writes |
 | gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
 | Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
 | Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |
@@ -19490,7 +19491,10 @@ A client waiting to observe `CacheCheck` will wait forever.
 The matching engine walks the queue in sort order, and for each action looks
 for the first worker that satisfies the action's platform properties. The
 source still carries an `O(n*m)` TODO in
-<SourceLink file="nativelink-scheduler/src/simple_scheduler.rs" symbol="SimpleScheduler" />,
+<SourceLink
+  file="nativelink-scheduler/src/simple_scheduler.rs"
+  symbol="SimpleScheduler"
+/>,
 but the walk is narrowed first: a `WorkerCapabilityIndex` (an inverted index
 over `Exact` and `Priority` properties) produces the candidate set, and only
 that set is scanned in LRU order, checking availability and `Minimum`
@@ -19589,8 +19593,14 @@ and do not spend `max_job_retries`. The execution histograms carry an
 `execution.outcome` attribute so the killed samples can be told from the
 completed ones.
 
-The `historical_resource` scheduler that fills reservations sizes an action
-from what the scheduler itself measured. Every sampled usage report a worker
+The `historical_resource` scheduler uses `hints_file` by default. It loads the
+file at startup and refreshes it in the background at `refresh_interval_s`
+(zero means once), preserving the last usable generation after a failed read.
+An existing configuration does not switch to learning automatically.
+
+Set `learn_from_workers: true` to size actions from worker measurements.
+In this mode the file is only a seed for an empty sketch, and its first real
+sample replaces each seeded entry. Every sampled usage report a worker
 sends lands in a bounded sketch: one entry per key with 25-bucket log2
 histograms of peak memory, CPU and disk, the exact maxima, the reservation
 the action was last killed at, and when it was last seen. The key is the
@@ -19603,9 +19613,10 @@ that names both is recorded under its mnemonic as well, so a target the
 sketch has never seen is sized from its kind of action rather than the cold
 start. A lookup walks that ladder most specific first and reserves the 95th
 percentile bucket's upper bound, capped by the exact maximum, plus
-`headroom_percent`, never at or below the kill. Within the window a sample
-weighs half as much each day, so what a key used last week stops shaping
-it, and a kill floor expires with the window. **`classes`** on the same scheduler defines the
+`headroom_percent`, never at or below the kill. Two half-window histograms
+retain samples for between half and one full `window_days` window, and a
+kill floor expires with the window. Wide histogram counters preserve the
+relative weights of common and rare observations. **`classes`** on the same scheduler defines the
 fleet's size ladder: named points with `cpu_count`, `memory_kb` and
 `disk_kb`, listed ascending, and a hint takes the smallest class that holds
 its numbers on every dimension the class names. An action the sketch has
@@ -19616,18 +19627,91 @@ nothing for takes the class picked by `class_by_mnemonic`, then
 kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
 
-The sketch lives within `memory_budget_bytes` (keys the fleet has not run
-for `window_days` are forgotten, and a full family evicts its least
-recently seen key), split over shards by key hash so a snapshot never holds
-up the Execute path. Each scheduler replica sees only the workers connected
-to it, so each writes its own snapshot to `snapshot_store` every
-`snapshot_interval_s` under `historical_resource_sketch/<hostname>`, and a
-start reads every replica's snapshot and merges them; the store must take a
-string key, which the start probes. The admin API's
-`/scheduler/{instance}/hints` lists what it reserves for every key in the
-`hints_file` shape, which is how a new fleet is seeded from an old one: the
-file is read once into an empty sketch and a seeded hint stands until the
-first real sample of its key replaces it.
+The `memory_budget_bytes` accounting includes entry storage, variable-length
+keys, map bookkeeping, probation and reserved snapshot working memory. The
+**512 MiB default** holds roughly 55,000 target keys plus mnemonic and command
+families with short keys; long labels reduce that capacity. Explicitly configured
+budgets keep their value. One quarter funds resident data and the remainder
+reserves space for snapshot encoding and loading. Size the process memory limit
+above the budget plus the scheduler's other allocations: this is not a total
+process RSS limit. File-backed mode does not allocate the learned cache in advance.
+Old keys expire after `window_days`, and full families evict their least recently
+used entries. Monitor capacity and evictions as the number of distinct keys grows.
+The writer encodes one shard at a time without cloning the entire sketch;
+lock contention and snapshot latency still need workload measurements.
+
+Each replica writes `historical_resource_sketch/<replica_id>` in `snapshot_store`
+every `snapshot_interval_s`. Set `replica_id` to a stable identity unique among
+concurrent writers, or leave it empty to use the pod's hostname. On startup the
+scheduler prefers its own snapshot. A replacement pod whose key is missing
+restores the newest compatible snapshot under the same prefix, **without merging
+histories**. Discovery reads small headers and retains at most 128 candidate keys;
+if that limit is exceeded, it warns and uses the hints file. Keep retired keys
+under a TTL, and use a separate store prefix for each logical scheduler. Stores
+without listing support need a stable replica ID to restore after a roll.
+
+Snapshot version 3 uses wide counters; older snapshots are skipped with a warning.
+Reads and decoded entry counts are bounded. Zero disables periodic writes;
+shutdown does not flush them. In learning mode the admin API's
+`/scheduler/{instance}/hints` exports shaped reservations as a hints file.
+Switching back to file-backed mode restores the configured file and refresh
+interval, not the learned state. Preserve the last known-good file for rollback.
+
+#### Choosing a snapshot store [#choosing-a-snapshot-store]
+
+`snapshot_store` names an entry in **this scheduler process's top-level `stores`**.
+It does not create a store or reference another CAS process's configuration. A
+missing name or failed startup write/read probe warns and leaves learning in
+memory for that process's lifetime. Fix the configuration or backend and restart
+to enable persistence; unsaved measurements are lost on restart.
+
+Names are user-defined in NativeLink. For the enterprise chart's standard names,
+check the rendered scheduler config:
+
+| Scheduler backend | Available standard snapshot-store names |
+| --- | --- |
+| Redis | `SCHEDULER_STORE`; also `ORIGIN_EVENT_STORE` when `cas.originEvents.enabled=true` |
+| Memory | `ORIGIN_EVENT_STORE` only when `cas.originEvents.enabled=true`; `SCHEDULER_STORE` is absent |
+
+If neither store is rendered, leave `snapshot_store` unset or define a dedicated
+store in the scheduler's own config. The chart may reject an invalid store name
+earlier during rendering; the server's fallback does not override chart checks.
+
+#### Waiting for an autoscaled size class [#waiting-for-an-autoscaled-size-class]
+
+Learned sizing selects from the configured class ladder, including a class whose
+pool currently has no connected workers. The retry escalator separately caps its
+memory ceiling at the largest connected worker advertisement; a size class is not
+an inventory of pools that can be provisioned. Capping learned hints to currently connected
+workers would prevent scale-from-zero and could repeat memory kills on a small
+worker.
+
+The memory scheduler sees only its own connected workers. Redis peer exchange
+adds other schedulers' **connected** workers, not pool templates awaiting startup. A pod
+created by the provisioner does not satisfy an action until the worker registers.
+A 60-second `unsatisfiable_action_timeout_s` can therefore fail a valid large-class
+action while its node or image is still starting.
+
+For autoscaling, initially leave that timeout at `0`, or set it above the measured
+worst-case time through worker registration, including node and image startup.
+For example, if that bound is below ten minutes, the nested `simple` scheduler can
+use:
+
+```json5
+{
+  simple: {
+    unsatisfiable_action_timeout_s: 600,
+    no_worker_action_timeout_s: 600,
+  },
+}
+```
+
+The second timeout covers a completely empty connected fleet; it does not replace
+the first when small workers are still connected. Zero disables the respective
+failure deadline, so monitor queued demand and provisioning failures. These
+settings preserve the requested reservation while the larger pool starts; they
+do not create workers themselves. With the memory backend, provisioner demand
+must come from the scheduler admin API rather than nonexistent Redis queue records.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 

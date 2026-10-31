@@ -23,7 +23,7 @@ at https://docs.nativelink.com/llms.txt, https://docs.nativelink.com/llms-small.
 - [NativeLink: build infrastructure for the agentic era](https://nativelink.com/): When agents write your code, your build system is the bottleneck. NativeLink is the high-performance remote build cache and remote execution platform for Bazel and beyond.
 - [Product](https://nativelink.com/product): One platform: remote caching, remote execution and observability in a single Rust-native binary, for codebases that grow faster than they can be provisioned.
 - [Pricing](https://nativelink.com/pricing): Two tiers: self-host the source-available release for free, or NativeLink Enterprise with dedicated engineering. Pricing is discussed by email, not read off a page.
-- [For agents and intelligent collaborators](https://nativelink.com/agents): Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
+- [For agents](https://nativelink.com/agents): Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
 - [Company](https://nativelink.com/company): NativeLink is built by Trace Machina, whose mission is to accelerate the progress of humanity in the machine age.
 - [Community](https://nativelink.com/community): Where to read, ask and contribute: the docs, the NativeLink Slack, and the GitHub repository with its contributors.
 - [Careers](https://nativelink.com/careers): A small team building the source-available remote build cache and execution platform, and growing.
@@ -188,7 +188,7 @@ The complete map is at https://docs.nativelink.com/llms.txt; the sections below 
 
 - [Pricing](https://nativelink.com/pricing): Open Source is free and self-hosted; Enterprise is custom. To discuss pricing, email contact@tracemachina.com.
 - [Contact](https://nativelink.com/contact): contact@tracemachina.com for general and sales, security@tracemachina.com for disclosures, legal@tracemachina.com for legal.
-- [Slack](https://forms.gle/LtaWSixEC6bYi5xF7): the community workspace.
+- [Slack](https://nativelink.com/community#slack): request an invite to the community workspace.
 
 ## Optional
 
