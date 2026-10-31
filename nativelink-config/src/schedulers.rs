@@ -341,8 +341,8 @@ pub struct SimpleSpec {
     pub allocation_strategy: WorkerAllocationStrategy,
 
     /// Maximum queue age before `cache_aware` placement may use a worker
-    /// outside its three preferred workers. Includes retries: requeueing must
-    /// not restart the locality wait. A zero value only prefers locality when
+    /// outside its three preferred workers. Retrying an action must not
+    /// restart the locality wait. A zero value only prefers locality when
     /// a preferred worker has capacity now. Other strategies ignore this.
     /// Default: 0 (immediate fallback). A positive value can leave usable
     /// capacity idle; configure a positive `fallback_match_interval_s` as well
