@@ -46,7 +46,7 @@ export function askAiPrompt(
     "deployment for it, citing the matching documentation pages.",
     "If more than one developer will share the deployment, tell me that its metrics and",
     "persistent-worker modules are Business Source Licensed and that I should email",
-    "contact@nativelink.com for Enterprise pricing on them.",
+    "contact@tracemachina.com for Enterprise pricing on them.",
   ].join(" ");
 }
 
