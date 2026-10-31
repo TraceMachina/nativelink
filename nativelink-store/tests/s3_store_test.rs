@@ -35,7 +35,7 @@ use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::spawn;
-use nativelink_util::store_trait::{StoreLike, UploadSizeInfo};
+use nativelink_util::store_trait::{StoreDriver, StoreLike, UploadSizeInfo};
 use pretty_assertions::assert_eq;
 use sha2::{Digest, Sha256};
 
@@ -1095,5 +1095,54 @@ async fn incomplete_multipart_upload_aborts_before_s3_commit() -> Result<(), Err
         .map(|request| request.method().to_string())
         .collect();
     assert_eq!(methods, vec!["POST", "DELETE"]);
+    Ok(())
+}
+
+// A caller that does not know an upload's length announces the most it could
+// be. The store's own advertised limit must be accepted, where `u64::MAX` is
+// refused before any request is sent.
+#[nativelink_test]
+async fn update_accepts_its_advertised_max_upload_size() -> Result<(), Error> {
+    const DATA: &[u8] = b"unknown-length";
+    let digest = DigestInfo::try_new(VALID_HASH1, DATA.len() as u64)?;
+
+    let refusing = store_with(
+        &compatible_endpoint_spec(true),
+        StaticReplayClient::new(vec![]),
+    )
+    .await?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    tx.send(DATA.into()).await?;
+    tx.send_eof()?;
+    let result = refusing
+        .update(digest, rx, UploadSizeInfo::MaxSize(u64::MAX))
+        .await;
+    assert_eq!(result.unwrap_err().code, Code::FailedPrecondition);
+
+    let mock = StaticReplayClient::new(vec![
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::OK).body(SdkBody::from(
+                "<InitiateMultipartUploadResult><UploadId>advertised-max</UploadId></InitiateMultipartUploadResult>"
+            )).unwrap()),
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::OK).body(SdkBody::empty()).unwrap()),
+        ReplayEvent::new(http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder().status(StatusCode::OK).body(SdkBody::from(
+                "<CompleteMultipartUploadResult></CompleteMultipartUploadResult>"
+            )).unwrap()),
+    ]);
+    let store = store_with(&compatible_endpoint_spec(true), mock.clone()).await?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    tx.send(DATA.into()).await?;
+    tx.send_eof()?;
+    let uploaded = store
+        .update(digest, rx, UploadSizeInfo::MaxSize(store.max_upload_size()))
+        .await?;
+    assert_eq!(uploaded, DATA.len() as u64);
+    let methods: Vec<_> = mock
+        .actual_requests()
+        .map(|request| request.method().to_string())
+        .collect();
+    assert_eq!(methods, vec!["POST", "PUT", "POST"]);
     Ok(())
 }
