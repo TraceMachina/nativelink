@@ -339,7 +339,7 @@ async fn priority_order(age_weight_s: u64) -> Result<Vec<String>, Error> {
         ..SimpleSpec::default()
     });
     add_action(&scheduler, 1).await?;
-    MockClock::advance(Duration::from_secs(60));
+    MockClock::advance(Duration::from_mins(1));
     let base = make_base_action_info(
         UNIX_EPOCH + MockClock::time(),
         DigestInfo::new([2; 32], 512),
@@ -376,6 +376,89 @@ async fn disabled_queue_aging_preserves_strict_priority() -> Result<(), Error> {
         priority_order(0).await?,
         vec!["02".repeat(32), "01".repeat(32)]
     );
+    Ok(())
+}
+
+/// Keep a worker occupied while one higher-priority action arrives per second.
+/// Each completion offers exactly one slot: the older action must eventually
+/// take it even though fresh work continues to arrive.
+async fn old_action_dispatch_round(age_weight_s: u64) -> Result<Option<u8>, Error> {
+    use nativelink_util::action_messages::{ActionResult, ActionStage};
+    use nativelink_util::operation_state_manager::UpdateOperationType;
+
+    let scheduler = make_scheduler_with_spec(&SimpleSpec {
+        queue_age_priority_s: age_weight_s,
+        client_action_timeout_s: 1_000,
+        worker_timeout_s: 1_000,
+        supported_platform_properties: Some(HashMap::from([(
+            "memory_kb".to_string(),
+            PropertyType::Minimum,
+        )])),
+        ..SimpleSpec::default()
+    });
+    let worker_id = WorkerId("worker".to_string());
+    let mut rx = add_worker_with_properties(&scheduler, "worker", memory_worker(1_000)).await?;
+    add_action_with_properties(&scheduler, 1, memory_action(1_000)).await?;
+    let Some(update_for_worker::Update::StartAction(mut running)) = rx.recv().await.unwrap().update
+    else {
+        panic!("the initial action must occupy the worker");
+    };
+    add_action_with_properties(&scheduler, 2, memory_action(1_000)).await?;
+    let old_digest = DigestInfo::new([2; 32], 512);
+    let mut dispatched_round = None;
+    for round in 1..=12 {
+        MockClock::advance(Duration::from_secs(1));
+        let base = make_base_action_info(
+            UNIX_EPOCH + MockClock::time(),
+            DigestInfo::new([100 + round; 32], 512),
+        );
+        scheduler
+            .add_action(
+                OperationId::default(),
+                Arc::new(ActionInfo {
+                    priority: 5,
+                    platform_properties: memory_action(1_000),
+                    ..(*base).clone()
+                }),
+            )
+            .await?;
+        scheduler
+            .update_action(
+                &worker_id,
+                &OperationId::from(running.operation_id),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    ActionResult::default(),
+                )),
+            )
+            .await?;
+        scheduler.do_try_match_for_test().await?;
+        let update = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a runnable action must take the released slot")
+            .unwrap();
+        let Some(update_for_worker::Update::StartAction(next)) = update.update else {
+            panic!("expected the next action, got {update:?}");
+        };
+        if next.execute_request.as_ref().unwrap().action_digest == Some(old_digest.into()) {
+            assert!(
+                dispatched_round.replace(round).is_none(),
+                "duplicate assignment"
+            );
+        }
+        assert_eq!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        running = next;
+    }
+    Ok(dispatched_round)
+}
+
+#[nativelink_test]
+async fn queue_aging_dispatches_old_work_during_continuing_priority_arrivals() -> Result<(), Error>
+{
+    // Negative control: strict priority bypasses the old action at every slot.
+    assert_eq!(old_action_dispatch_round(0).await?, None);
+    // At five seconds the scores tie; at six the old action strictly wins.
+    // Continue arrivals after it runs to check it was assigned only once.
+    assert_eq!(old_action_dispatch_round(1).await?, Some(6));
     Ok(())
 }
 
