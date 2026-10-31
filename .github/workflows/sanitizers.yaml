@@ -32,10 +32,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04]
-        sanitizer: [asan]
+        sanitizer: [asan, cfi]
     name: ${{ matrix.sanitizer }} / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # CFI's LLVM LTO links can outlast the ASan lane's budget.
+    timeout-minutes: ${{ matrix.sanitizer == 'cfi' && 60 || 30 }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -48,6 +49,7 @@ jobs:
         uses: ./.github/actions/free-disk
 
       - name: Setup Bazel
+        if: matrix.sanitizer == 'asan'
         uses: >- # v0.19.0
           bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
         with:
@@ -55,6 +57,7 @@ jobs:
           repository-cache: true
 
       - name: Setup NativeLink Cloud
+        if: matrix.sanitizer == 'asan'
         uses: ./.github/actions/setup-nativelink-cloud
         with:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
@@ -72,4 +75,85 @@ jobs:
           exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
       - name: Run Bazel tests
+        if: matrix.sanitizer == 'asan'
         run: bazel test --config=${{ matrix.sanitizer }} --config=nl-quiet --lockfile_mode=error --verbose_failures //...
+
+      # CFI needs an instrumented standard library. The Bazel Rust
+      # toolchain downloads prebuilt std, so use Cargo's build-std here.
+      - name: Set up CFI toolchain
+        if: matrix.sanitizer == 'cfi'
+        run: rustup toolchain install nightly-2026-08-26 --profile minimal --component rust-src --component llvm-tools-preview
+
+      - name: Disable AppArmor namespace restrictions
+        if: matrix.sanitizer == 'cfi'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Set up Azurite test runner
+        if: matrix.sanitizer == 'cfi'
+        uses: ./.github/actions/setup-azurite-test-runner
+
+      - name: Run CFI tests
+        if: matrix.sanitizer == 'cfi'
+        env:
+          # Native build scripts also emit LLVM bitcode for linker-plugin LTO.
+          # Match Rust's split-unit metadata on Clang-generated bitcode.
+          CC: clang
+          CXX: clang++
+          CFLAGS: -fsplit-lto-unit
+          CXXFLAGS: -fsplit-lto-unit
+          # getrandom 0.3.4 otherwise indirectly calls uninstrumented glibc
+          # getrandom(2), which trips CFI. Its documented linux_raw backend
+          # uses the same kernel syscall directly, retaining Rust CFI checks.
+          RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1 --cfg=getrandom_backend="linux_raw"
+          RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1 --cfg=getrandom_backend="linux_raw"
+          RUST_TEST_THREADS: 1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          RUST_BACKTRACE: 1
+          # rustc 787af2b8c formats trait-object types for CFI diagnostics
+          # without emitting an ordinary diagnostic, triggering its
+          # trimmed_def_paths assertion. Logging mode exempts this invariant.
+          # Keep compiler logging quiet while retaining CFI runtime reports.
+          RUSTC_LOG: error
+          # Bound simultaneous LLD instances and avoid CI-only incremental state.
+          CARGO_BUILD_JOBS: '2'
+          CARGO_INCREMENTAL: '0'
+        # Emit CFI type mismatch diagnostics instead of an unexplained SIGILL;
+        # retain abort-on-violation (do not enable CFI recovery).
+        # Work around an associated-type normalization ICE in the nightly's new
+        # trait solver (triggered by der 0.7.10 during CFI codegen).
+        # The CFI LTO requirement also applies to Cargo's target-discovery probe.
+        # Split Rust LTO units consistently so LLD can perform CFI type tests.
+        # Use rustc's bundled LLD: Ubuntu's LLVM 18 LLD cannot read LLVM 23
+        # bitcode emitted by the pinned nightly. Avoid forcing fat LTO on
+        # mixed crate-type libraries such as crc-fast.
+        # Rebuild std with the same instrumentation; keep host tools unsanitized.
+        run: |
+          rust_lld="$(rustup run nightly-2026-08-26 rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld"
+          test -x "$rust_lld"
+          ln -s "$rust_lld" "$RUNNER_TEMP/ld.lld"
+          "$RUNNER_TEMP/ld.lld" --version
+          export RUSTFLAGS="$RUSTFLAGS -Clink-arg=--ld-path=$RUNNER_TEMP/ld.lld"
+          export RUSTDOCFLAGS="$RUSTDOCFLAGS -Clink-arg=--ld-path=$RUNNER_TEMP/ld.lld"
+          # std resolves the glibc-private __pthread_get_minstack with dlsym.
+          # glibc is not CFI-instrumented, so exclude only that indirect call
+          # while Cargo recompiles the standard library with -Zbuild-std.
+          python3 .github/scripts/patch-cfi-glibc.py \
+            "$(rustup run nightly-2026-08-26 rustc --print sysroot)"
+          # ipnet 2.11.0 boxes parser closures as dyn FnMut; nightly's CFI
+          # rejects its Rust-only indirect call. Rewrite this one parser on
+          # the disposable runner without weakening CFI or changing Cargo.lock.
+          cargo +nightly-2026-08-26 fetch --locked --target x86_64-unknown-linux-gnu
+          python3 .github/scripts/patch-cfi-ipnet.py
+          # The workspace's CI-oriented smol profile reduces build artifacts
+          # from roughly 12 GB to 1 GB, easing CFI link pressure.
+          cargo +nightly-2026-08-26 test --locked --workspace --profile smol -Zbuild-std --target x86_64-unknown-linux-gnu
+
+      # Inspect CFI bitcode on failures. The profile-specific output directory
+      # must match the Cargo invocation above.
+      - name: Diagnose CFI LTO inputs
+        if: failure() && matrix.sanitizer == 'cfi'
+        run: |
+          sysroot="$(rustup run nightly-2026-08-26 rustc --print sysroot)"
+          python3 .github/scripts/diagnose-cfi-lto.py \
+            "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-dis" \
+            target/x86_64-unknown-linux-gnu/smol
