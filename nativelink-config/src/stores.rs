@@ -2008,6 +2008,94 @@ pub struct RedisSpec {
     /// Default: 1500
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_count_per_cursor: u64,
+
+    /// Replace scheduler indexes an older release created `TEMPORARY` with
+    /// persistent ones, keeping every hash.
+    ///
+    /// A temporary index is never garbage collected on `RediSearch` 2.10, so
+    /// every query walks every dead entry it has collected, and dropping one
+    /// the ordinary way deletes the hashes it covers (so does its idle
+    /// expiry). With this set, a persistent index is built beside each
+    /// temporary one, reads move to it once it holds every key (the scan
+    /// finished, nothing failed to index, and it counts as many keys as the
+    /// old one), and the old one is removed with the keys left in place.
+    ///
+    /// Set it only once no process older than v1.8.1 writes this store: those
+    /// create the index temporary again. Turn it on for every process that
+    /// reads the store together where possible: during a rolling restart,
+    /// the processes without it recreate the old index each time it is
+    /// retired and the ones with it retire it again. No key is lost, but each
+    /// round costs a backfill.
+    ///
+    /// Building the replacement needs free memory below `maxmemory`, about
+    /// what a clean index of the live keys takes. A Redis already full of
+    /// dead entries refuses it; the migration then waits, logs an error and
+    /// leaves everything in place. Restarting Redis frees that memory: it
+    /// rebuilds every index from the keys, without the dead entries, though
+    /// a temporary index stays temporary and fills up again.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub migrate_temporary_indexes: bool,
+    /// Experimental. Keeps the scheduler's queue in Redis sorted sets as
+    /// actions are written, so a match pass reads it by key range rather
+    /// than sorting the whole queue through `RediSearch`, and has no
+    /// server-side cursor to expire. Present, writes maintain the sets;
+    /// reads use them only once `read` is set.
+    ///
+    /// Not supported in cluster mode, and the scripts reach keys under
+    /// `nlsq:` that they are not given as keys, so an ACL that limits key
+    /// patterns must allow those. Run Redis with `maxmemory-policy
+    /// noeviction`. An evicted set is caught while it is empty (an empty set
+    /// is always confirmed through `RediSearch`), but once new writes refill
+    /// it, the actions queued before are missing from it until the next
+    /// reconcile.
+    /// Do not turn it on while `migrate_temporary_indexes` is still
+    /// replacing a temporary index; reads refuse the set until it is done.
+    ///
+    /// Default: (unset, the queue is read through `RediSearch` only)
+    #[serde(default)]
+    pub experimental_sorted_index: Option<RedisSortedIndexSpec>,
+}
+
+/// See [`RedisSpec::experimental_sorted_index`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct RedisSortedIndexSpec {
+    /// Index values kept in a sorted set. A write that carries an expiry
+    /// is never added, since Redis would expire the key under its member.
+    ///
+    /// Default: `["queued"]`
+    #[serde(default = "default_sorted_index_values")]
+    pub values: Vec<String>,
+
+    /// Serve reads of `values` from the sorted sets. Set this only once
+    /// every process writing this store maintains them: an action written
+    /// by one that does not is missing from the sets until the next
+    /// reconcile.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub read: bool,
+
+    /// Seconds between reconcile walks, which add every indexed key to its
+    /// set. The first read in a process reconciles before it reads.
+    ///
+    /// Default: 300
+    #[serde(
+        default = "default_sorted_index_reconcile_interval_s",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub reconcile_interval_s: u64,
+}
+
+fn default_sorted_index_values() -> Vec<String> {
+    vec!["queued".to_string()]
+}
+
+const fn default_sorted_index_reconcile_interval_s() -> u64 {
+    300
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
