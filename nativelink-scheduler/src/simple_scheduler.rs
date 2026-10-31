@@ -236,6 +236,9 @@ pub struct SimpleScheduler {
     /// burst drains in a few passes. See `unsatisfiable_fail_cap`.
     last_unsatisfiable_backlog: AtomicUsize,
 
+    /// Optional age weight for queued action ordering.
+    queue_age_priority_s: u64,
+
     /// The clock the state manager uses.
     now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
 }
@@ -746,7 +749,8 @@ impl SimpleScheduler {
         }
 
         /// Actions this pass read that found no room, in the order the
-        /// queue listed them: highest priority first, then oldest. That is
+        /// queue ordered them: age-weighted priority when enabled, otherwise
+        /// highest priority first, then oldest. That is
         /// the order room is offered to them in, before the action the
         /// pass is reading, whenever the fleet's capacity changes. Parking
         /// is a push; a replay walks the list once and asks the fleet once
@@ -818,7 +822,7 @@ impl SimpleScheduler {
                     still_parked.push_back((shape, loaded));
                     continue;
                 }
-                let MatchOutcome::Matched(worker_id) = workers
+                let outcome = workers
                     .find_worker_for_action(
                         &loaded.action_info.platform_properties,
                         full_worker_logging,
@@ -826,12 +830,17 @@ impl SimpleScheduler {
                         Some(QueuedAction {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            command_digest: loaded.action_info.inner.command_digest,
                         }),
                     )
-                    .await
-                else {
+                    .await;
+                let MatchOutcome::Matched(worker_id) = outcome else {
                     still_parked.push_back((shape.clone(), loaded));
-                    blocked.insert(shape);
+                    // Same resource shape can have different command locality.
+                    // Do not skip another action whose preferred workers are free.
+                    if !matches!(outcome, MatchOutcome::WaitingForLocality) {
+                        blocked.insert(shape);
+                    }
                     continue;
                 };
                 placement.attempted += 1;
@@ -894,7 +903,7 @@ impl SimpleScheduler {
         };
         let no_workers_reason = UnsatisfiableReason::no_workers();
 
-        let mut stream = self
+        let stream = self
             .get_queued_operations()
             .await
             .err_tip(|| "Failed to get queued operations in do_try_match")?;
@@ -905,6 +914,43 @@ impl SimpleScheduler {
                 elapsed_ms = query_elapsed.as_millis(),
                 "Slow get_queued_operations query"
             );
+        }
+
+        let mut stream = stream
+            .then(|action| {
+                load_action(
+                    action,
+                    self.platform_property_manager.as_ref(),
+                    &self.typed_properties,
+                )
+            })
+            .boxed();
+        if self.queue_age_priority_s > 0 {
+            // No writeback or second Redis scan: score the same loaded records
+            // this pass would otherwise read while placing. Default streaming
+            // placement stays unchanged when age weighting is disabled.
+            let mut queued = Vec::new();
+            while let Some(loaded) = stream.next().await {
+                match loaded {
+                    Ok(Some(loaded)) => queued.push(loaded),
+                    Ok(None) => {}
+                    Err(err) => result = result.merge(Err(err)),
+                }
+            }
+            let score = |loaded: &Loaded| {
+                let action = &loaded.action_info.inner;
+                let age = unsatisfiable_pass
+                    .now
+                    .duration_since(action.insert_timestamp)
+                    .unwrap_or_default()
+                    .as_nanos();
+                i128::from(action.priority) * i128::from(self.queue_age_priority_s) * 1_000_000_000
+                    + i128::try_from(age).unwrap_or(i128::MAX)
+            };
+            // Stable sort preserves the existing order for equal scores.
+            queued.sort_by_cached_key(|loaded| core::cmp::Reverse(score(loaded)));
+            stream =
+                futures::stream::iter(queued.into_iter().map(|loaded| Ok(Some(loaded)))).boxed();
         }
 
         let workers = self.worker_scheduler.as_ref();
@@ -924,15 +970,9 @@ impl SimpleScheduler {
         // it, requeues included: the pass already reads every queued action,
         // so the ages cost nothing more from the store.
         let mut queued_ages = AgeBuckets::default();
-        'actions: while let Some(action_state_result) = stream.next().await {
+        'actions: while let Some(loaded) = stream.next().await {
             queued_seen += 1;
-            let loaded = match load_action(
-                action_state_result,
-                self.platform_property_manager.as_ref(),
-                &self.typed_properties,
-            )
-            .await
-            {
+            let loaded = match loaded {
                 Ok(Some(loaded)) => loaded,
                 Ok(None) => continue,
                 Err(err) => {
@@ -967,6 +1007,7 @@ impl SimpleScheduler {
                         Some(QueuedAction {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            command_digest: loaded.action_info.inner.command_digest,
                         }),
                     )
                     .await;
@@ -1016,7 +1057,7 @@ impl SimpleScheduler {
                 }
                 // A worker could run it once one has room. The match
                 // considered holding a worker for it (`reservation_hold`).
-                MatchOutcome::WaitingForCapacity => {
+                MatchOutcome::WaitingForCapacity | MatchOutcome::WaitingForLocality => {
                     parked.park(loaded);
                 }
                 // Nothing to wait for; a worker connecting starts a new pass,
@@ -1317,6 +1358,7 @@ impl SimpleScheduler {
             state_manager.clone(),
             platform_property_manager.clone(),
             spec.allocation_strategy,
+            spec.cache_affinity_wait_s,
             spec.live_memory_veto.clone(),
             spec.memory_escalation.clone(),
             spec.reservation_hold,
@@ -1608,6 +1650,7 @@ impl SimpleScheduler {
                 no_worker_tracker: no_worker_action_timeout
                     .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
+                queue_age_priority_s: spec.queue_age_priority_s,
                 now_fn: scheduler_now_fn,
             }
         });

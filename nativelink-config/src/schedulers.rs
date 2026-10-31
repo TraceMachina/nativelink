@@ -93,6 +93,16 @@ pub enum WorkerAllocationStrategy {
     /// which is what such a property is for (a zone, a cache locality).
     /// Ties go to the fewest running actions, then least recently used.
     BestFit,
+    /// Prefer up to three compatible workers chosen deterministically from
+    /// the instance, command digest and worker identity. Smaller fitting
+    /// worker classes come first, preserving large workers for large actions.
+    /// Within that set use best fit, then the fewest running actions. Stable
+    /// commands tend to reuse worker disk caches without persisting worker
+    /// history. Cache presence is a preference, never a correctness assumption.
+    /// After `cache_affinity_wait_s`, any available compatible worker may run
+    /// the action. Worker churn and fallback can use more than three workers.
+    /// The preference is local to each scheduler replica.
+    CacheAware,
 }
 
 // Disabled by default: each log lists every queued and executing operation
@@ -329,6 +339,28 @@ pub struct SimpleSpec {
     /// The strategy used to assign workers jobs.
     #[serde(default)]
     pub allocation_strategy: WorkerAllocationStrategy,
+
+    /// Maximum queue age before `cache_aware` placement may use a worker
+    /// outside its three preferred workers. Retrying an action must not
+    /// restart the locality wait. A zero value only prefers locality when
+    /// a preferred worker has capacity now. Other strategies ignore this.
+    /// Default: 0 (immediate fallback). A positive value can leave usable
+    /// capacity idle; configure a positive `fallback_match_interval_s` as well
+    /// so the scheduler rechecks expiry even without a worker notification.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub cache_affinity_wait_s: u64,
+
+    /// Queue age in seconds worth one priority point. For example, at 10,
+    /// an action waiting 60 seconds outranks a new action with five more
+    /// priority points. Original submission time is retained across retries.
+    /// Zero preserves strict priority followed by submission order (default).
+    /// When enabled, each matching pass loads and sorts the queued actions
+    /// before placement: O(queue length) temporary memory and O(n log n)
+    /// comparisons, with no additional store queries or persisted fields.
+    /// This orders opportunities; use `reservation_hold` as well when large
+    /// actions need a worker to drain before they can fit.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub queue_age_priority_s: u64,
 
     /// The name of a `minimum` platform property, usually `memory_kb`, that
     /// the scheduler compares against the free memory each worker reports
