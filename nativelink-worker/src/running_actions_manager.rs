@@ -93,6 +93,10 @@ use crate::persistent_worker::{
     Input as PersistentWorkerInput, PersistentWorkerPool, PoolConfig, WireFormat, WorkRequest,
     WorkerKey,
 };
+use crate::process_table::{
+    ProcessTableCache, live_process_table, process_exists, read_process_memory_kb, ticks_to_millis,
+    worker_pgid,
+};
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
 /// due to a signal.
@@ -107,7 +111,6 @@ const REQUIRES_WORKER_PROTOCOL_PROPERTY: &str = "requires-worker-protocol";
 const DEFAULT_HISTORICAL_RESULTS_STRATEGY: UploadCacheResultsStrategy =
     UploadCacheResultsStrategy::FailuresOnly;
 
-#[cfg(target_os = "linux")]
 const RESOURCE_USAGE_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How many output files are open for upload at once, across the whole
@@ -260,16 +263,13 @@ const fn pod_memory_limit_kb() -> Option<u64> {
     None
 }
 
-#[cfg(target_os = "linux")]
 struct ActionResourceUsageSampler {
     stop_tx: watch::Sender<bool>,
     handle: tokio::task::JoinHandle<SampledResourceUsage>,
 }
 
-/// What the sampler found over a ceiling, with the figure it saw. Only the
-/// Linux sampler sends one; the arm that receives it is built everywhere.
+/// What the sampler found over a ceiling, with the figure it saw.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 enum OverLimit {
     Memory(u64),
     Disk(u64),
@@ -299,7 +299,6 @@ pub struct ActionMemoryWatch {
     /// nothing linking it to the action once its wrapper exits; this is
     /// how the sampler still counts it and a kill still reaches it. Only
     /// the Linux sampler fills it.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     process_groups: Mutex<Vec<u32>>,
 }
 
@@ -418,7 +417,6 @@ const fn whole_percent(value: f64) -> u64 {
 /// `over_limit_tx` and the caller kills the action; nothing is sent when no
 /// ceiling is set, and the caller keeps the sender alive so the receiver
 /// stays pending.
-#[cfg(target_os = "linux")]
 struct Ceilings {
     memory_limit_kb: Option<u64>,
     disk_limit_kb: Option<u64>,
@@ -430,10 +428,8 @@ struct Ceilings {
 /// One disk sample every this many memory samples: a walk of the action
 /// directory is a stat per file, so it runs every ten seconds, not four
 /// times a second.
-#[cfg(target_os = "linux")]
 const DISK_SAMPLE_EVERY: u32 = 40;
 
-#[cfg(target_os = "linux")]
 fn start_action_resource_usage_sampler(
     pgid: u32,
     ceilings: Ceilings,
@@ -522,7 +518,6 @@ pub fn directory_stamp(_directory: &Path) -> Result<SystemTime, Error> {
 /// Starts a disk sample: the action's own files, walked on the blocking
 /// pool as a task of its own, so the memory samples carry on while a large
 /// tree is being walked. `None` when there is no directory to measure.
-#[cfg(target_os = "linux")]
 fn start_disk_sample(
     directory: Option<&(PathBuf, SystemTime)>,
 ) -> Option<JoinHandleDropGuard<u64>> {
@@ -555,19 +550,10 @@ fn signal_process_group(pgid: u32, signal: i32) -> bool {
 /// kill and keep its memory. Returns whether any process got it.
 #[cfg(target_family = "unix")]
 fn signal_action(action_pgid: u32, watch: &ActionMemoryWatch, signal: i32) -> bool {
-    #[cfg(target_os = "linux")]
-    let groups = {
-        let mut seeds = watch.process_groups.lock().clone();
-        seeds.push(action_pgid);
-        let mut groups = action_membership_live(&seeds).groups;
-        groups.insert(action_pgid);
-        groups
-    };
-    #[cfg(not(target_os = "linux"))]
-    let groups = {
-        let _ = watch;
-        [action_pgid]
-    };
+    let mut seeds = watch.process_groups.lock().clone();
+    seeds.push(action_pgid);
+    let mut groups = action_membership_live(&seeds).groups;
+    groups.insert(action_pgid);
     let mut delivered = false;
     for pgid in groups {
         delivered |= signal_process_group(pgid, signal);
@@ -575,7 +561,6 @@ fn signal_action(action_pgid: u32, watch: &ActionMemoryWatch, signal: i32) -> bo
     delivered
 }
 
-#[cfg(target_os = "linux")]
 async fn finish_action_resource_usage_sampler(
     sampler: ActionResourceUsageSampler,
 ) -> Option<SampledResourceUsage> {
@@ -583,7 +568,6 @@ async fn finish_action_resource_usage_sampler(
     sampler.handle.await.ok()
 }
 
-#[cfg(target_os = "linux")]
 async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
@@ -630,7 +614,7 @@ async fn sample_action_resource_usage(
                 .last_memory_kb
                 .store(memory_kb, Ordering::Relaxed);
         }
-        if observed.is_none() && !Path::new(&format!("/proc/{pgid}")).exists() {
+        if observed.is_none() && !process_exists(pgid) {
             // The group leader has been reaped and no member process remains,
             // so the action is finished.
             break;
@@ -746,19 +730,6 @@ async fn sample_action_resource_usage(
     }
 }
 
-/// Converts clock ticks from `/proc` into milliseconds.
-///
-/// `_SC_CLK_TCK` is 100 on every Linux we run on, but it is queryable so ask
-/// rather than assume, and fall back to 100 if the query fails.
-#[cfg(target_os = "linux")]
-fn ticks_to_millis(ticks: u64) -> u64 {
-    // SAFETY: `sysconf` takes an int and returns a long, with no memory
-    // safety considerations.
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    let hz = if hz > 0 { hz as u64 } else { 100 };
-    ticks.saturating_mul(1_000) / hz
-}
-
 /// One process as `/proc/<pid>/stat` describes it: its parent and its
 /// process group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -836,77 +807,8 @@ pub fn action_membership(
     }
 }
 
-/// Every process `/proc` lists, with the CPU ticks each has used so far.
-#[cfg(target_os = "linux")]
-fn live_process_table() -> Vec<(ProcEntry, Option<u64>)> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
-            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-            let (parent, group) = parse_links_from_stat(&stat)?;
-            Some((
-                ProcEntry {
-                    pid,
-                    ppid: parent,
-                    pgrp: group,
-                },
-                parse_cpu_ticks_from_stat(&stat),
-            ))
-        })
-        .collect()
-}
-
-/// A [`live_process_table`] snapshot shared by every action sampler on this
-/// worker.
-///
-/// Each running action samples every `RESOURCE_USAGE_SAMPLE_INTERVAL`, and
-/// finding its members means reading `/proc/<pid>/stat` for every process on
-/// the host. Scanning once per action makes the cost (running actions) x
-/// (host processes) per interval, which on a busy shared host saturates
-/// dozens of cores. Samplers instead reuse a snapshot younger than one
-/// interval, so the host is scanned at most once per interval however many
-/// actions run. Member memory is still read fresh on every sample; only
-/// membership can lag, by at most one interval, as it already could between
-/// two samples. Kills keep their own live scan ([`action_membership_live`]).
-#[cfg(target_os = "linux")]
-#[derive(Debug, Default)]
-struct ProcessTableCache {
-    snapshot: tokio::sync::Mutex<Option<(Instant, ProcessTable)>>,
-}
-
-/// Every process with the CPU ticks it has used, as [`live_process_table`]
-/// returns it.
-#[cfg(target_os = "linux")]
-type ProcessTable = Arc<[(ProcEntry, Option<u64>)]>;
-
-#[cfg(target_os = "linux")]
-impl ProcessTableCache {
-    /// Returns a snapshot at most one sample interval old. Callers that
-    /// arrive while a scan is running wait for it rather than starting their
-    /// own.
-    async fn current(&self) -> ProcessTable {
-        let mut snapshot = self.snapshot.lock().await;
-        if let Some((taken_at, table)) = snapshot.as_ref()
-            && taken_at.elapsed() < RESOURCE_USAGE_SAMPLE_INTERVAL
-        {
-            return table.clone();
-        }
-        // The scan is thousands of blocking reads; keep it off the async workers.
-        let table: ProcessTable = spawn_blocking!("process_table_scan", live_process_table)
-            .await
-            .map_or_else(|_| Arc::from(Vec::new()), Arc::from);
-        *snapshot = Some((Instant::now(), table.clone()));
-        table
-    }
-}
-
 /// The action's members on the live system; see [`action_membership`].
 /// The kills resolve the groups to signal through this.
-#[cfg(target_os = "linux")]
 pub fn action_membership_live(seed_groups: &[u32]) -> ActionMembers {
     let table: Vec<ProcEntry> = live_process_table()
         .into_iter()
@@ -915,18 +817,10 @@ pub fn action_membership_live(seed_groups: &[u32]) -> ActionMembers {
     action_membership(seed_groups, worker_pgid(), &table)
 }
 
-/// The worker's own process group, excluded from every action's members.
-#[cfg(target_os = "linux")]
-fn worker_pgid() -> u32 {
-    // SAFETY: `getpgrp` takes no arguments and cannot fail.
-    u32::try_from(unsafe { libc::getpgrp() }).unwrap_or(0)
-}
-
 /// Sums the resident memory of every process that belongs to the action
 /// (see [`action_membership`]) and records their CPU ticks, and the groups
 /// they are in in `watch`. Returns `None` when no member process can be
 /// read (the action has no processes left).
-#[cfg(target_os = "linux")]
 fn sample_process_group(
     pgid: u32,
     table: &[(ProcEntry, Option<u64>)],
@@ -959,23 +853,6 @@ fn sample_process_group(
         }
     }
     found_any_process.then_some(total_kb)
-}
-
-/// The process's share of its resident pages: `Pss` from `smaps_rollup`
-/// divides a page shared by N processes N ways, so summed over the group it
-/// counts a forked parent's pages, shared libraries and mapped inputs once.
-/// `VmRSS` counts them once per process, and a test runner that forks eight
-/// children would sample at several times what the cgroup charges. Falls
-/// back to `VmRSS` where `smaps_rollup` cannot be read (kernels before 4.14).
-#[cfg(target_os = "linux")]
-fn read_process_memory_kb(pid: u32) -> Option<u64> {
-    if let Ok(rollup) = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
-        && let Some(pss_kb) = parse_kb_field(&rollup, "Pss:")
-    {
-        return Some(pss_kb);
-    }
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    parse_kb_field(&status, "VmRSS:")
 }
 
 /// The value of a `Field:    1234 kB` line in `/proc` text, in KiB.
@@ -3644,7 +3521,6 @@ impl RunningActionImpl {
                             // CPU is what the process spent from here on;
                             // peak memory is the whole process, which holds
                             // what earlier requests left in it.
-                            #[cfg(target_os = "linux")]
                             let sampler = lease.worker().pid().map(|pgid| {
                                 start_action_resource_usage_sampler(
                                     pgid,
@@ -3673,15 +3549,12 @@ impl RunningActionImpl {
                                     _ = &mut kill_channel_rx => None,
                                 }
                             };
-                            #[cfg(target_os = "linux")]
                             let sampled_usage = match sampler {
                                 Some(sampler) => finish_action_resource_usage_sampler(sampler)
                                     .await
                                     .unwrap_or_default(),
                                 None => SampledResourceUsage::default(),
                             };
-                            #[cfg(not(target_os = "linux"))]
-                            let sampled_usage = SampledResourceUsage::default();
                             let response = match dispatch_result {
                                 Some(Ok(response)) => {
                                     lease.release(true).await;
@@ -3952,7 +3825,6 @@ impl RunningActionImpl {
         // Holds the sender when no ceiling is enforced, so the receiver
         // below stays pending instead of resolving closed.
         let mut over_limit_keepalive = Some(over_limit_tx);
-        #[cfg(target_os = "linux")]
         let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
             let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
             let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
@@ -3986,8 +3858,6 @@ impl RunningActionImpl {
                 self.running_actions_manager.process_table.clone(),
             )
         });
-        #[cfg(not(target_os = "linux"))]
-        let _ = &disk_enforcement;
         let mut over_limit_fut = over_limit_rx.fuse();
 
         // The group to end when the action's own process has exited; taken
@@ -4251,15 +4121,12 @@ impl RunningActionImpl {
                         maybe_all_stderr.err_tip(|| "Internal error reading from stderr of worker task")??,
                     );
 
-                    #[cfg(target_os = "linux")]
                     let sampled_usage = match maybe_resource_usage_sampler.take() {
                         Some(sampler) => finish_action_resource_usage_sampler(sampler)
                             .await
                             .unwrap_or_default(),
                         None => SampledResourceUsage::default(),
                     };
-                    #[cfg(not(target_os = "linux"))]
-                    let sampled_usage = SampledResourceUsage::default();
 
                     let memory_limit_kb = memory_reservation
                         .map(|(_, limit_kb)| limit_kb)
@@ -5580,8 +5447,7 @@ pub struct RunningActionsManagerImpl {
     pod_memory_limit_kb: Option<u64>,
     #[cfg(target_os = "linux")]
     use_namespaces: UseNamespaces,
-    /// The `/proc` snapshot every action's resource-usage sampler shares.
-    #[cfg(target_os = "linux")]
+    /// The process table every action's resource-usage sampler shares.
     process_table: Arc<ProcessTableCache>,
     running_actions: Mutex<HashMap<OperationId, Weak<RunningActionImpl>>>,
     /// Set once the memory pressure monitor has been started; it starts
@@ -5728,8 +5594,7 @@ impl RunningActionsManagerImpl {
             buck2_captures: Mutex::new(HashMap::new()),
             #[cfg(target_os = "linux")]
             use_namespaces: args.use_namespaces,
-            #[cfg(target_os = "linux")]
-            process_table: Arc::new(ProcessTableCache::default()),
+            process_table: Arc::new(ProcessTableCache::new(RESOURCE_USAGE_SAMPLE_INTERVAL)),
         })
     }
 

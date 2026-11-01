@@ -91,7 +91,7 @@ mod tests {
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::download_to_directory_bounded;
@@ -6886,7 +6886,7 @@ exit 0
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn action_over_its_memory_reservation_is_killed_by_the_worker()
     -> Result<(), Box<dyn core::error::Error>> {
