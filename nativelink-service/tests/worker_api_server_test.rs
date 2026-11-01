@@ -191,6 +191,7 @@ async fn setup_api_server_with(
         state_manager.clone(),
         platform_property_manager,
         WorkerAllocationStrategy::default(),
+        0, // cache_affinity_wait_s
         None,
         None,
         None,
