@@ -380,22 +380,26 @@ async fn disabled_queue_aging_preserves_strict_priority() -> Result<(), Error> {
     Ok(())
 }
 
-/// Keep a worker occupied while one higher-priority action arrives per second.
+/// Keep a worker occupied while higher-priority actions continue to arrive.
 /// Each completion offers exactly one slot: the older action must eventually
 /// take it even though fresh work continues to arrive.
-async fn old_action_dispatch_round(age_weight_s: u64) -> Result<Option<u8>, Error> {
+async fn old_action_dispatch_round(
+    spec: SimpleSpec,
+    step_s: u64,
+    fresh_priority: i32,
+    rounds: u8,
+) -> Result<Option<u8>, Error> {
     use nativelink_util::action_messages::{ActionResult, ActionStage};
     use nativelink_util::operation_state_manager::UpdateOperationType;
 
     let scheduler = make_scheduler_with_spec(&SimpleSpec {
-        queue_age_priority_s: age_weight_s,
         client_action_timeout_s: 1_000,
         worker_timeout_s: 1_000,
         supported_platform_properties: Some(HashMap::from([(
             "memory_kb".to_string(),
             PropertyType::Minimum,
         )])),
-        ..SimpleSpec::default()
+        ..spec
     });
     let worker_id = WorkerId("worker".to_string());
     let mut rx = add_worker_with_properties(&scheduler, "worker", memory_worker(1_000)).await?;
@@ -407,8 +411,8 @@ async fn old_action_dispatch_round(age_weight_s: u64) -> Result<Option<u8>, Erro
     add_action_with_properties(&scheduler, 2, memory_action(1_000)).await?;
     let old_digest = DigestInfo::new([2; 32], 512);
     let mut dispatched_round = None;
-    for round in 1..=12 {
-        MockClock::advance(Duration::from_secs(1));
+    for round in 1..=rounds {
+        MockClock::advance(Duration::from_secs(step_s));
         let base = make_base_action_info(
             UNIX_EPOCH + MockClock::time(),
             DigestInfo::new([100 + round; 32], 512),
@@ -417,12 +421,18 @@ async fn old_action_dispatch_round(age_weight_s: u64) -> Result<Option<u8>, Erro
             .add_action(
                 OperationId::default(),
                 Arc::new(ActionInfo {
-                    priority: 5,
+                    priority: fresh_priority,
                     platform_properties: memory_action(1_000),
                     ..(*base).clone()
                 }),
             )
             .await?;
+        scheduler.do_try_match_for_test().await?;
+        assert_eq!(
+            scheduler.held_workers_for_test().await,
+            Vec::<WorkerId>::new(),
+            "one completion makes room, so reservation holds must not engage"
+        );
         scheduler
             .update_action(
                 &worker_id,
@@ -456,10 +466,52 @@ async fn old_action_dispatch_round(age_weight_s: u64) -> Result<Option<u8>, Erro
 async fn queue_aging_dispatches_old_work_during_continuing_priority_arrivals() -> Result<(), Error>
 {
     // Negative control: strict priority bypasses the old action at every slot.
-    assert_eq!(old_action_dispatch_round(0).await?, None);
+    assert_eq!(
+        old_action_dispatch_round(SimpleSpec::default(), 1, 5, 12).await?,
+        None
+    );
     // At five seconds the scores tie; at six the old action strictly wins.
     // Continue arrivals after it runs to check it was assigned only once.
-    assert_eq!(old_action_dispatch_round(1).await?, Some(6));
+    assert_eq!(
+        old_action_dispatch_round(
+            SimpleSpec {
+                queue_age_priority_s: 1,
+                ..SimpleSpec::default()
+            },
+            1,
+            5,
+            12,
+        )
+        .await?,
+        Some(6)
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn queue_escalation_prevents_priority_starvation_with_reservation_holds() -> Result<(), Error>
+{
+    use nativelink_config::schedulers::ReservationHoldSpec;
+
+    for (escalation_s, expected_round) in [(0, None), (180, Some(18))] {
+        let spec = SimpleSpec {
+            queue_age_escalation_s: escalation_s,
+            reservation_hold: Some(ReservationHoldSpec {
+                hold_after_s: 10,
+                max_hold_s: 120,
+                max_held_workers: 2,
+            }),
+            ..SimpleSpec::default()
+        };
+        // A fresh maximum-priority action competes for every released slot.
+        // Holds alone never give the older action a turn. Escalation does at
+        // exactly 180 seconds, and continued arrivals cannot dispatch it twice.
+        assert_eq!(
+            old_action_dispatch_round(spec, 10, i32::MAX, 22).await?,
+            expected_round,
+            "queue_age_escalation_s={escalation_s}"
+        );
+    }
     Ok(())
 }
 
@@ -684,7 +736,7 @@ async fn escalated_large_action_reserves_capacity_while_small_workers_continue()
         panic!("expected backfill")
     };
     running.push(start.operation_id);
-    MockClock::advance(Duration::from_secs(180));
+    MockClock::advance(Duration::from_mins(3));
     scheduler.do_try_match_for_test().await?;
     add_action_with_properties(&scheduler, 5, memory_action(1_000)).await?;
     assert_eq!(
