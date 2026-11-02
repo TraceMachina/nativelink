@@ -367,9 +367,10 @@ pub struct SimpleSpec {
     /// for a three-minute escalation; zero disables it (default).
     /// This changes scheduling order, not resource requirements or retry limits.
     /// Retries retain the original submission time. Like `queue_age_priority_s`,
-    /// this loads and sorts the queue before placement. Pair with
-    /// `reservation_hold.hold_after_s` at the same threshold so a worker can
-    /// drain for an escalated action that needs more than one free slot.
+    /// this loads and sorts the queue before placement. Existing
+    /// `reservation_hold` independently lets a worker drain when an action
+    /// needs multiple completions to fit; keep its configured threshold.
+    /// Priority escalation does not require delaying an earlier hold.
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub queue_age_escalation_s: u64,
 

@@ -189,9 +189,11 @@ This changes priority, not resource requirements or retry limits. Keep
 Escalation shares the queue-loading and sorting cost described above.
 
 Small actions prefer the smallest suitable available worker class before cache
-locality. If that class is busy, they can fill available larger workers. With
-`reservation_hold.hold_after_s: 180`, an overdue large action can instead hold a
-worker to let its running actions finish without admitting more small work.
+locality. If that class is busy, they can fill available larger workers. The
+existing `reservation_hold` policy can hold a worker for an old action that
+needs multiple completions to fit, without admitting more small work. Its
+`hold_after_s` threshold is independent of priority escalation; preserve an
+existing shorter hold threshold.
 Other workers remain available. Hold duration and count remain bounded by
 `max_hold_s` and `max_held_workers`. Running actions are not preempted and no
 execution-time prediction is assumed. Three minutes is an escalation threshold,
