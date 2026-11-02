@@ -946,6 +946,10 @@ where
         matches!(optimization, StoreOptimizations::LazyExistenceOnSync)
     }
 
+    fn max_upload_size(&self) -> u64 {
+        MAX_BLOCKS as u64 * MAX_BLOCK_SIZE
+    }
+
     async fn update(
         self: Pin<&Self>,
         digest: StoreKey<'_>,
