@@ -106,7 +106,6 @@ jobs:
           # uses the same kernel syscall directly, retaining Rust CFI checks.
           RUSTFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1 --cfg=getrandom_backend="linux_raw"
           RUSTDOCFLAGS: -Znext-solver=coherence -Zsanitizer=cfi -Zsanitizer-cfi-diag -Zsplit-lto-unit -Clinker-plugin-lto -Clinker=clang -Ccodegen-units=1 --cfg=getrandom_backend="linux_raw"
-          RUST_TEST_THREADS: 1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           RUST_BACKTRACE: 1
           # rustc 787af2b8c formats trait-object types for CFI diagnostics
@@ -114,9 +113,6 @@ jobs:
           # trimmed_def_paths assertion. Logging mode exempts this invariant.
           # Keep compiler logging quiet while retaining CFI runtime reports.
           RUSTC_LOG: error
-          # Bound simultaneous LLD instances and avoid CI-only incremental state.
-          CARGO_BUILD_JOBS: '2'
-          CARGO_INCREMENTAL: '0'
         # Emit CFI type mismatch diagnostics instead of an unexplained SIGILL;
         # retain abort-on-violation (do not enable CFI recovery).
         # Work around an associated-type normalization ICE in the nightly's new
