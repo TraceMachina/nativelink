@@ -35,7 +35,6 @@ pub const EXECUTION_WORKER_ID: &str = "execution.worker_id";
 pub const EXECUTION_OUTCOME: &str = "execution.outcome";
 pub const EXECUTION_ACTION_MNEMONIC: &str = "execution.action_mnemonic";
 pub const EXECUTION_EXIT_CODE: &str = "execution.exit_code";
-pub const EXECUTION_ACTION_DIGEST: &str = "execution.action_digest";
 
 // Metric attribute keys for gRPC serving, following OTel rpc semconv.
 pub const RPC_SERVICE: &str = "rpc.service";
@@ -814,15 +813,19 @@ pub fn make_execution_attributes(
 }
 
 /// Records the histogram metrics derivable from a completed action's result.
+///
+/// These carry no worker id. Worker ids are minted per connection, so a
+/// per-worker histogram adds a full set of buckets for every worker the
+/// scheduler has ever seen, and the cumulative export grows until the
+/// collector rejects it. The execution counters keep the worker id.
 pub fn record_completed_execution_metrics(
     action_result: &ActionResult,
     instance_name: &str,
-    worker_id: Option<&str>,
     priority: Option<i32>,
 ) {
     let m = &*EXECUTION_METRICS;
     let md = &action_result.execution_metadata;
-    let base = make_execution_attributes(instance_name, worker_id, priority);
+    let base = make_execution_attributes(instance_name, None, priority);
 
     let record_secs =
         |hist: &metrics::Histogram<f64>, start: SystemTime, end: SystemTime, attrs: &[KeyValue]| {

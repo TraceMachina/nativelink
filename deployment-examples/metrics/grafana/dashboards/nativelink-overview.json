@@ -752,14 +752,14 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "expr": "sum by (execution_action_digest, execution_result) (increase(nativelink_execution_completed_count_total{execution_result=~\"failure|cancelled|timeout\"}[1h])) > 0",
+          "expr": "sum by (execution_result) (increase(nativelink_execution_completed_count_total{execution_result=~\"failure|cancelled|timeout\"}[1h])) > 0",
           "format": "table",
           "instant": true,
           "legendFormat": "",
           "refId": "A"
         }
       ],
-      "title": "Failed/Cancelled/Timed Out Actions by Digest",
+      "title": "Failed/Cancelled/Timed Out Actions by Result",
       "transformations": [
         {
           "id": "organize",
@@ -769,7 +769,6 @@
             },
             "renameByName": {
               "Value": "Count",
-              "execution_action_digest": "Action Digest",
               "execution_result": "Result"
             }
           }

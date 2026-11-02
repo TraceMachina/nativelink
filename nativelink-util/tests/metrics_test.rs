@@ -253,10 +253,10 @@ fn record_completed_execution_metrics_guards_unpopulated_metadata() {
         ..ActionResult::default()
     };
     // Should record without panicking.
-    record_completed_execution_metrics(&populated, "instance", Some("worker-1"), Some(3));
+    record_completed_execution_metrics(&populated, "instance", Some(3));
 
     // Default (UNIX_EPOCH) metadata must skip the duration records cleanly.
-    record_completed_execution_metrics(&ActionResult::default(), "instance", None, None);
+    record_completed_execution_metrics(&ActionResult::default(), "instance", None);
 }
 
 #[test]

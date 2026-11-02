@@ -166,7 +166,6 @@ fn record_execution_metrics(awaited_action: &AwaitedAction, is_retry: bool) {
             nativelink_util::metrics::record_completed_execution_metrics(
                 action_result,
                 instance_name,
-                worker_id.as_deref(),
                 priority,
             );
         }
