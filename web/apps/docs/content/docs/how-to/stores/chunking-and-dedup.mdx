@@ -36,6 +36,17 @@ an index for incomplete input. See
 [upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
 contract and its limits.
 
+In development builds, a repair request, such as the one `verify` sends after a
+read fails its size check, drops the blob's index from the index store and
+never removes a chunk: chunks are keyed by their own digests, and other blobs
+may share them. A `true` result means a cached index was dropped, not that a
+durable copy was repaired. An index store that holds the only copy keeps it
+when wrapped in `cache_metrics` with `allow_remove: false`. A chunk counts as
+present only at the size its digest names, so a blob built from a chunk of any
+other size is reported missing, and the next upload or cache fill replaces the
+chunk instead of indexing it again. A chunk corrupt at the right length is not
+detected this way.
+
 ## Requirements [#requirements]
 
 - **Bazel 9.1.1+ or 8.7.0+** on the client, with

@@ -44,6 +44,15 @@ const DEFAULT_NORM_SIZE: u64 = 256 * 1024;
 const DEFAULT_MAX_SIZE: u64 = 512 * 1024;
 const DEFAULT_MAX_CONCURRENT_FETCH_PER_GET: usize = 10;
 
+/// Whether a content chunk the content store reported is one this store can
+/// use: only a copy of exactly the size its digest names. Chunks are
+/// content-addressed and whole, so a copy of any other size is a bad one.
+/// Counted as present, `update` would index it again instead of replacing
+/// it, and every blob built from it would fail to read.
+fn chunk_is_whole(chunk: &DigestInfo, stored_size: Option<u64>) -> bool {
+    stored_size == Some(chunk.size_bytes())
+}
+
 #[derive(
     Serialize,
     Deserialize,
@@ -159,17 +168,20 @@ impl DedupStore {
 
         let digests: Vec<_> = index_entries
             .entries
-            .into_iter()
+            .iter()
+            .copied()
             .map(StoreKey::Digest)
             .collect();
+        let sizes = self.content_store.has_many(&digests).await?;
         let mut sum = 0;
-        for size in self.content_store.has_many(&digests).await? {
-            let Some(size) = size else {
-                // A part is missing so return None meaning not-found.
-                // This will abort all in-flight queries related to this request.
+        for (chunk, size) in index_entries.entries.iter().zip(sizes) {
+            if !chunk_is_whole(chunk, size) {
+                // A part is missing, or held at the wrong size, so the blob
+                // cannot be reassembled: report it missing, and the upload
+                // that follows replaces the part.
                 return Ok(None);
-            };
-            sum += size;
+            }
+            sum += chunk.size_bytes();
         }
         Ok(Some(sum))
     }
@@ -183,6 +195,26 @@ impl StoreDriver for DedupStore {
             self.content_store.clone().into_inner().post_init(),
         )?;
         Ok(())
+    }
+
+    /// Drops this blob's index from the index store, so the next read misses
+    /// here and a store above can refill it from another tier, and returns
+    /// the index store's answer. Chunks are never removed: they are keyed by
+    /// their own digests and other blobs may share them. A bad chunk is
+    /// replaced instead, by the next upload that finds it at the wrong size.
+    /// `true` means a cached index was dropped, not that any durable copy
+    /// was repaired. An index store holding the only copy is protected like
+    /// any other tier, with a `cache_metrics` wrapper whose `allow_remove` is
+    /// false.
+    async fn remove(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        if is_zero_digest(key.borrow()) {
+            return Ok(false);
+        }
+        self.index_store
+            .as_store_driver_pin()
+            .remove(key)
+            .await
+            .err_tip(|| "Failed to remove index in dedup store")
     }
 
     async fn has_with_results(
@@ -231,15 +263,21 @@ impl StoreDriver for DedupStore {
             .map_ok(|frame| async move {
                 let hash = blake3::hash(&frame[..]).into();
                 let index_entry = DigestInfo::new(hash, frame.len() as u64);
-                if self
+                let stored_size = self
                     .content_store
                     .has(index_entry)
                     .await
-                    .err_tip(|| "Failed to call .has() in DedupStore::update()")?
-                    .is_some()
-                {
+                    .err_tip(|| "Failed to call .has() in DedupStore::update()")?;
+                if chunk_is_whole(&index_entry, stored_size) {
                     // If our store has this digest, we don't need to upload it.
                     return Result::<_, Error>::Ok(index_entry);
+                }
+                if let Some(stored_size) = stored_size {
+                    warn!(
+                        %index_entry,
+                        stored_size,
+                        "Replacing a dedup content chunk whose stored size disagrees with its digest"
+                    );
                 }
                 self.content_store
                     .update_oneshot(index_entry, frame)
