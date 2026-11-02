@@ -1,0 +1,283 @@
+---
+title: Debug a cache miss
+description: Find out why a Bazel or Buck2 action did not hit the action cache, and whether the cause is the client, the action itself, or the server.
+---
+
+{/* archetype: how-to, see /web/apps/docs/templates/how-to.mdx */}
+
+**Who this is for:** anyone staring at an action that re-ran when it should
+have been served from the cache. **What you'll have at the end:** the reason
+it missed, pinned to one of three places: the client never asked, the action
+asked a different question each time, or the server did not have the answer.
+**Time:** fifteen minutes for the client side, which is where most misses end.
+
+<Prerequisites>
+  A build that reaches NativeLink and has produced hits at least once. If you
+  have never seen a hit, start with
+  [Verify your cache](/getting-started/verify-your-cache) instead; this page
+  assumes the cache works and asks why one action did not use it.
+</Prerequisites>
+
+A cache miss has exactly three possible causes, and they are checked in order
+because each one is cheaper than the next:
+
+1. **The client did not ask.** The flag was wrong, the connection failed, or
+   the result came from a local cache and was never sent.
+2. **The client asked a different question.** The action's digest changed
+   between the two runs, so from the server's point of view this is a new
+   action that has never been seen. This is where almost every "mysterious"
+   miss ends up.
+3. **The server did not have the entry.** The digest was identical, the
+   request arrived, and the lookup returned nothing: the result was never
+   written, or it was written and then evicted.
+
+The server cannot tell you which of the first two happened. Only the client
+knows what it sent and why, so start there.
+
+## Step 1: prove the request was made [#step-1-prove-the-request-was-made]
+
+Bazel treats a remote cache error as a warning, prints it once, and builds
+locally. The build succeeds. Record the wire traffic to see whether the cache
+was consulted at all:
+
+```bash
+bazel build //... --remote_cache=grpc://127.0.0.1:50051 --remote_grpc_log=/tmp/grpc.log
+```
+
+An empty log means Bazel never opened a connection, which points at the flag
+or the network rather than at the server.
+[Verify your cache](/getting-started/verify-your-cache#getting-more-detail-than-the-summary-line)
+explains the log in more detail. If the log shows `GetActionResult` calls
+and the response is `NOT_FOUND`, the request was made and you can move on.
+
+A second build that is fast but reports no remote hits is usually a
+`--disk_cache` answering first; see
+[The second build is faster but reports no remote hits](/getting-started/verify-your-cache#faster-but-no-remote-hits).
+
+## Step 2: compare the digest across two runs [#step-2-compare-the-digest-across-two-runs]
+
+The action cache is keyed by the action digest, which covers the command
+line, every input file's contents, the declared environment variables and
+the platform properties. If any of those differ between two runs, the digests
+differ and the second run cannot hit, however similar the two actions look to
+you.
+
+Ask Bazel to record the digest of every action, once on each run:
+
+```bash
+bazel build //pkg:target --remote_cache=grpc://127.0.0.1:50051 --execution_log_json_file=/tmp/run1.json
+bazel clean
+bazel build //pkg:target --remote_cache=grpc://127.0.0.1:50051 --execution_log_json_file=/tmp/run2.json
+```
+
+Each entry in the log carries the action's `digest`, its `remoteCacheHit`
+flag, and the full list of inputs with their own digests. Find the action in
+both files and compare:
+
+```bash
+jq -c 'select(.targetLabel == "//pkg:target") | {mnemonic, digest, remoteCacheHit}' /tmp/run1.json /tmp/run2.json
+```
+
+The answer forks here:
+
+**Different digest.** The action is not stable, and this is a hermeticity
+problem rather than a cache problem. Diff the two entries' `inputs` and
+`environmentVariables` to see which one moved; a timestamp, an absolute
+path, a hostname or a toolchain picked up from `PATH` are the usual
+suspects. [Correctness and hermeticity](/explanations/correctness-hermeticity#find-a-hermeticity-leak)
+is the page for the hunt. Bazel's `--explain=/tmp/explain.log` with
+`--verbose_explanations` names the changed input from Bazel's own point of
+view, which is often faster than diffing logs by hand; it describes why
+Bazel's local action cache re-ran the action, not the remote one, but the
+input that invalidated the local action is the same one that moved the
+digest.
+
+**Same digest, still a miss.** The client asked the right question twice and
+the server said no twice. Go to [Step 3](#step-3-the-silent-zero-hit-checklist)
+if nothing hits, or [Step 4](#step-4-ask-the-server) if this action is the
+exception.
+
+<Callout type="info" title="The compact log is smaller; the JSON log is greppable">
+  `--execution_log_compact_file` writes the same information in a fraction
+  of the space, but reading it needs the converter from the Bazel source
+  tree. For a one-off investigation the JSON file and `jq` are enough.
+</Callout>
+
+## Step 3: the silent zero-hit checklist [#step-3-the-silent-zero-hit-checklist]
+
+When *every* action misses on an unchanged tree, with no error anywhere, one
+of these is almost always the reason. Check them in order; each one produces
+a cache that works perfectly for the client that wrote to it and never for
+the one reading.
+
+| Check | Why it causes a miss | Where to look |
+| --- | --- | --- |
+| `--remote_instance_name` matches a name the server registers | Each instance name is a separate cache. A client that sends `""` against a server that only registers `main` gets an error Bazel downgrades to a warning. | [Servers and services](/configuration/servers-and-services) |
+| Both runs use the same `--digest_function` | SHA-256 and BLAKE3 digests of the same action are different keys. | the server log, below |
+| `--remote_default_exec_properties` and `--platforms` agree across clients | Platform properties are inside the action digest. Two clients with different properties produce different digests for the same compile. | [Platform properties](/remote-execution/platform-properties) |
+| No `--disk_cache` is answering first | Disk-cache hits count separately and never reach the server. | [Verify your cache](/getting-started/verify-your-cache#faster-but-no-remote-hits) |
+| The hit-rate panel is empty because nothing is wrapped | Cache metrics are opt-in per store. An empty dashboard is not a zero hit rate. | [Turn on cache metrics](/operate/observability#turn-on-cache-metrics) |
+
+The digest-function case is the one the server will tell you about. When a
+client uploads with a digest function other than the server default,
+NativeLink logs one warning per distinct pair, and it names the problem:
+
+```text
+ByteStream client declared a digest function that differs from the server default;
+the client-declared function will be used for this upload, but clients using
+different digest functions generate different cache keys and will not share cache hits
+```
+
+If you see it, set `global.default_digest_hash_function` and every client's
+`--digest_function` to the same value.
+<SourceLink file="nativelink-service/src/bytestream_server.rs" symbol="reported_digest_function_mismatches" />
+
+## Step 4: ask the server [#step-4-ask-the-server]
+
+By the time you are here the digest is stable and the request arrives. The
+remaining question is why the entry is not there, and the honest answer is
+that NativeLink keeps misses quiet by design: `GetActionResult` returns
+`NOT_FOUND` so often on a healthy cache that the server strips the error
+message and does not log the event at its default level.
+<SourceLink file="nativelink-service/src/ac_server.rs" symbol="get_action_result" />
+
+What you can see today:
+
+**The lookup, at debug level.** The AC service's request span records the
+full request and its result when the module is raised to debug:
+
+```bash
+RUST_LOG=info,nativelink_service::ac_server=debug nativelink /path/to/config.json5
+```
+
+This is noisy on a busy server: one line per lookup, hit or miss. Turn it on
+for the duration of the investigation and off afterwards. The lines carry the
+instance name and action digest, which you match against the `digest` from
+Step 2.
+
+**The rate, always.** The gRPC duration histogram is emitted for every
+service without opting in, and its status-code label separates misses from
+hits. Status code `5` is `NOT_FOUND`:
+
+```text
+sum(rate(nativelink_rpc_server_duration_count{rpc_method="GetActionResult", rpc_grpc_status_code="5"}[5m])) /
+sum(rate(nativelink_rpc_server_duration_count{rpc_method="GetActionResult"}[5m]))
+```
+
+It tells you the miss rate moved, not which action moved it. For the
+per-cache-type version, wrap the store as described in
+[Turn on cache metrics](/operate/observability#turn-on-cache-metrics).
+
+**The digest, in the client's own output.** The worker can append a message
+to every execution response. Set `success_message_template` or
+`failure_message_template` to include `{action_digest_hash}` and
+`{action_digest_size}`, and the developer sees the digest in Bazel's output
+without a log on either side. The templates are designed to produce a
+`bb_browser` link, but any text works.
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="success_message_template" />
+
+### Reasons a result was never written [#reasons-a-result-was-never-written]
+
+Three server-side behaviours look like misses and are not bugs:
+
+**The action failed.** The default `upload_ac_results_strategy` is
+`SuccessOnly`: a non-zero exit code goes to the historical results store, not
+the action cache, so a deterministic failure re-runs for every client. The
+worker does not log that decision.
+<SourceLink file="nativelink-config/src/cas_server.rs" symbol="UploadActionResultConfig" />
+
+**The worker has no `ac_store`.** A worker whose `upload_action_result` block
+is missing or whose strategy is `never` runs every action and caches nothing,
+with builds succeeding and no error anywhere.
+[Architecture](/explanations/architecture#workers) explains why the worker,
+not the scheduler, is what decides whether anything is cached.
+
+**The client said not to look.** `skip_cache_lookup` disables the read but
+still writes the result; `do_not_cache` is parsed and ignored. Both are
+covered in
+[Caching semantics that surprise people](/explanations/correctness-hermeticity#caching-semantics-that-surprise-people).
+
+### The entry existed and then did not [#the-entry-existed-and-then-did-not]
+
+If the action hit yesterday and misses today on the same digest, it was
+evicted. The action cache and the CAS evict independently, so there are two
+shapes:
+
+- **The action cache entry is gone.** A plain miss; the action re-runs and is
+  written again. Size the AC store's `eviction_policy` so this is rare.
+- **The entry is there but an output blob is gone.** Bazel reports a hit,
+  then fails to download: `CacheNotFoundException` or
+  `Lost inputs no longer available remotely` on the client, and
+  `not found in either fast or slow store` on the server. A
+  `completeness_checking` store in front of the AC turns this into an
+  ordinary miss by checking every output exists before answering the lookup.
+  [Compose stores](/how-to/stores/compose-stores#completeness_checking--the-action-cache-wrapper)
+  shows the configuration, and
+  [Actions fail with a CAS miss](/operate/troubleshooting#actions-fail-with-a-cas-miss)
+  covers the error strings.
+
+<VerifyBlock>
+  Build the target twice with `--execution_log_json_file` on both runs. The
+  same `digest` appears in both files, and the second entry says
+  `"remoteCacheHit": true`. If the digest matches and the second run still
+  says `false`, the server log at debug level shows the `GetActionResult`
+  for that digest and its result, which is the last fact you need.
+</VerifyBlock>
+
+## Troubleshooting [#troubleshooting]
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Zero remote hits, no errors, every build | Instance name or digest function mismatch | [Step 3](#step-3-the-silent-zero-hit-checklist) |
+| Hits on my machine, misses from CI | Different toolchain, absolute path or platform properties change the digest | [Step 2](#step-2-compare-the-digest-across-two-runs); then [Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity) |
+| One action always misses, everything else hits | The action is non-deterministic | [Find a hermeticity leak](/explanations/correctness-hermeticity#find-a-hermeticity-leak) |
+| A failing action re-runs on every build | Failures are not cached under `SuccessOnly` | [Reasons a result was never written](#reasons-a-result-was-never-written) |
+| Hit reported, then download fails | An output blob was evicted from the CAS | [The entry existed and then did not](#the-entry-existed-and-then-did-not) |
+| Hits stop after a few days | Action cache eviction | Raise `max_bytes` on the AC store; see [Scaling the CAS](/operate/scaling-cas) |
+| Dashboard shows no hit rate at all | No store is wrapped in `cache_metrics` | [Turn on cache metrics](/operate/observability#turn-on-cache-metrics) |
+
+## FAQ [#faq]
+
+<Accordions type="multiple">
+
+<Accordion title="Can the server tell me why a specific action missed?" id="can-the-server-tell-me-why">
+Not at its default log level. The server knows that a lookup for a digest
+returned nothing; it does not know whether that digest was ever written,
+and it does not log the lookup unless the AC module is raised to debug as
+in [Step 4](#step-4-ask-the-server). The information that explains most
+misses, why the digest changed, exists only on the client. Start with the
+execution log, and treat the server log as confirmation.
+</Accordion>
+
+<Accordion title="What is the equivalent of the execution log in Buck2, Pants or recc?" id="other-build-tools">
+Buck2 shows where each action ran, and its digest, in `buck2 log what-ran`.
+Pants counts remote cache requests in its end-of-run stats when
+`[stats].log` is on. recc logs an `Action Cache hit` line per compile with
+`RECC_LOG_LEVEL=info`. The method is the same: find the tool's own record
+of the action, and compare the key it sent across two runs.
+</Accordion>
+
+<Accordion title="Hits locally, misses in CI, same commit. What changed?" id="hits-locally-misses-in-ci">
+The digest, and the usual reasons are the toolchain and the path. A compiler
+resolved from `PATH` has a different digest on every image; a workspace at a
+different absolute path leaks into any action that embeds one. Run Step 2
+on both machines and diff the `inputs` lists for the action. The fix is to
+pin the toolchain inside the build so its identity is part of the digest,
+which is what
+[Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity)
+is about.
+</Accordion>
+
+</Accordions>
+
+## What's next [#whats-next]
+
+<NextStep href="/explanations/correctness-hermeticity" title="Correctness and hermeticity">
+  Most misses are a stability problem wearing a cache problem's clothes. This
+  is the page on finding and closing the leaks.
+</NextStep>
+
+<NextStep href="/operate/observability" kind="aside" title="Observability">
+  Hit rate as a number you can alert on, once you have wrapped the stores
+  that should report it.
+</NextStep>
