@@ -258,6 +258,84 @@ fn cache_scheduler(wait_s: u64) -> Arc<SimpleScheduler> {
     })
 }
 
+#[nativelink_test]
+async fn cache_aware_places_actions_using_historical_memory_hints() -> Result<(), Error> {
+    use nativelink_config::schedulers::HistoricalResourceSpec;
+    use nativelink_scheduler::historical_resource_scheduler::HistoricalResourceScheduler;
+    use nativelink_scheduler::resource_sketch::{Entry, SketchKey};
+
+    let scheduler = cache_scheduler(0);
+    let spec: HistoricalResourceSpec = serde_json::from_value(serde_json::json!({
+        "learn_from_workers": true,
+        "headroom_percent": 0,
+        "memory_budget_bytes": "16MiB",
+        "scheduler": {"simple": {}}
+    }))
+    .unwrap();
+    let sketch = Arc::new(HistoricalResourceScheduler::sketch_from_spec(&spec));
+    let small_command = DigestInfo::new([10; 32], 512);
+    let large_command = DigestInfo::new([20; 32], 512);
+    for (command, memory_kb) in [(small_command, 1_000), (large_command, 30_000)] {
+        assert!(sketch.seed(
+            SketchKey::for_attempt(None, None, &command.to_string()),
+            Entry::seeded(0, memory_kb, 0, 1, NOW_TIME),
+        ));
+    }
+    let hints = HistoricalResourceScheduler::new(&spec, scheduler.clone(), sketch);
+    let mut small = Vec::new();
+    let mut large = Vec::new();
+    for i in 0..8 {
+        small.push(
+            add_worker_with_properties(&scheduler, &format!("small-{i}"), memory_worker(4_000))
+                .await?,
+        );
+    }
+    for i in 0..2 {
+        large.push(
+            add_worker_with_properties(&scheduler, &format!("large-{i}"), memory_worker(40_000))
+                .await?,
+        );
+    }
+    for digest in 1..=15 {
+        let command_digest = if digest <= 2 {
+            large_command
+        } else {
+            small_command
+        };
+        let base = make_base_action_info(
+            UNIX_EPOCH + MockClock::time(),
+            DigestInfo::new([digest; 32], 512),
+        );
+        // No declared memory: the wrapper must supply the resource minimum.
+        hints
+            .add_action(
+                OperationId::default(),
+                Arc::new(ActionInfo {
+                    command_digest,
+                    ..(*base).clone()
+                }),
+            )
+            .await?;
+        scheduler.do_try_match_for_test().await?;
+        if digest == 2 {
+            assert_eq!(
+                large.iter_mut().map(dispatched).collect::<Vec<_>>(),
+                vec![1, 1]
+            );
+            assert_eq!(small.iter_mut().map(dispatched).sum::<usize>(), 0);
+        } else if digest == 14 {
+            let placements: Vec<_> = small.iter_mut().map(dispatched).collect();
+            assert_eq!(placements.iter().sum::<usize>(), 12);
+            assert_eq!(placements.iter().filter(|count| **count > 0).count(), 3);
+        }
+    }
+    // Once the three preferred small workers are full, use another small
+    // worker immediately. Both large workers still have room for small work.
+    assert_eq!(small.iter_mut().map(dispatched).sum::<usize>(), 1);
+    assert_eq!(large.iter_mut().map(dispatched).sum::<usize>(), 0);
+    Ok(())
+}
+
 /// Different actions with the same command keep a three-worker working set.
 /// An idle fourth worker must not draw input copies until the wait expires.
 #[nativelink_test]
