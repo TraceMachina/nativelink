@@ -469,6 +469,13 @@ impl FetchServer {
     ) -> Result<Option<Vec<ExpectedChecksum>>, Error> {
         let mut checksum = None;
         for qualifier in &request.qualifiers {
+            if qualifier.name.starts_with("http_header:")
+                || qualifier.name.starts_with("http_header_url:")
+            {
+                return Err(make_input_err!(
+                    "HTTP header qualifiers are not supported by the fetch downloader"
+                ));
+            }
             if qualifier.name != "checksum.sri" {
                 if qualifier.name != "bazel.canonical_id" && !downloader.allow_unknown_qualifiers {
                     return Err(make_input_err!("Unsupported fetch qualifier"));

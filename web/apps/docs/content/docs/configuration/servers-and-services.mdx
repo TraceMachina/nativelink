@@ -161,12 +161,12 @@ checksums, or duplicate `checksum.sri` qualifiers is rejected before cache looku
 Requests without a checksum are allowed by default, matching Bazel's optional
 `sha256` and `integrity` attributes. Set `require_checksum: true` to require one.
 
-`bazel.canonical_id` is accepted as URL-index identity metadata. Other qualifiers
-are accepted as opaque URL-index metadata by default; their semantics are not
-applied to the HTTP request. In particular, accepting `http_header:` or `http_header_url:` does not
-forward those headers or credentials. Set `allow_unknown_qualifiers: false` to
-reject unrecognized qualifiers, including header qualifiers whose semantics are not implemented. This
-switch is independent of `require_checksum` and also applies on cache hits.
+`bazel.canonical_id` is accepted as URL-index identity metadata. The downloader
+rejects `http_header:` and `http_header_url:` qualifiers before cache lookup or
+downloading because it does not implement their HTTP header semantics. Other
+qualifiers are accepted as opaque URL-index metadata by default; set
+`allow_unknown_qualifiers: false` to reject them. This switch is independent of
+`require_checksum` and also applies on cache hits. Lookup-only mode is unchanged.
 
 The index is keyed by URI plus qualifiers and stores a complete digest,
 including its size. Different URI/qualifier keys have independent mappings.

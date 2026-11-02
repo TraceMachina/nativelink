@@ -514,6 +514,72 @@ async fn freshness_reuses_recent_records_and_http_errors_are_not_cached() {
 }
 
 #[nativelink_test]
+async fn header_qualifiers_rejected_before_download_or_cache_reuse() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed = hits.clone();
+    let app = axum::Router::new().fallback(move |headers: axum::http::HeaderMap| {
+        let hits = observed.clone();
+        async move {
+            hits.fetch_add(1, Ordering::SeqCst);
+            if headers
+                .get("accept")
+                .is_some_and(|v| v == "application/octet-stream")
+            {
+                "binary content"
+            } else {
+                "JSON metadata"
+            }
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let uri = format!("http://{}", listener.local_addr().unwrap());
+    let _task = nativelink_util::spawn!("fetch_header_fixture", async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let (server, stores, cas) = downloader_server(downloader_config()).await;
+    // Warm the CAS and index with the default representation.
+    let digest = assert_cas(
+        &cas,
+        &fetch(&server, fetch_request(&uri)).await,
+        b"JSON metadata",
+    )
+    .await;
+    for name in ["http_header:Accept", "http_header_url:0:Accept"] {
+        let mut request = fetch_request(&uri);
+        request.qualifiers = vec![Qualifier {
+            name: name.into(),
+            value: "application/octet-stream".into(),
+        }];
+        for cached in [false, true] {
+            if cached {
+                let artifact = RemoteAssetArtifact::new(
+                    uri.clone(),
+                    request.qualifiers.clone(),
+                    digest.into(),
+                    None,
+                    1,
+                );
+                stores
+                    .get_store("test_fetch_store")
+                    .unwrap()
+                    .update_oneshot(artifact.digest(), artifact.as_bytes())
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                server
+                    .fetch_blob(Request::new(request.clone()))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                tonic::Code::InvalidArgument
+            );
+        }
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[nativelink_test]
 async fn unknown_and_duplicate_qualifiers_rejected_before_download() {
     let origin = http_fixture(
         Bytes::from_static(b"unverified"),
@@ -1152,6 +1218,16 @@ async fn fetch_logs_do_not_include_uri_or_qualifier_credentials() {
             value: "fetch-custom-marker".into(),
         },
     ];
+    assert_eq!(
+        server
+            .fetch_blob(Request::new(request.clone()))
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::InvalidArgument
+    );
+    let header_qualifiers = request.qualifiers.clone();
+    request.qualifiers.retain(|q| q.name == "custom");
     // Both the cold result and warm index result echo metadata to the caller,
     // but neither the request nor response may be dumped into tracing.
     for _ in 0..2 {
@@ -1172,6 +1248,22 @@ async fn fetch_logs_do_not_include_uri_or_qualifier_credentials() {
         &stores,
     )
     .unwrap();
+    request.qualifiers = header_qualifiers;
+    let mut hasher = DigestHasherFunc::Sha256.hasher();
+    hasher.update(b"private dependency");
+    let artifact = RemoteAssetArtifact::new(
+        uri.clone(),
+        request.qualifiers.clone(),
+        hasher.finalize_digest().into(),
+        None,
+        1,
+    );
+    stores
+        .get_store("test_fetch_store")
+        .unwrap()
+        .update_oneshot(artifact.digest(), artifact.as_bytes())
+        .await
+        .unwrap();
     let response = fetch(&lookup_only, request.clone()).await;
     assert_eq!(response.qualifiers, request.qualifiers);
     assert_eq!(response.uri, uri);
