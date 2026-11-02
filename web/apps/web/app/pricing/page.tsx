@@ -1,3 +1,4 @@
+import { type Cta, GET_STARTED, TALK_TO_US } from "@/lib/cta";
 import { Button, Eyebrow, Reveal, Section, cn } from "@nativelink/ui";
 import { Fragment } from "react";
 
@@ -16,8 +17,8 @@ interface Tier {
   cadence: string;
   tagline: string;
   features: string[];
-  cta: { label: string; href: string; external?: boolean };
-  secondary?: { label: string; href: string };
+  cta: Cta;
+  secondary?: Cta;
 }
 
 const tiers: Tier[] = [
@@ -33,7 +34,7 @@ const tiers: Tier[] = [
       "All build systems (Bazel, Buck2, Siso, Pants)",
       "All major cloud providers",
     ],
-    cta: { label: "Get started", href: "/docs", external: true },
+    cta: GET_STARTED,
   },
   {
     name: "Enterprise",
@@ -48,10 +49,11 @@ const tiers: Tier[] = [
       "Procurement support",
       "Priority feature requests",
     ],
-    cta: { label: "Email us about pricing", href: PRICING_MAILTO },
+    cta: TALK_TO_US,
     secondary: {
-      label: "Already decided? Subscribe now",
+      label: "Already have a quote? Buy a licence on the Enterprise portal",
       href: "https://enterprise.nativelink.com",
+      external: true,
     },
   },
 ];
@@ -205,8 +207,8 @@ export default function PricingPage() {
                     <p className="mt-3 text-center text-sm text-muted-foreground">
                       <a
                         href={tier.secondary.href}
-                        target="_blank"
-                        rel="noreferrer"
+                        target={tier.secondary.external ? "_blank" : undefined}
+                        rel={tier.secondary.external ? "noreferrer" : undefined}
                         className="text-brand underline-offset-4 hover:underline"
                       >
                         {tier.secondary.label}

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -714,6 +714,15 @@ pub trait StoreDriver:
     /// See: [`StoreLike::optimized_for`] for details.
     fn optimized_for(&self, _optimization: StoreOptimizations) -> bool {
         false
+    }
+
+    /// The largest object this store can hold, in bytes. A caller that
+    /// streams data out of this store without knowing its length can announce
+    /// this as the [`UploadSizeInfo::MaxSize`] of the copy, because nothing
+    /// larger could have been stored here. The default, `u64::MAX`, means the
+    /// store has no known limit; wrappers do not forward it.
+    fn max_upload_size(&self) -> u64 {
+        u64::MAX
     }
 
     /// See: [`StoreLike::update_with_whole_file`] for details.

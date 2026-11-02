@@ -78,6 +78,18 @@ commit_parsers = [
 
   # Custom rules for specific commits.
 
+  # v1.8.3: pinned by subject, since their bodies trip the generic word rules.
+  { message = "Add REAPI protobuf fuzz target", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "Fix learned resource sizing regressions on main", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Redis store: bound the temp key of every upload", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "Remove the vulnerable zstd line that survived the 0.14.3 bump", group = "<!-- 7 -->⬆️ Bumps & Version Updates" },
+  { message = "fix Clippy and Redis failures and restore Bazel PR checks", group = "<!-- 4 -->🧪 Testing & CI" },
+  { message = "give the community page's offline contributor fallback real counts", group = "<!-- 6 -->⚙️ Miscellaneous" },
+  { message = "restore broken /resources/oreilly-bazel-book page", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "retry the action read at start", group = "<!-- 2 -->🐛 Bug Fixes" },
+  { message = "size actions from the usage its workers report", group = "<!-- 1 -->⛰️  Features" },
+  { message = "worker tests: import Semaphore on every platform", group = "<!-- 4 -->🧪 Testing & CI" },
+
   # v1.8.2: pinned by subject, since their bodies trip the generic word rules.
   { message = "Bound the requests an Azure store keeps in flight", group = "<!-- 1 -->⛰️  Features" },
   { message = "Declare macOS rustc dylibs and rust-objcopy as lre-rs toolchain inputs", group = "<!-- 2 -->🐛 Bug Fixes" },
