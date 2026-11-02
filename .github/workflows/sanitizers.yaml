@@ -135,7 +135,6 @@ jobs:
         env:
           RUSTFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
           RUSTDOCFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
-          RUST_TEST_THREADS: 1
           # The wrappers instrument only builds whose Rust code uses MSan.
           CC: ${{ runner.temp }}/msan-clang
           CXX: ${{ runner.temp }}/msan-clang++
@@ -167,7 +166,6 @@ jobs:
         env:
           RUSTFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
           RUSTDOCFLAGS: -Zsanitizer=memory -Zsanitizer-memory-track-origins=2
-          RUST_TEST_THREADS: 1
           # The wrappers instrument only builds whose Rust code uses MSan.
           CC: ${{ runner.temp }}/msan-clang
           CXX: ${{ runner.temp }}/msan-clang++
