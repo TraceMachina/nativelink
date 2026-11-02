@@ -716,6 +716,15 @@ pub trait StoreDriver:
         false
     }
 
+    /// The largest object this store can hold, in bytes. A caller that
+    /// streams data out of this store without knowing its length can announce
+    /// this as the [`UploadSizeInfo::MaxSize`] of the copy, because nothing
+    /// larger could have been stored here. The default, `u64::MAX`, means the
+    /// store has no known limit; wrappers do not forward it.
+    fn max_upload_size(&self) -> u64 {
+        u64::MAX
+    }
+
     /// See: [`StoreLike::update_with_whole_file`] for details.
     async fn update_with_whole_file(
         self: Pin<&Self>,
