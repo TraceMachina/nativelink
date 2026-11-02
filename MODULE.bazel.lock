@@ -258,7 +258,7 @@
   "moduleExtensions": {
     "@@local-remote-execution+//rust:extension.bzl%lre_rs": {
       "general": {
-        "bzlTransitiveDigest": "hqjjHPBn/hDengegd54DGv9Xdn+QWBtlt5UBex1YTzU=",
+        "bzlTransitiveDigest": "mVSVG1IVjs6BmeowvSuzGIwkB3Q0NoUDLCt2TKpDr3w=",
         "usagesDigest": "R9P8gnprFTJ/SsXLiQE5qx+Sqsa8YOFAOmRUyDO3tLY=",
         "recordedInputs": [
           "REPO_MAPPING:local-remote-execution+,bazel_tools bazel_tools"
