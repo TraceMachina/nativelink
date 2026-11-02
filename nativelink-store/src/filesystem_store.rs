@@ -21,6 +21,7 @@ use std::borrow::Cow;
 #[cfg(unix)]
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
@@ -689,7 +690,10 @@ impl FlushCoalescer {
 }
 
 #[cfg(unix)]
-async fn prepare_executable_dir(content_path: &str) -> Result<bool, Error> {
+async fn prepare_executable_dir(
+    content_path: &str,
+    remove_dir: fn(&Path) -> std::io::Result<()>,
+) -> Result<bool, Error> {
     fn is_non_writable_error(err: &std::io::Error) -> bool {
         matches!(
             err.kind(),
@@ -700,7 +704,7 @@ async fn prepare_executable_dir(content_path: &str) -> Result<bool, Error> {
     let executable_dir = format!("{content_path}{EXECUTABLE_DIR_SUFFIX}");
     let executable_digest_dir = format!("{executable_dir}/{DIGEST_FOLDER_V2}");
     spawn_blocking!("filesystem_store_prepare_executable_dir", move || {
-        match std::fs::remove_dir_all(&executable_dir) {
+        match remove_dir(Path::new(&executable_dir)) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             // A read-only cache must remain available for ordinary reads. Do
@@ -1176,6 +1180,21 @@ pub async fn check_duplicate_files<Fe>(
 where
     Fe: FileEntry,
 {
+    check_duplicate_files_with_open_check(evicting_map, key, entry, |_| Ok(())).await
+}
+
+/// Injects file-open failures without relying on the test process's privileges.
+#[doc(hidden)]
+pub async fn check_duplicate_files_with_open_check<Fe, F>(
+    evicting_map: &Arc<FsEvictingMap<'_, Fe>>,
+    key: &StoreKey<'static>,
+    entry: &Arc<Fe>,
+    before_open: F,
+) -> Result<bool, Error>
+where
+    Fe: FileEntry,
+    F: Fn(&OsStr) -> Result<(), Error> + Send + Sync,
+{
     let temp_file_encoded_file_path = entry.get_encoded_file_path().write().await;
     let maybe_existing_item = evicting_map.get(&key.borrow().into_owned()).await;
     if let Some(existing_item) = maybe_existing_item {
@@ -1190,8 +1209,14 @@ where
             let existing_path = existing_item_encoded_file_path.get_file_path();
             let temp_path = temp_file_encoded_file_path.get_file_path();
             trace!(?existing_path, ?temp_path, "Checking duplicate files");
+            before_open(&temp_path)?;
             let mut temp_file = fs::open_file(&temp_path, 0, file_length).await?;
-            let mut existing_file = match fs::open_file(&existing_path, 0, file_length).await {
+            let existing_open = async {
+                before_open(&existing_path)?;
+                fs::open_file(&existing_path, 0, file_length).await
+            }
+            .await;
+            let mut existing_file = match existing_open {
                 Ok(file) => file,
                 Err(err) if err.code == Code::NotFound => {
                     warn!(
@@ -1380,6 +1405,19 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         spec: &FilesystemSpec,
         rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
     ) -> Result<Arc<Self>, Error> {
+        Self::new_with_filesystem_fns(spec, rename_fn, |path| std::fs::remove_dir_all(path)).await
+    }
+
+    /// Injects startup cleanup failures without changing filesystem permissions.
+    #[doc(hidden)]
+    pub async fn new_with_filesystem_fns(
+        spec: &FilesystemSpec,
+        rename_fn: fn(&OsStr, &OsStr) -> Result<(), std::io::Error>,
+        remove_dir_fn: fn(&Path) -> std::io::Result<()>,
+    ) -> Result<Arc<Self>, Error> {
+        #[cfg(not(unix))]
+        let _ = remove_dir_fn;
+
         async fn create_subdirs(path: &str) -> Result<bool, Error> {
             let mut writable = true;
             for folder in [STR_FOLDER_V2, DIGEST_FOLDER_V2] {
@@ -1419,7 +1457,7 @@ impl<Fe: FileEntry> FilesystemStore<Fe> {
         // against) does not apply on Windows.
         #[cfg(unix)]
         let executable_variants_enabled = {
-            let enabled = prepare_executable_dir(&spec.content_path).await?;
+            let enabled = prepare_executable_dir(&spec.content_path, remove_dir_fn).await?;
             if !enabled {
                 warn!(
                     executable_dir = %format!("{}{EXECUTABLE_DIR_SUFFIX}", spec.content_path),

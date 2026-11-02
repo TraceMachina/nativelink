@@ -33,7 +33,7 @@ use nativelink_macro::nativelink_test;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER_V1, DIGEST_FOLDER_V2, EncodedFilePath, FileEntry, FileEntryImpl, FileType,
     FilesystemStore, Generation, STR_FOLDER_V1, STR_FOLDER_V2, check_duplicate_files,
-    key_and_generation_from_file_v2, make_temp_key,
+    check_duplicate_files_with_open_check, key_and_generation_from_file_v2, make_temp_key,
 };
 use nativelink_util::buf_channel::make_buf_channel_pair;
 use nativelink_util::common::{DigestInfo, fs, make_temp_path};
@@ -1877,19 +1877,6 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
 #[nativelink_test]
 async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants() -> Result<(), Error>
 {
-    use std::os::unix::fs::PermissionsExt;
-
-    struct RestoreWritable(String);
-
-    impl Drop for RestoreWritable {
-        fn drop(&mut self) {
-            use std::os::unix::fs::PermissionsExt;
-
-            std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755))
-                .expect("restore executable digest directory permissions");
-        }
-    }
-
     let content_path = make_temp_path("content_path_read_only_exec");
     let temp_path = make_temp_path("temp_path_read_only_exec");
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -1905,15 +1892,13 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
         store.get_executable_hardlink_source(&digest).await?;
     }
 
-    let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER_V2}");
-    fs::set_permissions(
-        &executable_digest_dir,
-        std::fs::Permissions::from_mode(0o555),
+    // chmod alone does not fail for privileged remote test workers.
+    let store = FilesystemStore::<FileEntryImpl>::new_with_filesystem_fns(
+        &spec,
+        |from, to| std::fs::rename(from, to),
+        |_| Err(std::io::ErrorKind::PermissionDenied.into()),
     )
     .await?;
-    let _restore_permissions = RestoreWritable(executable_digest_dir);
-
-    let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
     assert_eq!(
         store.get_part_unchunked(digest, 0, None).await?,
         VALUE1.as_bytes(),
@@ -2404,11 +2389,8 @@ async fn older_upload_finishing_last_does_not_replace_newer_generation() -> Resu
     Ok(())
 }
 
-#[cfg(unix)]
 #[nativelink_test]
 async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error> {
-    use std::os::unix::fs::PermissionsExt;
-
     let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
         content_path: make_temp_path("content_path"),
         temp_path: make_temp_path("temp_path"),
@@ -2418,22 +2400,36 @@ async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
     store.update_oneshot(digest, VALUE1.into()).await?;
     let entry = store.get_file_entry_for_digest(&digest).await?;
-    entry
-        .get_file_path_locked(|path| async move {
-            fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).await
-        })
-        .await?;
-    let result = store.update_oneshot(digest, VALUE1.into()).await;
-    entry
-        .get_file_path_locked(|path| async move {
-            fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).await
-        })
-        .await?;
+    // A distinct entry with identical data reaches the existing-file open.
+    let other_digest = DigestInfo::try_new(HASH2, VALUE1.len())?;
+    store.update_oneshot(other_digest, VALUE1.into()).await?;
+    let duplicate = store.get_file_entry_for_digest(&other_digest).await?;
+    let opens = AtomicU32::new(0);
+    let result = check_duplicate_files_with_open_check(
+        &store.get_evicting_map(),
+        &StoreKey::Digest(digest),
+        &duplicate,
+        |_| {
+            if opens.fetch_add(1, Ordering::Relaxed) == 1 {
+                Err(Error::from(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .await;
+    assert_eq!(opens.load(Ordering::Relaxed), 2);
     assert_eq!(result.unwrap_err().code, Code::PermissionDenied);
     assert!(Arc::ptr_eq(
         &entry,
         &store.get_file_entry_for_digest(&digest).await?
     ));
+    assert_eq!(
+        store.get_part_unchunked(digest, 0, None).await?,
+        VALUE1.as_bytes()
+    );
     Ok(())
 }
 
