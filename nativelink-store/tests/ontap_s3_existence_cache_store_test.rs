@@ -124,7 +124,7 @@ async fn test_get_part_not_in_cache() -> Result<(), Error> {
         ReplayEvent::new(
             http::Request::builder()
                 .uri(format!(
-                    "https://test-bucket.s3.{VSERVER_NAME}.amazonaws.com/?list-type=2&max-keys=1000&prefix="
+                    "https://{BUCKET_NAME}.s3.{VSERVER_NAME}.amazonaws.com/?list-type=2&max-keys=1000&prefix="
                 ))
                 .body(SdkBody::empty())
                 .unwrap(),
