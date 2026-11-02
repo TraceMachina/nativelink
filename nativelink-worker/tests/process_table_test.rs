@@ -19,10 +19,10 @@ use std::sync::Arc;
 
 use nativelink_macro::nativelink_test;
 use nativelink_worker::process_table::{
-    ProcessTableCache, live_process_table, process_exists, read_process_memory_kb, ticks_to_millis,
-    worker_pgid,
+    ProcessTableCache, live_process_table, process_exists, read_process_cpu_ticks,
+    read_process_memory_kb, ticks_to_millis, worker_pgid,
 };
-use nativelink_worker::running_actions_manager::action_membership_live;
+use nativelink_worker::running_actions_manager::{ProcEntry, action_membership_live};
 
 /// A child that idles for longer than any test here runs, spawned the way
 /// an action is: as its own process group where the platform has them.
@@ -44,6 +44,15 @@ fn spawn_idle_child() -> Child {
         .stdout(Stdio::null())
         .spawn()
         .expect("the idle child spawns")
+}
+
+/// Keeps this thread busy for `duration`.
+fn spin_for(duration: Duration) {
+    let busy_until = std::time::Instant::now() + duration;
+    let mut spin = 0u64;
+    while std::time::Instant::now() < busy_until {
+        spin = black_box(spin.wrapping_add(1));
+    }
 }
 
 /// The scan finds this process in the worker's own group, and a child it
@@ -101,11 +110,7 @@ fn cpu_time_grows_with_the_work_done() {
             .expect("this process's CPU time is readable")
     };
     let before = own_ticks();
-    let busy_until = std::time::Instant::now() + Duration::from_millis(300);
-    let mut spin = 0u64;
-    while std::time::Instant::now() < busy_until {
-        spin = black_box(spin.wrapping_add(1));
-    }
+    spin_for(Duration::from_millis(300));
     let spent_ms = ticks_to_millis(own_ticks()) - ticks_to_millis(before);
     // Clock ticks are 10 ms on Linux and the spin shares a core with the
     // rest of the test run, so allow well under the 300 ms spun.
@@ -139,4 +144,27 @@ async fn a_stale_snapshot_is_scanned_again() {
     let first = cache.current().await;
     let second = cache.current().await;
     assert!(!Arc::ptr_eq(&first, &second));
+}
+
+/// A snapshot keeps the CPU time it was taken with, so work done since only
+/// shows in a fresh read, which is why the sampler reads its members' CPU
+/// time fresh.
+#[nativelink_test]
+async fn cpu_time_read_fresh_moves_past_a_held_snapshot() {
+    let own_pid = std::process::id();
+    let own_ticks = |table: &[(ProcEntry, Option<u64>)]| {
+        table
+            .iter()
+            .find(|(entry, _)| entry.pid == own_pid)
+            .and_then(|(_, ticks)| *ticks)
+            .expect("this process's CPU time is in the snapshot")
+    };
+    let cache = ProcessTableCache::new(Duration::MAX);
+    let before = own_ticks(&cache.current().await);
+    spin_for(Duration::from_millis(300));
+    let held = own_ticks(&cache.current().await);
+    let fresh = read_process_cpu_ticks(own_pid).expect("this process's CPU time is readable");
+    assert_eq!(held, before);
+    let spent_ms = ticks_to_millis(fresh) - ticks_to_millis(before);
+    assert!(spent_ms >= 100, "{spent_ms} ms");
 }

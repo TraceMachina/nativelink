@@ -94,8 +94,8 @@ use crate::persistent_worker::{
     WorkerKey,
 };
 use crate::process_table::{
-    ProcessTableCache, live_process_table, process_exists, read_process_memory_kb, ticks_to_millis,
-    worker_pgid,
+    ProcessTableCache, live_process_table, process_exists, read_process_cpu_ticks,
+    read_process_memory_kb, ticks_to_millis, worker_pgid,
 };
 
 /// For simplicity we use a fixed exit code for cases when our program is terminated
@@ -841,7 +841,10 @@ fn sample_process_group(
         if !members.contains(&entry.pid) {
             continue;
         }
-        if let Some(ticks) = ticks {
+        // Read now, not from the shared snapshot: a request to a pooled
+        // process can start and end within one snapshot's lifetime, and
+        // would then measure nothing.
+        if let Some(ticks) = read_process_cpu_ticks(entry.pid).or(ticks) {
             // Monotonic per process, but a pid could in principle be reused
             // within one action, so never let the figure go backwards.
             let slot = cpu_ticks_by_pid.entry(entry.pid).or_insert(0);

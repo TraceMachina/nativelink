@@ -44,8 +44,9 @@ pub type ProcessTable = Arc<[(ProcEntry, Option<u64>)]>;
 /// interval, which on a busy shared host saturates dozens of cores. Samplers
 /// instead reuse a snapshot younger than `max_age`, one interval, so the
 /// host is scanned at most once per interval however many actions run.
-/// Member memory is still read fresh on every sample; only membership can
-/// lag, by at most one interval, as it already could between two samples.
+/// Member memory and CPU time are still read fresh on every sample; only
+/// membership can lag, by at most one interval, as it already could between
+/// two samples.
 /// Kills keep their own live scan
 /// ([`action_membership_live`](crate::running_actions_manager::action_membership_live)).
 #[derive(Debug)]
@@ -93,6 +94,13 @@ pub fn live_process_table() -> Vec<(ProcEntry, Option<u64>)> {
 /// the process cannot be read.
 pub fn read_process_memory_kb(pid: u32) -> Option<u64> {
     platform::read_process_memory_kb(pid)
+}
+
+/// The CPU ticks `pid` has used so far, read now rather than from a
+/// snapshot (see [`ticks_to_millis`]). `None` when the process cannot be
+/// read.
+pub fn read_process_cpu_ticks(pid: u32) -> Option<u64> {
+    platform::read_process_cpu_ticks(pid)
 }
 
 /// Converts the CPU ticks of [`live_process_table`] into milliseconds.
@@ -167,6 +175,10 @@ mod platform {
         parse_kb_field(&status, "VmRSS:")
     }
 
+    pub(super) fn read_process_cpu_ticks(pid: u32) -> Option<u64> {
+        parse_cpu_ticks_from_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    }
+
     /// Ticks are clock ticks from `/proc`. `_SC_CLK_TCK` is 100 on every
     /// Linux we run on, but it is queryable so ask rather than assume, and
     /// fall back to 100 if the query fails.
@@ -229,8 +241,7 @@ mod platform {
                         ppid: info.pbi_ppid,
                         pgrp: info.pbi_pgid,
                     },
-                    rusage(pid)
-                        .map(|usage| usage.ri_user_time.saturating_add(usage.ri_system_time)),
+                    read_process_cpu_ticks(pid),
                 ))
             })
             .collect()
@@ -241,6 +252,10 @@ mod platform {
     /// per process.
     pub(super) fn read_process_memory_kb(pid: u32) -> Option<u64> {
         rusage(pid).map(|usage| usage.ri_phys_footprint / 1024)
+    }
+
+    pub(super) fn read_process_cpu_ticks(pid: u32) -> Option<u64> {
+        rusage(pid).map(|usage| usage.ri_user_time.saturating_add(usage.ri_system_time))
     }
 
     /// Ticks are Mach absolute time units: nanoseconds on Intel, but not on
@@ -360,6 +375,10 @@ mod platform {
             )
         };
         (ok != 0).then_some(counters.PrivateUsage as u64 / 1024)
+    }
+
+    pub(super) fn read_process_cpu_ticks(pid: u32) -> Option<u64> {
+        process_times(pid).map(|times| times.cpu)
     }
 
     /// Ticks are the 100 ns units of `GetProcessTimes`.
