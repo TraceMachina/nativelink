@@ -55,7 +55,7 @@ fn make_scheduler_with_spec(spec: &SimpleSpec) -> Arc<SimpleScheduler> {
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         spec,
-        memory_awaited_action_db_factory(0, &task_change_notify, MockInstantWrapped::default),
+        memory_awaited_action_db_factory(1_000, &task_change_notify, MockInstantWrapped::default),
         || async move {},
         task_change_notify,
         MockInstantWrapped::default,
@@ -543,6 +543,7 @@ async fn locality_wait_requires_a_periodic_wakeup() -> Result<(), Error> {
         serde_json::from_str(r#"{"allocation_strategy":"cache_aware"}"#).unwrap();
     assert_eq!(spec.cache_affinity_wait_s, 0);
     assert_eq!(spec.queue_age_priority_s, 0);
+    assert_eq!(spec.queue_age_escalation_s, 0);
     assert!(spec.fallback_match_interval_s > 0);
     spec.cache_affinity_wait_s = 5;
     spec.fallback_match_interval_s = 0;
@@ -559,5 +560,165 @@ async fn locality_wait_requires_a_periodic_wakeup() -> Result<(), Error> {
     )
     .unwrap();
     scheduler_factory(&SchedulerSpec::Simple(no_wait), &stores, None).await?;
+    let escalation_without_tick = serde_json::from_str(
+        r#"{
+        "queue_age_escalation_s":180, "fallback_match_interval_s":0
+    }"#,
+    )
+    .unwrap();
+    let rejected = scheduler_factory(
+        &SchedulerSpec::Simple(escalation_without_tick),
+        &stores,
+        None,
+    )
+    .await;
+    assert!(
+        matches!(rejected, Err(ref err) if err.message_string().contains("requires fallback_match_interval_s"))
+    );
+
+    Ok(())
+}
+
+/// Before the deadline priority is preserved; at the deadline no priority
+/// advantage can keep new arrivals ahead of the old action.
+#[nativelink_test]
+async fn queue_escalates_at_three_minutes() -> Result<(), Error> {
+    for (age_s, escalated) in [(179, false), (180, true), (181, true)] {
+        let scheduler = make_scheduler_with_spec(&SimpleSpec {
+            queue_age_escalation_s: 180,
+            client_action_timeout_s: 1_000,
+            ..SimpleSpec::default()
+        });
+        add_action(&scheduler, 1).await?;
+        MockClock::advance(Duration::from_secs(age_s));
+        let fresh = make_base_action_info(
+            UNIX_EPOCH + MockClock::time(),
+            DigestInfo::new([2; 32], 512),
+        );
+        scheduler
+            .add_action(
+                OperationId::default(),
+                Arc::new(ActionInfo {
+                    priority: i32::MAX,
+                    ..(*fresh).clone()
+                }),
+            )
+            .await?;
+        let mut rx = add_worker(&scheduler, "worker").await?;
+        scheduler.do_try_match_for_test().await?;
+        let mut order = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let Some(update_for_worker::Update::StartAction(start)) = msg.update {
+                order.push(start.execute_request.unwrap().action_digest.unwrap().hash);
+            }
+        }
+        let expected = if escalated {
+            vec!["01".repeat(32), "02".repeat(32)]
+        } else {
+            vec!["02".repeat(32), "01".repeat(32)]
+        };
+        assert_eq!(order, expected, "queue age {age_s}");
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cache_aware_uses_small_capacity_before_large_spare_capacity() -> Result<(), Error> {
+    let scheduler = cache_scheduler(0);
+    let mut small = add_worker_with_properties(&scheduler, "small", memory_worker(4_000)).await?;
+    let mut large = add_worker_with_properties(&scheduler, "large", memory_worker(40_000)).await?;
+    add_action_with_properties(&scheduler, 1, memory_action(39_000)).await?;
+    assert_eq!(dispatched(&mut large), 1);
+    // Dynamic best-fit would choose the large worker's last 1,000 units.
+    for digest in 2..=5 {
+        add_action_with_properties(&scheduler, digest, memory_action(1_000)).await?;
+    }
+    assert_eq!(dispatched(&mut small), 4);
+    assert_eq!(dispatched(&mut large), 0);
+    // All small capacity is busy: allow useful overflow before stress mode.
+    add_action_with_properties(&scheduler, 6, memory_action(1_000)).await?;
+    assert_eq!(dispatched(&mut large), 1);
+    Ok(())
+}
+
+/// Young small work may backfill spare slots, but once a large action has
+/// waited three minutes its reservation must drain without new small work.
+#[nativelink_test]
+async fn escalated_large_action_reserves_capacity_while_small_workers_continue() -> Result<(), Error>
+{
+    use nativelink_config::schedulers::ReservationHoldSpec;
+    use nativelink_util::action_messages::{ActionResult, ActionStage};
+    use nativelink_util::operation_state_manager::UpdateOperationType;
+
+    let scheduler = make_scheduler_with_spec(&SimpleSpec {
+        allocation_strategy: WorkerAllocationStrategy::CacheAware,
+        queue_age_escalation_s: 180,
+        reservation_hold: Some(ReservationHoldSpec {
+            hold_after_s: 180,
+            max_hold_s: 300,
+            max_held_workers: 2,
+        }),
+        client_action_timeout_s: 1_000,
+        worker_timeout_s: 1_000,
+        supported_platform_properties: Some(HashMap::from([(
+            "memory_kb".to_string(),
+            PropertyType::Minimum,
+        )])),
+        ..SimpleSpec::default()
+    });
+    let mut large = add_worker_with_properties(&scheduler, "large", memory_worker(40_000)).await?;
+    let mut running = Vec::new();
+    for digest in 1..=2 {
+        add_action_with_properties(&scheduler, digest, memory_action(15_000)).await?;
+        let msg = large.recv().await.unwrap();
+        let Some(update_for_worker::Update::StartAction(start)) = msg.update else {
+            panic!("expected action")
+        };
+        running.push(start.operation_id);
+    }
+    add_action_with_properties(&scheduler, 3, memory_action(40_000)).await?;
+    // A young blocked large action does not idle the remaining capacity.
+    add_action_with_properties(&scheduler, 4, memory_action(1_000)).await?;
+    let msg = large.recv().await.unwrap();
+    let Some(update_for_worker::Update::StartAction(start)) = msg.update else {
+        panic!("expected backfill")
+    };
+    running.push(start.operation_id);
+    MockClock::advance(Duration::from_secs(180));
+    scheduler.do_try_match_for_test().await?;
+    add_action_with_properties(&scheduler, 5, memory_action(1_000)).await?;
+    assert_eq!(
+        dispatched(&mut large),
+        0,
+        "large worker must drain for overdue work"
+    );
+    let mut small = add_worker_with_properties(&scheduler, "small", memory_worker(4_000)).await?;
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(
+        dispatched(&mut small),
+        1,
+        "the hold must not block the small pool"
+    );
+    for operation in running {
+        scheduler
+            .update_action(
+                &WorkerId("large".to_string()),
+                &OperationId::from(operation),
+                UpdateOperationType::UpdateWithActionStage(ActionStage::Completed(
+                    ActionResult::default(),
+                )),
+            )
+            .await?;
+        scheduler.do_try_match_for_test().await?;
+    }
+    let msg = large.recv().await.unwrap();
+    let Some(update_for_worker::Update::StartAction(start)) = msg.update else {
+        panic!("expected escalated action")
+    };
+    assert_eq!(
+        start.execute_request.unwrap().action_digest.unwrap().hash,
+        "03".repeat(32)
+    );
+    assert_eq!(dispatched(&mut large), 0, "exactly one dispatch");
     Ok(())
 }

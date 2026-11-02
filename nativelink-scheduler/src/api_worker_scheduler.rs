@@ -1323,6 +1323,26 @@ impl ApiWorkerSchedulerImpl {
             WorkerAllocationStrategy::CacheAware
         ) && let Some(action) = asking
         {
+            // Locality must not send small work to a larger class while a
+            // smaller suitable worker has room, even outside the shortlist.
+            let available_fit = self
+                .workers
+                .iter()
+                .filter(|(id, _)| candidates.contains(id))
+                .filter(&worker_matches)
+                .map(|(_, w)| {
+                    (
+                        usize::MAX - priority_matches(platform_properties, w),
+                        fit_leftover_permille(platform_properties, w, true),
+                    )
+                })
+                .min();
+            let best_available_class = |(_, w): &(&WorkerId, &Worker)| {
+                Some((
+                    usize::MAX - priority_matches(platform_properties, w),
+                    fit_leftover_permille(platform_properties, w, true),
+                )) == available_fit
+            };
             let mut preferred = Vec::with_capacity(4);
             for (worker_id, worker) in self.workers.iter() {
                 if !candidates.contains(worker_id)
@@ -1352,6 +1372,7 @@ impl ApiWorkerSchedulerImpl {
                 .iter()
                 .filter_map(|(_, _, _, id)| self.workers.peek(id).map(|w| (*id, w)))
                 .filter(&worker_matches)
+                .filter(&best_available_class)
                 .min_by_key(|(_, w)| {
                     (
                         usize::MAX - priority_matches(platform_properties, w),
@@ -1406,7 +1427,20 @@ impl ApiWorkerSchedulerImpl {
                 .min_by_key(|(_, w)| w.running_action_infos.len())
                 .map(|(_, w)| w.id.clone()),
 
-            WorkerAllocationStrategy::BestFit | WorkerAllocationStrategy::CacheAware => {
+            WorkerAllocationStrategy::CacheAware => workers_iter
+                .rev()
+                .filter(|(id, _)| candidates.contains(id))
+                .filter(&worker_matches)
+                .min_by_key(|(_, w)| {
+                    (
+                        usize::MAX - priority_matches(platform_properties, w),
+                        fit_leftover_permille(platform_properties, w, true),
+                        fit_leftover_permille(platform_properties, w, false),
+                        w.running_action_infos.len(),
+                    )
+                })
+                .map(|(_, w)| w.id.clone()),
+            WorkerAllocationStrategy::BestFit => {
                 workers_iter
                     .rev()
                     .filter(|(worker_id, _)| candidates.contains(worker_id))

@@ -362,6 +362,17 @@ pub struct SimpleSpec {
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub queue_age_priority_s: u64,
 
+    /// Queue age at which an action takes precedence over all younger work,
+    /// regardless of priority. Escalated actions run oldest first. Set to 180
+    /// for a three-minute escalation; zero disables it (default).
+    /// This changes scheduling order, not resource requirements or retry limits.
+    /// Retries retain the original submission time. Like `queue_age_priority_s`,
+    /// this loads and sorts the queue before placement. Pair with
+    /// `reservation_hold.hold_after_s` at the same threshold so a worker can
+    /// drain for an escalated action that needs more than one free slot.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub queue_age_escalation_s: u64,
+
     /// The name of a `minimum` platform property, usually `memory_kb`, that
     /// the scheduler compares against the free memory each worker reports
     /// with its keepalive: a worker reporting less than the action asks for

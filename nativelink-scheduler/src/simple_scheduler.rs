@@ -238,6 +238,7 @@ pub struct SimpleScheduler {
 
     /// Optional age weight for queued action ordering.
     queue_age_priority_s: u64,
+    queue_age_escalation_s: u64,
 
     /// The clock the state manager uses.
     now_fn: Box<dyn Fn() -> SystemTime + Send + Sync>,
@@ -925,7 +926,7 @@ impl SimpleScheduler {
                 )
             })
             .boxed();
-        if self.queue_age_priority_s > 0 {
+        if self.queue_age_priority_s > 0 || self.queue_age_escalation_s > 0 {
             // No writeback or second Redis scan: score the same loaded records
             // this pass would otherwise read while placing. Default streaming
             // placement stays unchanged when age weighting is disabled.
@@ -944,8 +945,25 @@ impl SimpleScheduler {
                     .duration_since(action.insert_timestamp)
                     .unwrap_or_default()
                     .as_nanos();
-                i128::from(action.priority) * i128::from(self.queue_age_priority_s) * 1_000_000_000
-                    + i128::try_from(age).unwrap_or(i128::MAX)
+                let age = i128::try_from(age).unwrap_or(i128::MAX);
+                let escalated = self.queue_age_escalation_s > 0
+                    && age >= i128::from(self.queue_age_escalation_s) * 1_000_000_000;
+                if escalated {
+                    // No priority value can keep an overdue action behind fresh
+                    // work. Keep original age across retries, oldest first.
+                    (true, 0, age)
+                } else if self.queue_age_priority_s > 0 {
+                    (
+                        false,
+                        0,
+                        i128::from(action.priority)
+                            * i128::from(self.queue_age_priority_s)
+                            * 1_000_000_000
+                            + age,
+                    )
+                } else {
+                    (false, action.priority, age)
+                }
             };
             // Stable sort preserves the existing order for equal scores.
             queued.sort_by_cached_key(|loaded| core::cmp::Reverse(score(loaded)));
@@ -1651,6 +1669,7 @@ impl SimpleScheduler {
                     .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
                 queue_age_priority_s: spec.queue_age_priority_s,
+                queue_age_escalation_s: spec.queue_age_escalation_s,
                 now_fn: scheduler_now_fn,
             }
         });

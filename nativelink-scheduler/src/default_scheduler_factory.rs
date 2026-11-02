@@ -234,6 +234,11 @@ async fn simple_scheduler_factory(
             "cache_aware with cache_affinity_wait_s > 0 requires fallback_match_interval_s > 0 so locality waits expire without a worker notification"
         ));
     }
+    if spec.queue_age_escalation_s > 0 && spec.fallback_match_interval_s <= 0 {
+        return Err(make_input_err!(
+            "queue_age_escalation_s > 0 requires fallback_match_interval_s > 0 so escalation is revisited without a worker notification"
+        ));
+    }
     if let Some(policy) = &spec.memory_escalation
         && policy.percent <= 100
     {
