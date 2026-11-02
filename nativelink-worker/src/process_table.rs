@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -206,8 +206,8 @@ mod platform {
     // not warrant that dependency.
     #[repr(C)]
     struct MachTimebaseInfo {
-        numer: u32,
-        denom: u32,
+        numerator: u32,
+        denominator: u32,
     }
 
     unsafe extern "C" {
@@ -261,15 +261,21 @@ mod platform {
     /// Ticks are Mach absolute time units: nanoseconds on Intel, but not on
     /// Apple silicon, so convert through the timebase.
     pub(super) fn ticks_to_millis(ticks: u64) -> u64 {
-        let mut timebase = MachTimebaseInfo { numer: 0, denom: 0 };
+        let mut timebase = MachTimebaseInfo {
+            numerator: 0,
+            denominator: 0,
+        };
         // SAFETY: fills the struct it is given, which outlives the call.
         let status = unsafe { mach_timebase_info(&raw mut timebase) };
-        let (numer, denom) = if status == 0 && timebase.denom != 0 {
-            (u128::from(timebase.numer), u128::from(timebase.denom))
+        let (numerator, denominator) = if status == 0 && timebase.denominator != 0 {
+            (
+                u128::from(timebase.numerator),
+                u128::from(timebase.denominator),
+            )
         } else {
             (1, 1)
         };
-        let millis = u128::from(ticks) * numer / denom / 1_000_000;
+        let millis = u128::from(ticks) * numerator / denominator / 1_000_000;
         u64::try_from(millis).unwrap_or(u64::MAX)
     }
 
