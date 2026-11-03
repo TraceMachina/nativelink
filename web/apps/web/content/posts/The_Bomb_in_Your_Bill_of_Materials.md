@@ -1,12 +1,18 @@
 ---
 title: "The Bomb in Your Bill of Materials"
 tags: ["security", "blog-posts"]
+image: /assets/sbom-hidden-risk.png
 slug: the-bomb-in-your-bill-of-materials
 pubDate: 2026-11-03
 readTime: 4 minutes
 ---
 
 **Marcus Eagan**
+
+<figure>
+  <img src="/assets/sbom-hidden-risk.png" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." width="1536" height="1024" fetchpriority="high" />
+  <figcaption>A bill of materials makes hidden dependencies visible. Each flagged component still needs an answer.</figcaption>
+</figure>
 
 > "You dropped a bomb on me, baby<br />
 > You dropped a bomb on me (I won't forgive what you done)<br />
@@ -25,6 +31,11 @@ In NativeLink, the software bill of materials comes out of how we build the proj
 
 The industry needs to adopt open standards like SPDX, CycloneDX and OpenVEX faster, alongside tools like [OpenSSF Scorecard](https://scorecard.dev/). A bill of materials only helps if the people downstream can read it, merge it and act on it with the same tools.
 
+<figure>
+  <img src="/assets/sbom-dependency-tree.png" alt="A magnifying glass reveals an amber component several levels down a branching software dependency tree." width="1536" height="1024" loading="lazy" decoding="async" />
+  <figcaption>A vulnerable component can sit several layers below the application that depends on it.</figcaption>
+</figure>
+
 ## The fuse is long
 
 The zstd ecosystem shows why. In August, zstd-jni disclosed [out-of-bounds read](https://github.com/luben/zstd-jni/security/advisories/GHSA-ff36-7w3w-g8rm) and [use-after-free](https://github.com/luben/zstd-jni/security/advisories/GHSA-947w-pxjj-c7m9) bugs that can crash the JVM or corrupt data. On October 12, an advisory for the Go zstd decoder in klauspost/compress [described a panic on crafted two-block frames](https://github.com/klauspost/compress/security/advisories/GHSA-fpmh-frq8-7rj8).
@@ -36,6 +47,11 @@ For our own zstd dependency fixes in [NativeLink v1.8.3](https://github.com/Trac
 ## Fast fixes, informed by the build
 
 NativeLink lets us patch quickly because we can check a fix for regressions. When we bump a compression library, remote execution reruns the tests and benchmarks across platforms in minutes, so the security fix and the performance check ship together. Once patching is cheap, teams stop bargaining with their vulnerability backlog.
+
+<figure>
+  <img src="/assets/sbom-patch-verification.png" alt="An amber component is replaced with a violet patch, then checked across four parallel verification stations before the paths converge into a release package." width="1536" height="1024" loading="lazy" decoding="async" />
+  <figcaption>Patch the dependency, verify the change across workers, and carry the results into the release.</figcaption>
+</figure>
 
 It also shapes how we think about security. When every action declares its inputs, an unexpected input stands out. We work to keep our OpenSSF Scorecard as high as we can.
 
