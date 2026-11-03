@@ -135,25 +135,39 @@ If you see it, set `global.default_digest_hash_function` and every client's
 ## Step 4: ask the server [#step-4-ask-the-server]
 
 By the time you are here the digest is stable and the request arrives. The
-remaining question is why the entry is not there, and the honest answer is
-that NativeLink keeps misses quiet by design: `GetActionResult` returns
-`NOT_FOUND` so often on a healthy cache that the server strips the error
-message and does not log the event at its default level.
+remaining question is why the entry is not there. NativeLink keeps misses
+quiet by default, because `GetActionResult` returns `NOT_FOUND` so often on
+a healthy cache that logging each one would bury everything else, but it
+records every miss on a log target you can switch on by itself.
 <SourceLink file="nativelink-service/src/ac_server.rs" symbol="get_action_result" />
 
-What you can see today:
-
-**The lookup, at debug level.** The AC service's request span records the
-full request and its result when the module is raised to debug:
+**The miss, by name.** Raise the `nativelink::cache_miss` target and nothing
+else:
 
 ```bash
-RUST_LOG=info,nativelink_service::ac_server=debug nativelink /path/to/config.json5
+RUST_LOG=info,nativelink::cache_miss=debug nativelink /path/to/config.json5
 ```
 
-This is noisy on a busy server: one line per lookup, hit or miss. Turn it on
-for the duration of the investigation and off afterwards. The lines carry the
-instance name and action digest, which you match against the `digest` from
-Step 2.
+Every miss then produces one line carrying the instance name, the digest
+function and the action digest, which you match against the `digest` from
+Step 2. If the client sent Bazel's request metadata, which Bazel does by
+default, the line also carries the invocation id, the target and the
+mnemonic, so you can find the miss for *this* build among everyone else's:
+
+```text
+DEBUG nativelink::cache_miss: Action cache miss source="ac_server" instance_name="main"
+  digest_function=Sha256 action_digest=3a7bd3e2...-142 tool_name="bazel"
+  tool_invocation_id=2f1c9b8e-... target_id=//src:main action_mnemonic=CppCompile
+```
+
+The same target also says *why* the entry was not there. The worker writes a
+line when it decides not to upload a result, naming the exit code and the
+`upload_ac_results_strategy` that caused the skip. A `completeness_checking`
+store writes a line when an entry exists but one of its outputs has been
+evicted, naming the missing digest. With the target on, "never written" and
+"evicted" stop looking the same. The full set of lines, and what each one
+means, is on the [Observability](/operate/observability) page.
+<SourceLink file="nativelink-util/src/origin_event.rs" symbol="record_action_cache_miss" />
 
 **The rate, always.** The gRPC duration histogram is emitted for every
 service without opting in, and its status-code label separates misses from
@@ -220,8 +234,10 @@ shapes:
   Build the target twice with `--execution_log_json_file` on both runs. The
   same `digest` appears in both files, and the second entry says
   `"remoteCacheHit": true`. If the digest matches and the second run still
-  says `false`, the server log at debug level shows the `GetActionResult`
-  for that digest and its result, which is the last fact you need.
+  says `false`, a server started with
+  `RUST_LOG=info,nativelink::cache_miss=debug` shows an `Action cache miss`
+  line for that digest and your invocation id, and next to it the worker or
+  completeness-checking line that says why, which is the last fact you need.
 </VerifyBlock>
 
 ## Troubleshooting [#troubleshooting]
@@ -232,6 +248,7 @@ shapes:
 | Hits on my machine, misses from CI | Different toolchain, absolute path or platform properties change the digest | [Step 2](#step-2-compare-the-digest-across-two-runs); then [Toolchains and hermeticity](/remote-execution/toolchains-and-hermeticity) |
 | One action always misses, everything else hits | The action is non-deterministic | [Find a hermeticity leak](/explanations/correctness-hermeticity#find-a-hermeticity-leak) |
 | A failing action re-runs on every build | Failures are not cached under `SuccessOnly` | [Reasons a result was never written](#reasons-a-result-was-never-written) |
+| Same digest twice, still a miss, and no idea which side | Misses are not logged at the default level | [Step 4](#step-4-ask-the-server): raise `nativelink::cache_miss` |
 | Hit reported, then download fails | An output blob was evicted from the CAS | [The entry existed and then did not](#the-entry-existed-and-then-did-not) |
 | Hits stop after a few days | Action cache eviction | Raise `max_bytes` on the AC store; see [Scaling the CAS](/operate/scaling-cas) |
 | Dashboard shows no hit rate at all | No store is wrapped in `cache_metrics` | [Turn on cache metrics](/operate/observability#turn-on-cache-metrics) |
@@ -241,12 +258,13 @@ shapes:
 <Accordions type="multiple">
 
 <Accordion title="Can the server tell me why a specific action missed?" id="can-the-server-tell-me-why">
-Not at its default log level. The server knows that a lookup for a digest
-returned nothing; it does not know whether that digest was ever written,
-and it does not log the lookup unless the AC module is raised to debug as
-in [Step 4](#step-4-ask-the-server). The information that explains most
-misses, why the digest changed, exists only on the client. Start with the
-execution log, and treat the server log as confirmation.
+It can tell you that the lookup missed, for which digest, from which build,
+and whether the result was skipped by the worker or lost to eviction. That is
+the `nativelink::cache_miss` target in [Step 4](#step-4-ask-the-server), off
+by default and switched on with one `RUST_LOG` directive. What it cannot tell
+you is why the digest the client sent differs from the one it sent last time;
+that information exists only on the client. Start with the execution log, and
+use the server's miss line to confirm which side the problem is on.
 </Accordion>
 
 <Accordion title="What is the equivalent of the execution log in Buck2, Pants or recc?" id="other-build-tools">
