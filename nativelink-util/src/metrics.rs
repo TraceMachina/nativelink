@@ -551,6 +551,14 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
     let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());
 
     ExecutionMetrics {
+        execute_stream_drops: meter
+            .u64_counter("execution.stream.drops")
+            .with_description(
+                "Execute/WaitExecution response streams dropped before the operation finished: client disconnects, and streams a shutdown or an intermediary tore down",
+            )
+            .with_unit("{stream}")
+            .build(),
+
         execution_stage_duration: meter
             .f64_histogram("execution.stage.duration")
             .with_description("Duration of each execution stage in seconds")
@@ -691,6 +699,9 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
 /// OpenTelemetry metrics instruments for remote execution monitoring.
 #[derive(Debug)]
 pub struct ExecutionMetrics {
+    /// `Execute`/`WaitExecution` response streams dropped before the
+    /// operation finished, whichever side tore the stream down.
+    pub execute_stream_drops: metrics::Counter<u64>,
     /// Histogram of stage durations in seconds
     pub execution_stage_duration: metrics::Histogram<f64>,
     /// Histogram of total execution durations in seconds
@@ -1256,14 +1267,6 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
             .with_unit("{worker}")
             .build(),
 
-        execute_stream_drops: meter
-            .u64_counter("execution.client_stream.drops")
-            .with_description(
-                "Execute/WaitExecution response streams the client dropped before the operation finished",
-            )
-            .with_unit("{stream}")
-            .build(),
-
         awaited_action_orphans: meter
             .u64_counter("scheduler.awaited_action.orphans")
             .with_description(
@@ -1371,9 +1374,6 @@ pub struct SchedulerOtlpMetrics {
     pub held_workers: metrics::Gauge<u64>,
     /// Listed operations whose record was gone on read, by site.
     pub awaited_action_orphans: metrics::Counter<u64>,
-    /// `Execute`/`WaitExecution` response streams the client dropped before the
-    /// operation finished.
-    pub execute_stream_drops: metrics::Counter<u64>,
     /// Abandoned-queue sweeps that failed before finishing.
     pub sweep_failures: metrics::Counter<u64>,
     /// Actions sized by the historical resource scheduler, by source.
@@ -1571,10 +1571,10 @@ pub fn record_held_workers(count: usize) {
         .record(u64::try_from(count).unwrap_or(u64::MAX), &[]);
 }
 
-/// Records an `Execute`/`WaitExecution` response stream the client dropped
-/// before its operation finished.
+/// Records an `Execute`/`WaitExecution` response stream dropped before its
+/// operation finished, whichever side tore the stream down.
 pub fn record_execute_stream_drop() {
-    SCHEDULER_METRICS.execute_stream_drops.add(1, &[]);
+    EXECUTION_METRICS.execute_stream_drops.add(1, &[]);
 }
 
 /// Records an operation the queue listed whose record was gone when read;

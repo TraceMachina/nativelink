@@ -52,7 +52,9 @@ use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_fo
 use nativelink_util::metrics::record_execute_stream_drop;
 use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_from_baggage};
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::Context;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
@@ -325,11 +327,13 @@ pub struct ExecutionServer {
 
 type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send>>;
 
-/// Watches an `Execute`/`WaitExecution` response stream so a client that walks
-/// away is recorded. tonic drops the stream on disconnect without running
-/// any handler code, so the `Drop` impl is the only place the server can
-/// see it; the operation's fate after this is the scheduler's client
-/// keepalive timeout, which the dropped subscriber stops refreshing.
+/// Watches an `Execute`/`WaitExecution` response stream so a stream torn
+/// down before its operation finished is recorded — usually a client that
+/// walked away, but a server shutdown counts too. tonic drops the stream on
+/// disconnect without running any handler code, so the `Drop` impl is the
+/// only place the server can see it; the operation's fate after this is the
+/// scheduler's client keepalive timeout, which the dropped subscriber (or
+/// the aborted drive task) stops refreshing.
 struct ExecuteStreamMonitor {
     inner: ExecuteStream,
     operation_id: String,
@@ -361,7 +365,7 @@ impl Drop for ExecuteStreamMonitor {
         if !self.finished {
             info!(
                 operation_id = %self.operation_id,
-                "Client execute stream dropped before the operation finished"
+                "Execute stream dropped before the operation finished"
             );
             record_execute_stream_drop();
         }
@@ -411,69 +415,141 @@ impl ExecutionServer {
         OperationsServer::new(self)
     }
 
+    /// Waits for the next update and converts it for the client. The bool
+    /// says whether the stream is over (a finished stage or an error).
+    async fn next_operation(
+        action_listener: &mut Box<dyn ActionStateResult>,
+        client_operation_id: &OperationId,
+        cas_store: &Store,
+    ) -> (Result<Operation, Status>, bool) {
+        match action_listener.changed().await {
+            Ok((action_update, _maybe_origin_metadata)) => {
+                debug!(?action_update, "Execute Resp Stream");
+                forget_missing_input(cas_store, &action_update.stage).await;
+                let finished = action_update.stage.is_finished();
+                (
+                    Ok(action_update.as_operation(client_operation_id.clone())),
+                    finished,
+                )
+            }
+            Err(err) => {
+                error!(?err, "Error in action_listener stream");
+                (Err(err.into()), true)
+            }
+        }
+    }
+
     fn to_execute_stream(
         nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
         cas_store: Store,
         heartbeat_interval: Option<Duration>,
     ) -> impl Stream<Item = Result<Operation, Status>> + Send + use<> {
-        struct StreamState {
-            action_listener: Box<dyn ActionStateResult>,
-            /// The last update sent, re-sent as the heartbeat. `None` until
-            /// the first update, which the subscription yields immediately.
+        struct HeartbeatState {
+            rx: tokio::sync::mpsc::Receiver<Result<Operation, Status>>,
+            /// The last update sent, re-sent as the heartbeat.
             last_operation: Option<Operation>,
+            /// Aborts the driving task when the stream is dropped.
+            _drive_guard: JoinHandleDropGuard<()>,
         }
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
-        let inner = unfold(
-            Some(StreamState {
-                action_listener,
-                last_operation: None,
-            }),
-            move |maybe_state| {
-                let client_operation_id = client_operation_id.clone();
-                let cas_store = cas_store.clone();
-                async move {
+        let inner: ExecuteStream = if let Some(interval) = heartbeat_interval {
+            // `changed()` must be awaited without interruption: subscriber
+            // implementations keep their no-progress watchdog (the
+            // `no_event_action_timeout` select in the state manager) inside
+            // one `changed()` call, so cancelling it on a timer would reset
+            // that watchdog forever. A task drives the listener and feeds a
+            // channel, whose `recv()` is cancel-safe, and the heartbeat
+            // timer races the channel instead.
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Operation, Status>>(1);
+            let task_client_operation_id = client_operation_id.clone();
+            let mut action_listener = action_listener;
+            // The guard aborts the task when the stream is dropped, so a
+            // client disconnect still drops the subscriber and lets its
+            // keepalive lapse, exactly as without the heartbeat.
+            let drive_guard = spawn!("execute_stream_updates", async move {
+                // Send the current state first: it seeds the heartbeat, so
+                // the stream is never silent while waiting for the first
+                // transition. Subscribers typically re-yield the current
+                // state as their first update too; duplicates are permitted.
+                match action_listener.as_state().await {
+                    Ok((state, _maybe_origin_metadata)) => {
+                        let finished = state.stage.is_finished();
+                        let operation = state.as_operation(task_client_operation_id.clone());
+                        if tx.send(Ok(operation)).await.is_err() || finished {
+                            return;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = tx.send(Err(err.into())).await;
+                        return;
+                    }
+                }
+                loop {
+                    let (item, finished) = Self::next_operation(
+                        &mut action_listener,
+                        &task_client_operation_id,
+                        &cas_store,
+                    )
+                    .await;
+                    if tx.send(item).await.is_err() || finished {
+                        return;
+                    }
+                }
+            });
+            Box::pin(unfold(
+                Some(HeartbeatState {
+                    rx,
+                    last_operation: None,
+                    _drive_guard: drive_guard,
+                }),
+                move |maybe_state| async move {
                     let mut state = maybe_state?;
-                    let changed = if let (Some(interval), Some(last_operation)) =
-                        (heartbeat_interval, state.last_operation.as_ref())
-                    {
-                        match tokio::time::timeout(interval, state.action_listener.changed()).await
-                        {
-                            Ok(changed) => changed,
-                            // No stage change within the interval: re-send the
-                            // last state. Recreating `changed()` is safe here;
-                            // the subscriber keeps its subscription and re-reads
-                            // the record on entry, so a lost wakeup surfaces on
-                            // the next call rather than being dropped.
-                            Err(_elapsed) => {
-                                let heartbeat = last_operation.clone();
-                                return Some((Ok(heartbeat), Some(state)));
-                            }
+                    let received = if let Some(last_operation) = state.last_operation.clone() {
+                        match tokio::time::timeout(interval, state.rx.recv()).await {
+                            Ok(received) => received,
+                            // No update within the interval: re-send the last
+                            // state. `recv()` is cancel-safe, so no update is
+                            // lost, and the listener keeps running in its task.
+                            Err(_elapsed) => return Some((Ok(last_operation), Some(state))),
                         }
                     } else {
-                        state.action_listener.changed().await
+                        state.rx.recv().await
                     };
-                    match changed {
-                        Ok((action_update, _maybe_origin_metadata)) => {
-                            debug!(?action_update, "Execute Resp Stream");
-                            forget_missing_input(&cas_store, &action_update.stage).await;
-                            let finished = action_update.stage.is_finished();
-                            let operation = action_update.as_operation(client_operation_id);
-                            if !finished && heartbeat_interval.is_some() {
+                    match received {
+                        Some(Ok(operation)) => {
+                            let finished = operation.done;
+                            if !finished {
                                 state.last_operation = Some(operation.clone());
                             }
                             Some((Ok(operation), (!finished).then_some(state)))
                         }
-                        Err(err) => {
-                            error!(?err, "Error in action_listener stream");
-                            Some((Err(err.into()), None))
-                        }
+                        Some(Err(err)) => Some((Err(err), None)),
+                        None => None,
                     }
-                }
-            },
-        );
+                },
+            ))
+        } else {
+            Box::pin(unfold(
+                Some(action_listener),
+                move |maybe_action_listener| {
+                    let client_operation_id = client_operation_id.clone();
+                    let cas_store = cas_store.clone();
+                    async move {
+                        let mut action_listener = maybe_action_listener?;
+                        let (item, finished) = Self::next_operation(
+                            &mut action_listener,
+                            &client_operation_id,
+                            &cas_store,
+                        )
+                        .await;
+                        Some((item, (!finished).then_some(action_listener)))
+                    }
+                },
+            ))
+        };
         ExecuteStreamMonitor {
-            inner: Box::pin(inner),
+            inner,
             operation_id: nl_client_operation_id.to_string(),
             finished: false,
         }
