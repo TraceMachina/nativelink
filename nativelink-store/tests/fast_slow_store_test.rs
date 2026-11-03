@@ -1408,6 +1408,127 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
     Ok(())
 }
 
+/// A wedged slow write must not hang `has()` with it: past the in-flight
+/// wait timeout the key is reported missing, so `FindMissingBlobs` and
+/// reads of a just-uploaded blob degrade to a re-upload instead of
+/// blocking for as long as the stuck writer lives.
+#[nativelink_test(start_paused = true)]
+async fn has_stops_waiting_on_wedged_in_flight_write() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct WedgedSlowStore {
+        /// Held open for the whole test, so the slow write never finishes.
+        _gate_tx: tokio::sync::oneshot::Sender<()>,
+        gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl StoreDriver for WedgedSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let started_tx = self.started_tx.lock().unwrap().take();
+            if let Some(tx) = started_tx {
+                let _ = tx.send(());
+            }
+            // Wait on a sender the test never drops or fires: the write is
+            // wedged, holding its in-flight entry's lock.
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(rx) = gate {
+                let _ = rx.await;
+            }
+            reader.drain().await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(WedgedSlowStore);
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(WedgedSlowStore {
+        _gate_tx: gate_tx,
+        gate: Mutex::new(Some(gate_rx)),
+        started_tx: Mutex::new(Some(started_tx)),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    let writer_store = fast_slow.clone();
+    let writer =
+        tokio::spawn(async move { writer_store.update_oneshot(digest, data.into()).await });
+    started_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "started signal lost: {e:?}"))?;
+
+    // The observer must come back on its own, reporting the key missing,
+    // once the in-flight wait timeout elapses (paused time auto-advances).
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        None,
+        "has() must report a key missing once its wedged in-flight write exceeds the wait timeout",
+    );
+
+    writer.abort();
+    Ok(())
+}
+
 /// `has()` consults the fast store after the slow store reports `NotFound`.
 /// This is asserted indirectly above by `fast_store_only_value_is_reported_by_has`;
 /// here we additionally assert that when the slow store DOES have the blob,

@@ -586,8 +586,29 @@ impl StoreDriver for FastSlowStore {
                 }
             }
         }
-        while let Some((i, size)) = in_flight_futs.next().await {
-            results[i] = size;
+        // A writer holds its in-flight entry's lock for as long as its slow
+        // write runs, so a wedged writer holds it indefinitely, and every
+        // `has` of that key (FindMissingBlobs, a worker's upload check, a
+        // just-uploaded blob's first read) inherits the hang. Wait only
+        // briefly: past the deadline the keys still in flight are reported
+        // missing, and the worst case is a client re-uploading a blob that
+        // was landing anyway.
+        let drain_in_flight = async {
+            while let Some((i, size)) = in_flight_futs.next().await {
+                results[i] = size;
+            }
+        };
+        if tokio::time::timeout(IN_FLIGHT_WRITE_WAIT_TIMEOUT, drain_in_flight)
+            .await
+            .is_err()
+        {
+            self.metrics
+                .has_in_flight_wait_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+            debug!(
+                timeout_secs = IN_FLIGHT_WRITE_WAIT_TIMEOUT.as_secs(),
+                "has() gave up waiting on in-flight slow writes; reporting those keys missing"
+            );
         }
 
         // NOTE: With a writable slow store we intentionally *NEVER* check
@@ -1112,6 +1133,10 @@ struct FastSlowStoreMetrics {
     leader_wait_timeouts: AtomicU64,
     #[metric(help = "get_part calls that bypassed dedup for huge blobs")]
     huge_blob_dedup_bypasses: AtomicU64,
+    #[metric(
+        help = "has() calls that stopped waiting on in-flight slow writes at IN_FLIGHT_WRITE_WAIT_TIMEOUT and reported the keys missing"
+    )]
+    has_in_flight_wait_timeouts: AtomicU64,
     #[metric(help = "Stale fast-store map entries that fell through to the slow store")]
     fast_store_stale_map_falls_through: AtomicU64,
     #[metric(
@@ -1128,5 +1153,11 @@ struct FastSlowStoreMetrics {
 /// deadline fired (e.g. Bazel's `--remote_timeout`), turning a
 /// single slow read into a fan-out of `DEADLINE_EXCEEDED` errors.
 const LEADER_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
+
+/// Maximum time `has` waits on a key whose slow write is still in flight
+/// before reporting it missing. A missing report only costs a re-upload,
+/// while an unbounded wait hands every existence check the writer's fate;
+/// matches `LEADER_WAIT_TIMEOUT`, the read path's equivalent bound.
+const IN_FLIGHT_WRITE_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
 
 default_health_status_indicator!(FastSlowStore);
