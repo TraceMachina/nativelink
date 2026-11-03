@@ -85,7 +85,13 @@ export function getAllPosts(): Post[] {
         body,
       };
     })
-    .sort((a, b) => b.pubDate.localeCompare(a.pubDate));
+    .sort((a, b) => {
+      let compare = b.pubDate.localeCompare(a.pubDate);
+      if (compare == 0) {
+        compare = b.title.localeCompare(a.title);
+      }
+      return compare
+    });
 }
 
 export function getPost(slug: string): Post | undefined {
