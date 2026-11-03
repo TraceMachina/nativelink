@@ -354,7 +354,7 @@ history. Privacy requests go to privacy@tracemachina.com.
 
 **Blog**: every post, newest first. The full text of each is in /llms-full.txt.
 
-- [The Bomb in Your Bill of Materials](https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials) (2026-11-03): <figure <img src="/assets/sbom-hidden-risk.png" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." wid…
+- [The Bomb in Your Bill of Materials](https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials) (2026-11-03): <figure <img src="/assets/sbom-hidden-risk.svg" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." wid…
 - [The Inaugural RE API Fellow](https://nativelink.com/resources/blog/re-api-fellow) (2026-09-08): When people first see the open source NativeLink repository on GitHub, they think about CI: continuous integration, the practice of building and testing software every time someone pushes a change.…
 - [How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink](https://nativelink.com/resources/blog/case-study-menlo-security) (2026-08-28): "NativeLink is the simplest way to get fast builds with Chromium." Christopher Staite, Principal Engineer, Menlo Security
 - [From One Robot to 1,000 with rules_omniverse](https://nativelink.com/resources/blog/rules-omniverse-0-3-0) (2026-08-27): Today we are releasing our first official Bazel ruleset for physical AI. It is built to carry robotics work from research to production.
@@ -505,12 +505,12 @@ look finished and are not.
 
 # https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials
 
-**The Bomb in Your Bill of Materials** (2026-11-03): <figure <img src="/assets/sbom-hidden-risk.png" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." wid…
+**The Bomb in Your Bill of Materials** (2026-11-03): <figure <img src="/assets/sbom-hidden-risk.svg" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." wid…
 
 **Marcus Eagan**
 
 <figure>
-  <img src="/assets/sbom-hidden-risk.png" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." width="1536" height="1024" fetchpriority="high" />
+  <img src="/assets/sbom-hidden-risk.svg" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." width="1536" height="1024" fetchpriority="high" />
   <figcaption>A bill of materials makes hidden dependencies visible. Each flagged component still needs an answer.</figcaption>
 </figure>
 
@@ -532,7 +532,7 @@ In NativeLink, the software bill of materials comes out of how we build the proj
 The industry needs to adopt open standards like SPDX, CycloneDX and OpenVEX faster, alongside tools like [OpenSSF Scorecard](https://scorecard.dev/). A bill of materials only helps if the people downstream can read it, merge it and act on it with the same tools.
 
 <figure>
-  <img src="/assets/sbom-dependency-tree.png" alt="A magnifying glass reveals an amber component several levels down a branching software dependency tree." width="1536" height="1024" loading="lazy" decoding="async" />
+  <img src="/assets/sbom-dependency-tree.svg" alt="A magnifying glass reveals an amber component several levels down a branching software dependency tree." width="1536" height="1024" loading="lazy" decoding="async" />
   <figcaption>A vulnerable component can sit several layers below the application that depends on it.</figcaption>
 </figure>
 
@@ -549,7 +549,7 @@ For our own zstd dependency fixes in [NativeLink v1.8.3](https://github.com/Trac
 NativeLink lets us patch quickly because we can check a fix for regressions. When we bump a compression library, remote execution reruns the tests and benchmarks across platforms in minutes, so the security fix and the performance check ship together. Once patching is cheap, teams stop bargaining with their vulnerability backlog.
 
 <figure>
-  <img src="/assets/sbom-patch-verification.png" alt="An amber component is replaced with a violet patch, then checked across four parallel verification stations before the paths converge into a release package." width="1536" height="1024" loading="lazy" decoding="async" />
+  <img src="/assets/sbom-patch-verification.svg" alt="An amber component is replaced with a violet patch, then checked across four parallel verification stations before the paths converge into a release package." width="1536" height="1024" loading="lazy" decoding="async" />
   <figcaption>Patch the dependency, verify the change across workers, and carry the results into the release.</figcaption>
 </figure>
 
