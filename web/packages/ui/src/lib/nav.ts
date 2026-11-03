@@ -55,3 +55,18 @@ export function isCurrentNavHref(href: string, currentPath: string | undefined):
   }
   return path === target || path.startsWith(`${target}/`);
 }
+
+/**
+ * Whether a nav `href` leaves the marketing site: an absolute URL, or the
+ * docs, which are a separate app served under /docs. Such links open in a
+ * new tab and carry an external-link mark so the exit is never silent.
+ * `mailto:` is not a page, so it is neither.
+ */
+export function leavesSite(href: string): boolean {
+  const raw = href.trim();
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    return true;
+  }
+  const path = normalizeNavPath(raw);
+  return path === "/docs" || path.startsWith("/docs/");
+}
