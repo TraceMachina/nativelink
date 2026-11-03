@@ -96,6 +96,13 @@ export function SiteHeader({
                     aria-current={current ? "page" : undefined}
                     className={cn(
                       "inline-flex h-9 items-center gap-1 rounded-full px-3.5 text-[13px] font-medium transition-colors",
+                      // Optical padding. The arrow's stroke ends ~1.75px inside
+                      // its 10px box, so a label that ends in it reads as having
+                      // ~2px more trailing space than one that ends in a letter.
+                      // That shows at the right edge of the bar, where the gap
+                      // after "Enterprise ↗" looked looser than the gap before
+                      // "Product". Pull the right padding in by that amount.
+                      external && "pr-3",
                       current
                         ? "bg-brand-soft text-brand"
                         : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
