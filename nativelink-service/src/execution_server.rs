@@ -49,7 +49,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
-use nativelink_util::metrics::record_execute_stream_drop;
+use nativelink_util::metrics::{record_execute_stream_drop, record_execute_stream_heartbeat};
 use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_from_baggage};
 use nativelink_util::spawn;
@@ -532,6 +532,7 @@ impl ExecutionServer {
                             Err(_elapsed) => {
                                 let heartbeat =
                                     state.last_operation.clone().expect("checked is_some above");
+                                record_execute_stream_heartbeat();
                                 return Some((Ok(heartbeat), Some(state)));
                             }
                         }

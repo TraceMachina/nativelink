@@ -551,6 +551,14 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
     let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());
 
     ExecutionMetrics {
+        execute_stream_heartbeats: meter
+            .u64_counter("execution.stream.heartbeats")
+            .with_description(
+                "Operation states re-sent on idle Execute/WaitExecution streams by the stream heartbeat",
+            )
+            .with_unit("{message}")
+            .build(),
+
         execute_stream_drops: meter
             .u64_counter("execution.stream.drops")
             .with_description(
@@ -699,6 +707,9 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
 /// OpenTelemetry metrics instruments for remote execution monitoring.
 #[derive(Debug)]
 pub struct ExecutionMetrics {
+    /// Operation states re-sent on idle `Execute`/`WaitExecution` streams
+    /// by the stream heartbeat.
+    pub execute_stream_heartbeats: metrics::Counter<u64>,
     /// `Execute`/`WaitExecution` response streams dropped before the
     /// operation finished, whichever side tore the stream down.
     pub execute_stream_drops: metrics::Counter<u64>,
@@ -1569,6 +1580,12 @@ pub fn record_held_workers(count: usize) {
     SCHEDULER_METRICS
         .held_workers
         .record(u64::try_from(count).unwrap_or(u64::MAX), &[]);
+}
+
+/// Records an operation state re-sent on an idle `Execute`/`WaitExecution`
+/// stream by the stream heartbeat.
+pub fn record_execute_stream_heartbeat() {
+    EXECUTION_METRICS.execute_stream_heartbeats.add(1, &[]);
 }
 
 /// Records an `Execute`/`WaitExecution` response stream dropped before its
