@@ -5,6 +5,7 @@ image: /assets/sbom-hidden-risk.svg
 slug: the-bomb-in-your-bill-of-materials
 pubDate: 2026-11-03
 readTime: 4 minutes
+excerpt: "Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes."
 ---
 
 **Marcus Eagan**

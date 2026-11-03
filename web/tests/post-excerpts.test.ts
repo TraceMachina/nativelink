@@ -1,54 +1,60 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { deriveExcerpt } from "../apps/web/lib/posts";
+import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
-describe("deriveExcerpt", () => {
-  test("skips lead figures and quotations to find the opening paragraph", () => {
-    const opening =
-      "A dependency inventory helps maintainers identify vulnerable components and verify their fixes.";
-    const body = `**Author**
+const root = mkdtempSync(path.join(tmpdir(), "post-excerpts-"));
+const postsDir = path.join(root, "content/posts");
+mkdirSync(postsDir, { recursive: true });
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-<figure>
-  <img src="/assets/dependencies.svg" alt="A highlighted dependency in a software inventory." />
-  <figcaption>This illustration has a caption long enough to be mistaken for the article summary.</figcaption>
-</figure>
+const introduction =
+  "An existing opening quotation remains the summary when an article has no explicit excerpt.";
+for (const [slug, field] of [
+  ["existing", ""],
+  ["blank", 'excerpt: "   "'],
+] as const) {
+  writeFileSync(
+    path.join(postsDir, `${slug}.md`),
+    `---\ntitle: ${slug}\n${field}\n---\n\n> ${introduction}\n\nThe article body follows.`,
+  );
+}
+writeFileSync(
+  path.join(postsDir, "article.md"),
+  readFileSync(
+    new URL("../apps/web/content/posts/The_Bomb_in_Your_Bill_of_Materials.md", import.meta.url),
+  ),
+);
 
-> This opening quotation is also long enough to be mistaken for the article summary.
->
-> — Attribution
+// Run the public loader with an isolated working directory, as the website does.
+const moduleUrl = new URL("../apps/web/lib/posts.ts", import.meta.url).href;
+const result = spawnSync(
+  process.execPath,
+  [
+    "-e",
+    `const { getAllPosts } = await import(${JSON.stringify(moduleUrl)}); console.log(JSON.stringify(getAllPosts()));`,
+  ],
+  { cwd: root, encoding: "utf8" },
+);
+if (result.status !== 0) throw new Error(result.stderr);
+const posts = JSON.parse(result.stdout) as { slug: string; excerpt: string; body: string }[];
 
-${opening}`;
-
-    expect(deriveExcerpt(body)).toBe(opening);
-  });
-
-  test("strips HTML without leaving tag fragments in the summary", () => {
-    const prose =
-      "A declared dependency tree makes it easier to trace the components included in a release.";
-    expect(deriveExcerpt(`<p><strong>${prose}</strong><br /></p>`)).toBe(prose);
-  });
-
-  test("preserves link text and the excerpt length limit", () => {
-    const prose =
-      "Review the dependency inventory, patch affected components, and verify the result. ".repeat(
-        4,
-      );
-    const expected = `Read the inventory. ${prose}`;
-    expect(deriveExcerpt(`[Read the inventory](https://example.com). ${prose}`)).toBe(
-      `${expected.slice(0, 197).trimEnd()}…`,
+describe("post excerpts", () => {
+  test("uses the article's explicit summary instead of its lead image or quotation", () => {
+    const post = posts.find((item) => item.slug === "the-bomb-in-your-bill-of-materials");
+    expect(post?.excerpt).toBe(
+      "Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes.",
     );
+    expect(post?.body).toContain("<figure>");
+    expect(post?.body).toContain("https://www.youtube.com/watch?v=17lkdqoLt44");
   });
 
-  test("summarizes the bill of materials article from its introduction", () => {
-    const article = readFileSync(
-      new URL("../apps/web/content/posts/The_Bomb_in_Your_Bill_of_Materials.md", import.meta.url),
-      "utf8",
-    );
-    const body = article.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
-    const opening = body
-      .split(/\r?\n\r?\n/)
-      .find((block) => block.startsWith("Most software bombs"));
-    expect(opening).toBeDefined();
-    expect(deriveExcerpt(body)).toBe(`${opening?.slice(0, 197).trimEnd()}…`);
+  test("preserves automatic summaries for existing articles", () => {
+    expect(posts.find((post) => post.slug === "existing")?.excerpt).toBe(introduction);
+  });
+
+  test("treats a blank explicit excerpt as an automatic summary", () => {
+    expect(posts.find((post) => post.slug === "blank")?.excerpt).toBe(introduction);
   });
 });

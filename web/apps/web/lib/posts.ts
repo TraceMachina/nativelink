@@ -42,18 +42,14 @@ function parseFrontmatter(raw: string): {
   return { data, body: raw.slice(match[0].length) };
 }
 
-export function deriveExcerpt(body: string): string {
-  // Lead illustrations and quotations describe the presentation, not the article.
-  const prose = body
-    .replace(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi, "")
-    .replace(/^[\t ]*>.*$/gm, "");
-  for (const block of prose.split(/\r?\n\r?\n/)) {
+function deriveExcerpt(body: string): string {
+  for (const block of body.split(/\r?\n\r?\n/)) {
     let text = block
       .replace(/^#+\s.*$/gm, "")
       .replace(/^-{3,}\s*$/gm, "")
       .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
       .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/[*_`]/g, "");
+      .replace(/[*_`>]/g, "");
     // Strip HTML tags to a fixpoint so overlapping fragments can't
     // reassemble into a tag after a single pass.
     let previous: string;
@@ -61,7 +57,7 @@ export function deriveExcerpt(body: string): string {
       previous = text;
       text = text.replace(/<[^>]*>/g, "");
     } while (text !== previous);
-    text = text.replace(/>/g, "").replace(/\s+/g, " ").trim();
+    text = text.replace(/\s+/g, " ").trim();
     if (text.length > 60) {
       return text.length > 200 ? `${text.slice(0, 197).trimEnd()}…` : text;
     }
@@ -85,7 +81,10 @@ export function getAllPosts(): Post[] {
         image: typeof data.image === "string" ? data.image : undefined,
         pubDate: typeof data.pubDate === "string" ? data.pubDate : "",
         readTime: typeof data.readTime === "string" ? data.readTime : undefined,
-        excerpt: deriveExcerpt(body),
+        excerpt:
+          typeof data.excerpt === "string" && data.excerpt.trim()
+            ? data.excerpt.trim()
+            : deriveExcerpt(body),
         body,
       };
     })
