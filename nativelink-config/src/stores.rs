@@ -1028,6 +1028,19 @@ pub struct FastSlowSpec {
     /// Default: 30
     #[serde(default)]
     pub has_slow_write_wait_timeout_s: Option<usize>,
+
+    /// Maximum seconds a cache fill (the read that populates the fast tier
+    /// from the slow tier while streaming to its reader) may go without
+    /// moving a single byte before it fails with `DEADLINE_EXCEEDED`. Only
+    /// the stalled fill fails: its dedup entry is removed so the next
+    /// reader of the key leads a fresh fill, and followers already fall
+    /// back to reading the slow store directly after their own bounded
+    /// wait. The clock measures inactivity and resets on every chunk — a
+    /// whole-transfer deadline would be wrong here, because a
+    /// multi-gigabyte blob legitimately streams for minutes.
+    /// `0` (the default) keeps today's behavior: no inactivity bound.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub leader_inactivity_timeout_s: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]

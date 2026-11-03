@@ -385,6 +385,7 @@ async fn stress_concurrent_construction() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(fast_store),
         Store::new(delay_store),

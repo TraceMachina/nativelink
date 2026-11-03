@@ -84,6 +84,9 @@ pub struct FastSlowStore {
     /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` waits
     /// indefinitely.
     has_slow_write_wait_timeout: Option<Duration>,
+    /// See [`FastSlowSpec::leader_inactivity_timeout_s`]. `None` never
+    /// times a fill out.
+    leader_inactivity_timeout: Option<Duration>,
 }
 
 /// One slow-store write in flight. `has()` waiters wait on `size` for as
@@ -225,6 +228,8 @@ impl FastSlowStore {
                 Some(secs) => Some(Duration::from_secs(secs as u64)),
                 None => Some(DEFAULT_HAS_SLOW_WRITE_WAIT_TIMEOUT),
             },
+            leader_inactivity_timeout: (spec.leader_inactivity_timeout_s > 0)
+                .then(|| Duration::from_secs(spec.leader_inactivity_timeout_s as u64)),
         })
     }
 
@@ -388,6 +393,11 @@ impl FastSlowStore {
         let mut bytes_received: u64 = 0;
         let mut counted_hit = false;
 
+        let key_str = key.as_str().into_owned();
+        // Bumped on every chunk the fill moves; the inactivity watchdog
+        // below reads it to tell a slow transfer from a wedged one.
+        let fill_progress = Arc::new(AtomicU64::new(0));
+        let data_stream_progress = fill_progress.clone();
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
         let data_stream_fut = async move {
@@ -437,6 +447,7 @@ impl FastSlowStore {
                 );
 
                 bytes_received += output_buf_len;
+                data_stream_progress.fetch_add(output_buf_len, Ordering::Release);
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
                 fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
@@ -449,8 +460,43 @@ impl FastSlowStore {
             .fast_store
             .update(key.borrow(), fast_rx, reader_stream_size);
 
-        let (data_stream_res, slow_res, fast_res) =
-            join!(data_stream_fut, slow_store_fut, fast_store_fut);
+        // The fill fails once no byte has moved for the inactivity timeout:
+        // dropping the joined future tears down all three sides at once, so
+        // a wedged slow read cannot pin the fill (and every follower waiting
+        // on it) forever. Progress resets the clock, so a slow but moving
+        // multi-gigabyte transfer is never cut; a whole-transfer deadline
+        // would be wrong here for exactly that reason.
+        let joined_fut = async { join!(data_stream_fut, slow_store_fut, fast_store_fut) };
+        let (data_stream_res, slow_res, fast_res) = match self.leader_inactivity_timeout {
+            None => joined_fut.await,
+            Some(inactivity) => {
+                tokio::pin!(joined_fut);
+                loop {
+                    let seen = fill_progress.load(Ordering::Acquire);
+                    match tokio::time::timeout(inactivity, &mut joined_fut).await {
+                        Ok(results) => break results,
+                        Err(_elapsed) => {
+                            if fill_progress.load(Ordering::Acquire) != seen {
+                                continue;
+                            }
+                            self.metrics
+                                .leader_inactivity_timeouts
+                                .fetch_add(1, Ordering::Relaxed);
+                            warn!(
+                                key = %key_str,
+                                timeout_secs = inactivity.as_secs(),
+                                "Cache fill moved no bytes within the inactivity timeout; failing it so a new leader can take over"
+                            );
+                            return Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "The cache fill for {key_str} moved no bytes for {}s",
+                                inactivity.as_secs()
+                            ));
+                        }
+                    }
+                }
+            }
+        };
         match data_stream_res {
             Ok((fast_eof_res, maybe_writer_pin)) =>
             // Sending the EOF will drop us almost immediately in bytestream_server
@@ -1207,6 +1253,10 @@ struct FastSlowStoreMetrics {
         help = "In-flight slow writes that has() gave up waiting on at the configured deadline, counted once per write; their keys are reported missing until the write resolves"
     )]
     has_in_flight_wait_timeouts: AtomicU64,
+    #[metric(
+        help = "Cache fills failed because they moved no bytes for leader_inactivity_timeout_s; the next reader of the key leads a fresh fill"
+    )]
+    leader_inactivity_timeouts: AtomicU64,
     #[metric(help = "Stale fast-store map entries that fell through to the slow store")]
     fast_store_stale_map_falls_through: AtomicU64,
     #[metric(

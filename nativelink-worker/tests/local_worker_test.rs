@@ -623,6 +623,7 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -666,6 +667,7 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {

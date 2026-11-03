@@ -60,6 +60,7 @@ fn make_stores_direction(
             slow_direction,
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -118,6 +119,7 @@ async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Res
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast.clone(),
         slow.clone(),
@@ -164,6 +166,7 @@ async fn filesystem_slow_tier_fills_fast_tier_with_content_length() -> Result<()
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -479,6 +482,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store,
         slow_store,
@@ -524,6 +528,7 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -551,6 +556,7 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         slow_direction: StoreDirection::default(),
         bypass_dedup_threshold_bytes: 0,
         has_slow_write_wait_timeout_s: None,
+        leader_inactivity_timeout_s: 0,
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,
@@ -803,6 +809,7 @@ fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -1080,6 +1087,7 @@ fn make_fast_slow_with_instrumented_slow(
     data: Vec<u8>,
     gate: Option<tokio::sync::oneshot::Receiver<()>>,
     bypass_dedup_threshold_bytes: u64,
+    leader_inactivity_timeout_s: usize,
 ) -> (Store, Arc<InstrumentedSlowStore>) {
     let slow = Arc::new(InstrumentedSlowStore {
         digest,
@@ -1096,6 +1104,7 @@ fn make_fast_slow_with_instrumented_slow(
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s,
         },
         fast,
         Store::new(slow.clone()),
@@ -1113,7 +1122,7 @@ async fn concurrent_reads_dedup_to_a_single_slow_store_call() -> Result<(), Erro
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0, 0);
 
     let mut handles = Vec::with_capacity(N_CONCURRENT);
     for _ in 0..N_CONCURRENT {
@@ -1168,7 +1177,7 @@ async fn concurrent_reads_bypass_dedup_above_threshold() -> Result<(), Error> {
     // Threshold == blob size, so every read is at-or-above and bypasses
     // dedup. No gate: each reader hits the slow store directly.
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), None, blob_size);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), None, blob_size, 0);
 
     let mut handles = Vec::with_capacity(N_CONCURRENT);
     for _ in 0..N_CONCURRENT {
@@ -1208,7 +1217,7 @@ async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0, 0);
 
     let store_for_a = fast_slow_store.clone();
     let leader_handle =
@@ -1345,6 +1354,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -1512,6 +1522,7 @@ async fn has_stops_waiting_on_wedged_in_flight_write() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow),
@@ -1655,6 +1666,7 @@ async fn dropped_writer_does_not_remove_successors_in_flight_entry() -> Result<(
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow),
@@ -1796,6 +1808,7 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         slow.clone(),
@@ -1916,6 +1929,7 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -2084,6 +2098,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast.clone(),
         Store::new(slow.clone()),
@@ -2255,6 +2270,7 @@ async fn huge_blob_bypasses_dedup_and_skips_populate() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -2321,6 +2337,7 @@ async fn small_blob_still_dedups_and_populates() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -2385,6 +2402,7 @@ async fn bypass_threshold_is_inclusive_at_exact_size() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: SIZE as u64,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -2509,6 +2527,7 @@ fn make_stores_with_stale_fast(
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store,
         slow_store.clone(),
@@ -2691,6 +2710,7 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(MemoryStore::new(&MemorySpec::default())),
         Store::new(Arc::new(PartialThenGoneStore {
@@ -2856,6 +2876,7 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
                     slow_direction: StoreDirection::default(),
                     bypass_dedup_threshold_bytes: 0,
                     has_slow_write_wait_timeout_s: None,
+                    leader_inactivity_timeout_s: 0,
                 },
                 fast.clone(),
                 slow,
@@ -2871,5 +2892,33 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
             assert_eq!(fast.has(digest).await?, None);
         }
     }
+    Ok(())
+}
+
+/// A cache fill whose slow store stops producing bytes must fail at the
+/// inactivity timeout instead of pinning the fill (and every follower
+/// waiting on it) to the wedged read forever. Only the stalled fill fails;
+/// its loader entry is removed so the next reader leads a fresh fill.
+#[nativelink_test(start_paused = true)]
+async fn stalled_fill_fails_at_the_inactivity_timeout() -> Result<(), Error> {
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // The gate is never released: the slow store accepts the read and then
+    // produces nothing, forever.
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (fast_slow, _slow) =
+        make_fast_slow_with_instrumented_slow(digest, data, Some(gate_rx), 0, 1);
+
+    let err = fast_slow
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("a fill that moves no bytes must fail at the inactivity timeout");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the inactivity deadline, got: {err:?}",
+    );
+
     Ok(())
 }
