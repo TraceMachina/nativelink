@@ -217,6 +217,7 @@ fn make_execution_server(
             instance_name: INSTANCE_NAME.to_string(),
             config: ExecutionConfig {
                 experimental_buck2_invocation_isolation: false,
+                execute_stream_heartbeat_s: 0,
                 cas_store: "main_cas".to_string(),
                 scheduler: "scheduler".to_string(),
             },
