@@ -1,4 +1,4 @@
-// Copyright 2024-2025 The NativeLink Authors. All rights reserved.
+// Copyright 2024-2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -289,17 +289,20 @@ impl FastSlowStore {
                 err
             }
         }
-        let reader_stream_size = if self
-            .slow_store
-            .inner_store(Some(key.borrow()))
+        let slow_inner_store = self.slow_store.inner_store(Some(key.borrow()));
+        let reader_stream_size = if slow_inner_store
             .optimized_for(StoreOptimizations::LazyExistenceOnSync)
         {
             trace!(
                 %key,
-                store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
+                store_name = %slow_inner_store.get_name(),
                 "Skipping .has() check due to LazyExistenceOnSync optimization"
             );
-            UploadSizeInfo::MaxSize(u64::MAX)
+            // The length is unknown without the skipped `.has()`, but the
+            // slow store could not have held anything larger than its limit.
+            // A digest's size is no substitute: an AC value's length differs
+            // from its key's.
+            UploadSizeInfo::MaxSize(slow_inner_store.max_upload_size())
         } else {
             UploadSizeInfo::ExactSize(self
                     .slow_store
