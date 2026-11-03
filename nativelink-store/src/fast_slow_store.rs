@@ -128,7 +128,20 @@ impl Drop for InFlightSlowWriteGuard {
         let Some(key) = self.key.take() else {
             return;
         };
-        store.in_flight_slow_writes.lock().remove(&key);
+        // Remove only this writer's own entry. A later writer of the same
+        // key (a re-upload after `has` reported it missing at
+        // IN_FLIGHT_WRITE_WAIT_TIMEOUT) replaces the entry in the map, and
+        // the first writer's drop must not take the live writer's entry
+        // with it.
+        let mut in_flight = store.in_flight_slow_writes.lock();
+        if let std::collections::hash_map::Entry::Occupied(occupied_entry) = in_flight.entry(key)
+            && Arc::ptr_eq(
+                occupied_entry.get(),
+                tokio::sync::OwnedMutexGuard::mutex(&self.write_complete_guard),
+            )
+        {
+            occupied_entry.remove();
+        }
     }
 }
 
@@ -605,7 +618,8 @@ impl StoreDriver for FastSlowStore {
             self.metrics
                 .has_in_flight_wait_timeouts
                 .fetch_add(1, Ordering::Relaxed);
-            debug!(
+            warn!(
+                abandoned_keys = in_flight_futs.len(),
                 timeout_secs = IN_FLIGHT_WRITE_WAIT_TIMEOUT.as_secs(),
                 "has() gave up waiting on in-flight slow writes; reporting those keys missing"
             );
@@ -1156,8 +1170,11 @@ const LEADER_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Maximum time `has` waits on a key whose slow write is still in flight
 /// before reporting it missing. A missing report only costs a re-upload,
-/// while an unbounded wait hands every existence check the writer's fate;
-/// matches `LEADER_WAIT_TIMEOUT`, the read path's equivalent bound.
-const IN_FLIGHT_WRITE_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
+/// while an unbounded wait hands every existence check the writer's fate.
+/// Deliberately under typical client deadlines (Bazel's default
+/// `--remote_timeout` is 60s): the degraded answer has to arrive while the
+/// client is still listening, or every timeout here surfaces as the
+/// client's own `DEADLINE_EXCEEDED` instead of a re-upload.
+const IN_FLIGHT_WRITE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 default_health_status_indicator!(FastSlowStore);

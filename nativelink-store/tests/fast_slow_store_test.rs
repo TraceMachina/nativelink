@@ -1529,6 +1529,158 @@ async fn has_stops_waiting_on_wedged_in_flight_write() -> Result<(), Error> {
     Ok(())
 }
 
+/// The timeout above invites a re-upload while the wedged writer still
+/// exists, so two writers of one key overlap. The first writer's guard must
+/// not remove the second writer's in-flight entry when it is dropped: an
+/// observer that starts after the wedged writer dies must still see the
+/// live writer's result.
+#[nativelink_test(start_paused = true)]
+async fn dropped_writer_does_not_remove_successors_in_flight_entry() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct QueuedGatesSlowStore {
+        /// One (started, gate) pair per expected `update` call, in order.
+        calls: Mutex<
+            Vec<(
+                tokio::sync::oneshot::Sender<()>,
+                tokio::sync::oneshot::Receiver<()>,
+            )>,
+        >,
+    }
+
+    #[async_trait]
+    impl StoreDriver for QueuedGatesSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let maybe_call = {
+                let mut calls = self.calls.lock().unwrap();
+                if calls.is_empty() {
+                    None
+                } else {
+                    Some(calls.remove(0))
+                }
+            };
+            if let Some((started_tx, gate_rx)) = maybe_call {
+                let _ = started_tx.send(());
+                let _ = gate_rx.await;
+            }
+            reader.drain().await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(QueuedGatesSlowStore);
+
+    let (started_a_tx, started_a_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_a_tx, gate_a_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_b_tx, started_b_rx) = tokio::sync::oneshot::channel::<()>();
+    let (gate_b_tx, gate_b_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(QueuedGatesSlowStore {
+        calls: Mutex::new(vec![(started_a_tx, gate_a_rx), (started_b_tx, gate_b_rx)]),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Writer A wedges (its gate sender is kept but never fired).
+    let store_a = fast_slow.clone();
+    let data_a = data.clone();
+    let writer_a = tokio::spawn(async move { store_a.update_oneshot(digest, data_a.into()).await });
+    started_a_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer A started signal lost: {e:?}"))?;
+
+    // Writer B re-uploads the same key, replacing A's in-flight entry.
+    let store_b = fast_slow.clone();
+    let data_b = data.clone();
+    let writer_b = tokio::spawn(async move { store_b.update_oneshot(digest, data_b.into()).await });
+    started_b_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer B started signal lost: {e:?}"))?;
+
+    // The wedged writer dies. Its guard must leave B's entry alone.
+    writer_a.abort();
+    let _ = writer_a.await;
+
+    // An observer must still see B's in-flight write...
+    let observer_store = fast_slow.clone();
+    let observer = tokio::spawn(async move { observer_store.has(digest).await });
+
+    // ...so once B completes, the observer reports the size instead of the
+    // immediate "missing" a removed entry would give.
+    gate_b_tx
+        .send(())
+        .map_err(|()| make_err!(Code::Internal, "Failed to release writer B's gate"))?;
+    writer_b
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer B join error: {e:?}"))??;
+    let has_result = observer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "observer join error: {e:?}"))??;
+    assert_eq!(
+        has_result,
+        Some(data.len() as u64),
+        "Observer must see writer B's in-flight write after writer A's guard dropped",
+    );
+
+    Ok(())
+}
+
 /// `has()` consults the fast store after the slow store reports `NotFound`.
 /// This is asserted indirectly above by `fast_store_only_value_is_reported_by_has`;
 /// here we additionally assert that when the slow store DOES have the blob,
