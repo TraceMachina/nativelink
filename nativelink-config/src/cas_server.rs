@@ -1440,7 +1440,9 @@ pub struct LocalWorkerConfig {
     /// pod's cgroup limit does. On cgroup v2 the container cgroup carries
     /// `memory.oom.group`, so the kernel's kill takes the worker and every
     /// action on it; this one takes only the offender and fails it with
-    /// `FailedPrecondition`. Linux only; accepted and ignored elsewhere.
+    /// `FailedPrecondition`. The memory pressure kill reads a cgroup and is
+    /// Linux only; on Windows the disk axis is not sampled, and a kill ends
+    /// the action's own process rather than every process in it.
     /// Actions run through a persistent worker are not covered, since that
     /// process outlives the action and serves others. With either axis on,
     /// the worker reads an action's platform properties from the
