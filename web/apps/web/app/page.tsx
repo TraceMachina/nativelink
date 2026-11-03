@@ -9,6 +9,7 @@ import {
   ThirdWaveLogo,
 } from "@/components/customer-logos";
 import { McpDemo } from "@/components/mcp-demo";
+import { CLONE_THE_REPO, GET_STARTED, TALK_TO_US } from "@/lib/cta";
 import {
   Badge,
   Button,
@@ -19,8 +20,6 @@ import {
   Section,
   VideoFacade,
 } from "@nativelink/ui";
-import { CLONE_THE_REPO, GET_STARTED, TALK_TO_US } from "@/lib/cta";
-import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
   title: "NativeLink — Build infrastructure for the agentic era",
