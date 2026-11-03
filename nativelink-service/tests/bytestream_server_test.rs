@@ -94,6 +94,7 @@ async fn rejects_incomplete_bytestream_without_verification_wrapper()
                     fast_direction: nativelink_config::stores::StoreDirection::default(),
                     slow_direction: nativelink_config::stores::StoreDirection::default(),
                     bypass_dedup_threshold_bytes: 0,
+                    has_slow_write_wait_timeout_s: None,
                 }))
             } else {
                 memory_spec

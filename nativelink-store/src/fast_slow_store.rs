@@ -16,7 +16,7 @@ use core::borrow::BorrowMut;
 use core::cmp::{max, min};
 use core::ops::Range;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -76,8 +76,48 @@ pub struct FastSlowStore {
     // the best-known size. Consulted by `has_with_results` so that a
     // concurrent writer that has not yet finished pushing to the slow store
     // is still visible to a concurrent existence check, preventing redundant
-    // duplicate uploads of the same blob.
-    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<tokio::sync::Mutex<MaybeSize>>>>,
+    // duplicate uploads of the same blob. One slot per key: a second writer
+    // of the same key replaces the entry, and the earlier write, though
+    // still running, is no longer visible here — at worst a duplicate
+    // upload, never a wrong answer.
+    in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<InFlightSlowWrite>>>,
+    /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` waits
+    /// indefinitely.
+    has_slow_write_wait_timeout: Option<Duration>,
+}
+
+/// One slow-store write in flight. `has()` waiters wait on `size` for as
+/// long as the WRITE has been in flight (not per call), so a wedged writer
+/// delays existence checks of its key at most once; afterwards they report
+/// the key missing immediately.
+#[derive(Debug)]
+struct InFlightSlowWrite {
+    registered_at: tokio::time::Instant,
+    /// Set by whichever waiter first gives up on this write, so a wedged
+    /// writer is logged and counted once rather than per existence check.
+    gave_up_reported: AtomicBool,
+    size: Arc<tokio::sync::Mutex<MaybeSize>>,
+}
+
+impl InFlightSlowWrite {
+    /// Records that a waiter gave up on this write, once per write.
+    fn report_gave_up(
+        &self,
+        metrics: &FastSlowStoreMetrics,
+        key: &StoreKey<'_>,
+        wait_timeout: Duration,
+    ) {
+        if !self.gave_up_reported.swap(true, Ordering::Relaxed) {
+            metrics
+                .has_in_flight_wait_timeouts
+                .fetch_add(1, Ordering::Relaxed);
+            warn!(
+                %key,
+                timeout_secs = wait_timeout.as_secs(),
+                "has() gave up waiting on an in-flight slow write; reporting the key missing until the write resolves"
+            );
+        }
+    }
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -111,6 +151,7 @@ impl LoaderGuard<'_> {
 struct InFlightSlowWriteGuard {
     weak_store: Weak<FastSlowStore>,
     key: Option<StoreKey<'static>>,
+    entry: Arc<InFlightSlowWrite>,
     write_complete_guard: tokio::sync::OwnedMutexGuard<MaybeSize>,
 }
 
@@ -129,16 +170,12 @@ impl Drop for InFlightSlowWriteGuard {
             return;
         };
         // Remove only this writer's own entry. A later writer of the same
-        // key (a re-upload after `has` reported it missing at
-        // IN_FLIGHT_WRITE_WAIT_TIMEOUT) replaces the entry in the map, and
-        // the first writer's drop must not take the live writer's entry
-        // with it.
+        // key (a re-upload after `has` reported it missing at the wait
+        // timeout) replaces the entry in the map, and the first writer's
+        // drop must not take the live writer's entry with it.
         let mut in_flight = store.in_flight_slow_writes.lock();
         if let std::collections::hash_map::Entry::Occupied(occupied_entry) = in_flight.entry(key)
-            && Arc::ptr_eq(
-                occupied_entry.get(),
-                tokio::sync::OwnedMutexGuard::mutex(&self.write_complete_guard),
-            )
+            && Arc::ptr_eq(occupied_entry.get(), &self.entry)
         {
             occupied_entry.remove();
         }
@@ -183,22 +220,33 @@ impl FastSlowStore {
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
             in_flight_slow_writes: Mutex::new(HashMap::new()),
+            has_slow_write_wait_timeout: match spec.has_slow_write_wait_timeout_s {
+                Some(0) => None,
+                Some(secs) => Some(Duration::from_secs(secs as u64)),
+                None => Some(DEFAULT_HAS_SLOW_WRITE_WAIT_TIMEOUT),
+            },
         })
     }
 
     fn register_in_flight_slow_write(&self, key: StoreKey<'_>) -> InFlightSlowWriteGuard {
         let owned = key.into_owned();
-        let write_complete = Arc::new(tokio::sync::Mutex::new(None));
-        let write_complete_guard = write_complete
+        let size = Arc::new(tokio::sync::Mutex::new(None));
+        let write_complete_guard = size
             .clone()
             .try_lock_owned()
             .expect("Newly created mutex is locked");
+        let entry = Arc::new(InFlightSlowWrite {
+            registered_at: tokio::time::Instant::now(),
+            gave_up_reported: AtomicBool::new(false),
+            size,
+        });
         self.in_flight_slow_writes
             .lock()
-            .insert(owned.borrow().into_owned(), write_complete);
+            .insert(owned.borrow().into_owned(), entry.clone());
         InFlightSlowWriteGuard {
             weak_store: self.weak_self.clone(),
             key: Some(owned),
+            entry,
             write_complete_guard,
         }
     }
@@ -583,7 +631,17 @@ impl StoreDriver for FastSlowStore {
         // Check with the slow store first.
         self.slow_store.has_with_results(key, results).await?;
 
-        // Check for any in-flight requests to the slow store next.
+        // Check for any in-flight requests to the slow store next. A writer
+        // holds its entry's lock for as long as its slow write runs, so a
+        // wedged writer holds it indefinitely, and every `has` of that key
+        // (FindMissingBlobs, a worker's upload check, a just-uploaded blob's
+        // first read) would inherit the hang. Each wait is therefore bounded
+        // by how long the WRITE has been in flight, not per call: a wedged
+        // write delays existence checks at most once, and once it is older
+        // than the deadline every later check reports the key missing
+        // immediately. The worst case is a client re-uploading a blob that
+        // was landing anyway.
+        let wait_timeout = self.has_slow_write_wait_timeout;
         let mut in_flight_futs = FuturesUnordered::new();
         {
             let in_flight = self.in_flight_slow_writes.lock();
@@ -591,38 +649,36 @@ impl StoreDriver for FastSlowStore {
                 for (i, (k, result)) in key.iter().zip(results.iter_mut()).enumerate() {
                     if result.is_none() {
                         let owned = k.borrow().into_owned();
-                        if let Some(maybe_size) = in_flight.get(&owned) {
-                            let maybe_size = maybe_size.clone();
-                            in_flight_futs.push(async move { (i, *maybe_size.lock().await) });
+                        if let Some(entry) = in_flight.get(&owned) {
+                            let entry = entry.clone();
+                            let metrics = &self.metrics;
+                            in_flight_futs.push(async move {
+                                let Some(wait_timeout) = wait_timeout else {
+                                    return (i, *entry.size.lock().await);
+                                };
+                                let remaining =
+                                    wait_timeout.saturating_sub(entry.registered_at.elapsed());
+                                // A write already past the deadline is
+                                // answered without arming a timer.
+                                if remaining.is_zero() {
+                                    entry.report_gave_up(metrics, &owned, wait_timeout);
+                                    return (i, None);
+                                }
+                                match tokio::time::timeout(remaining, entry.size.lock()).await {
+                                    Ok(size_guard) => (i, *size_guard),
+                                    Err(_elapsed) => {
+                                        entry.report_gave_up(metrics, &owned, wait_timeout);
+                                        (i, None)
+                                    }
+                                }
+                            });
                         }
                     }
                 }
             }
         }
-        // A writer holds its in-flight entry's lock for as long as its slow
-        // write runs, so a wedged writer holds it indefinitely, and every
-        // `has` of that key (FindMissingBlobs, a worker's upload check, a
-        // just-uploaded blob's first read) inherits the hang. Wait only
-        // briefly: past the deadline the keys still in flight are reported
-        // missing, and the worst case is a client re-uploading a blob that
-        // was landing anyway.
-        let drain_in_flight = async {
-            while let Some((i, size)) = in_flight_futs.next().await {
-                results[i] = size;
-            }
-        };
-        if tokio::time::timeout(IN_FLIGHT_WRITE_WAIT_TIMEOUT, drain_in_flight)
-            .await
-            .is_err()
-        {
-            self.metrics
-                .has_in_flight_wait_timeouts
-                .fetch_add(1, Ordering::Relaxed);
-            warn!(
-                abandoned_keys = in_flight_futs.len(),
-                timeout_secs = IN_FLIGHT_WRITE_WAIT_TIMEOUT.as_secs(),
-                "has() gave up waiting on in-flight slow writes; reporting those keys missing"
-            );
+        while let Some((i, size)) = in_flight_futs.next().await {
+            results[i] = size;
         }
 
         // NOTE: With a writable slow store we intentionally *NEVER* check
@@ -1148,7 +1204,7 @@ struct FastSlowStoreMetrics {
     #[metric(help = "get_part calls that bypassed dedup for huge blobs")]
     huge_blob_dedup_bypasses: AtomicU64,
     #[metric(
-        help = "has() calls that stopped waiting on in-flight slow writes at IN_FLIGHT_WRITE_WAIT_TIMEOUT and reported the keys missing"
+        help = "In-flight slow writes that has() gave up waiting on at the configured deadline, counted once per write; their keys are reported missing until the write resolves"
     )]
     has_in_flight_wait_timeouts: AtomicU64,
     #[metric(help = "Stale fast-store map entries that fell through to the slow store")]
@@ -1168,13 +1224,13 @@ struct FastSlowStoreMetrics {
 /// single slow read into a fan-out of `DEADLINE_EXCEEDED` errors.
 const LEADER_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// Maximum time `has` waits on a key whose slow write is still in flight
-/// before reporting it missing. A missing report only costs a re-upload,
-/// while an unbounded wait hands every existence check the writer's fate.
+/// Default for [`FastSlowSpec::has_slow_write_wait_timeout_s`]: how long
+/// `has` waits on a key whose slow write is still in flight before
+/// reporting it missing, measured from when the write registered.
 /// Deliberately under typical client deadlines (Bazel's default
 /// `--remote_timeout` is 60s): the degraded answer has to arrive while the
 /// client is still listening, or every timeout here surfaces as the
 /// client's own `DEADLINE_EXCEEDED` instead of a re-upload.
-const IN_FLIGHT_WRITE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_HAS_SLOW_WRITE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 default_health_status_indicator!(FastSlowStore);

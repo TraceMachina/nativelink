@@ -59,6 +59,7 @@ fn make_stores_direction(
             fast_direction,
             slow_direction,
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -116,6 +117,7 @@ async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Res
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast.clone(),
         slow.clone(),
@@ -161,6 +163,7 @@ async fn filesystem_slow_tier_fills_fast_tier_with_content_length() -> Result<()
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -475,6 +478,7 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store,
         slow_store,
@@ -519,6 +523,7 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store.clone(),
         slow_store,
@@ -545,6 +550,7 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         fast_direction: StoreDirection::default(),
         slow_direction: StoreDirection::default(),
         bypass_dedup_threshold_bytes: 0,
+        has_slow_write_wait_timeout_s: None,
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,
@@ -796,6 +802,7 @@ fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -1088,6 +1095,7 @@ fn make_fast_slow_with_instrumented_slow(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes,
+            has_slow_write_wait_timeout_s: None,
         },
         fast,
         Store::new(slow.clone()),
@@ -1336,6 +1344,7 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast,
         Store::new(slow.clone()),
@@ -1502,6 +1511,7 @@ async fn has_stops_waiting_on_wedged_in_flight_write() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast,
         Store::new(slow),
@@ -1524,6 +1534,21 @@ async fn has_stops_waiting_on_wedged_in_flight_write() -> Result<(), Error> {
         None,
         "has() must report a key missing once its wedged in-flight write exceeds the wait timeout",
     );
+
+    // The write is now older than the deadline, so later checks must not
+    // pay the wait again: this resolves without the clock advancing.
+    let second = fast_slow.has(digest);
+    tokio::select! {
+        biased;
+        res = second => assert_eq!(
+            res?,
+            None,
+            "a stale in-flight entry must be reported missing",
+        ),
+        () = tokio::time::sleep(Duration::from_millis(1)) => {
+            panic!("has() on a stale in-flight entry waited on the clock again")
+        }
+    }
 
     writer.abort();
     Ok(())
@@ -1629,6 +1654,7 @@ async fn dropped_writer_does_not_remove_successors_in_flight_entry() -> Result<(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast,
         Store::new(slow),
@@ -1769,6 +1795,7 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast,
         slow.clone(),
@@ -1888,6 +1915,7 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast,
         Store::new(slow.clone()),
@@ -2055,6 +2083,7 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast.clone(),
         Store::new(slow.clone()),
@@ -2225,6 +2254,7 @@ async fn huge_blob_bypasses_dedup_and_skips_populate() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store.clone(),
         slow_store,
@@ -2290,6 +2320,7 @@ async fn small_blob_still_dedups_and_populates() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store.clone(),
         slow_store,
@@ -2353,6 +2384,7 @@ async fn bypass_threshold_is_inclusive_at_exact_size() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: SIZE as u64,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store.clone(),
         slow_store,
@@ -2476,6 +2508,7 @@ fn make_stores_with_stale_fast(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         fast_store,
         slow_store.clone(),
@@ -2657,6 +2690,7 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
         },
         Store::new(MemoryStore::new(&MemorySpec::default())),
         Store::new(Arc::new(PartialThenGoneStore {
@@ -2821,6 +2855,7 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
                     fast_direction: StoreDirection::default(),
                     slow_direction: StoreDirection::default(),
                     bypass_dedup_threshold_bytes: 0,
+                    has_slow_write_wait_timeout_s: None,
                 },
                 fast.clone(),
                 slow,
