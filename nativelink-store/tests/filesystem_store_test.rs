@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -180,6 +180,10 @@ impl<Hooks: FileEntryHooks + 'static + Sync + Send> FileEntry for TestFileEntry<
 impl<Hooks: FileEntryHooks + 'static + Sync + Send> LenEntry for TestFileEntry<Hooks> {
     fn len(&self) -> u64 {
         self.inner.as_ref().unwrap().len()
+    }
+
+    fn content_len(&self) -> u64 {
+        self.inner.as_ref().unwrap().content_len()
     }
 
     fn is_empty(&self) -> bool {
@@ -1119,7 +1123,8 @@ async fn update_oneshot_with_zero_digest() -> Result<(), Error> {
 #[nativelink_test]
 async fn update_with_zero_digest() -> Result<(), Error> {
     wrap_update_zero_digest(async |digest, store| {
-        let (_writer, reader) = make_buf_channel_pair();
+        let (mut writer, reader) = make_buf_channel_pair();
+        writer.send_eof()?;
         store
             .update(digest, reader, UploadSizeInfo::ExactSize(0))
             .await
@@ -1356,6 +1361,68 @@ async fn get_file_size_uses_block_size() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn has_reports_content_length_while_eviction_counts_size_on_disk() -> Result<(), Error> {
+    const BLOCK_SIZE: u64 = 4 * 1024;
+
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    })
+    .await?;
+    let value_5kb: String = "xabcd".repeat(1024);
+    let digest_5kb = DigestInfo::try_new(HASH2, value_5kb.len())?;
+    store.update_oneshot(digest_5kb, value_5kb.into()).await?;
+    store
+        .update_oneshot(StoreKey::new_str("action_result"), "x".repeat(538).into())
+        .await?;
+    assert_eq!(
+        store
+            .get_file_entry_for_digest(&digest_5kb)
+            .await?
+            .size_on_disk(),
+        2 * BLOCK_SIZE
+    );
+    assert_eq!(
+        store.has(digest_5kb).await?,
+        Some(5 * 1024),
+        "has() must report the content length, not the size on disk"
+    );
+    assert_eq!(
+        store.has(StoreKey::new_str("action_result")).await?,
+        Some(538)
+    );
+    assert_eq!(store.has(StoreKey::new_str("missing")).await?, None);
+
+    // Room for two one-block entries: the third pushes the total to max_bytes
+    // and evicts the oldest. Counted by content length (1 + 2 + 3 bytes) all
+    // three would stay.
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        eviction_policy: Some(EvictionPolicy {
+            max_bytes: usize::try_from(3 * BLOCK_SIZE).unwrap(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .await?;
+    let digests = [1, 2, 3].map(|size| DigestInfo::try_new(HASH1, size).unwrap());
+    for digest in digests {
+        let data = make_random_data(usize::try_from(digest.size_bytes()).unwrap());
+        store.update_oneshot(digest, data.into()).await?;
+    }
+    assert_eq!(
+        store.has(digests[0]).await?,
+        None,
+        "each entry counts as a full block for eviction, so the oldest was evicted"
+    );
+    assert_eq!(store.has(digests[1]).await?, Some(2));
+    assert_eq!(store.has(digests[2]).await?, Some(3));
+    Ok(())
+}
+
+#[nativelink_test]
 async fn update_with_whole_file_closes_file() -> Result<(), Error> {
     #[expect(clippy::collection_is_never_read)] // TODO(jhpratt) investigate
     let mut permits = vec![];
@@ -1436,7 +1503,9 @@ async fn update_with_whole_file_uses_same_inode() -> Result<(), Error> {
 
     let file_path = OsString::from(format!("{temp_path}/dummy_file"));
     let original_inode = {
-        let file = fs::create_file(&file_path).await?;
+        let mut file = fs::create_file(&file_path).await?;
+        file.write_all(value.as_bytes()).await?;
+        file.flush().await?;
         let original_inode = file.as_ref().metadata().await?.ino();
 
         let result = store
@@ -2860,8 +2929,10 @@ async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error>
     .await?;
     assert_entries_readable(&store).await?;
     let after_upgrade = list_file_names(&format!("{content_path}/{STR_FOLDER_V2}")).await?;
+    // Another test may keep a file open throughout these restarts.
+    // Restarting this store must not wait for the process-wide counter.
+    let unrelated_permit = fs::get_permit().await;
     drop(store);
-    wait_for_no_open_files().await?;
 
     for restart in 1..=2 {
         let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
@@ -2888,9 +2959,9 @@ async fn upgraded_layout_is_not_migrated_again_on_restart() -> Result<(), Error>
             vec![format!("{digest}-0")],
         );
         drop(store);
-        wait_for_no_open_files().await?;
     }
 
+    drop(unrelated_permit);
     Ok(())
 }
 
@@ -3116,5 +3187,29 @@ async fn partial_migration_stays_readable_and_retries_next_startup() -> Result<(
         Bytes::from(VALUE1),
     );
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_whole_file_does_not_replace_existing_blob() -> Result<(), Error> {
+    let temp_path = make_temp_path("whole_file_integrity");
+    let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("whole_file_integrity_content"),
+        temp_path: temp_path.clone(),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    let key = DigestInfo::try_new(HASH1, 78)?;
+    let good = Bytes::from(vec![7; 78]);
+    store.update_oneshot(key, good.clone()).await?;
+    let path = OsString::from(format!("{temp_path}/incomplete"));
+    let file = fs::create_file(&path).await?;
+    let error = store
+        .update_with_whole_file(key, path, file, UploadSizeInfo::ExactSize(78))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, Code::InvalidArgument);
+    assert_eq!(store.get_part_unchunked(key, 0, None).await?, good);
     Ok(())
 }

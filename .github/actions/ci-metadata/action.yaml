@@ -1,0 +1,10 @@
+name: Bazel CI metadata
+description: Write job identity and available GitHub timestamps for the workspace rc import.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      run: python3 "$GITHUB_ACTION_PATH/../../scripts/ci_metadata.py"

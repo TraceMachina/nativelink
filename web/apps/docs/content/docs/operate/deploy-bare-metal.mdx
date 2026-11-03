@@ -302,7 +302,7 @@ on the way back up, so a crash mid-write reclaims itself.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Unit restarts in a loop, journal says `unknown field` | Config is parsed with `deny_unknown_fields`; one unrecognised key is fatal | Check the key in the [configuration reference](/reference/nativelink-config) |
-| Process exits during startup, no error about ports | `NL_OTEL_ENDPOINT` without a scheme or explicit port panics before binding | Use `http://host:4317`; see [CLI and environment](/reference/cli-and-env) |
+| Process exits during startup, no error about ports | `NL_OTEL_ENDPOINT` without a scheme or explicit port stops the process before binding | Use `http://host:4317`; see [CLI and environment](/reference/cli-and-env) |
 | Everything slows down under load, nothing errors | File-descriptor semaphore exhaustion blocks rather than failing | Raise `LimitNOFILE` **and** `max_open_files` together |
 | Two workers on one host behave erratically | They share a `work_directory`, which is purged at startup | Give each worker its own |
 | Disk full, then every request fails and keeps retrying | ENOSPC surfaces as a generic error code that clients and upstream stores retry, and eviction is not triggered by write failures | [Runbooks](/operate/runbooks#the-disk-fills-up) |

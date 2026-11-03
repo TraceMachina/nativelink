@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -1025,5 +1025,34 @@ async fn single_request_permit() -> Result<(), Error> {
         "Number of waiting permits for Mongo waiting=0"
     ));
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_preserves_mongo_value() -> Result<(), Error> {
+    let helper = TestMongoHelper::new(None).await?;
+    let key = DigestInfo::try_new(VALID_HASH1, 999)?;
+    let good = Bytes::from(vec![7; 78]);
+    helper.store.update_oneshot(key, good.clone()).await?;
+    for finish in [false, true] {
+        for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                if finish {
+                    tx.send_eof()?;
+                }
+                Ok::<_, Error>(())
+            };
+            let (result, _) = tokio::join!(
+                helper.store.update(key, rx, UploadSizeInfo::ExactSize(78)),
+                send
+            );
+            assert!(result.is_err());
+            assert_eq!(helper.store.get_part_unchunked(key, 0, None).await?, good);
+        }
+    }
     Ok(())
 }

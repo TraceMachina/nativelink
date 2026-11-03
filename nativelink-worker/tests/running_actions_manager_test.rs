@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ mod tests {
         digest_function::Value as ProtoDigestFunction, platform::Property,
     };
     use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-        HistoricalExecuteResponse, ResourceOutcome, StartExecute,
+        ActionResourceUsage, HistoricalExecuteResponse, ResourceOutcome, StartExecute,
     };
     use nativelink_proto::google::rpc::Status;
     #[cfg(target_family = "unix")]
@@ -77,6 +77,7 @@ mod tests {
     use nativelink_util::action_messages::SymlinkInfo;
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
+        STORE_UNREACHABLE_ERROR_TIP,
     };
     #[cfg(target_family = "unix")]
     use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -90,7 +91,7 @@ mod tests {
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::download_to_directory_bounded;
@@ -100,15 +101,13 @@ mod tests {
         Callbacks, ExecutionConfiguration, KillReason, PersistentWorkersSettings,
         ResourceEnforcement, RunningAction, RunningActionImpl, RunningActionsManager,
         RunningActionsManagerArgs, RunningActionsManagerImpl, classify_outcome,
-        download_to_directory, log_excerpt, parse_kb_field,
+        download_to_directory, log_excerpt, parse_kb_field, with_input_fetch_stats, with_phases,
     };
     use pretty_assertions::assert_eq;
     use prost::Message;
     #[cfg(target_family = "unix")]
-    use tokio::sync::Semaphore;
-    use tokio::sync::oneshot;
-    #[cfg(target_family = "unix")]
     use tokio::sync::watch;
+    use tokio::sync::{Semaphore, oneshot};
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
@@ -593,6 +592,94 @@ mod tests {
                 FILE2_MTIME
             );
         }
+        Ok(())
+    }
+
+    // The first fetch of a tree pulls every file from the CAS; a second one
+    // finds them all in the worker's local store. Executable files count too.
+    #[nativelink_test]
+    async fn download_to_directory_counts_fetched_and_cached_input_bytes()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let plain = DigestInfo::new([12u8; 32], 10);
+        let exec = DigestInfo::new([13u8; 32], 7);
+        slow_store
+            .as_ref()
+            .update_oneshot(plain, "0123456789".into())
+            .await?;
+        slow_store
+            .as_ref()
+            .update_oneshot(exec, "#!/bin/".into())
+            .await?;
+        let root = DigestInfo::new([11u8; 32], 32);
+        let directory = Directory {
+            files: vec![
+                FileNode {
+                    name: "plain.txt".to_string(),
+                    digest: Some(plain.into()),
+                    is_executable: false,
+                    node_properties: None,
+                },
+                FileNode {
+                    name: "tool.sh".to_string(),
+                    digest: Some(exec.into()),
+                    is_executable: true,
+                    node_properties: None,
+                },
+            ],
+            ..Default::default()
+        };
+        slow_store
+            .as_ref()
+            .update_oneshot(root, directory.encode_to_vec().into())
+            .await?;
+
+        for (round, expected_cached) in [(0, 0u64), (1, 17)] {
+            let dir = make_temp_path(&format!("stats_dir_{round}"));
+            fs::create_dir_all(&dir).await?;
+            let (result, stats) = with_input_fetch_stats(download_to_directory(
+                cas_store.as_ref(),
+                fast_store.as_pin(),
+                &root,
+                &dir,
+            ))
+            .await;
+            result?;
+            assert_eq!(stats.bytes(), (17, expected_cached), "round {round}");
+        }
+        Ok(())
+    }
+
+    #[nativelink_test]
+    async fn with_phases_reads_the_result_metadata() -> Result<(), Box<dyn core::error::Error>> {
+        let at = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(1_000 + secs);
+        let result = ActionResult {
+            output_files: vec![FileInfo {
+                name_or_path: NameOrPath::Path("out".to_string()),
+                digest: DigestInfo::new([1u8; 32], 300),
+                is_executable: false,
+            }],
+            stdout_digest: DigestInfo::new([2u8; 32], 20),
+            stderr_digest: DigestInfo::new([3u8; 32], 5),
+            execution_metadata: ExecutionMetadata {
+                input_fetch_start_timestamp: at(0),
+                input_fetch_completed_timestamp: at(2),
+                output_upload_start_timestamp: at(10),
+                output_upload_completed_timestamp: at(13),
+                ..ActionResult::default().execution_metadata
+            },
+            ..ActionResult::default()
+        };
+        let mut usage = ActionResourceUsage::default();
+        with_phases(&mut usage, &result);
+        assert_eq!(usage.input_fetch_ms, 2_000);
+        assert_eq!(usage.output_upload_ms, 3_000);
+        assert_eq!(usage.output_bytes, 325);
+
+        // A phase that never started reads as zero, not as decades.
+        let mut unset = ActionResourceUsage::default();
+        with_phases(&mut unset, &ActionResult::default());
+        assert_eq!((unset.input_fetch_ms, unset.output_upload_ms), (0, 0));
         Ok(())
     }
 
@@ -3534,6 +3621,8 @@ exit 0
             memory_property_name: "memory_kb".to_string(),
             memory_headroom_percent: 20,
             disk_headroom_percent: 20,
+            memory_pressure_kill_percent: 0,
+            memory_pressure_kill_after_s: 30,
         };
         assert!(
             ResourceEnforcement::from_config(&config(
@@ -3686,6 +3775,7 @@ exit 0
                     disk_property_name: Some("disk_kb".to_string()),
                     disk_soft: false,
                     disk_headroom_percent: 20,
+                    pressure_kill: None,
                 }),
                 ..Default::default()
             },
@@ -3780,6 +3870,7 @@ exit 0
                 disk_property_name: Some("disk_kb".to_string()),
                 disk_soft: false,
                 disk_headroom_percent: 20,
+                pressure_kill: None,
             }),
             None,
         ] {
@@ -3833,6 +3924,7 @@ exit 0
                         disk_property_name: Some("disk_kb".to_string()),
                         disk_soft: false,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -3917,6 +4009,47 @@ exit 0
             err.to_string().contains("Not enough free disk"),
             "the refusal should name the disk: {err}"
         );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_has_terminated(pid: u32) -> Result<bool, std::io::Error> {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => Ok(nativelink_worker::reaper::parse_zombie_ppid(&stat).is_some()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(err) => Err(err),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn process_termination_does_not_require_reaping()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()?;
+        let pid = child.id().expect("just spawned");
+        let _owned = nativelink_worker::reaper::OwnedChild::new(Some(pid));
+        assert!(
+            !process_has_terminated(pid)?,
+            "a live child is not terminated"
+        );
+
+        child.start_kill()?;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !process_has_terminated(pid)? {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await??;
+        // Keep the child's exit status owned by this handle: it must still be
+        // present as a zombie, which a signal-0 existence check would reject.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+        assert!(nativelink_worker::reaper::parse_zombie_ppid(&stat).is_some());
+        child.wait().await?;
+        assert!(process_has_terminated(pid)?, "a reaped child is terminated");
         Ok(())
     }
 
@@ -4023,17 +4156,19 @@ exit 0
             .expect("a timed-out action must carry an error");
         assert_eq!(err.code, Code::DeadlineExceeded, "{err}");
 
-        let pids: Vec<i32> = std::fs::read_to_string(&pid_file)?
+        let pids: Vec<u32> = std::fs::read_to_string(&pid_file)?
             .lines()
             .filter_map(|line| line.trim().parse().ok())
             .collect();
         assert_eq!(pids.len(), 2, "both children should have written their pid");
-        // A moment for the kernel to reap; then neither pid may exist.
+        // Check termination, not reaping: a dead orphan can retain its pid
+        // until its parent's next reaper sweep.
         tokio::time::sleep(Duration::from_millis(200)).await;
         for pid in pids {
-            // SAFETY: signal 0 checks for existence and sends nothing.
-            let alive = unsafe { libc::kill(pid, 0) } == 0;
-            assert!(!alive, "child {pid} outlived the timed-out action");
+            assert!(
+                process_has_terminated(pid)?,
+                "child {pid} outlived the timed-out action"
+            );
         }
         Ok(())
     }
@@ -4318,13 +4453,14 @@ exit 0
         Ok(())
     }
 
-    /// `max_concurrent_input_downloads` of 0 takes the default pool of 64;
-    /// any other value is the pool's size.
+    /// `max_concurrent_input_downloads` of 0, the default, shares no pool:
+    /// each action fetches on its own, as before the setting existed. Any
+    /// other value is the size of the pool every action shares.
     #[nativelink_test]
-    async fn input_download_pool_defaults_to_sixty_four() -> Result<(), Box<dyn core::error::Error>>
-    {
+    async fn input_download_pool_is_unbounded_unless_configured()
+    -> Result<(), Box<dyn core::error::Error>> {
         let (_, _, cas_store, _) = setup_stores().await?;
-        for (configured, expected) in [(0, 64), (7, 7)] {
+        for (configured, expected) in [(0, Semaphore::MAX_PERMITS), (7, 7)] {
             let manager = RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory: make_temp_path("root_action_directory"),
                 execution_configuration: ExecutionConfiguration {
@@ -4587,7 +4723,7 @@ exit 0
     #[derive(Debug)]
     struct FlakyStore {
         inner: Store,
-        fail_on: DigestInfo,
+        fail_on: Mutex<DigestInfo>,
         failures: u64,
         code: Code,
         reads: AtomicU64,
@@ -4603,7 +4739,7 @@ exit 0
         ) -> Arc<Self> {
             Arc::new(Self {
                 inner: Store::new(inner),
-                fail_on,
+                fail_on: Mutex::new(fail_on),
                 failures,
                 code,
                 reads: AtomicU64::new(0),
@@ -4613,6 +4749,12 @@ exit 0
         /// Reads of the flaky digest so far, refused or served.
         fn reads(&self) -> u64 {
             self.reads.load(Ordering::SeqCst)
+        }
+
+        /// Makes another digest the flaky one: the Action itself, whose
+        /// digest the setup only knows once it has uploaded it.
+        fn retarget(&self, digest: DigestInfo) {
+            *self.fail_on.lock().unwrap() = digest;
         }
     }
 
@@ -4661,7 +4803,7 @@ exit 0
             offset: u64,
             length: Option<u64>,
         ) -> Result<(), Error> {
-            if key == StoreKey::Digest(self.fail_on) {
+            if key == StoreKey::Digest(*self.fail_on.lock().unwrap()) {
                 let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
                 if read <= self.failures {
                     return Err(make_err!(self.code, "flaky store refused read {read}"));
@@ -4722,7 +4864,14 @@ exit 0
         make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
     ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
     {
-        fetch_setup_tree(max_download_timeout, None, false, make_slow).await
+        fetch_setup_tree(
+            max_download_timeout,
+            None,
+            false,
+            ExecutionConfiguration::default(),
+            make_slow,
+        )
+        .await
     }
 
     /// The second file of a nested `fetch_setup_tree`, at the root.
@@ -4737,6 +4886,7 @@ exit 0
         max_download_timeout: Duration,
         action_timeout: Option<Duration>,
         nested: bool,
+        execution_configuration: ExecutionConfiguration,
         make_slow: impl FnOnce(Arc<MemoryStore>, DigestInfo) -> Arc<S>,
     ) -> Result<(Arc<RunningActionsManagerImpl>, DigestInfo, Arc<S>), Box<dyn core::error::Error>>
     {
@@ -4837,7 +4987,7 @@ exit 0
         let running_actions_manager =
             Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
                 root_action_directory,
-                execution_configuration: ExecutionConfiguration::default(),
+                execution_configuration,
                 cas_store: cas_store.clone(),
                 ac_store: None,
                 historical_store: Store::new(cas_store.clone()),
@@ -4901,6 +5051,8 @@ exit 0
             "took {:?}",
             started.elapsed()
         );
+        // A stall is a sign of an overloaded store too.
+        assert!(logs_contain(INPUT_POOL_HINT));
         action.cleanup().await?;
         assert!(
             !Path::new(&action_directory).exists(),
@@ -4999,6 +5151,214 @@ exit 0
         Ok(())
     }
 
+    /// The Action is read with the same retries as the inputs: a store that
+    /// refuses it twice with `Unavailable` (a CAS pod being replaced) delays
+    /// the start by 1 s then 2 s, and the action is created rather than
+    /// failed on the spot.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_retries_a_transient_action_read()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let elapsed = started.elapsed();
+        assert_eq!(
+            store.reads(),
+            3,
+            "two refused reads of the Action, then the one served"
+        );
+        assert!(elapsed > Duration::from_secs(2), "{elapsed:?}");
+        assert!(
+            elapsed <= Duration::from_secs(3) + Duration::from_millis(10),
+            "{elapsed:?}"
+        );
+        let action = action.prepare_action().await?;
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// An Action read that never recovers stops at `max_download_timeout`
+    /// and fails with the store's code, so a dead store still ends the action
+    /// and the scheduler sees why.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_stops_retrying_the_action_read_at_the_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_secs(5), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let err = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await
+            .expect_err("a store that never answers must fail the action");
+        // The fast-slow store reports a slow tier that dropped mid-read as
+        // `Internal`; the refusal itself is in the chain.
+        assert!(
+            matches!(err.code, Code::Internal | Code::Unavailable),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("flaky store refused read"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("the next retry would start after max_download_timeout"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "the scheduler is told the store was down: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            store.reads() >= 2,
+            "retried at least once: {}",
+            store.reads()
+        );
+        Ok(())
+    }
+
+    /// The advice `max_concurrent_input_downloads` logs, in part.
+    #[cfg(target_family = "unix")]
+    const INPUT_POOL_HINT: &str = "Consider setting max_concurrent_input_downloads to 64";
+
+    /// How many log lines carry the advice.
+    #[cfg(target_family = "unix")]
+    fn input_pool_hints(lines: &[&str]) -> usize {
+        lines
+            .iter()
+            .filter(|line| line.contains(INPUT_POOL_HINT))
+            .count()
+    }
+
+    /// A worker without a shared input pool whose fetches fail the way an
+    /// overloaded store fails them suggests `max_concurrent_input_downloads`,
+    /// once for the two failures rather than once per failure.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_suggests_a_shared_input_pool_once()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            1 => Ok(()),
+            n => Err(format!("{n} pool suggestions for two failed fetches")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A read that fails with `DataLoss` is retried like any transient
+    /// failure, but it means a bad stored copy rather than an overloaded
+    /// store, so a worker without a pool is not told to set one.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_with_data_loss_suggests_nothing()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::DataLoss)
+            })
+            .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two corrupt reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} pool suggestions for corrupt reads")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// A worker that already shares a pool is not told to set one.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_with_a_shared_input_pool_suggests_nothing()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            None,
+            false,
+            ExecutionConfiguration {
+                max_concurrent_input_downloads: 64,
+                ..Default::default()
+            },
+            |inner, digest| FlakyStore::new(inner, digest, 2, Code::Unavailable),
+        )
+        .await?;
+        let operation_id = OperationId::default();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let action = action.prepare_action().await?;
+        assert_eq!(store.reads(), 3, "two refused reads, then the one served");
+        logs_assert(|lines: &[&str]| match input_pool_hints(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} pool suggestions with a pool configured")),
+        });
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
     /// A first attempt that fails after part of the tree is built (the
     /// subdirectory exists, the file in it does not) is cleared before the
     /// next, which stages the whole tree.
@@ -5006,11 +5366,14 @@ exit 0
     #[nativelink_test(start_paused = true)]
     async fn prepare_action_restages_a_partly_built_tree() -> Result<(), Box<dyn core::error::Error>>
     {
-        let (running_actions_manager, action_digest, store) =
-            fetch_setup_tree(Duration::from_mins(10), None, true, |inner, digest| {
-                FlakyStore::new(inner, digest, 1, Code::Unavailable)
-            })
-            .await?;
+        let (running_actions_manager, action_digest, store) = fetch_setup_tree(
+            Duration::from_mins(10),
+            None,
+            true,
+            ExecutionConfiguration::default(),
+            |inner, digest| FlakyStore::new(inner, digest, 1, Code::Unavailable),
+        )
+        .await?;
         let operation_id = OperationId::default();
         let action = running_actions_manager
             .create_and_add_action(
@@ -5126,12 +5489,12 @@ exit 0
     /// deadline leaves room for another attempt; then the last error comes
     /// back, naming the attempts, before the deadline itself fires.
     #[cfg(target_family = "unix")]
-    #[nativelink_test(start_paused = true)]
-    async fn prepare_action_stops_retrying_at_the_download_deadline()
-    -> Result<(), Box<dyn core::error::Error>> {
+    async fn check_prepare_stops_retrying_at_the_download_deadline(
+        code: Code,
+    ) -> Result<(), Box<dyn core::error::Error>> {
         let (running_actions_manager, action_digest, store) =
             fetch_setup(Duration::from_secs(5), |inner, digest| {
-                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+                FlakyStore::new(inner, digest, u64::MAX, code)
             })
             .await?;
         let operation_id = OperationId::default();
@@ -5154,6 +5517,10 @@ exit 0
         assert_eq!(store.reads(), 3, "{err:?}");
         assert_ne!(err.code, Code::DeadlineExceeded, "{err:?}");
         assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "{err:?}"
+        );
         assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
         action.cleanup().await?;
         assert!(
@@ -5164,6 +5531,22 @@ exit 0
             .await
             .expect("an entry was left behind");
         Ok(())
+    }
+
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_at_the_download_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        check_prepare_stops_retrying_at_the_download_deadline(Code::Unavailable).await
+    }
+
+    // Characterize the current policy: the same input returning DataLoss
+    // consumes the preparation retry window just like an unavailable store.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn prepare_action_stops_retrying_unchanged_data_loss_at_the_download_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        check_prepare_stops_retrying_at_the_download_deadline(Code::DataLoss).await
     }
 
     /// An action with its own timeout is not retried past it: the scheduler
@@ -5177,6 +5560,7 @@ exit 0
             Duration::from_mins(10),
             Some(Duration::from_secs(4)),
             false,
+            ExecutionConfiguration::default(),
             |inner, digest| FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable),
         )
         .await?;
@@ -5435,6 +5819,7 @@ exit 0
                         disk_property_name: Some("disk_kb".to_string()),
                         disk_soft: true,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -6501,7 +6886,7 @@ exit 0
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn action_over_its_memory_reservation_is_killed_by_the_worker()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -6522,6 +6907,7 @@ exit 0
                         disk_property_name: None,
                         disk_soft: false,
                         disk_headroom_percent: 20,
+                        pressure_kill: None,
                     }),
                     ..Default::default()
                 },
@@ -8845,7 +9231,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
             action: &Action,
             action_digest: DigestInfo,
             operation_id: &str,
-        ) -> Result<String, Error> {
+        ) -> Result<(String, ActionResourceUsage), Error> {
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
                     WORKER_ID.to_string(),
@@ -8863,8 +9249,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                     },
                 )
                 .await?;
-            let action_result = run_action(running_action_impl).await?;
-            slow_store
+            let action_result = run_action(running_action_impl.clone()).await?;
+            let count = slow_store
                 .as_ref()
                 .get_part_unchunked(action_result.output_files[0].digest, 0, None)
                 .await
@@ -8873,7 +9259,11 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                         Error::from_std_err(Code::Internal, &err)
                             .append("Decoding persistent worker count.txt")
                     })
-                })
+                })?;
+            let usage = running_action_impl
+                .resource_usage()
+                .expect("usage is reported for every executed action");
+            Ok((count, usage))
         }
 
         let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
@@ -8918,6 +9308,8 @@ while IFS= read -r request; do
     continue
   fi
   count=$((count + 1))
+  i=0
+  while [ "$i" -lt 100000 ]; do i=$((i + 1)); done
   sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
   printf '%s' "$count" > "$sandbox_dir/count.txt"
   printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
@@ -8931,7 +9323,7 @@ done
             .await?;
         let (action, action_digest) = create_action(&cas_store, worker_script_digest).await?;
 
-        let first = run_persistent_action(
+        let (first, first_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -8939,7 +9331,7 @@ done
             "persistent_worker_first",
         )
         .await?;
-        let second = run_persistent_action(
+        let (second, second_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -8953,6 +9345,14 @@ done
             second, "2",
             "second action must reuse the already-running persistent worker"
         );
+        // Each request spins for well under one process-table snapshot's
+        // lifetime, so CPU read from the snapshot would measure nothing; and
+        // the pooled process is single-threaded, so a request charged more
+        // than its own wall time carries another request's work.
+        for usage in [&first_usage, &second_usage] {
+            assert!(usage.cpu_time_ms > 0, "{usage:?}");
+            assert!(usage.cpu_time_ms <= usage.wall_time_ms + 20, "{usage:?}");
+        }
         Ok(())
     }
 
@@ -10199,6 +10599,503 @@ done
             "expected one output directory"
         );
         assert_eq!(action_result.output_folders[0].path, "out");
+        Ok(())
+    }
+
+    /// The members of an action are reached by two links, each needed
+    /// where the other fails: process group, which survives an intermediate
+    /// shell exiting and reparenting the work to the worker, and parent
+    /// pid, which reaches a Bazel test that `set -m` put in a group of its
+    /// own. Nothing in the worker's own group is ever counted.
+    #[test]
+    fn action_member_pids_follow_parent_and_group_links() {
+        use nativelink_worker::running_actions_manager::{ProcEntry, action_member_pids};
+        let entry = |pid, ppid, pgrp| ProcEntry { pid, ppid, pgrp };
+        let worker_pgid = 1;
+        let table = [
+            entry(1, 0, 1),       // the worker, pid 1 in its pod
+            entry(100, 1, 100),   // the action: test-setup.sh, group leader
+            entry(102, 1, 100),   // a helper the shell forked and lost; kept its group
+            entry(200, 100, 200), // the test binary, in its own group under set -m
+            entry(201, 200, 200), // the test's child
+            entry(202, 1, 200),   // the test's grandchild, reparented, still in its group
+            entry(300, 1, 300),   // another action
+            entry(301, 300, 300), // that action's child
+            entry(400, 100, 1),   // impossible, but a member's child in the worker's group
+        ];
+        let members = action_member_pids(100, worker_pgid, &table);
+        let mut got: Vec<u32> = members.into_iter().collect();
+        got.sort_unstable();
+        assert_eq!(got, vec![100, 102, 200, 201, 202]);
+        // Nothing left of the action: an empty set, not the worker.
+        assert!(action_member_pids(100, worker_pgid, &table[..1]).is_empty());
+    }
+
+    /// Once the wrapper is gone, a `set -m` test has no parent or group
+    /// link to the action; the group an earlier sample found still reaches
+    /// it. A remembered group with nothing left in it is dropped, so a
+    /// reused group id is never signalled, and the worker's group is never
+    /// a seed.
+    #[test]
+    fn action_membership_keeps_a_remembered_group() {
+        use std::collections::HashSet;
+
+        use nativelink_worker::running_actions_manager::{ProcEntry, action_membership};
+        let entry = |pid, ppid, pgrp| ProcEntry { pid, ppid, pgrp };
+        let worker_pgid = 1;
+        let table = [
+            entry(1, 0, 1),     // the worker
+            entry(200, 1, 200), // the test, reparented after its wrapper exited
+            entry(201, 200, 200),
+            entry(300, 1, 300), // another action
+        ];
+        assert!(
+            action_membership(&[100], worker_pgid, &table)
+                .pids
+                .is_empty()
+        );
+        let members = action_membership(&[100, 200, 250, worker_pgid], worker_pgid, &table);
+        assert_eq!(members.pids, HashSet::from([200, 201]));
+        assert_eq!(members.groups, HashSet::from([200]));
+    }
+
+    /// Live version of the above: a shell under `set -m` puts its
+    /// background job in a new process group, as Bazel's test-setup.sh
+    /// does with the test binary, and the sampler's membership still
+    /// reaches it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn action_member_pids_live_reach_a_job_control_child() {
+        use std::io::{BufRead, BufReader};
+        use std::os::unix::process::CommandExt;
+
+        use nativelink_worker::running_actions_manager::{
+            action_membership_live, parse_pgid_from_stat,
+        };
+        let mut child = std::process::Command::new("bash")
+            .args(["-c", "set -m; sleep 30 & echo $!; wait"])
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("bash spawns");
+        let shell_pid = child.id();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().expect("stdout is piped"))
+            .read_line(&mut line)
+            .expect("the shell prints the job's pid");
+        let sleep_pid: u32 = line.trim().parse().expect("a pid");
+        let sleep_stat =
+            std::fs::read_to_string(format!("/proc/{sleep_pid}/stat")).expect("the job is alive");
+        let sleep_pgrp = parse_pgid_from_stat(&sleep_stat).expect("a stat line");
+        let members = action_membership_live(&[shell_pid]).pids;
+        // SAFETY: killing the two processes this test started.
+        unsafe {
+            libc::kill(sleep_pid.cast_signed(), libc::SIGKILL);
+            libc::kill(shell_pid.cast_signed(), libc::SIGKILL);
+        }
+        drop(child.wait());
+        assert_ne!(
+            sleep_pgrp, shell_pid,
+            "set -m must have moved the job to its own process group for this test to mean anything"
+        );
+        assert!(members.contains(&shell_pid), "{members:?}");
+        assert!(
+            members.contains(&sleep_pid),
+            "the job in its own process group must be a member: {members:?}"
+        );
+    }
+
+    /// A kill needs the pressure to hold for the whole window; a dip starts
+    /// over, and so does a kill, so the next one waits a full window.
+    #[test]
+    fn pressure_window_kills_only_after_sustained_pressure() {
+        use nativelink_worker::running_actions_manager::PressureWindow;
+        use tokio::time::Instant;
+        let t0 = Instant::now();
+        let at = |secs| t0 + Duration::from_secs(secs);
+        let mut window = PressureWindow::new(40, Duration::from_secs(30));
+        assert!(!window.observe(55.0, at(0)));
+        assert!(!window.observe(55.0, at(29)));
+        assert!(
+            window.observe(40.0, at(30)),
+            "at the threshold, for the window: kill"
+        );
+        assert!(
+            !window.observe(55.0, at(31)),
+            "a kill starts the window over"
+        );
+        assert!(!window.observe(55.0, at(60)));
+        assert!(!window.observe(10.0, at(61)), "a dip starts over");
+        assert!(!window.observe(55.0, at(62)));
+        assert!(!window.observe(55.0, at(91)));
+        assert!(window.observe(55.0, at(92)));
+    }
+
+    /// The kill lands on the action furthest over its reservation, or the
+    /// largest when none is over, never on one without a sample, one
+    /// already asked to die, or one that reserves the whole worker;
+    /// nothing qualifying means no kill.
+    #[test]
+    fn pressure_victim_is_the_furthest_over_its_reservation() {
+        use nativelink_worker::running_actions_manager::{PressureCandidate, pick_pressure_victim};
+        const GIB: u64 = 1024 * 1024;
+        let c = |item, last_kb, reserved_kb, kill_requested| PressureCandidate {
+            item,
+            last_kb,
+            reserved_kb,
+            kill_requested,
+        };
+        // A uses more but is within its reservation; B is 4 GiB over.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 15 * GIB, 16 * GIB, false),
+                    c("b", 6 * GIB, 2 * GIB, false)
+                ],
+                None
+            ),
+            Some("b")
+        );
+        // Nobody over: the largest.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 500, 1_000, false),
+                    c("c", 7_000, 8_000, false),
+                    c("d", 0, 0, false)
+                ],
+                None
+            ),
+            Some("c")
+        );
+        // Already asked, or unsampled: never.
+        assert_eq!(
+            pick_pressure_victim([c("a", 0, 0, false), c("b", 9_000, 0, true)], None),
+            None
+        );
+        // Reserving the whole worker: never, even when furthest over.
+        assert_eq!(
+            pick_pressure_victim(
+                [
+                    c("a", 40 * GIB, 32 * GIB, false),
+                    c("b", 3 * GIB, 2 * GIB, false)
+                ],
+                Some(32 * GIB)
+            ),
+            Some("b")
+        );
+        assert_eq!(
+            pick_pressure_victim([c("a", 40 * GIB, 32 * GIB, false)], Some(32 * GIB)),
+            None
+        );
+        assert_eq!(
+            pick_pressure_victim(Vec::<PressureCandidate<&str>>::new(), None),
+            None
+        );
+    }
+
+    /// With 20% headroom a 52 GiB pod advertises 40 GiB, so the largest
+    /// reservation it is ever given is 40 GiB, well under its cgroup limit.
+    /// An action holding that whole figure is still never the victim.
+    #[test]
+    fn pressure_victim_skips_an_action_reserving_the_advertised_memory() {
+        use nativelink_config::cas_server::{CapacityConfig, CpuUnit, WorkerProperty};
+        use nativelink_worker::capacity::{ObservedCapacity, advertised_memory_kb};
+        use nativelink_worker::running_actions_manager::{PressureCandidate, pick_pressure_victim};
+        const GIB: u64 = 1024 * 1024;
+        let capacity = CapacityConfig {
+            cpu_property_name: "cpu_count".to_string(),
+            memory_property_name: "memory_kb".to_string(),
+            cpu_unit: CpuUnit::Cores,
+            overhead_cpu_millicores: 1000,
+            overhead_memory_kb: 4 * GIB,
+            memory_headroom_percent: None,
+        };
+        let largest = advertised_memory_kb(
+            Some(&capacity),
+            20,
+            Some(ObservedCapacity {
+                cpu_millicores: 14_000,
+                memory_kb: 52 * GIB,
+            }),
+            &HashMap::<String, WorkerProperty>::new(),
+            "memory_kb",
+        );
+        assert_eq!(largest, Some(40 * GIB));
+        let candidates = || {
+            [PressureCandidate {
+                item: "whole",
+                last_kb: 45 * GIB,
+                reserved_kb: 40 * GIB,
+                kill_requested: false,
+            }]
+        };
+        assert_eq!(
+            pick_pressure_victim(candidates(), Some(52 * GIB)),
+            Some("whole")
+        );
+        assert_eq!(pick_pressure_victim(candidates(), largest), None);
+    }
+
+    /// An action running `arguments` on a manager with `memory: soft` and
+    /// the pressure kill armed at a threshold the host never reaches, so
+    /// only the test asks for a kill, under a 1 GiB reservation.
+    #[cfg(target_os = "linux")]
+    async fn pressure_armed_action(
+        arguments: Vec<String>,
+    ) -> Result<Arc<RunningActionImpl>, Box<dyn core::error::Error>> {
+        use nativelink_worker::running_actions_manager::{MemoryLimit, PressureKill};
+        const WORKER_ID: &str = "foo_worker_id";
+        let (_, _, cas_store, _ac_store) = setup_stores().await?;
+        let root_action_directory = make_temp_path("root_action_directory");
+        fs::create_dir_all(&root_action_directory).await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: root_action_directory.clone(),
+                execution_configuration: ExecutionConfiguration {
+                    resource_enforcement: Some(ResourceEnforcement {
+                        memory: Some(MemoryLimit {
+                            property_name: "memory_kb".to_string(),
+                            headroom_percent: 20,
+                        }),
+                        disk_property_name: None,
+                        disk_soft: false,
+                        disk_headroom_percent: 20,
+                        // Armed, but a threshold the host never reaches: the
+                        // test asks for the kill itself.
+                        pressure_kill: Some(PressureKill {
+                            full_avg10_percent: 100,
+                            after: Duration::from_hours(1),
+                            largest_reservation_kb: None,
+                        }),
+                    }),
+                    ..Default::default()
+                },
+                cas_store: cas_store.clone(),
+                ac_store: None,
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::Never,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+        let command = Command {
+            arguments,
+            working_directory: ".".to_string(),
+            environment_variables: vec![EnvironmentVariable {
+                name: "PATH".to_string(),
+                value: env::var("PATH").unwrap(),
+            }],
+            ..Default::default()
+        };
+        let command_digest = serialize_and_upload_message(
+            &command,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let input_root_digest = serialize_and_upload_message(
+            &Directory::default(),
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+        let action = Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(input_root_digest.into()),
+            ..Default::default()
+        };
+        let action_digest = serialize_and_upload_message(
+            &action,
+            cas_store.as_pin(),
+            &mut DigestHasherFunc::Sha256.hasher(),
+        )
+        .await?;
+
+        let running_action_impl = running_actions_manager
+            .create_and_add_action(
+                WORKER_ID.to_string(),
+                StartExecute {
+                    request_metadata: None,
+                    execute_request: Some(ExecuteRequest {
+                        action_digest: Some(action_digest.into()),
+                        digest_function: ProtoDigestFunction::Sha256.into(),
+                        ..Default::default()
+                    }),
+                    operation_id: OperationId::default().to_string(),
+                    queued_timestamp: None,
+                    // A reservation the sleep stays well under: nothing but
+                    // the pressure kill can end it early.
+                    platform: Some(Platform {
+                        properties: vec![Property {
+                            name: "memory_kb".into(),
+                            value: "1048576".into(),
+                        }],
+                    }),
+                    worker_id: WORKER_ID.to_string(),
+                },
+            )
+            .await?;
+        Ok(running_action_impl)
+    }
+
+    /// A pressure kill goes through the same path as a ceiling breach: the
+    /// process group dies at once, the result says the worker killed it for
+    /// memory, so the scheduler requeues it with a larger reservation, and
+    /// the error names the pressure.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn action_killed_under_memory_pressure_is_a_memory_kill()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let running_action_impl =
+            pressure_armed_action(vec!["sleep".to_string(), "30".to_string()]).await?;
+
+        let started = std::time::Instant::now();
+        let run = tokio::spawn(run_action(running_action_impl.clone()));
+        // The monitor would do this once the sampler has a figure; the test
+        // stands in for it.
+        while running_action_impl.last_memory_kb() == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the sampler never reported the sleeping action's memory"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        running_action_impl.request_memory_pressure_kill(55);
+        let result = run.await??;
+        let err = result
+            .error
+            .expect("a pressure-killed action must fail with an error");
+        assert_eq!(err.code, Code::FailedPrecondition, "{err}");
+        assert!(
+            err.to_string().contains("memory pressure") && err.to_string().contains("55%"),
+            "error should name the pressure: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the kill should land long before the 30s sleep ends"
+        );
+        let usage = running_action_impl
+            .resource_usage()
+            .expect("usage is reported for every executed action");
+        assert_eq!(
+            usage.outcome,
+            ResourceOutcome::KilledMemory as i32,
+            "{usage:?}"
+        );
+        assert!(usage.enforced, "the worker ended it: {usage:?}");
+        Ok(())
+    }
+
+    /// Whether a pid is still a running process; a zombie waiting for a
+    /// reaper that is not the test counts as gone.
+    #[cfg(target_os = "linux")]
+    fn process_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| !rest.trim_start().starts_with(['Z', 'X']))
+        })
+    }
+
+    /// A `set -m` job in its own process group, as Bazel's test-setup.sh
+    /// starts a test, under a wrapper that keeps running (`wait`) or exits
+    /// after a second (`sleep 1`). Returns the action and where the job's
+    /// pid lands.
+    #[cfg(target_os = "linux")]
+    async fn job_control_action(
+        wrapper_tail: &str,
+    ) -> Result<(Arc<RunningActionImpl>, PathBuf), Box<dyn core::error::Error>> {
+        let pid_file = PathBuf::from(make_temp_path("job_control_pid"));
+        fs::create_dir_all(pid_file.parent().expect("a temp path has a parent")).await?;
+        let script = format!(
+            "set -m; sleep 30 & echo $! > {}; {wrapper_tail}",
+            pid_file.display()
+        );
+        let action =
+            pressure_armed_action(vec!["bash".to_string(), "-c".to_string(), script]).await?;
+        Ok((action, pid_file))
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn read_job_pid(pid_file: &Path) -> u32 {
+        let started = std::time::Instant::now();
+        loop {
+            if let Ok(text) = std::fs::read_to_string(pid_file)
+                && let Ok(pid) = text.trim().parse::<u32>()
+            {
+                return pid;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(15),
+                "the job never wrote its pid"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// A kill reaches a job that `set -m` moved out of the action's group:
+    /// before, the kill went to the action's group alone, the job lived on
+    /// with its memory, and the requeued action ran twice.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn pressure_kill_reaches_a_job_control_group() -> Result<(), Box<dyn core::error::Error>>
+    {
+        let (running_action_impl, pid_file) = job_control_action("wait").await?;
+        let run = tokio::spawn(run_action(running_action_impl.clone()));
+        let job_pid = read_job_pid(&pid_file).await;
+        while running_action_impl.last_memory_kb() == 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        running_action_impl.request_memory_pressure_kill(55);
+        let result = run.await??;
+        assert!(result.error.is_some(), "the action must fail: {result:?}");
+        let started = std::time::Instant::now();
+        while process_running(job_pid) && started.elapsed() < Duration::from_secs(5) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let survived = process_running(job_pid);
+        if survived {
+            // SAFETY: the job this test started.
+            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+        }
+        assert!(!survived, "the set -m job survived the kill");
+        Ok(())
+    }
+
+    /// The same job after its wrapper has exited: nothing links it to the
+    /// action any more but the group an earlier sample found, and the
+    /// straggler sweep still ends it.
+    #[cfg(target_os = "linux")]
+    #[nativelink_test]
+    async fn straggler_sweep_reaches_an_orphaned_job_control_group()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_action_impl, pid_file) = job_control_action("sleep 1").await?;
+        let started = std::time::Instant::now();
+        drop(run_action(running_action_impl).await?);
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the action should end soon after its wrapper"
+        );
+        let job_pid = read_job_pid(&pid_file).await;
+        let survived = process_running(job_pid);
+        if survived {
+            // SAFETY: the job this test started.
+            unsafe { libc::kill(job_pid.cast_signed(), libc::SIGKILL) };
+        }
+        assert!(!survived, "the orphaned set -m job survived the sweep");
         Ok(())
     }
 }

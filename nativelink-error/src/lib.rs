@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -206,12 +206,42 @@ impl From<Error> for nativelink_proto::google::rpc::Status {
 
 impl From<nativelink_proto::google::rpc::Status> for Error {
     fn from(val: nativelink_proto::google::rpc::Status) -> Self {
+        let context = missing_digest_from_details(&val.details);
         Self {
             code: val.code.into(),
             messages: vec![val.message],
-            context: ErrorContext::None,
+            context,
         }
     }
+}
+
+/// The `REv2` missing-blob violation in a status's details, as the
+/// [`ErrorContext`] that produced it. A status that crosses a gRPC hop
+/// (a CAS forwarding `Execute` to a separate scheduler) would otherwise
+/// lose it, and with it the `PreconditionFailure` the client needs to
+/// upload the blob again and retry.
+fn missing_digest_from_details(details: &[prost_types::Any]) -> ErrorContext {
+    const PRECONDITION_FAILURE: &str = "type.googleapis.com/google.rpc.PreconditionFailure";
+    details
+        .iter()
+        .filter(|any| any.type_url == PRECONDITION_FAILURE)
+        .filter_map(|any| {
+            <nativelink_proto::google::rpc::PreconditionFailure as prost::Message>::decode(
+                any.value.as_slice(),
+            )
+            .ok()
+        })
+        .flat_map(|failure| failure.violations)
+        .filter(|violation| violation.r#type == "MISSING")
+        .find_map(|violation| {
+            let rest = violation.subject.strip_prefix("blobs/")?;
+            let (hash, size) = rest.split_once('/')?;
+            Some(ErrorContext::MissingDigest {
+                hash: hash.to_string(),
+                size: size.parse().ok()?,
+            })
+        })
+        .unwrap_or_default()
 }
 
 impl core::fmt::Display for Error {

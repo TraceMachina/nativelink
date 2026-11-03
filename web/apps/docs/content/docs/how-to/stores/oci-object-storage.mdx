@@ -20,6 +20,11 @@ OCI is one `provider` value of the same cloud object store used by
 providers over one store type, sharing the same multipart, retry and streaming
 code paths.
 
+In development builds, OCI uses the shared S3 upload implementation, including transfer size checks
+before publishing an object. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## How it works [#how-it-works]
 
 [OCI Object Storage](https://www.oracle.com/cloud/storage/object-storage/)

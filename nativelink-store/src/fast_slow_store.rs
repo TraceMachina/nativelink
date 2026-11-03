@@ -1,4 +1,4 @@
-// Copyright 2024-2025 The NativeLink Authors. All rights reserved.
+// Copyright 2024-2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -289,17 +289,20 @@ impl FastSlowStore {
                 err
             }
         }
-        let reader_stream_size = if self
-            .slow_store
-            .inner_store(Some(key.borrow()))
+        let slow_inner_store = self.slow_store.inner_store(Some(key.borrow()));
+        let reader_stream_size = if slow_inner_store
             .optimized_for(StoreOptimizations::LazyExistenceOnSync)
         {
             trace!(
                 %key,
-                store_name = %self.slow_store.inner_store(Some(key.borrow())).get_name(),
+                store_name = %slow_inner_store.get_name(),
                 "Skipping .has() check due to LazyExistenceOnSync optimization"
             );
-            UploadSizeInfo::MaxSize(u64::MAX)
+            // The length is unknown without the skipped `.has()`, but the
+            // slow store could not have held anything larger than its limit.
+            // A digest's size is no substitute: an AC value's length differs
+            // from its key's.
+            UploadSizeInfo::MaxSize(slow_inner_store.max_upload_size())
         } else {
             UploadSizeInfo::ExactSize(self
                     .slow_store
@@ -334,6 +337,12 @@ impl FastSlowStore {
                     .await
                     .err_tip(|| "Failed to read data data buffer from slow store")?;
                 if output_buf.is_empty() {
+                    reader_stream_size
+                        .validate_size(bytes_received)
+                        .map_err(|mut err| {
+                            err.code = Code::DataLoss;
+                            err.append("Slow store ended before the cache fill was complete")
+                        })?;
                     // Write out our EOF.
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.
@@ -394,11 +403,12 @@ impl FastSlowStore {
                     },
                 )
             }
+            Err(err) if err.code == Code::DataLoss => Err(err),
             Err(err) => match slow_res {
                 // The slow store lost the blob under the read (an evicting
                 // tier behind a gRPC store, say): the same missing input as
                 // a blob that was never there.
-                Err(slow_err) if slow_err.code == Code::NotFound => {
+                Err(slow_err) if matches!(slow_err.code, Code::NotFound | Code::DataLoss) => {
                     Err(name_missing_digest(slow_err, &key))
                 }
                 _ => fast_res.merge(slow_res).merge(Err(err)),
@@ -492,6 +502,21 @@ impl StoreDriver for FastSlowStore {
         Ok(fast || slow)
     }
 
+    /// Only the fast tier is a cache; the slow tier keeps its own copy.
+    async fn remove_cached(self: Pin<&Self>, key: StoreKey<'_>) -> Result<bool, Error> {
+        let fast = self
+            .fast_store
+            .as_store_driver_pin()
+            .remove(key.borrow())
+            .await?;
+        let slow = self
+            .slow_store
+            .as_store_driver_pin()
+            .remove_cached(key)
+            .await?;
+        Ok(fast || slow)
+    }
+
     async fn has_with_results(
         self: Pin<&Self>,
         key: &[StoreKey<'_>],
@@ -502,6 +527,44 @@ impl StoreDriver for FastSlowStore {
         let slow_store = self.slow_store.inner_store::<StoreKey<'_>>(None);
         if slow_store.optimized_for(StoreOptimizations::NoopDownloads) {
             return self.fast_store.has_with_results(key, results).await;
+        }
+
+        // A read-only slow store receives no uploads: the fast store is
+        // where writes land and the only place a new blob can be, so it
+        // counts toward presence, and the slow store answers for whatever
+        // predates it. Without this a reader that misses the fast tier is
+        // told the blob does not exist, and a blob is re-uploaded on every
+        // check even though the upload can only land where it already is.
+        // Across instances this holds when the fast store is shared (a
+        // compression tier over one backend); a per-instance fast tier
+        // such as memory or a local filesystem only answers for what that
+        // instance stored.
+        //
+        // The two lookups stay sequential on purpose: the slow store is
+        // asked only about the fast store's misses, so the second round
+        // trip is paid on a shrinking share of keys instead of every key.
+        if matches!(
+            self.slow_direction,
+            StoreDirection::ReadOnly | StoreDirection::Get
+        ) {
+            self.fast_store.has_with_results(key, results).await?;
+            let missing: Vec<usize> = results
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| r.is_none().then_some(i))
+                .collect();
+            if missing.is_empty() {
+                return Ok(());
+            }
+            let keys: Vec<StoreKey<'_>> = missing.iter().map(|&i| key[i].borrow()).collect();
+            let mut slow_results = vec![None; keys.len()];
+            self.slow_store
+                .has_with_results(&keys, &mut slow_results)
+                .await?;
+            for (i, r) in missing.into_iter().zip(slow_results) {
+                results[i] = r;
+            }
+            return Ok(());
         }
 
         // Check with the slow store first.
@@ -527,12 +590,12 @@ impl StoreDriver for FastSlowStore {
             results[i] = size;
         }
 
-        // NOTE: We intentionally *NEVER* check the fast store, this is to
-        // ensure that we re-upload data to the slow store if it only exists
-        // in the fast store.  This does not affect workers as they do not
-        // check existence through `has` and instead go direct to loading the
-        // data which bypasses the check and will load from the fast store if
-        // it does not exist in the slow store.
+        // NOTE: With a writable slow store we intentionally *NEVER* check
+        // the fast store, this is to ensure that we re-upload data to the
+        // slow store if it only exists in the fast store. Workers depend on
+        // this: `upload_file` asks `has` before uploading an output and
+        // skips the upload when the digest is present, so consulting a
+        // worker's local fast tier here would stop outputs reaching the CAS.
 
         Ok(())
     }

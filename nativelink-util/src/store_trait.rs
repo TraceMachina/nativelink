@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -86,6 +86,25 @@ pub enum UploadSizeInfo {
     /// checks, but still provide useful information to the underlying store about the data being
     /// sent that it can then use to optimize the upload process.
     MaxSize(u64),
+}
+
+impl UploadSizeInfo {
+    /// Check the payload length before publishing an upload. Use the transfer
+    /// size, not the key's digest size: AC values and encoded data may have a
+    /// different length from their keys.
+    pub fn validate_size(self, actual: u64) -> Result<(), Error> {
+        match self {
+            Self::ExactSize(expected) if actual != expected => Err(make_err!(
+                Code::InvalidArgument,
+                "Expected {expected} upload bytes, received {actual}"
+            )),
+            Self::MaxSize(maximum) if actual > maximum => Err(make_err!(
+                Code::InvalidArgument,
+                "Upload exceeded maximum size {maximum}: received {actual}"
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Utility to send all the data to the store from a file.
@@ -625,11 +644,22 @@ pub trait StoreDriver:
     // for ref stores
     async fn post_init(self: Arc<Self>) -> Result<(), Error>;
 
-    /// Drops this store's own copy of `key`, so the next read repopulates it
-    /// from below; a store that holds the durable copy keeps it and answers
-    /// `false`. Used when a read proves a cached copy is bad. Returns whether
-    /// anything was dropped.
+    /// Drops a disposable copy of `key`, so the next read can repopulate it
+    /// from another tier. Returns whether anything was dropped. The default
+    /// keeps the copy and returns `false`.
+    ///
+    /// Memory and filesystem implementations always evict when asked; they
+    /// cannot infer whether they hold the durable copy. Repair calls
+    /// [`StoreDriver::remove_cached`] instead, which only reaches tiers a
+    /// composition marks as caches.
     async fn remove(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
+        Ok(false)
+    }
+
+    /// Like [`StoreDriver::remove`], but only for copies in cache tiers
+    /// inside this store; the copy reads fall back to is kept.
+    /// Stores that forward `remove` must forward this too.
+    async fn remove_cached(self: Pin<&Self>, _key: StoreKey<'_>) -> Result<bool, Error> {
         Ok(false)
     }
 
@@ -684,6 +714,15 @@ pub trait StoreDriver:
     /// See: [`StoreLike::optimized_for`] for details.
     fn optimized_for(&self, _optimization: StoreOptimizations) -> bool {
         false
+    }
+
+    /// The largest object this store can hold, in bytes. A caller that
+    /// streams data out of this store without knowing its length can announce
+    /// this as the [`UploadSizeInfo::MaxSize`] of the copy, because nothing
+    /// larger could have been stored here. The default, `u64::MAX`, means the
+    /// store has no known limit; wrappers do not forward it.
+    fn max_upload_size(&self) -> u64 {
+        u64::MAX
     }
 
     /// See: [`StoreLike::update_with_whole_file`] for details.

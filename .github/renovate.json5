@@ -2,16 +2,11 @@
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   extends: [
     "config:recommended",
+    "replacements:all",
+    "workarounds:all",
+    "security:only-security-updates",
   ],
   packageRules: [
-    {
-      matchUpdateTypes: [
-        "patch",
-        "minor",
-        "digest",
-      ],
-      enabled: false,
-    },
     {
       matchDepNames: [
         "grafana/grafana", // In deployment-examples/metrics/docker-compose.yaml which we don't test in CI
@@ -28,8 +23,4 @@
     },
   ],
   prConcurrentLimit: 2,
-  vulnerabilityAlerts: {
-    enabled: true,
-  },
-  osvVulnerabilityAlerts: true,
 }

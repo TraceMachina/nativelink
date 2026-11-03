@@ -19,6 +19,11 @@ machines, single-digit milliseconds away, and priced by the cluster you run
 rather than per gigabyte stored. [Storage backends](/how-to/stores) compares
 all of them on the same axes.
 
+In development builds, MongoDB validates the received bytes and propagates stream errors before
+inserting or replacing a value. An invalid upload cannot replace an existing value. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## The recipe [#the-recipe]
 
 ```json5

@@ -54,7 +54,8 @@ function prose(md) {
 function slug(name) {
   return name
     .toLowerCase()
-    .replace(/[^a-z0-9 -]/g, "-")
+    .replace(/\./g, "")
+    .replace(/[^a-z0-9 \-_]/g, "-")
     .trim()
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-");

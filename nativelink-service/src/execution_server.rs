@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ use bytes::Bytes;
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName, WithInstanceName};
-use nativelink_error::{Error, ResultExt, make_input_err};
+use nativelink_error::{Error, ErrorContext, ResultExt, make_input_err};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
     Execution, ExecutionServer as Server,
 };
@@ -41,28 +41,57 @@ use nativelink_proto::google::rpc::{
 };
 use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropertyProvider;
 use nativelink_store::ac_utils::get_and_decode_digest;
+use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionUniqueKey, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY, OperationId,
-    TypeUrl,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
+    DEFAULT_EXECUTION_PRIORITY, OperationId, TypeUrl,
 };
 use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
+use nativelink_util::metrics::{record_execute_stream_drop, record_execute_stream_heartbeat};
 use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_from_baggage};
+use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike};
+use nativelink_util::task::JoinHandleDropGuard;
 use opentelemetry::Context;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::FutureExt;
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message as _;
 use tonic::{Code, Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, instrument, warn};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument, warn};
 
 /// Result of a synchronous `Execute` decision before the async
 /// scheduling stream begins. Stream is the happy path; Reject is a
 /// client-facing gRPC `Status` returned without going through NL's
 /// internal Error/instrumentation pipeline.
+/// When an action fails because one of its blobs is missing, stop this
+/// instance's existence cache vouching for that blob before the client
+/// hears about it. Bazel answers the failure by asking `FindMissingBlobs`
+/// again and uploading what it is told is missing; if the cache still
+/// says present (the blob left the object store, which sends no removal
+/// event, after the cache learned it), nothing is uploaded and the retry
+/// fails the same way until the cache entry expires.
+async fn forget_missing_input(cas_store: &Store, stage: &ActionStage) {
+    let ActionStage::Completed(result) = stage else {
+        return;
+    };
+    let Some(ErrorContext::MissingDigest { hash, size }) =
+        result.error.as_ref().map(|err| &err.context)
+    else {
+        return;
+    };
+    let Ok(digest) = DigestInfo::try_new(hash, *size) else {
+        return;
+    };
+    if let Some(cache) = cas_store.downcast_ref::<ExistenceCacheStore<SystemTime>>(None) {
+        cache.remove_from_cache(&digest).await;
+        debug!(%digest, "Action input missing; dropped it from the existence cache");
+    }
+}
+
 enum ExecuteOutcome<S> {
     Stream(S),
     Reject(Status),
@@ -177,6 +206,10 @@ struct InstanceInfo {
     scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     cas_store: Store,
     buck2_invocation_isolation: bool,
+    /// Re-send the current operation state on an otherwise idle `Execute`
+    /// or `WaitExecution` stream at this interval. `None` sends no
+    /// heartbeats.
+    execute_stream_heartbeat: Option<Duration>,
 }
 
 impl fmt::Debug for InstanceInfo {
@@ -294,6 +327,51 @@ pub struct ExecutionServer {
 
 type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send>>;
 
+/// Watches an `Execute`/`WaitExecution` response stream so a stream torn
+/// down before its operation finished is recorded — usually a client that
+/// walked away, but a server shutdown counts too. tonic drops the stream on
+/// disconnect without running any handler code, so the `Drop` impl is the
+/// only place the server can see it; the operation's fate after this is the
+/// scheduler's client keepalive timeout, which the dropped subscriber (or
+/// the aborted drive task) stops refreshing.
+struct ExecuteStreamMonitor {
+    inner: ExecuteStream,
+    operation_id: String,
+    finished: bool,
+}
+
+impl Stream for ExecuteStreamMonitor {
+    type Item = Result<Operation, Status>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        let poll = this.inner.as_mut().poll_next(cx);
+        if let core::task::Poll::Ready(item) = &poll {
+            match item {
+                Some(Ok(operation)) if operation.done => this.finished = true,
+                Some(Err(_)) | None => this.finished = true,
+                Some(Ok(_)) => {}
+            }
+        }
+        poll
+    }
+}
+
+impl Drop for ExecuteStreamMonitor {
+    fn drop(&mut self) {
+        if !self.finished {
+            info!(
+                operation_id = %self.operation_id,
+                "Execute stream dropped before the operation finished"
+            );
+            record_execute_stream_drop();
+        }
+    }
+}
+
 impl ExecutionServer {
     pub fn new(
         configs: &[WithInstanceName<ExecutionConfig>],
@@ -321,6 +399,8 @@ impl ExecutionServer {
                     scheduler,
                     cas_store,
                     buck2_invocation_isolation: config.experimental_buck2_invocation_isolation,
+                    execute_stream_heartbeat: (config.execute_stream_heartbeat_s > 0)
+                        .then(|| Duration::from_secs(config.execute_stream_heartbeat_s as u64)),
                 },
             );
         }
@@ -335,30 +415,176 @@ impl ExecutionServer {
         OperationsServer::new(self)
     }
 
+    /// Converts one action state into the client's `Operation`, with the
+    /// side effects every sent update carries. The bool says whether the
+    /// operation is finished.
+    async fn operation_from_update(
+        action_update: Arc<ActionState>,
+        client_operation_id: &OperationId,
+        cas_store: &Store,
+    ) -> (Operation, bool) {
+        debug!(?action_update, "Execute Resp Stream");
+        forget_missing_input(cas_store, &action_update.stage).await;
+        let finished = action_update.stage.is_finished();
+        (
+            action_update.as_operation(client_operation_id.clone()),
+            finished,
+        )
+    }
+
+    /// Waits for the next update and converts it for the client. The bool
+    /// says whether the stream is over (a finished stage or an error).
+    async fn next_operation(
+        action_listener: &mut Box<dyn ActionStateResult>,
+        client_operation_id: &OperationId,
+        cas_store: &Store,
+    ) -> (Result<Operation, Status>, bool) {
+        match action_listener.changed().await {
+            Ok((action_update, _maybe_origin_metadata)) => {
+                let (operation, finished) =
+                    Self::operation_from_update(action_update, client_operation_id, cas_store)
+                        .await;
+                (Ok(operation), finished)
+            }
+            Err(err) => {
+                error!(?err, "Error in action_listener stream");
+                (Err(err.into()), true)
+            }
+        }
+    }
+
     fn to_execute_stream(
         nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
+        cas_store: Store,
+        heartbeat_interval: Option<Duration>,
     ) -> impl Stream<Item = Result<Operation, Status>> + Send + use<> {
+        struct HeartbeatState {
+            rx: tokio::sync::mpsc::Receiver<Result<Operation, Status>>,
+            /// The last update sent, re-sent as the heartbeat.
+            last_operation: Option<Operation>,
+            /// Aborts the driving task when the stream is dropped.
+            _drive_guard: JoinHandleDropGuard<()>,
+        }
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
-        unfold(Some(action_listener), move |maybe_action_listener| {
-            let client_operation_id = client_operation_id.clone();
-            async move {
-                let mut action_listener = maybe_action_listener?;
-                match action_listener.changed().await {
-                    Ok((action_update, _maybe_origin_metadata)) => {
-                        debug!(?action_update, "Execute Resp Stream");
-                        Some((
-                            Ok(action_update.as_operation(client_operation_id)),
-                            (!action_update.stage.is_finished()).then_some(action_listener),
-                        ))
+        let inner: ExecuteStream = if let Some(interval) = heartbeat_interval {
+            // `changed()` must be awaited without interruption: subscriber
+            // implementations keep their no-progress watchdog (the
+            // `no_event_action_timeout` select in the state manager) inside
+            // one `changed()` call, so cancelling it on a timer would reset
+            // that watchdog forever. A task drives the listener and feeds a
+            // channel, whose `recv()` is cancel-safe, and the heartbeat
+            // timer races the channel instead.
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<Operation, Status>>(1);
+            let task_client_operation_id = client_operation_id.clone();
+            let mut action_listener = action_listener;
+            // The guard aborts the task when the stream is dropped, so a
+            // client disconnect still drops the subscriber and lets its
+            // keepalive lapse, exactly as without the heartbeat.
+            let drive_guard = spawn!("execute_stream_updates", async move {
+                // Send the current state first: it seeds the heartbeat, so
+                // the stream is never silent while waiting for the first
+                // transition. Subscribers typically re-yield the current
+                // state as their first update too; duplicates are permitted.
+                match action_listener.as_state().await {
+                    Ok((state, _maybe_origin_metadata)) => {
+                        let (operation, finished) = Self::operation_from_update(
+                            state,
+                            &task_client_operation_id,
+                            &cas_store,
+                        )
+                        .await;
+                        if tx.send(Ok(operation)).await.is_err() || finished {
+                            return;
+                        }
                     }
                     Err(err) => {
-                        error!(?err, "Error in action_listener stream");
-                        Some((Err(err.into()), None))
+                        let _ = tx.send(Err(err.into())).await;
+                        return;
                     }
                 }
-            }
-        })
+                loop {
+                    let (item, finished) = Self::next_operation(
+                        &mut action_listener,
+                        &task_client_operation_id,
+                        &cas_store,
+                    )
+                    .await;
+                    if tx.send(item).await.is_err() || finished {
+                        return;
+                    }
+                }
+            });
+            Box::pin(unfold(
+                Some(HeartbeatState {
+                    rx,
+                    last_operation: None,
+                    _drive_guard: drive_guard,
+                }),
+                move |maybe_state| async move {
+                    let mut state = maybe_state?;
+                    let received = if state.last_operation.is_some() {
+                        match tokio::time::timeout(interval, state.rx.recv()).await {
+                            Ok(received) => received,
+                            // No update within the interval: re-send the last
+                            // state. `recv()` is cancel-safe, so no update is
+                            // lost, and the listener keeps running in its task.
+                            Err(_elapsed) => {
+                                let heartbeat =
+                                    state.last_operation.clone().expect("checked is_some above");
+                                record_execute_stream_heartbeat();
+                                return Some((Ok(heartbeat), Some(state)));
+                            }
+                        }
+                    } else {
+                        state.rx.recv().await
+                    };
+                    match received {
+                        Some(Ok(operation)) => {
+                            let finished = operation.done;
+                            if !finished {
+                                state.last_operation = Some(operation.clone());
+                            }
+                            Some((Ok(operation), (!finished).then_some(state)))
+                        }
+                        Some(Err(err)) => Some((Err(err), None)),
+                        // The producer only returns after a terminal item or
+                        // when this side is gone, so an empty channel here
+                        // means the drive task died (a panic). Surface an
+                        // error rather than a clean, successful-looking end.
+                        None => Some((
+                            Err(Status::internal(
+                                "Execute stream update task ended before the operation finished",
+                            )),
+                            None,
+                        )),
+                    }
+                },
+            ))
+        } else {
+            Box::pin(unfold(
+                Some(action_listener),
+                move |maybe_action_listener| {
+                    let client_operation_id = client_operation_id.clone();
+                    let cas_store = cas_store.clone();
+                    async move {
+                        let mut action_listener = maybe_action_listener?;
+                        let (item, finished) = Self::next_operation(
+                            &mut action_listener,
+                            &client_operation_id,
+                            &cas_store,
+                        )
+                        .await;
+                        Some((item, (!finished).then_some(action_listener)))
+                    }
+                },
+            ))
+        };
+        ExecuteStreamMonitor {
+            inner,
+            operation_id: nl_client_operation_id.to_string(),
+            finished: false,
+        }
     }
 
     async fn inner_execute(
@@ -490,6 +716,8 @@ impl ExecutionServer {
                     .clone(),
             ),
             action_listener,
+            instance_info.cas_store.clone(),
+            instance_info.execute_stream_heartbeat,
         )))
     }
 
@@ -525,7 +753,12 @@ impl ExecutionServer {
         else {
             return Err(Status::not_found("Failed to find existing task"));
         };
-        Ok(Self::to_execute_stream(&nl_operation_id, rx))
+        Ok(Self::to_execute_stream(
+            &nl_operation_id,
+            rx,
+            instance_info.cas_store.clone(),
+            instance_info.execute_stream_heartbeat,
+        ))
     }
 }
 

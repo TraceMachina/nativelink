@@ -13,7 +13,7 @@
 #
 # The site serves the same bytes from web/apps/web/public/, which its build
 # regenerates on every deploy; nothing on a page load reads these files.
-name: Regenerate llms files
+name: Docs / Regenerate llms
 
 on:
   push:

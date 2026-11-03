@@ -9,8 +9,10 @@ cargo-fuzz = true
 
 [dependencies]
 nativelink-config = { path = "../../nativelink-config" }
+nativelink-proto = { path = "../../nativelink-proto" }
 
 libfuzzer-sys = "0.4"
+prost = { version = "0.14.4", default-features = false }
 serde_json5 = { version = "0.2.1", default-features = false }
 
 [[bin]]
@@ -18,4 +20,11 @@ bench = false
 doc = false
 name = "cas_config"
 path = "fuzz_targets/cas_config.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "reapi_messages"
+path = "fuzz_targets/reapi_messages.rs"
 test = false

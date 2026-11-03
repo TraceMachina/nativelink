@@ -1,5 +1,5 @@
 ---
-name: Create OCI image
+name: Images / OCI
 on:
   # The OCI image build/test/Trivy-scan is deferred off the per-PR path: it is a
   # ~90-min build, not a code-correctness gate, and the image is already built,

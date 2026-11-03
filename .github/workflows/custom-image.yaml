@@ -1,4 +1,4 @@
-name: Build Custom Docker Image
+name: Images / Custom
 
 on:
   workflow_dispatch:
@@ -120,7 +120,7 @@ jobs:
             core.setOutput('components', option?.['components'] ?? '');
 
   build-image:
-    name: Build and Push Image
+    name: Build and push
     needs: check-trigger
     if: needs.check-trigger.outputs.should_build == 'true'
     runs-on: ubuntu-24.04

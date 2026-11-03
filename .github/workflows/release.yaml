@@ -8,7 +8,7 @@
 # SLSA provenance (`*.intoto.jsonl`) among the release assets. The cosign image
 # signatures in GHCR are NOT visible to that check, which is why container-only
 # signing left the score at zero.
-name: Signed release artifacts
+name: Release / Signed artifacts
 
 on:
   # Fires automatically the moment a maintainer clicks "Publish release".
@@ -244,7 +244,8 @@ jobs:
     # commit SHA: slsa-verifier validates the reusable-workflow ref to confirm a
     # trusted builder produced the provenance, so a SHA pin would fail
     # verification. This is the one intentional exception to SHA-pinning here.
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    uses: > # v2.1.0
+      slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
     with:
       base64-subjects: ${{ needs.combine-hashes.outputs.subjects }}
       upload-assets: true

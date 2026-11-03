@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -286,6 +286,25 @@ pub struct ExecutionConfig {
     /// must use a runtime supporting this execution scope before enabling it.
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub experimental_buck2_invocation_isolation: bool,
+
+    /// Seconds between re-sends of the operation's current state on an
+    /// `Execute` or `WaitExecution` stream that has produced no stage
+    /// change. The Remote Execution API permits duplicate updates, and the
+    /// periodic message gives the client and every intermediary (an L7 load
+    /// balancer, for example) proof the stream is alive. Without it the
+    /// server is silent for as long as an action sits queued or executing,
+    /// so a client holding a connection whose server side is gone waits
+    /// until its own timeout rather than failing when the path died.
+    ///
+    /// Default: 0 (disabled, no heartbeats are sent)
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "is_default",
+        alias = "execute_stream_heartbeat"
+    )]
+    pub execute_stream_heartbeat_s: usize,
+
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
     /// This value must be a CAS store reference.
@@ -976,6 +995,38 @@ pub struct ResourceEnforcementConfig {
         deserialize_with = "convert_numeric_with_shellexpand"
     )]
     pub disk_headroom_percent: u64,
+
+    /// Kill one running action once the worker's cgroup has spent at least
+    /// this share of the last ten seconds, as a whole number from 0 to 100,
+    /// with every task stalled on memory (`full avg10` in cgroup v2
+    /// `memory.pressure`) for `memory_pressure_kill_after_s` without a
+    /// break. A worker whose actions fit under its limit only by thrashing
+    /// never reaches the OOM killer and stops answering the scheduler; this
+    /// ends the action instead, as a memory kill, so the scheduler requeues
+    /// it with a larger reservation. The kill lands on the action furthest
+    /// over its reservation, or the largest when none is over, and never
+    /// on one that reserves the whole worker. It does not check that the
+    /// actions caused the pressure: pressure from the worker itself (page
+    /// cache from the filesystem store, a large upload) still kills an
+    /// action. Needs `memory: soft`, which supplies the per-action samples
+    /// the choice is made from. Values over 100 are read as 100. 0 disables.
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub memory_pressure_kill_percent: u64,
+
+    /// How long `memory.pressure` must stay at or above
+    /// `memory_pressure_kill_percent` before an action is killed, in
+    /// seconds. Another kill waits this long again. 0 is read as 1.
+    /// Default: 30
+    #[serde(
+        default = "default_memory_pressure_kill_after_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub memory_pressure_kill_after_s: u64,
+}
+
+const fn default_memory_pressure_kill_after_s() -> u64 {
+    30
 }
 
 fn default_memory_property_name() -> String {
@@ -1321,9 +1372,17 @@ pub struct LocalWorkerConfig {
     /// CAS or the object store, so this bounds what one worker asks of
     /// them at a time: several cold actions share this many fetches
     /// instead of each opening its own. Blobs already in the store are
-    /// linked without one.
+    /// linked without one. 0 shares no pool; each action fetches on its
+    /// own.
     ///
-    /// Default: 64
+    /// Without a pool, an action fetches up to 64 inputs at a time per
+    /// directory of its input tree. Set this when several cold actions on
+    /// one worker overload the CAS or the object store behind it; 64 is a
+    /// good start. A worker without it logs a warning suggesting it, at
+    /// most every 10 minutes, when an input fetch times out or fails with
+    /// a transient error other than `DataLoss`.
+    ///
+    /// Default: 0 (no shared pool)
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_input_downloads: usize,
 
@@ -1400,7 +1459,9 @@ pub struct LocalWorkerConfig {
     /// pod's cgroup limit does. On cgroup v2 the container cgroup carries
     /// `memory.oom.group`, so the kernel's kill takes the worker and every
     /// action on it; this one takes only the offender and fails it with
-    /// `FailedPrecondition`. Linux only; accepted and ignored elsewhere.
+    /// `FailedPrecondition`. The memory pressure kill reads a cgroup and is
+    /// Linux only; on Windows the disk axis is not sampled, and a kill ends
+    /// the action's own process rather than every process in it.
     /// Actions run through a persistent worker are not covered, since that
     /// process outlives the action and serves others. With either axis on,
     /// the worker reads an action's platform properties from the
@@ -1578,6 +1639,15 @@ pub struct LocalWorkerConfig {
     /// on Linux. It is highly recommended as it avoids a number of issues with
     /// zombie processes and also provides additional hermeticity. If explicitly set
     /// to true and it is not supported the worker will exit with an error.
+    ///
+    /// The action runs as PID 1 of its own PID namespace, and `/proc` is
+    /// remounted inside it, so the processes listed there are the action's
+    /// own, each under the PID the action knows it by: a process reading
+    /// `/proc/<pid>` for a child it forked finds that child, not whichever
+    /// host process has the number. If the worker's environment refuses that
+    /// mount (an unprivileged container that masks paths under `/proc` does)
+    /// the worker logs a warning at startup and actions see the host's
+    /// `/proc` instead.
     ///
     /// Note: this will fail for non-privileged Dockerised workers, as workers in
     /// Docker don't have permissions to make a new user namespace. Privileged

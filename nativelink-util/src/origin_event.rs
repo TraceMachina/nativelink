@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -83,6 +83,7 @@ pub const fn get_id_for_event(event: &Event) -> [u8; 2] {
             Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
             Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
             Some(response_event::Event::ActionResourceUsage(_)) => [0x02, 0x0C],
+            Some(response_event::Event::ActionAttemptEnded(_)) => [0x02, 0x0D],
         },
         Some(event::Event::Stream(stream)) => match stream.event {
             None => [0x03, 0x00],

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -242,6 +242,7 @@ fn get_id_for_event_test() {
                     Some(response_event::Event::FetchBlobResponse(_)) => [0x02, 0x0A],
                     Some(response_event::Event::PushBlobResponse(_)) => [0x02, 0x0B],
                     Some(response_event::Event::ActionResourceUsage(_)) => [0x02, 0x0C],
+                    Some(response_event::Event::ActionAttemptEnded(_)) => [0x02, 0x0D],
                     // Don't forget to add new entries to test cases.
                 }
             }
@@ -289,6 +290,7 @@ fn get_id_for_event_test() {
     test_event!(Response, QueryWriteStatusResponse);
     test_event!(Response, Empty);
     test_event!(Response, ActionResourceUsage);
+    test_event!(Response, ActionAttemptEnded);
 
     test_event!(Stream, None);
     test_event!(Stream, Error);

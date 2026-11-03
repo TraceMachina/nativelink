@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,11 +21,13 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::future::join_all;
 use nativelink_config::stores::{
-    FastSlowSpec, FilesystemSpec, MemorySpec, NoopSpec, StoreDirection, StoreSpec,
+    CompressionAlgorithm, CompressionSpec, FastSlowSpec, FilesystemSpec, Lz4Config, MemorySpec,
+    NoopSpec, StoreDirection, StoreSpec,
 };
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
+use nativelink_store::compression_store::CompressionStore;
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
 use nativelink_store::memory_store::MemoryStore;
@@ -136,6 +138,70 @@ async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Res
         }
         assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, content);
         assert_eq!(slow.get_part_unchunked(digest, 0, None).await?, content);
+    }
+    Ok(())
+}
+
+/// A filesystem slow tier fills the fast tier with the blob's content length,
+/// not its block-rounded size on disk, for CAS digest and string keys alike.
+#[nativelink_test]
+async fn filesystem_slow_tier_fills_fast_tier_with_content_length() -> Result<(), Error> {
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        // The default block size (4 KiB): the tier rounds sizes up to it.
+        ..Default::default()
+    };
+    let slow_store = Store::new(FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?);
+    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow_store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Filesystem(filesystem_spec),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+        },
+        fast_store.clone(),
+        slow_store.clone(),
+    ));
+
+    // 4097 bytes spans a second block: the bug is not limited to small blobs.
+    for (key, size) in [
+        (StoreKey::Digest(DigestInfo::try_new(VALID_HASH, 206)?), 206),
+        (StoreKey::new_str("action_cache_entry"), 538),
+        (
+            StoreKey::Digest(DigestInfo::try_new(VALID_HASH, 4097)?),
+            4097,
+        ),
+    ] {
+        let data = Bytes::from(make_random_data(size));
+        slow_store
+            .update_oneshot(key.borrow(), data.clone())
+            .await?;
+        assert_eq!(
+            fast_store.has(key.borrow()).await?,
+            None,
+            "{key:?}: the blob starts out only in the slow tier"
+        );
+
+        assert_eq!(
+            fast_slow_store
+                .get_part_unchunked(key.borrow(), 0, None)
+                .await?,
+            data,
+            "{key:?}: reading through fast_slow fills the fast tier from the slow tier"
+        );
+        assert_eq!(
+            slow_store.has(key.borrow()).await?,
+            Some(size as u64),
+            "{key:?}: the filesystem tier reports content length, not size on disk"
+        );
+        assert_eq!(
+            fast_store.get_part_unchunked(key.borrow(), 0, None).await?,
+            data,
+            "{key:?}: the fast tier holds the filled copy"
+        );
     }
     Ok(())
 }
@@ -633,6 +699,13 @@ async fn fast_readonly_only_not_updated_on_get() -> Result<(), Error> {
 }
 
 fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
+    make_stores_with_lazy_slow_over(Store::new(MemoryStore::new(&MemorySpec::default())))
+}
+
+/// The object size limit the lazy slow store below advertises.
+const LAZY_SLOW_MAX_UPLOAD_SIZE: u64 = 4 * MEGABYTE_SZ as u64;
+
+fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
     #[derive(MetricsComponent)]
     struct LazyStore {
         inner: Arc<MemoryStore>,
@@ -687,6 +760,10 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
             )
         }
 
+        fn max_upload_size(&self) -> u64 {
+            LAZY_SLOW_MAX_UPLOAD_SIZE
+        }
+
         fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
             self
         }
@@ -709,7 +786,6 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
 
     default_health_status_indicator!(LazyStore);
 
-    let fast_store = Store::new(MemoryStore::new(&MemorySpec::default()));
     let slow_store = Store::new(Arc::new(LazyStore {
         inner: MemoryStore::new(&MemorySpec::default()),
     }));
@@ -725,6 +801,56 @@ fn make_stores_with_lazy_slow() -> (Store, Store, Store) {
         slow_store.clone(),
     ));
     (fast_slow_store, fast_store, slow_store)
+}
+
+fn make_compression_store() -> Result<Store, Error> {
+    Ok(Store::new(CompressionStore::new(
+        &CompressionSpec {
+            backend: StoreSpec::Memory(MemorySpec::default()),
+            compression_algorithm: CompressionAlgorithm::Lz4(Lz4Config {
+                block_size: 10,
+                ..Default::default()
+            }),
+        },
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?))
+}
+
+#[nativelink_test]
+async fn lazy_slow_read_fills_a_compression_fast_tier() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(make_compression_store()?);
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    let from_fast = fast_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(from_fast.as_ref(), original_data.as_slice());
+    Ok(())
+}
+
+// An action cache entry's stored length differs from the size in its key.
+#[nativelink_test]
+async fn lazy_slow_read_fills_a_compression_fast_tier_with_an_ac_entry() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(make_compression_store()?);
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, 10).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    let from_fast = fast_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(from_fast.as_ref(), original_data.as_slice());
+    Ok(())
 }
 
 #[nativelink_test]
@@ -768,6 +894,98 @@ async fn lazy_not_found_syncs_to_fast_store() -> Result<(), Error> {
     assert!(
         fast_store.has(digest).await?.is_some(),
         "Expected data to be synced to fast store"
+    );
+    Ok(())
+}
+
+/// Fast store that records the size each `update` was announced with.
+#[derive(MetricsComponent)]
+struct SizeRecordingStore {
+    inner: Arc<MemoryStore>,
+    announced_sizes: Arc<Mutex<Vec<UploadSizeInfo>>>,
+}
+
+#[async_trait]
+impl StoreDriver for SizeRecordingStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        digests: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(digests, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        digest: StoreKey<'_>,
+        reader: DropCloserReadHalf,
+        size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        self.announced_sizes.lock().unwrap().push(size_info);
+        Pin::new(self.inner.as_ref())
+            .update(digest, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SizeRecordingStore);
+
+// With the `.has()` skipped the length is unknown, so the fast store is told
+// the most it could receive: the slow store's limit, not `u64::MAX`.
+#[nativelink_test]
+async fn lazy_slow_read_announces_the_slow_store_limit_to_the_fast_store() -> Result<(), Error> {
+    let announced_sizes = Arc::new(Mutex::new(Vec::new()));
+    let (fast_slow_store, _fast_store, slow_store) =
+        make_stores_with_lazy_slow_over(Store::new(Arc::new(SizeRecordingStore {
+            inner: MemoryStore::new(&MemorySpec::default()),
+            announced_sizes: announced_sizes.clone(),
+        })));
+    let original_data = make_random_data(100);
+    let digest = DigestInfo::try_new(VALID_HASH, original_data.len()).unwrap();
+    slow_store
+        .update_oneshot(digest, original_data.clone().into())
+        .await?;
+
+    let retrieved_data = fast_slow_store.get_part_unchunked(digest, 0, None).await?;
+    assert_eq!(retrieved_data.as_ref(), original_data.as_slice());
+
+    assert_eq!(
+        *announced_sizes.lock().unwrap(),
+        vec![UploadSizeInfo::MaxSize(LAZY_SLOW_MAX_UPLOAD_SIZE)],
     );
     Ok(())
 }
@@ -825,7 +1043,9 @@ impl StoreDriver for InstrumentedSlowStore {
         if let Some(rx) = gate {
             let _ = rx.await;
         }
-        writer.send(Bytes::copy_from_slice(&self.data)).await?;
+        if !self.data.is_empty() {
+            writer.send(Bytes::copy_from_slice(&self.data)).await?;
+        }
         writer.send_eof()
     }
 
@@ -2185,5 +2405,163 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
         "{err:?}"
     );
 
+    Ok(())
+}
+
+/// Both directions that keep uploads out of the slow store take the branch.
+async fn has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(
+    slow_direction: StoreDirection,
+) -> Result<(), Error> {
+    let (fast_slow_store, fast_store, slow_store) =
+        make_stores_direction(StoreDirection::Both, slow_direction);
+
+    // An upload lands in the fast store only: the slow one takes no writes.
+    let uploaded = DigestInfo::try_new(VALID_HASH, 3)?;
+    fast_slow_store
+        .update_oneshot(uploaded, Bytes::from_static(b"new"))
+        .await?;
+    assert_eq!(slow_store.has(uploaded).await?, None, "{slow_direction:?}");
+    assert_eq!(
+        fast_store.has(uploaded).await?,
+        Some(3),
+        "{slow_direction:?}"
+    );
+
+    // A blob that predates the fast tier sits in the slow store alone.
+    let old = DigestInfo::try_new(VALID_HASH_B, 3)?;
+    slow_store
+        .update_oneshot(old, Bytes::from_static(b"old"))
+        .await?;
+
+    let absent = DigestInfo::try_new(VALID_HASH_C, 3)?;
+
+    let mut results = [None, None, None];
+    fast_slow_store
+        .has_with_results(&[uploaded.into(), old.into(), absent.into()], &mut results)
+        .await?;
+    assert_eq!(
+        results,
+        [Some(3), Some(3), None],
+        "{slow_direction:?}: presence covers the fast store, where uploads land, and the slow one, where the old data is"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn has_counts_the_fast_store_when_the_slow_store_is_read_only() -> Result<(), Error> {
+    has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(StoreDirection::ReadOnly).await
+}
+
+#[nativelink_test]
+async fn has_counts_the_fast_store_when_the_slow_store_is_get_only() -> Result<(), Error> {
+    has_counts_the_fast_store_when_the_slow_store_takes_no_uploads(StoreDirection::Get).await
+}
+
+#[nativelink_test]
+async fn has_still_skips_the_fast_store_when_the_slow_store_is_writable() -> Result<(), Error> {
+    let (fast_slow_store, fast_store, _slow_store) = make_stores();
+    let only_in_fast = DigestInfo::try_new(VALID_HASH, 4)?;
+    fast_store
+        .update_oneshot(only_in_fast, Bytes::from_static(b"fast"))
+        .await?;
+    assert_eq!(
+        fast_slow_store.has(only_in_fast).await?,
+        None,
+        "a blob only the fast store holds is reported missing so the client re-uploads it to the slow store"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_preserves_memory_and_filesystem_values() -> Result<(), Error> {
+    let filesystem = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+        content_path: make_temp_path("upload_integrity_content"),
+        temp_path: make_temp_path("upload_integrity_temp"),
+        block_size: 1,
+        ..Default::default()
+    })
+    .await?;
+    for store in [
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+        Store::new(filesystem),
+    ] {
+        // AC and encoded values need not match the size in their key.
+        let key = DigestInfo::try_new(VALID_HASH, 999)?;
+        let good = Bytes::from(vec![7; 78]);
+        store.update_oneshot(key, good.clone()).await?;
+        for (size_info, payload) in [
+            (UploadSizeInfo::ExactSize(78), Bytes::new()),
+            (UploadSizeInfo::ExactSize(78), Bytes::from_static(b"short")),
+            (UploadSizeInfo::ExactSize(78), Bytes::from(vec![9; 79])),
+            (UploadSizeInfo::MaxSize(78), Bytes::from(vec![9; 79])),
+        ] {
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, _) = tokio::join!(store.update(key, rx, size_info), send);
+            assert_eq!(result.unwrap_err().code, Code::InvalidArgument);
+            assert_eq!(store.get_part_unchunked(key, 0, None).await?, good);
+        }
+        // A normal write still uses the payload size rather than the key's size.
+        let (mut tx, rx) = make_buf_channel_pair();
+        let send = async {
+            tx.send(good.clone()).await?;
+            tx.send_eof()
+        };
+        let (result, sent) =
+            tokio::join!(store.update(key, rx, UploadSizeInfo::ExactSize(78)), send);
+        assert_eq!(result?, 78);
+        sent?;
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(), Error> {
+    for data in [vec![], b"short".to_vec()] {
+        let filesystem = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: make_temp_path("short_read_content"),
+            temp_path: make_temp_path("short_read_temp"),
+            block_size: 1,
+            ..Default::default()
+        })
+        .await?;
+        for fast in [
+            Store::new(MemoryStore::new(&MemorySpec::default())),
+            Store::new(filesystem),
+        ] {
+            let digest = DigestInfo::try_new(VALID_HASH, 78)?;
+            let slow = Store::new(Arc::new(InstrumentedSlowStore {
+                digest,
+                data: data.clone(),
+                get_part_count: AtomicU64::new(0),
+                gate: Mutex::new(None),
+            }));
+            let store = FastSlowStore::new(
+                &FastSlowSpec {
+                    fast: StoreSpec::Memory(MemorySpec::default()),
+                    slow: StoreSpec::Memory(MemorySpec::default()),
+                    fast_direction: StoreDirection::default(),
+                    slow_direction: StoreDirection::default(),
+                    bypass_dedup_threshold_bytes: 0,
+                },
+                fast.clone(),
+                slow,
+            );
+            assert_eq!(
+                store
+                    .get_part_unchunked(digest, 0, None)
+                    .await
+                    .unwrap_err()
+                    .code,
+                Code::DataLoss
+            );
+            assert_eq!(fast.has(digest).await?, None);
+        }
+    }
     Ok(())
 }

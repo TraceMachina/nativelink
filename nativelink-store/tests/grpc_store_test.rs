@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_lock::Mutex;
+use bytes::Bytes;
 use futures::stream::{self, unfold};
 use futures::{Stream, StreamExt};
 use nativelink_config::stores::{GrpcEndpoint, GrpcSpec, Retry, StoreType};
@@ -60,6 +61,8 @@ const VALID_HASH: &str = "0123456789abcdef00000000000000000001000000000000012345
 const RAW_INPUT: &str = "123";
 
 fn test_spec<T: Into<String>>(endpoint: T, use_legacy_resource_names: bool) -> GrpcSpec {
+    // Match the fake servers' IPv4 bind address. Resolving localhost can reach
+    // an unrelated service listening on the same port on IPv6 loopback.
     GrpcSpec {
         instance_name: String::new(),
         endpoints: vec![GrpcEndpoint {
@@ -120,6 +123,8 @@ struct FakeStreamServer {
     /// Take this many `WriteRequest`s of the next upload, then fail it, as a
     /// server that restarts mid-upload does. Zero is off.
     fail_mid_upload: Arc<Mutex<usize>>,
+    failure_code: tonic::Code,
+    require_zero_start: bool,
 }
 
 impl FakeStreamServer {
@@ -131,6 +136,8 @@ impl FakeStreamServer {
             committed_size_override: None,
             fail_after_commit: Arc::new(Mutex::new(false)),
             fail_mid_upload: Arc::new(Mutex::new(0)),
+            failure_code: tonic::Code::Unavailable,
+            require_zero_start: false,
         }
     }
 
@@ -201,12 +208,20 @@ impl ByteStream for FakeStreamServer {
                     self.write_requests.lock().await.push(req?);
                 }
             }
-            return Err(Status::unavailable("simulated restart mid-upload"));
+            return Err(Status::new(
+                self.failure_code,
+                "simulated failure mid-upload",
+            ));
         }
         if self.drain_all {
             let mut committed_size = 0i64;
             while let Some(req) = stream.next().await {
                 let req = req?;
+                if self.require_zero_start && committed_size == 0 && req.write_offset != 0 {
+                    return Err(Status::invalid_argument(
+                        "upstream lost the upload; expected offset 0",
+                    ));
+                }
                 committed_size += i64::try_from(req.data.len()).unwrap();
                 self.write_requests.lock().await.push(req);
             }
@@ -271,7 +286,7 @@ async fn write_update_works_core(
 ) -> Result<(), Error> {
     let (server, port) = make_fake_bytestream_server().await;
     let spec = test_spec(
-        format!("http://localhost:{port}"),
+        format!("http://127.0.0.1:{port}"),
         use_legacy_resource_names,
     );
     let store = GrpcStore::new(&spec)?;
@@ -311,15 +326,113 @@ async fn write_update_works() -> Result<(), Error> {
 }
 
 #[nativelink_test]
+async fn empty_cas_blob_skips_remote_bytestream() -> Result<(), Error> {
+    let (server, port) = make_fake_bytestream_server().await;
+    let store = GrpcStore::new(&test_spec(format!("http://127.0.0.1:{port}"), false))?;
+    for digest in nativelink_store::cas_utils::ZERO_BYTE_DIGESTS {
+        store.update_oneshot(digest, Bytes::new()).await?;
+    }
+    let requests = server.write_requests.lock().await;
+    assert!(
+        requests.is_empty(),
+        "empty CAS blobs must not require an RPC"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 async fn write_update_works_with_legacy_resource_names() -> Result<(), Error> {
     let upload_pattern = Regex::new("/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/blobs/0123456789abcdef000000000000000000010000000000000123456789abcdef/3").unwrap();
     write_update_works_core(true, upload_pattern).await
 }
 
 #[nativelink_test]
+async fn cas_update_restarts_from_zero_after_upstream_loses_the_upload() -> Result<(), Error> {
+    let server = FakeStreamServer {
+        require_zero_start: true,
+        ..FakeStreamServer::new_draining()
+    };
+    // More than the two cached messages: replaying them cannot restart this upload.
+    *server.fail_mid_upload.lock().await = 3;
+    let (server, port) = spawn_bytestream_server(server).await;
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
+    spec.retry.max_retries = 1;
+    spec.rpc_timeout_s = 30;
+    let store = GrpcStore::new(&spec)?;
+    let payload: Vec<u8> = (0..=3 * MAX_WRITE_REQUEST_DATA_BYTES)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let digest = DigestInfo::try_new(VALID_HASH, payload.len())?;
+
+    let err = store
+        .update_oneshot(digest, payload.clone().into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, tonic::Code::Unavailable, "{err:?}");
+    assert_eq!(server.write_requests.lock().await.len(), 3);
+
+    // The caller can now retry the entire blob in a fresh upload.
+    store.update_oneshot(digest, payload.clone().into()).await?;
+    let requests = server.write_requests.lock().await;
+    let (cut_off, retry) = requests.split_at(3);
+    assert_eq!(retry[0].write_offset, 0);
+    assert_ne!(retry[0].resource_name, cut_off[0].resource_name);
+    let mut offset = 0;
+    for request in retry {
+        assert_eq!(request.write_offset, offset);
+        offset += i64::try_from(request.data.len()).unwrap();
+    }
+    assert_eq!(
+        retry
+            .iter()
+            .flat_map(|request| request.data.iter().copied())
+            .collect::<Vec<_>>(),
+        payload
+    );
+    assert!(retry.last().unwrap().finish_write);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn cas_update_preserves_permanent_errors_and_makes_transient_errors_retryable()
+-> Result<(), Error> {
+    for (failure_code, expected_code) in [
+        (tonic::Code::Internal, tonic::Code::Unavailable),
+        (tonic::Code::DeadlineExceeded, tonic::Code::Unavailable),
+        (tonic::Code::ResourceExhausted, tonic::Code::Unavailable),
+        (tonic::Code::InvalidArgument, tonic::Code::InvalidArgument),
+        (tonic::Code::PermissionDenied, tonic::Code::PermissionDenied),
+    ] {
+        let server = FakeStreamServer {
+            failure_code,
+            ..FakeStreamServer::new_draining()
+        };
+        *server.fail_mid_upload.lock().await = 1;
+        let (_, port) = spawn_bytestream_server(server).await;
+        let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
+        spec.retry.max_retries = 1;
+        let store = GrpcStore::new(&spec)?;
+        let digest = DigestInfo::try_new(VALID_HASH, RAW_INPUT.len())?;
+        let err = store
+            .update_oneshot(digest, RAW_INPUT.into())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code, expected_code,
+            "upstream returned {failure_code:?}: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("simulated failure mid-upload"),
+            "{err:?}"
+        );
+    }
+    Ok(())
+}
+
+#[nativelink_test]
 async fn event_sink_uses_payload_size_and_rejects_cache_operations() -> Result<(), Error> {
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     spec.instance_name = "bep".into();
     let store = GrpcStore::new(&spec)?;
@@ -385,7 +498,7 @@ async fn event_sink_rejects_incomplete_acknowledgement() -> Result<(), Error> {
         ..FakeStreamServer::new_draining()
     };
     let (_, port) = spawn_bytestream_server(server).await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     let store = GrpcStore::new(&spec)?;
     let err = store
@@ -401,7 +514,7 @@ async fn event_sink_retry_preserves_upload_identity_after_lost_ack() -> Result<(
     let server = FakeStreamServer::new_draining();
     *server.fail_after_commit.lock().await = true;
     let (server, port) = spawn_bytestream_server(server).await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     spec.retry.max_retries = 1;
     let store = GrpcStore::new(&spec)?;
@@ -429,7 +542,7 @@ async fn event_sink_retry_resends_a_multi_chunk_event_from_zero() -> Result<(), 
     // to resume from, so resuming would start mid-event.
     *server.fail_mid_upload.lock().await = 3;
     let (server, port) = spawn_bytestream_server(server).await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.store_type = StoreType::EventSink;
     spec.retry.max_retries = 1;
     // Two attempts move about 12 MiB; the shared one-second limit is too
@@ -474,7 +587,7 @@ where
 {
     let (server, port) = make_fake_bytestream_server().await;
     let spec = edit_spec(test_spec(
-        format!("http://localhost:{port}"),
+        format!("http://127.0.0.1:{port}"),
         use_legacy_resource_names,
     ));
     let store = GrpcStore::new(&spec)?;
@@ -661,7 +774,7 @@ async fn make_fake_cas_server() -> (FakeCasServer, u16) {
 #[nativelink_test]
 async fn split_and_splice_blob_forward_to_backend() -> Result<(), Error> {
     let (server, port) = make_fake_cas_server().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.instance_name = "backend_instance".to_string();
     let store = GrpcStore::new(&spec)?;
 
@@ -717,7 +830,7 @@ async fn update_splits_buffers_larger_than_the_grpc_message_limit() -> Result<()
     const BLOB_LEN: usize = 9_869_079;
 
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     // This test moves and reassembles almost 10 MiB under instrumented builds.
     // The deadline is headroom for that, not part of the test: at 5 s the
     // ASan job timed out on a loaded runner with nothing else wrong.
@@ -803,7 +916,7 @@ async fn write_splits_frames_larger_than_the_grpc_message_limit() -> Result<(), 
     const BLOB_LEN: usize = 5_242_883;
 
     let (server, port) = make_fake_bytestream_server_draining().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     // Streaming several MiB through ByteStream is slow under instrumented
     // builds. This deadline is headroom for that, not part of the test.
     spec.rpc_timeout_s = 30;
@@ -877,7 +990,7 @@ async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<()
     const ENTRIES: usize = 12; // ~10.5MiB total, comfortably over the limit.
 
     let (server, port) = make_fake_cas_server().await;
-    let mut spec = test_spec(format!("http://localhost:{port}"), false);
+    let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
     spec.instance_name = "backend_instance".to_string();
     // Over 10 MiB through the fake server; headroom for sanitizer builds.
     spec.rpc_timeout_s = 30;
@@ -939,5 +1052,61 @@ async fn batch_update_blobs_splits_an_oversized_batch_across_rpcs() -> Result<()
         got, expected_digests,
         "stitched responses must stay in request order"
     );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_upload_never_commits_remote_bytestream() -> Result<(), Error> {
+    for compressed in [false, true] {
+        for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+            let (server, port) = make_fake_bytestream_server_draining().await;
+            let mut spec = test_spec(format!("http://127.0.0.1:{port}"), false);
+            spec.experimental_remote_cache_compression = Some(compressed);
+            let store = GrpcStore::new(&spec)?;
+            let digest = DigestInfo::try_new(VALID_HASH, 64 * 1024)?;
+            let (mut tx, rx) = make_buf_channel_pair();
+            let send = async move {
+                if !payload.is_empty() {
+                    tx.send(payload).await?;
+                }
+                tx.send_eof()
+            };
+            let (result, _) = tokio::join!(
+                store.update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes())),
+                send
+            );
+            assert!(
+                result.is_err(),
+                "short upload must fail (compressed={compressed})"
+            );
+            assert!(
+                server
+                    .write_requests
+                    .lock()
+                    .await
+                    .iter()
+                    .all(|request| !request.finish_write)
+            );
+        }
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn incomplete_oneshot_cas_upload_never_sends_remote_write() -> Result<(), Error> {
+    let (server, port) = make_fake_bytestream_server_draining().await;
+    let store = GrpcStore::new(&test_spec(format!("http://127.0.0.1:{port}"), false))?;
+    let digest = DigestInfo::try_new(VALID_HASH, 78)?;
+    for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+        assert_eq!(
+            store
+                .update_oneshot(digest, payload)
+                .await
+                .unwrap_err()
+                .code,
+            tonic::Code::InvalidArgument
+        );
+    }
+    assert!(server.write_requests.lock().await.is_empty());
     Ok(())
 }

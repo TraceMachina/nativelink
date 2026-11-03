@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,8 +19,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::serde_utils::{
-    convert_duration_with_shellexpand, convert_duration_with_shellexpand_and_negative,
-    convert_numeric_with_shellexpand, convert_string_with_shellexpand,
+    convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
+    convert_duration_with_shellexpand_and_negative, convert_numeric_with_shellexpand,
+    convert_string_with_shellexpand,
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
@@ -262,6 +263,13 @@ pub struct SimpleSpec {
     /// above the typical queue wait. Only properties listed in
     /// `supported_platform_properties` are enforced strictly; a property
     /// that is not listed does not restrict workers that do not declare it.
+    /// The memory backend knows only workers connected to this scheduler.
+    /// A learned size class is not a promise that its pool is online: a pod
+    /// being created or Pending does not stop this clock. For pools that
+    /// scale from zero, leave this at 0 or allow the entire cold start through
+    /// worker registration, including node creation and image downloads.
+    /// Redis peer exchange below also describes connected workers, not
+    /// provisioner pool templates. It does not solve this cold-start gap.
     ///
     /// When several schedulers share one Redis backend, each publishes what
     /// its workers can run whenever a worker joins or leaves and at least
@@ -526,6 +534,22 @@ const fn default_historical_resource_refresh_interval_s() -> u64 {
     30
 }
 
+const fn default_historical_resource_headroom_percent() -> u64 {
+    20
+}
+
+const fn default_historical_resource_window_days() -> u64 {
+    7
+}
+
+const fn default_historical_resource_memory_budget_bytes() -> u64 {
+    512 * 1024 * 1024
+}
+
+const fn default_historical_resource_snapshot_interval_s() -> u64 {
+    60
+}
+
 fn default_historical_resource_cpu_property_name() -> String {
     "cpu_count".to_string()
 }
@@ -704,8 +728,20 @@ pub struct TimeoutClassSpec {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HistoricalResourceSpec {
-    /// JSON file containing historical resource hints keyed by Bazel
-    /// `RequestMetadata` `target_id` and/or `action_mnemonic`.
+    /// Opt in to learning reservations from worker measurements. Defaults to
+    /// false: existing configurations keep using `hints_file` and its refresh
+    /// interval. In learning mode the file is only a startup seed.
+    #[serde(default)]
+    pub learn_from_workers: bool,
+
+    /// JSON hints file. With learning disabled, reload it at `refresh_interval_s`
+    /// and preserve the last usable hints if a reload fails. In learning mode,
+    /// seed the scheduler's sketch from it, read
+    /// once at start when no snapshot is loaded. The scheduler learns what
+    /// every kind of action uses from the usage its workers report, so a
+    /// file is only worth having for a fresh fleet that inherits another's
+    /// history: the admin API's `/scheduler/{instance}/hints` is this shape.
+    /// A seeded hint stands until the first real sample of its key.
     ///
     /// Supported file shapes:
     /// ```json
@@ -717,16 +753,84 @@ pub struct HistoricalResourceSpec {
     /// ```json
     /// { "hints": [ ... ] }
     /// ```
-    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
     pub hints_file: String,
 
-    /// Reload interval for `hints_file`. Set to 0 to load once.
-    /// Default: 30 seconds
+    /// Reload interval for `hints_file` when `learn_from_workers` is false.
+    /// Zero reads once. Refresh happens in the background, outside Execute.
+    /// Ignored only when learning is explicitly enabled. Default: 30 seconds.
     #[serde(
         default = "default_historical_resource_refresh_interval_s",
         deserialize_with = "convert_duration_with_shellexpand"
     )]
     pub refresh_interval_s: u64,
+
+    /// Headroom over the measured 95th percentile, as a share of it: 20
+    /// reserves 20% more than was measured.
+    /// Default: 20
+    #[serde(
+        default = "default_historical_resource_headroom_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub headroom_percent: u64,
+
+    /// A key not measured for this many days is forgotten. Within the
+    /// window, two half-window histograms retain each sample for between
+    /// half and one full window. A memory kill stops lifting the
+    /// key's reservation this many days after it.
+    /// Default: 7
+    #[serde(
+        default = "default_historical_resource_window_days",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub window_days: u64,
+
+    /// Accounting budget for the learned sketch, including keys, map and
+    /// probation storage and reserved snapshot working memory. One quarter
+    /// funds resident entries; the remainder allows encoding/loading snapshots.
+    /// Long keys reduce the number of retained entries. This is conservative
+    /// allocation accounting, not a process RSS limit (allocator overhead and
+    /// other scheduler data are separate). Default: 512 MiB, holding roughly
+    /// 55,000 target keys plus mnemonic and command families with short keys.
+    /// An explicitly configured budget is unchanged. Size the process memory
+    /// limit above this budget plus the scheduler's other allocations.
+    #[serde(
+        default = "default_historical_resource_memory_budget_bytes",
+        deserialize_with = "convert_data_size_with_shellexpand"
+    )]
+    pub memory_budget_bytes: u64,
+
+    /// Store for this replica's learned sketch. This must name a store in this
+    /// scheduler process's own top-level `stores`, not in another CAS process.
+    /// A missing name or failed startup probe logs a warning and disables
+    /// persistence until restart; scheduling and in-memory learning continue.
+    /// Each replica prefers its own key (`historical_resource_sketch/<replica_id>`).
+    /// When that key is missing, it restores the newest compatible snapshot
+    /// under the prefix if the store supports listing. Only one history is
+    /// restored, never merged. Use a separate store prefix for each logical
+    /// scheduler. Fallback scans at most 128 keys; retire old keys with a TTL.
+    /// Version 3 snapshots use wide histogram counters; older snapshots are
+    /// skipped with a warning. Give the store eviction or a TTL for retired
+    /// replica keys. It must support string keys; startup probes write/read.
+    /// Ignored when `learn_from_workers` is false. Unset means memory only.
+    #[serde(default)]
+    pub snapshot_store: Option<String>,
+
+    /// Stable snapshot identity, unique among concurrent writers sharing the
+    /// snapshot store. Empty uses `HOSTNAME`, or a random ID if unset. A stable
+    /// identity avoids snapshot discovery on restart; Deployment pods whose
+    /// names change can use the newest-snapshot fallback. Maximum: 256 bytes.
+    #[serde(default, deserialize_with = "convert_string_with_shellexpand")]
+    pub replica_id: String,
+
+    /// How often the snapshot is written. Zero turns the periodic write
+    /// off. Writes happen on the periodic tick; shutdown does not flush.
+    /// Default: 60 seconds
+    #[serde(
+        default = "default_historical_resource_snapshot_interval_s",
+        deserialize_with = "convert_duration_with_shellexpand"
+    )]
+    pub snapshot_interval_s: u64,
 
     /// Platform property name used for CPU minimums. The nested scheduler
     /// must declare it as a `minimum` property (as it must the memory and

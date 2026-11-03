@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -43,6 +43,19 @@ use uuid::Uuid;
 
 use crate::common::{self, DigestInfo, HashMapExt, VecExt};
 use crate::digest_hasher::DigestHasherFunc;
+
+/// Appended to a `NotFound` raised while fetching something the client
+/// referenced by digest (the action, its command, its inputs), so the
+/// worker loop can tell a missing input from any other missing thing
+/// without reading a store's wording. The scheduler reads it back off the
+/// `FAILED_PRECONDITION` result the worker turns that into.
+pub const MISSING_INPUT_ERROR_TIP: &str = "action input missing from CAS";
+
+/// Appended when the worker gave up reading the action or its inputs after
+/// its store retries ran out, so the scheduler can tell a store that was
+/// down from a failure of the action without reading a store's wording or
+/// trusting a bare `Unavailable`, which the scheduler raises itself.
+pub const STORE_UNREACHABLE_ERROR_TIP: &str = "worker could not reach its store";
 
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -200,6 +200,7 @@ async fn setup_api_server_with(
         dispatch_ack_timeout_s,
         worker_registry,
         None,
+        None,                    // resource_sketch
         false,                   // has_peers
         Duration::from_secs(15), // record_ttl (unused while has_peers = false)
         "scheduler".to_string(),

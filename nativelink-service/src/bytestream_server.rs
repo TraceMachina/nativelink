@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
 use core::convert::Into;
 use core::fmt::{Debug, Formatter};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -25,7 +25,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use bytes::BytesMut;
 use futures::future::pending;
 use futures::stream::unfold;
-use futures::{Future, Stream, TryFutureExt, try_join};
+use futures::{Future, Stream, try_join};
 use nativelink_config::cas_server::{ByteStreamConfig, InstanceName, WithInstanceName};
 use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
 use nativelink_metric::{
@@ -50,9 +50,9 @@ use nativelink_util::digest_hasher::{
 };
 use nativelink_util::proto_stream_utils::WriteRequestStreamWrapper;
 use nativelink_util::resource_info::ResourceInfo;
-use nativelink_util::spawn;
 use nativelink_util::store_trait::{Store, StoreLike, StoreOptimizations, UploadSizeInfo};
 use nativelink_util::task::JoinHandleDropGuard;
+use nativelink_util::{background_spawn, spawn};
 use opentelemetry::context::FutureExt;
 use parking_lot::Mutex;
 use tokio::time::sleep;
@@ -66,6 +66,12 @@ const DEFAULT_PERSIST_STREAM_ON_DISCONNECT_TIMEOUT: Duration = Duration::from_mi
 
 /// If this value changes update the documentation in the config definition.
 const DEFAULT_MAX_BYTES_PER_STREAM: usize = 64 * 1024;
+
+/// How long an upload abandoned after its last byte gets to commit on its
+/// own task. Generous, since a large blob can take minutes to reach a slow
+/// store; the bound only keeps a stuck store from collecting one task per
+/// abandoned upload with no end.
+const BACKGROUND_COMMIT_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Metrics for `ByteStream` server operations.
 /// Tracks upload/download activity, throughput, and latency.
@@ -101,6 +107,9 @@ pub struct ByteStreamMetrics {
     pub resumed_uploads: AtomicU64,
     /// Number of idle streams that timed out
     pub idle_stream_timeouts: AtomicU64,
+    /// Uploads whose client went away after the last byte; their commit
+    /// finished on a task of its own.
+    pub uploads_finished_in_background: AtomicU64,
 }
 
 impl MetricsComponent for ByteStreamMetrics {
@@ -200,6 +209,12 @@ impl MetricsComponent for ByteStreamMetrics {
             &self.idle_stream_timeouts,
             MetricKind::Counter,
             "Number of idle streams that timed out"
+        );
+        publish!(
+            "uploads_finished_in_background",
+            &self.uploads_finished_in_background,
+            MetricKind::Counter,
+            "Uploads whose client went away after the last byte and whose commit finished on its own task"
         );
 
         Ok(MetricPublishKnownKindData::Component)
@@ -399,6 +414,10 @@ struct StreamState {
     tx: DropCloserWriteHalf,
     store_update_fut: StoreUpdateFuture,
     digest_function: DigestHasherFunc,
+    /// Set once the client's final chunk has been handed to the store with
+    /// EOF: from then on the store's update needs nothing more from the
+    /// client, only time to commit.
+    eof_sent: Arc<AtomicBool>,
 }
 
 impl Debug for StreamState {
@@ -447,6 +466,56 @@ impl Drop for ActiveStreamGuard {
         // Mark stream as idle with current timestamp.
         // The global sweeper will clean it up after idle_stream_timeout.
         // This avoids spawning a task per stream, reducing overhead from O(n) to O(1).
+        //
+        // A stream that already handed the store its last byte is parked
+        // only so a resumed client can collect the result: nothing is left
+        // to resume. Its commit must finish regardless, so drive it on a
+        // task of its own and park a future that waits for that task. Left
+        // unpolled, the commit would sit in whatever queue it was in (a
+        // filesystem store's write permits, say) holding its place, and
+        // taking a permit when its turn came, until the sweeper dropped it:
+        // enough of those and no upload on the instance commits at all.
+        let stream_state = if stream_state.eof_sent.load(Ordering::Acquire) {
+            self.metrics
+                .uploads_finished_in_background
+                .fetch_add(1, Ordering::Relaxed);
+            let StreamState {
+                uuid,
+                tx,
+                store_update_fut,
+                digest_function,
+                eof_sent,
+            } = stream_state;
+            let commit = background_spawn!("bytestream_finish_upload", async move {
+                tokio::time::timeout(BACKGROUND_COMMIT_TIMEOUT, store_update_fut)
+                    .await
+                    .unwrap_or_else(|_| {
+                        warn!(
+                            uuid = format!("{uuid:032x}"),
+                            timeout_s = BACKGROUND_COMMIT_TIMEOUT.as_secs(),
+                            "Abandoned upload did not commit in time; dropping it"
+                        );
+                        Err(make_err!(
+                            Code::DeadlineExceeded,
+                            "Upload commit did not finish within {} s",
+                            BACKGROUND_COMMIT_TIMEOUT.as_secs()
+                        ))
+                    })
+            });
+            StreamState {
+                uuid,
+                tx,
+                store_update_fut: Box::pin(async move {
+                    commit.await.map_err(|err| {
+                        make_err!(Code::Internal, "Upload commit task failed: {err:?}")
+                    })?
+                }),
+                digest_function,
+                eof_sent,
+            }
+        } else {
+            stream_state
+        };
         active_uploads_slot.1 = Some(IdleStream {
             stream_state,
             idle_since: Instant::now(),
@@ -629,6 +698,7 @@ impl ByteStreamServer {
         instance: &InstanceInfo,
         digest: DigestInfo,
         digest_function: DigestHasherFunc,
+        write_offset: i64,
     ) -> Result<ActiveStreamGuard, Error> {
         // Bind the digest function to the retained store future itself. The
         // future can outlive this RPC while an upload is idle, so it must not
@@ -666,7 +736,20 @@ impl ByteStreamServer {
                             .fetch_add(1, Ordering::Relaxed);
                         return Ok(idle_stream.into_active_stream(bytes_received, instance));
                     }
-                    // Case 3: Stream is active - generate a unique UUID to avoid collision.
+                    // Case 3a: Stream is active and the client is resuming (non-zero
+                    // offset). Only the owner of this UUID resumes it: the client has
+                    // given up on its previous stream (deadline, dropped connection) but
+                    // we have not observed that stream ending yet. A fresh UUID would
+                    // expect offset 0 and reject the resume as out of order, so ask the
+                    // client to retry; by then the old stream is idle and the resume
+                    // joins it (Case 2).
+                    if write_offset > 0 {
+                        return Err(make_err!(
+                            Code::Unavailable,
+                            "Upload {uuid_str} is still active on the server; retry resuming at offset {write_offset}"
+                        ));
+                    }
+                    // Case 3b: Stream is active - generate a unique UUID to avoid collision.
                     // Using nanosecond timestamp makes collision probability essentially zero.
                     let original_key = *entry.key();
                     let unique_key = Self::generate_unique_uuid_key(original_key);
@@ -728,6 +811,7 @@ impl ByteStreamServer {
                 tx,
                 store_update_fut,
                 digest_function,
+                eof_sent: Arc::new(AtomicBool::new(false)),
             }),
             bytes_received,
             active_uploads: instance.active_uploads.clone(),
@@ -873,6 +957,7 @@ impl ByteStreamServer {
             >,
             tx: &mut DropCloserWriteHalf,
             outer_bytes_received: &Arc<AtomicU64>,
+            eof_sent: &Arc<AtomicBool>,
             expected_size: u64,
         ) -> Result<(), Error> {
             loop {
@@ -945,8 +1030,17 @@ impl ByteStreamServer {
                 }
                 if write_request.finish_write {
                     // Gracefully close our stream.
-                    tx.send_eof()
-                        .err_tip(|| "Failed to send EOF in ByteStream::write")?;
+                    // REAPI requires the completed upload to match its digest:
+                    // https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto
+                    // Validate before EOF, which authorizes the store to commit.
+                    UploadSizeInfo::ExactSize(expected_size)
+                        .validate_size(tx.get_bytes_written())?;
+                    // A resume after the last byte has nothing to send.
+                    if !eof_sent.load(Ordering::Acquire) {
+                        tx.send_eof()
+                            .err_tip(|| "Failed to send EOF in ByteStream::write")?;
+                        eof_sent.store(true, Ordering::Release);
+                    }
                     return Ok(());
                 }
                 // Continue.
@@ -959,21 +1053,48 @@ impl ByteStreamServer {
             .uuid
             .as_ref()
             .ok_or_else(|| make_input_err!("UUID must be set if writing data"))?;
-        let mut active_stream_guard =
-            self.create_or_join_upload_stream(uuid, instance_info, digest, digest_function)?;
+        let write_offset = stream.first_msg_write_offset().unwrap_or(0);
+        let mut active_stream_guard = self.create_or_join_upload_stream(
+            uuid,
+            instance_info,
+            digest,
+            digest_function,
+            write_offset,
+        )?;
         let expected_size = stream.resource_info.expected_size as u64;
 
         let active_stream = active_stream_guard.stream_state.as_mut().unwrap();
-        try_join!(
+        let eof_sent = active_stream.eof_sent.clone();
+        let store_done = AtomicBool::new(false);
+        let store_committed = AtomicBool::new(false);
+        let result = try_join!(
             process_client_stream(
                 stream,
                 &mut active_stream.tx,
                 &active_stream_guard.bytes_received,
+                &eof_sent,
                 expected_size
             ),
-            (&mut active_stream.store_update_fut)
-                .map_err(|err| { err.append("Error updating inner store") })
-        )?;
+            async {
+                let result = (&mut active_stream.store_update_fut).await;
+                store_done.store(true, Ordering::Relaxed);
+                store_committed.store(result.is_ok(), Ordering::Relaxed);
+                result.map_err(|err| err.append("Error updating inner store"))
+            }
+        );
+        if let Err(err) = result {
+            // A store update that already returned cannot be polled again.
+            // A commit stays parked as its result, so a resume collects the
+            // committed size; anything else is dropped, so a retry starts over.
+            if store_done.load(Ordering::Relaxed) {
+                if store_committed.load(Ordering::Relaxed) && eof_sent.load(Ordering::Acquire) {
+                    active_stream.store_update_fut = Box::pin(core::future::ready(Ok(())));
+                } else {
+                    active_stream_guard.graceful_finish();
+                }
+            }
+            return Err(err);
+        }
 
         // Close our guard and consider the stream no longer active.
         active_stream_guard.graceful_finish();
@@ -1063,6 +1184,7 @@ impl ByteStreamServer {
         }
 
         // Direct update without channel overhead
+        UploadSizeInfo::ExactSize(expected_size).validate_size(bytes_received)?;
         let store = instance_info.store.clone();
         let store_update_context = make_ctx_for_hash_func(digest_function)?;
         store

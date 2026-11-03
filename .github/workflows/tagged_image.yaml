@@ -1,5 +1,5 @@
 ---
-name: Create SemVer-tagged OCI image
+name: Images / SemVer OCI
 on:
   push:
     tags:
@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   get-images-matrix:
+    name: Resolve image matrix
     runs-on: ubuntu-24.04
     outputs:
        matrix: ${{ steps.setmatrix.outputs.matrix }}
@@ -27,6 +28,7 @@ jobs:
           echo "::set-output name=matrix::$MATRIX_STRINGIFIED"
 
   publish-image:
+    name: Publish ${{ matrix.image }}
     needs: get-images-matrix
     strategy:
       fail-fast: false

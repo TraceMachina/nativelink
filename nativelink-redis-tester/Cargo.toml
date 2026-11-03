@@ -4,13 +4,13 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-redis-tester"
-version = "1.7.7"
+version = "1.8.3"
 
 [dependencies]
 nativelink-util = { path = "../nativelink-util" }
 
 either = { version = "1.15.0", default-features = false }
-redis = { version = "1.0.0", default-features = false }
+redis = { version = "1.0.2", default-features = false }
 redis-protocol = { version = "6.0.0", default-features = false, features = [
   "bytes",
   "resp2",
@@ -18,5 +18,5 @@ redis-protocol = { version = "6.0.0", default-features = false, features = [
   "std",
 ] }
 redis-test = { version = "1.0.0", default-features = false, features = ["aio"] }
-tokio = { version = "1.52.2", features = [], default-features = false }
+tokio = { version = "1.53.3", features = [], default-features = false }
 tracing = { version = "0.1.41", default-features = false }

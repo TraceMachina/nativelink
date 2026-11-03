@@ -58,6 +58,8 @@ in {
       "web/apps/web/public/assets/re-api-fellow-fig1-action-lifecycle.jpg"
       "web/apps/web/public/assets/re-api-fellow-fig2-protocol-never-says-compiler.jpg"
       "web/apps/web/public/assets/re-api-fellow-fig3-overlap-hiring.jpg"
+      # O'Reilly Bazel book cover on the marketing site.
+      "web/apps/web/public/assets/oreilly-bazel-book-cover.png"
     ];
     name = "forbid-binary-files";
     types = ["binary"];
@@ -128,7 +130,8 @@ in {
   shfmt = {
     args = ["--indent" "4" "--space-redirects"];
     enable = true;
-    inherit excludes;
+    # Messes with COMMANDS formatting
+    excludes = ["toolchain-examples/rbe/cmds.sh"] ++ excludes;
   };
 
   # Starlark
@@ -215,6 +218,25 @@ in {
       '';
     in "${script}/bin/check-license";
     types = ["rust"];
+    pass_filenames = false;
+  };
+
+  # Check Github actions for hashes
+  check-hashes = {
+    description = "Check Github action hashes";
+    enable = true;
+    entry = let
+      python-with-yaml = pkgs.python3.withPackages (ps:
+        with ps; [
+          pyyaml
+        ]);
+      script = pkgs.writeShellScriptBin "check-github-hashes" ''
+        set -eu
+
+        ${python-with-yaml}/bin/python $(${flake-root}/bin/flake-root)/tools/github_action_hashes.py
+      '';
+    in "${script}/bin/check-github-hashes";
+    files = "^.github/.*$";
     pass_filenames = false;
   };
 }

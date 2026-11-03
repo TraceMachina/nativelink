@@ -11,7 +11,7 @@
 # and a required check that goes red for reasons outside the PR is a check
 # people learn to click past. It runs on a schedule instead, in the job below,
 # where a failure is a docs-maintenance task rather than a merge blocker.
-name: Docs lint
+name: CI / Docs
 
 on:
   push:
@@ -33,7 +33,9 @@ on:
 permissions: read-all
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # workflow_ref (not workflow name) so this file and vale.yaml can share the
+  # "CI / Docs" display prefix without cancelling each other.
+  group: ${{ github.workflow_ref }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

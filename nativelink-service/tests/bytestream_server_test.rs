@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -27,6 +29,7 @@ use nativelink_config::cas_server::{ByteStreamConfig, HttpListener, WithInstance
 use nativelink_config::stores::{MemorySpec, StoreSpec, VerifySpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+use nativelink_metric::MetricsComponent;
 use nativelink_proto::google::bytestream::byte_stream_client::ByteStreamClient;
 use nativelink_proto::google::bytestream::byte_stream_server::ByteStream;
 use nativelink_proto::google::bytestream::{
@@ -36,12 +39,16 @@ use nativelink_service::bytestream_server::ByteStreamServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
+use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::channel_body_for_tests::ChannelBody;
 use nativelink_util::common::{DigestInfo, encode_stream_proto};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc};
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::health_utils::HealthStatusIndicator;
+use nativelink_util::store_trait::{
+    RemoveCallback, Store, StoreDriver, StoreKey, StoreLike, UploadSizeInfo,
+};
 use nativelink_util::task::JoinHandleDropGuard;
-use nativelink_util::{background_spawn, spawn};
+use nativelink_util::{background_spawn, default_health_status_indicator, spawn};
 use pretty_assertions::assert_eq;
 use sha2::{Digest as ShaDigest, Sha256};
 use tokio::io::DuplexStream;
@@ -52,7 +59,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tonic::codec::{Codec, CompressionEncoding};
 use tonic::transport::{Channel, Endpoint};
-use tonic::{Request, Response, Streaming};
+use tonic::{Request, Response, Streaming, async_trait};
 use tonic_prost::ProstCodec;
 use tower::service_fn;
 
@@ -71,6 +78,43 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
         .await?,
     )?;
     Ok(store_manager)
+}
+
+#[nativelink_test]
+async fn rejects_incomplete_bytestream_without_verification_wrapper()
+-> Result<(), Box<dyn core::error::Error>> {
+    for streaming in [false, true] {
+        for payload in [Bytes::new(), Bytes::from_static(b"short")] {
+            let manager = Arc::new(StoreManager::new());
+            let memory_spec = StoreSpec::Memory(MemorySpec::default());
+            let spec = if streaming {
+                StoreSpec::FastSlow(Box::new(nativelink_config::stores::FastSlowSpec {
+                    fast: memory_spec.clone(),
+                    slow: memory_spec,
+                    fast_direction: nativelink_config::stores::StoreDirection::default(),
+                    slow_direction: nativelink_config::stores::StoreDirection::default(),
+                    bypass_dedup_threshold_bytes: 0,
+                }))
+            } else {
+                memory_spec
+            };
+            let store = store_factory(&spec, &manager, None).await?;
+            manager.add_store("main_cas", store.clone())?;
+            let server = Arc::new(make_bytestream_server(&manager, None)?);
+            let (tx, handle) = make_stream_and_writer_spawn(server, None);
+            tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+                resource_name: make_resource_name(78),
+                write_offset: 0,
+                finish_write: true,
+                data: payload.clone(),
+            })?))
+            .await?;
+            let error = handle.await?.expect_err("short uploads must fail");
+            assert_eq!(error.code(), Code::InvalidArgument);
+            assert_eq!(store.has(DigestInfo::try_new(HASH1, 78)?).await?, None);
+        }
+    }
+    Ok(())
 }
 
 async fn make_verify_store_manager() -> Result<Arc<StoreManager>, Error> {
@@ -1878,7 +1922,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
         // Test to ensure if we send exactly our max message size, it will succeed.
         let data = Bytes::from(vec![0u8; MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(data.len()),
             write_offset: 0,
             finish_write: true,
             data,
@@ -1899,7 +1943,7 @@ pub async fn max_decoding_message_size_test() -> Result<(), Box<dyn core::error:
             MAX_MESSAGE_SIZE - WRITE_REQUEST_MSG_WRAPPER_SIZE + 1
         ]);
         let write_request = WriteRequest {
-            resource_name: make_resource_name(MAX_MESSAGE_SIZE),
+            resource_name: make_resource_name(data.len()),
             write_offset: 0,
             finish_write: true,
             data,
@@ -2032,5 +2076,459 @@ async fn uuid_collision_does_not_deadlock() -> Result<(), Box<dyn core::error::E
 
     join2.await.expect("task panicked")?;
     drop(tx1);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn resume_while_previous_stream_still_active() -> Result<(), Box<dyn core::error::Error>> {
+    // A client's Write dies on the client side (deadline, dropped proxy or
+    // tunnel connection) before the server has observed the stream ending, so
+    // the server still holds it as active. The client follows the ByteStream
+    // resume protocol: QueryWriteStatus, then Write at the reported
+    // committed_size with the same UUID. The server reported that offset, so
+    // it must not reject a write there as InvalidArgument: it fails retryably
+    // while the old stream is still active, and the retry joins the stream
+    // once it has gone idle.
+    //
+    // Previously this resume hit the UUID-collision path, got a fresh UUID
+    // that expects offset 0, and failed with "Received out of order data. Got
+    // 5, expected 0", which clients do not retry.
+    const DATA: &[u8] = b"0123456789";
+    const SPLIT: usize = 5;
+    let resource_name = make_resource_name(DATA.len());
+
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+
+    // Writer 1: first half, stream left open so the server considers it active.
+    let (tx1, join1) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx1.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: DATA[..SPLIT].into(),
+    })?))
+    .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // The client thinks writer 1 is dead and asks where to resume.
+    let status = bs_server
+        .query_write_status(Request::new(QueryWriteStatusRequest {
+            resource_name: resource_name.clone(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(
+        status.committed_size,
+        i64::try_from(SPLIT)?,
+        "QueryWriteStatus should report the bytes received so far"
+    );
+
+    // Writer 2: resume at exactly the offset the server advertised.
+    let (tx2, join2) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx2.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: status.committed_size,
+        finish_write: true,
+        data: DATA[SPLIT..].into(),
+    })?))
+    .await?;
+    drop(tx2);
+
+    let result = tokio::time::timeout(core::time::Duration::from_secs(5), join2)
+        .await
+        .expect("resume hung")
+        .expect("task panicked");
+    let status_code = result
+        .expect_err("resume must not join a still-active stream")
+        .code();
+    assert_eq!(
+        status_code,
+        Code::Unavailable,
+        "Resume while the old stream is active must fail retryably"
+    );
+
+    // The server now observes writer 1 ending, which parks its stream as idle.
+    drop(tx1);
+    assert!(
+        join1.await.expect("task panicked").is_err(),
+        "Writer 1 ended early, so its Write should fail"
+    );
+
+    // The client retries the resume, exactly as before.
+    let status = bs_server
+        .query_write_status(Request::new(QueryWriteStatusRequest {
+            resource_name: resource_name.clone(),
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(status.committed_size, i64::try_from(SPLIT)?);
+    let (tx3, join3) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx3.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: status.committed_size,
+        finish_write: true,
+        data: DATA[SPLIT..].into(),
+    })?))
+    .await?;
+    drop(tx3);
+    join3
+        .await
+        .expect("task panicked")
+        .expect("Retried resume should join the idle stream and complete the upload");
+
+    let store = store_manager.get_store("main_cas").unwrap();
+    let digest = DigestInfo::try_new(HASH1, DATA.len())?;
+    assert_eq!(store.get_part_unchunked(digest, 0, None).await?, DATA);
+    Ok(())
+}
+
+/// A store that takes the whole upload and then holds the commit until the
+/// test lets it go, the way a filesystem store waits for a write permit, or
+/// with `fail_after_eof` refuses it at once, the way a commit-time check does.
+#[derive(Debug, MetricsComponent)]
+struct GatedStore {
+    inner: Store,
+    gate: Arc<tokio::sync::Notify>,
+    eof_received: Arc<AtomicBool>,
+    fail_after_eof: bool,
+}
+
+#[async_trait]
+impl StoreDriver for GatedStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        self.inner.has_with_results(keys, results).await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        let data = reader.consume(None).await?;
+        self.eof_received.store(true, Ordering::Release);
+        if self.fail_after_eof {
+            return Err(make_err!(Code::InvalidArgument, "commit refused"));
+        }
+        self.gate.notified().await;
+        let len = data.len() as u64;
+        self.inner.update_oneshot(key.into_owned(), data).await?;
+        Ok(len)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        self.inner.get_part(key, writer, offset, length).await
+    }
+
+    fn inner_store(&self, _digest: Option<StoreKey>) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(GatedStore);
+
+/// A client that sends its last byte and gives up before the commit
+/// answers leaves nothing to resume. The commit must still finish, on its
+/// own, instead of sitting unpolled in the parked stream: unpolled, it
+/// would keep its place in the store's commit queue, and take a permit
+/// when its turn came, until the idle-stream sweeper dropped it.
+#[nativelink_test]
+async fn upload_abandoned_after_its_last_byte_still_commits()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let eof_received = Arc::new(AtomicBool::new(false));
+    let inner = store_factory(
+        &StoreSpec::Memory(MemorySpec::default()),
+        &Arc::new(StoreManager::new()),
+        None,
+    )
+    .await?;
+    let store = Store::new(Arc::new(GatedStore {
+        inner: inner.clone(),
+        gate: gate.clone(),
+        eof_received: eof_received.clone(),
+        fail_after_eof: false,
+    }));
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", store)?;
+    let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref(), None)?);
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: make_resource_name(WRITE_DATA.len()),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+    // The store has every byte and is waiting at the gate.
+    for _ in 0..200 {
+        if eof_received.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        eof_received.load(Ordering::Acquire),
+        "the store never saw EOF"
+    );
+
+    // The client gives up: its deadline fires and the handler is dropped
+    // mid-commit, which parks the stream.
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // The queue moves on. Before the fix the parked future was never
+    // polled again, so the store never got past the gate.
+    gate.notify_one();
+    let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+    let mut committed = None;
+    for _ in 0..200 {
+        committed = inner.has(digest).await?;
+        if committed.is_some() {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        committed,
+        Some(WRITE_DATA.len() as u64),
+        "the abandoned upload must still commit once the queue moves"
+    );
+    Ok(())
+}
+
+async fn make_gated_server(
+    fail_after_eof: bool,
+) -> Result<
+    (
+        Arc<ByteStreamServer>,
+        Store,
+        Arc<tokio::sync::Notify>,
+        Arc<AtomicBool>,
+    ),
+    Box<dyn core::error::Error>,
+> {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let eof_received = Arc::new(AtomicBool::new(false));
+    let inner = store_factory(
+        &StoreSpec::Memory(MemorySpec::default()),
+        &Arc::new(StoreManager::new()),
+        None,
+    )
+    .await?;
+    let store = Store::new(Arc::new(GatedStore {
+        inner: inner.clone(),
+        gate: gate.clone(),
+        eof_received: eof_received.clone(),
+        fail_after_eof,
+    }));
+    let store_manager = Arc::new(StoreManager::new());
+    store_manager.add_store("main_cas", store)?;
+    let bs_server = Arc::new(make_bytestream_server(store_manager.as_ref(), None)?);
+    Ok((bs_server, inner, gate, eof_received))
+}
+
+/// A store that refuses the upload after reading all of it fails the
+/// write with its own error, and so does a retry: the finished update is
+/// not parked for a resume, where polling it again would panic.
+#[nativelink_test]
+async fn store_failing_after_eof_reports_its_error_on_every_attempt()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let (bs_server, _inner, _gate, _eof_received) = make_gated_server(true).await?;
+    for attempt in 0..2 {
+        let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+        tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+            resource_name: make_resource_name(WRITE_DATA.len()),
+            write_offset: 0,
+            finish_write: true,
+            data: WRITE_DATA.into(),
+        })?))
+        .await?;
+        let status = join_handle
+            .await
+            .expect("task panicked")
+            .expect_err("the store refused the upload");
+        assert_eq!(
+            status.code(),
+            Code::InvalidArgument,
+            "attempt {attempt}: {status:?}"
+        );
+        assert!(
+            status.message().contains("commit refused"),
+            "attempt {attempt}: {status:?}"
+        );
+    }
+    Ok(())
+}
+
+/// A client that resumes after its abandoned upload committed in the
+/// background, at the full size with `finish_write`, gets the committed
+/// size back.
+#[nativelink_test]
+async fn resume_after_a_background_commit_reports_the_full_size()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let (bs_server, inner, gate, eof_received) = make_gated_server(false).await?;
+    let resource_name = make_resource_name(WRITE_DATA.len());
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+    for _ in 0..200 {
+        if eof_received.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        eof_received.load(Ordering::Acquire),
+        "the store never saw EOF"
+    );
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    gate.notify_one();
+    let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+    let mut committed = None;
+    for _ in 0..200 {
+        committed = inner.has(digest).await?;
+        if committed.is_some() {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(committed, Some(WRITE_DATA.len() as u64));
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: i64::try_from(WRITE_DATA.len())?,
+        finish_write: true,
+        data: Bytes::new(),
+    })?))
+    .await?;
+    let response = tokio::time::timeout(core::time::Duration::from_secs(5), join_handle)
+        .await
+        .expect("resume hung")
+        .expect("task panicked")?
+        .into_inner();
+    assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
+    Ok(())
+}
+
+/// A retry that arrives while an abandoned upload commits in the background,
+/// sees that commit finish, and then loses its own client, leaves nothing to
+/// park: the finished update is not polled again, and the next resume gets
+/// the committed size instead of an `Internal` error from a panicked task.
+#[nativelink_test]
+async fn retry_that_sees_the_commit_finish_and_then_disconnects_is_not_parked()
+-> Result<(), Box<dyn core::error::Error>> {
+    const WRITE_DATA: &str = "12456789abcdefghijk";
+    let (bs_server, inner, gate, eof_received) = make_gated_server(false).await?;
+    let resource_name = make_resource_name(WRITE_DATA.len());
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: true,
+        data: WRITE_DATA.into(),
+    })?))
+    .await?;
+    for _ in 0..200 {
+        if eof_received.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        eof_received.load(Ordering::Acquire),
+        "the store never saw EOF"
+    );
+    drop(join_handle);
+    drop(tx);
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    // A retry resends a prefix and waits, so it is mid-stream when the
+    // commit finishes.
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name: resource_name.clone(),
+        write_offset: 0,
+        finish_write: false,
+        data: WRITE_DATA[..5].into(),
+    })?))
+    .await?;
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    gate.notify_one();
+    let digest = DigestInfo::try_new(HASH1, WRITE_DATA.len())?;
+    let mut committed = None;
+    for _ in 0..200 {
+        committed = inner.has(digest).await?;
+        if committed.is_some() {
+            break;
+        }
+        tokio::time::sleep(core::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(committed, Some(WRITE_DATA.len() as u64));
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+    // Then that client goes away too.
+    drop(tx);
+    drop(join_handle.await.expect("task panicked"));
+    tokio::time::sleep(core::time::Duration::from_millis(50)).await;
+
+    let (tx, join_handle) = make_stream_and_writer_spawn(bs_server.clone(), None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: i64::try_from(WRITE_DATA.len())?,
+        finish_write: true,
+        data: Bytes::new(),
+    })?))
+    .await?;
+    let response = tokio::time::timeout(core::time::Duration::from_secs(5), join_handle)
+        .await
+        .expect("resume hung")
+        .expect("task panicked")?
+        .into_inner();
+    assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
     Ok(())
 }

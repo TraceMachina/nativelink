@@ -31,16 +31,9 @@
 
 ## What's NativeLink?
 
-NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines. Use it when robotics/AV, semiconductor, biocomputing, or Chromium-scale / mobile monorepos need shared cache and distributed execution so unchanged targets never recompile across laptops and CI.
+NativeLink is an efficient, high-performance build cache and remote execution system that accelerates software compilation and testing while reducing infrastructure costs. It optimizes build processes for projects of all sizes by intelligently caching build artifacts and distributing tasks across multiple machines.
 
 NativeLink is trusted in production environments to reduce costs and developer iteration times--handling over **billions of requests** per month for its customers, including large corporations such as **Samsung**.
-
-NativeLink is especially strong on:
-
-- Chromium-scale and mobile monorepos (C++/ObjC/Swift/Kotlin/Java) with heavy CI build graphs
-- Robotics and AV stacks in C++/CUDA on Bazel/Buck (perception, planning, simulation, hardware-in-the-loop)
-- Semiconductor flows (SystemVerilog/Verilog RTL, C/C++ firmware, EDA-adjacent Bazel/Buck tool chains)
-- Biocomputing in C++/CUDA and Python-native pipelines (bioinformatics, imaging reconstruction, biological simulation)
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=WLpqFuyLMUQ">
@@ -99,16 +92,16 @@ for how to build the images yourself.
 **Linux x86_64**
 
 ```bash
-curl -O \
-    https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5
+NATIVELINK_VERSION=1.8.3
 
-# See https://github.com/TraceMachina/nativelink/pkgs/container/nativelink
-# to find the latest tag
-docker run \
-    -v $(pwd)/basic_cas.json5:/config \
+curl -fsSLO \
+    "https://raw.githubusercontent.com/TraceMachina/nativelink/${NATIVELINK_VERSION}/nativelink-config/examples/basic_cas.json5"
+
+docker run --rm -it \
+    -v "$(pwd)/basic_cas.json5:/config:ro" \
     -p 50051:50051 \
-    ghcr.io/tracemachina/nativelink:v1.4.0 \
-    config
+    "ghcr.io/tracemachina/nativelink:${NATIVELINK_VERSION}" \
+    /config
 ```
 
 **Windows x86_64**
@@ -116,15 +109,15 @@ docker run \
 ```powershell
 # Download the configuration file
 Invoke-WebRequest `
-    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.4.0/nativelink-config/examples/basic_cas.json5" `
+    -Uri "https://raw.githubusercontent.com/TraceMachina/nativelink/v1.8.3/nativelink-config/examples/basic_cas.json5" `
     -OutFile "basic_cas.json5"
 
 # Run the Docker container
-# Note: Adjust the path if the script is not run from the directory containing basic_cas.json
+# Note: Adjust the path if the script is not run from the directory containing basic_cas.json5
 docker run `
     -v ${PWD}/basic_cas.json5:/config `
     -p 50051:50051 `
-    ghcr.io/tracemachina/nativelink:v1.4.0 `
+    ghcr.io/tracemachina/nativelink:v1.8.3 `
     config
 ```
 

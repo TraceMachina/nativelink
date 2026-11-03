@@ -1,5 +1,5 @@
 ---
-name: PR template
+name: CI / PR template
 
 # `pull_request_target` so the comment can be posted on pull requests from
 # forks, which is where a first-time contributor is most likely to need it.
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   check:
-    name: check
+    name: Check
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

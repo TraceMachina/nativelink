@@ -49,20 +49,23 @@ They are the only variables that change the binary's own behaviour.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `NL_LOG` | `pretty` | Format of the stdout log layer. `compact` and `json` are recognised; **any other value silently falls back to `pretty`**, including a typo like `Json`. |
-| `RUST_LOG` | `info` | Log filter, parsed by `tracing_subscriber`'s `EnvFilter` in lossy mode; an unparseable directive is dropped rather than fatal. Applies to the stdout layer *and* to the OTLP log, trace and metric layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled from here. |
-| `NL_OTEL_ENDPOINT` | not set | When set, all three OTLP exporters share one client-side load-balanced gRPC channel pointed at this endpoint. When unset, each exporter is built with the SDK's own tonic defaults instead. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Standard OpenTelemetry SDK variable. Applies only when `NL_OTEL_ENDPOINT` is unset; an explicit channel wins over the SDK's endpoint resolution. The signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` variables behave the same way. |
+| `RUST_LOG` | `info` | Log filter, parsed by `tracing_subscriber`'s `EnvFilter` in lossy mode; a directive that cannot be parsed is dropped rather than fatal. Applies to the stdout layer *and* to the OTLP log, trace and metric layers. `hyper`, `tonic`, `h2`, `reqwest` and `tower` are forced off afterwards and cannot be re-enabled from here. |
+| `NL_OTEL_ENDPOINT` | not set | When set, all three OTLP exporters share one client-side load-balanced gRPC channel pointed at this endpoint. When unset, each exporter is built with the SDK's own tonic defaults instead. An `https://` endpoint gets TLS, with the certificate variables below or the system trust store. A per-signal certificate variable gives that signal a channel of its own, built with its material, instead of the shared one. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Standard OpenTelemetry SDK variable. Applies only when `NL_OTEL_ENDPOINT` is unset; an explicit channel wins over the SDK's endpoint resolution. The signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` variables behave the same way. An `https://` endpoint gets TLS, with the certificate variables below or the system trust store. |
+| `OTEL_EXPORTER_OTLP_CERTIFICATE` | not set | Standard OpenTelemetry variable, read by NativeLink itself because the Rust SDK does not: the path to a PEM file holding the CA that signs the collector's certificate. Set, it is the only CA trusted; unset, the host's system trust store is. The signal-specific `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_CERTIFICATE` forms win over it. An empty value counts as unset; a path that cannot be read stops the process at startup. |
+| `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` | not set | The path to the PEM certificate the exporter presents when the collector asks for one (mTLS). Has to be set together with `OTEL_EXPORTER_OTLP_CLIENT_KEY`; one without the other stops the process at startup. Signal-specific forms as above. |
+| `OTEL_EXPORTER_OTLP_CLIENT_KEY` | not set | The path to the PEM private key for `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`. Signal-specific forms as above. |
 | `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | How often the periodic metric reader flushes to the collector. NativeLink sets no interval of its own, so the SDK default of one minute applies unless you override it here. This is the first hop in the [reaction-time budget](/operate/autoscaling-reference). |
 
 <Callout type="warn" title="NL_OTEL_ENDPOINT requires a scheme and an explicit port">
 
   The endpoint is parsed as a URL and then the host and port are pulled out
-  individually, and each step `unwrap`s. A value with no scheme, or with no
-  explicit port, yields `None` for the port and **panics the process during
-  startup** rather than falling back to a default.
+  individually. A value with no scheme, or with no explicit port, **stops the
+  process during startup** with an error rather than falling back to a
+  default.
 
   `http://otel-collector:4317` is correct. `otel-collector:4317` and
-  `http://otel-collector` both crash the binary before it binds a socket.
+  `http://otel-collector` both stop the binary before it binds a socket.
 
 </Callout>
 

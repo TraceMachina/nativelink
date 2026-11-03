@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -168,7 +168,7 @@ pub mod request_event {
 pub struct ResponseEvent {
     #[prost(
         oneof = "response_event::Event",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
     )]
     pub event: ::core::option::Option<response_event::Event>,
 }
@@ -216,6 +216,8 @@ pub mod response_event {
         ),
         #[prost(message, tag = "12")]
         ActionResourceUsage(super::super::remote_execution::ActionResourceUsage),
+        #[prost(message, tag = "13")]
+        ActionAttemptEnded(super::super::remote_execution::ActionAttemptEnded),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

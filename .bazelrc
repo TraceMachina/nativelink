@@ -1,4 +1,4 @@
-# Copyright 2022 The NativeLink Authors. All rights reserved.
+# Copyright 2022 Trace Machina, Inc. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
@@ -249,3 +249,6 @@ try-import %workspace%/ci.bazelrc
 
 # Allow user-side customization.
 try-import %workspace%/user.bazelrc
+
+# Generated per-job metadata; absent for ordinary local builds.
+try-import %workspace%/ci-metadata.bazelrc

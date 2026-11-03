@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,19 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::pin::Pin;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::stream;
+use futures::{StreamExt, stream};
 use nativelink_config::cas_server::{ExecutionConfig, WithInstanceName};
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::Execution;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Action, Command, ExecuteRequest, RequestMetadata, ToolDetails, digest_function,
+    Action, Command, ExecuteRequest, RequestMetadata, ToolDetails, WaitExecutionRequest,
+    digest_function,
 };
 use nativelink_proto::google::longrunning::operations_server::Operations;
 use nativelink_proto::google::longrunning::{
@@ -43,11 +45,12 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::DigestInfo;
 use nativelink_util::digest_hasher::DigestHasherFunc;
+use nativelink_util::health_utils::{HealthStatusIndicator, default_health_status_indicator};
 use nativelink_util::operation_state_manager::{ActionStateResult, ActionStateResultStream};
 use nativelink_util::origin_event::{
     BAZEL_METADATA_KEY, OriginMetadata, request_metadata_to_baggage,
 };
-use nativelink_util::store_trait::StoreLike;
+use nativelink_util::store_trait::{StoreDriver, StoreLike};
 use opentelemetry::KeyValue;
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::context::{Context, FutureExt};
@@ -81,6 +84,21 @@ fn make_execution_server_with_isolation(
     store_manager: &StoreManager,
     isolation: bool,
 ) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
+    make_execution_server_inner(store_manager, isolation, 0)
+}
+
+fn make_execution_server_with_heartbeat(
+    store_manager: &StoreManager,
+    heartbeat_s: usize,
+) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
+    make_execution_server_inner(store_manager, false, heartbeat_s)
+}
+
+fn make_execution_server_inner(
+    store_manager: &StoreManager,
+    isolation: bool,
+    heartbeat_s: usize,
+) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
     let mut action_schedulers: HashMap<String, Arc<dyn KnownPlatformPropertyProvider>> =
         HashMap::new();
@@ -90,6 +108,7 @@ fn make_execution_server_with_isolation(
             instance_name: INSTANCE_NAME.to_string(),
             config: ExecutionConfig {
                 experimental_buck2_invocation_isolation: isolation,
+                execute_stream_heartbeat_s: heartbeat_s,
                 cas_store: "main_cas".to_string(),
                 scheduler: "main_scheduler".to_string(),
             },
@@ -318,6 +337,101 @@ async fn operations_wait_operation_finishes() -> Result<(), Box<dyn core::error:
     let operation = request_res?.into_inner();
     assert_eq!(operation.name, operation_name);
     assert!(operation.done);
+
+    Ok(())
+}
+
+/// With a heartbeat configured, a stream whose operation produces no stage
+/// changes re-sends the last state at the interval instead of going silent,
+/// so the client and every intermediary see a live stream.
+#[nativelink_test(start_paused = true)]
+async fn wait_execution_heartbeats_while_idle() -> Result<(), Box<dyn core::error::Error>> {
+    struct QueuedThenSilent {
+        state: Arc<ActionState>,
+        sent_first: bool,
+    }
+
+    #[async_trait]
+    impl ActionStateResult for QueuedThenSilent {
+        async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+            Ok((self.state.clone(), None))
+        }
+
+        async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+            if !self.sent_first {
+                self.sent_first = true;
+                return Ok((self.state.clone(), None));
+            }
+            futures::future::pending().await
+        }
+
+        async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+            Err(make_err!(
+                Code::Unimplemented,
+                "as_action_info not implemented"
+            ))
+        }
+    }
+
+    let store_manager = make_store_manager().await?;
+    let (execution_server, mock_scheduler) =
+        make_execution_server_with_heartbeat(&store_manager, 1)?;
+
+    let operation_name = format!("{INSTANCE_NAME}/heartbeat_operation_id");
+    let mock_result = QueuedThenSilent {
+        state: Arc::new(ActionState {
+            client_operation_id: OperationId::from("heartbeat_operation_id"),
+            stage: ActionStage::Queued,
+            action_digest: DigestInfo::new([0u8; 32], 0),
+            last_transition_timestamp: SystemTime::UNIX_EPOCH,
+        }),
+        sent_first: false,
+    };
+    let stream: ActionStateResultStream = Box::pin(stream::once(async move {
+        let result: Box<dyn ActionStateResult> = Box::new(mock_result);
+        result
+    }));
+
+    let request_fut = execution_server.wait_execution(Request::new(WaitExecutionRequest {
+        name: operation_name.clone(),
+    }));
+    let (request_res, _) = tokio::join!(
+        request_fut,
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+    let mut response_stream = request_res?.into_inner();
+
+    // Two items arrive immediately: the seed the drive task sends from
+    // as_state(), and the one update changed() yields before going silent.
+    let first = response_stream
+        .next()
+        .await
+        .expect("stream ended before first update")?;
+    assert_eq!(first.name, operation_name);
+    assert!(!first.done);
+    let duplicate = response_stream
+        .next()
+        .await
+        .expect("stream ended before the first changed() update")?;
+    assert_eq!(duplicate.name, first.name);
+
+    // No stage change follows, so the next items can only be timer-driven
+    // heartbeats: the same operation state, each a full interval later on
+    // the paused clock (auto-advance jumps to the timer).
+    for _ in 0..2 {
+        let before = tokio::time::Instant::now();
+        let heartbeat = response_stream
+            .next()
+            .await
+            .expect("stream went silent instead of heartbeating")?;
+        assert_eq!(heartbeat.name, first.name);
+        assert_eq!(heartbeat.metadata, first.metadata);
+        assert!(!heartbeat.done);
+        assert!(
+            before.elapsed() >= core::time::Duration::from_secs(1),
+            "heartbeat arrived without the interval elapsing, so it was not timer-driven",
+        );
+    }
 
     Ok(())
 }
@@ -652,5 +766,158 @@ async fn operations_wait_operation_timeout() -> Result<(), Box<dyn core::error::
     assert_eq!(operation.name, operation_name);
     assert!(!operation.done);
 
+    Ok(())
+}
+
+/// A store that loses a blob without telling anyone, as an object store
+/// does when its lifecycle rule or an operator deletes it.
+#[derive(nativelink_metric::MetricsComponent)]
+struct SilentStore {
+    inner: Arc<nativelink_store::memory_store::MemoryStore>,
+}
+
+#[async_trait]
+impl StoreDriver for SilentStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        keys: &[nativelink_util::store_trait::StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .has_with_results(keys, results)
+            .await
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        key: nativelink_util::store_trait::StoreKey<'_>,
+        reader: nativelink_util::buf_channel::DropCloserReadHalf,
+        size_info: nativelink_util::store_trait::UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        Pin::new(self.inner.as_ref())
+            .update(key, reader, size_info)
+            .await
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        key: nativelink_util::store_trait::StoreKey<'_>,
+        writer: &mut nativelink_util::buf_channel::DropCloserWriteHalf,
+        offset: u64,
+        length: Option<u64>,
+    ) -> Result<(), Error> {
+        Pin::new(self.inner.as_ref())
+            .get_part(key, writer, offset, length)
+            .await
+    }
+
+    fn inner_store(
+        &self,
+        _key: Option<nativelink_util::store_trait::StoreKey>,
+    ) -> &dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(
+        self: Arc<Self>,
+        _callback: nativelink_util::store_trait::RemoveCallback,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(SilentStore);
+
+/// A blob can leave the object store after the existence cache learned it,
+/// and the cache is told nothing. The action that needs it then fails with
+/// the blob missing; the execution server must stop vouching for it before
+/// the client hears, or the client's retry asks `FindMissingBlobs`, is told
+/// the blob is present, uploads nothing, and fails the same way until the
+/// cache entry expires.
+#[nativelink_test]
+async fn missing_input_drops_the_blob_from_the_existence_cache()
+-> Result<(), Box<dyn core::error::Error>> {
+    use futures::StreamExt as _;
+    use nativelink_config::stores::{ExistenceCacheSpec, NoopSpec};
+    use nativelink_error::ErrorContext;
+    use nativelink_store::existence_cache_store::ExistenceCacheStore;
+    use nativelink_store::memory_store::MemoryStore;
+    use nativelink_util::store_trait::Store;
+
+    let inner = Arc::new(SilentStore {
+        inner: MemoryStore::new(&MemorySpec::default()),
+    });
+    let cache = ExistenceCacheStore::new(
+        &ExistenceCacheSpec {
+            backend: StoreSpec::Noop(NoopSpec::default()),
+            eviction_policy: None,
+        },
+        Store::new(inner.clone()),
+    );
+    let store_manager = StoreManager::new();
+    store_manager.add_store("main_cas", Store::new(cache.clone()))?;
+    let (execution_server, mock_scheduler) = make_execution_server(&store_manager)?;
+
+    let digest = make_fake_digest(0xbb, 3);
+    Store::new(inner.clone())
+        .update_oneshot(digest, "abc".into())
+        .await?;
+    assert_eq!(Store::new(cache.clone()).has(digest).await?, Some(3));
+    // Gone below the cache, which still vouches for it.
+    assert!(inner.inner.remove_entry(digest.into()).await);
+    assert!(cache.exists_in_cache(&digest).await);
+
+    let mut error = make_err!(
+        Code::NotFound,
+        "Object {digest} not found in either fast or slow store"
+    );
+    error.context = ErrorContext::MissingDigest {
+        hash: digest.packed_hash().to_string(),
+        size: 3,
+    };
+    let failed = Arc::new(ActionState {
+        client_operation_id: OperationId::from("some_operation_id"),
+        stage: ActionStage::Completed(ActionResult {
+            error: Some(error),
+            ..ActionResult::default()
+        }),
+        action_digest: make_fake_digest(0xaa, 16),
+        last_transition_timestamp: SystemTime::UNIX_EPOCH,
+    });
+    let stream: ActionStateResultStream = Box::pin(stream::once(async move {
+        let result: Box<dyn ActionStateResult> = Box::new(MockActionStateResult {
+            states: vec![failed],
+        });
+        result
+    }));
+    let (response, _) = tokio::join!(
+        execution_server.wait_execution(Request::new(
+            nativelink_proto::build::bazel::remote::execution::v2::WaitExecutionRequest {
+                name: format!("{INSTANCE_NAME}/some_operation_id"),
+            }
+        )),
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+    let mut updates = response?.into_inner();
+    while let Some(update) = updates.next().await {
+        update?;
+    }
+    assert!(
+        !cache.exists_in_cache(&digest).await,
+        "the execution server must drop a missing input from the existence cache"
+    );
+    assert_eq!(Store::new(cache).has(digest).await?, None);
     Ok(())
 }

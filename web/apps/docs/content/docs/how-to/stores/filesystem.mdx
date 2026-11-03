@@ -14,6 +14,12 @@ your disk, with eviction that actually runs. **Time:** fifteen minutes.
   A config file you can edit. See [Configuration](/configuration).
 </Prerequisites>
 
+In development builds, the filesystem store validates streamed bytes before publishing its temporary
+file. Whole-file uploads check the actual file length before moving the file
+into the cache. See
+[upload integrity](/how-to/stores/compose-stores#upload-integrity) for the shared
+contract and its limits.
+
 ## The recipe [#the-recipe]
 
 ```json5

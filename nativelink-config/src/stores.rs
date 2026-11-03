@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -759,6 +759,15 @@ pub struct CacheMetricsSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub cache_type: String,
 
+    /// Allow repair requests to remove the backend's copy. Defaults to false.
+    /// Enable only for disposable cache tiers with a separate correct copy to
+    /// refill from. Memory and filesystem stores evict when asked, even if
+    /// they hold the only copy. Keep this disabled when wrapping such a tier.
+    /// This only gates removal through this wrapper, not the backend's own
+    /// eviction policy. Place the wrapper around the tier inside the verifier.
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub allow_remove: bool,
+
     /// Store to wrap with cache operation metrics.
     pub backend: StoreSpec,
 }
@@ -1433,6 +1442,65 @@ pub struct CommonObjectSpec {
     /// Default: 120.0
     #[serde(default = "default_throttle_retry_budget_s")]
     pub throttle_retry_budget_s: f32,
+
+    /// Most downloads (`GET`) this process keeps in flight against the
+    /// object store at once, each counted until its body has been sent on.
+    /// Further downloads wait in the process for a permit instead of being
+    /// sent and refused, which turns an account over its limit into
+    /// queueing here rather than wasted requests and retries in lockstep.
+    /// Existence checks (`HEAD`) are not counted: they move no bytes, so
+    /// they never wait behind a body going to a slow client, and a
+    /// throttled `HEAD` does not move the limit. 0 (the default) leaves
+    /// downloads unbounded, as before.
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_reads: usize,
+
+    /// With `max_concurrent_reads` set, let the bound move: a throttled
+    /// download (503 `ServerBusy` or 429) halves it, not below
+    /// `min_concurrent_reads`, and a run of answered downloads raises it
+    /// by one back toward `max_concurrent_reads`. Many processes behind one
+    /// account then converge on a share of its limit. Off, the bound is
+    /// fixed at `max_concurrent_reads`.
+    ///
+    /// Default: false
+    #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
+    pub adaptive_read_concurrency: bool,
+
+    /// Floor for the adaptive read bound.
+    ///
+    /// Default: 4
+    #[serde(
+        default = "default_min_concurrent_reads",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub min_concurrent_reads: usize,
+
+    /// Most requests of any kind this store keeps in flight against the
+    /// object store at once: existence checks (`HEAD`), downloads, uploads,
+    /// block staging and commits, and the cleanup after a failed upload.
+    /// Each request holds a connection of its own for its whole length
+    /// (Azure Blob Storage speaks HTTP/1.1), so this bounds the connections
+    /// the store opens and the local ports they take toward the account.
+    /// At the limit, further requests wait in the process, first come first
+    /// served, for one in flight to finish: nothing is sent or refused, so
+    /// the cost shows up as latency against callers' deadlines. A download
+    /// holds its permit while its body streams to the reader, so the store
+    /// refuses to start unless `max_concurrent_reads` is above 0 and below
+    /// this: downloads then never hold more than `max_concurrent_reads`
+    /// permits, and existence checks and uploads always keep the rest.
+    /// Every store in a `shard` has a limit of its own, so N shards hold up
+    /// to N times this. 0 (the default) leaves requests unbounded, as
+    /// before.
+    ///
+    /// Default: 0
+    #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
+    pub max_concurrent_requests: usize,
+}
+
+const fn default_min_concurrent_reads() -> usize {
+    4
 }
 
 const fn default_throttle_retry_delay_s() -> f32 {
@@ -1460,6 +1528,10 @@ impl Default for CommonObjectSpec {
             throttle_retry_delay_s: default_throttle_retry_delay_s(),
             throttle_retry_max_delay_s: default_throttle_retry_max_delay_s(),
             throttle_retry_budget_s: default_throttle_retry_budget_s(),
+            max_concurrent_reads: 0,
+            adaptive_read_concurrency: false,
+            min_concurrent_reads: default_min_concurrent_reads(),
+            max_concurrent_requests: 0,
         }
     }
 }
@@ -1888,8 +1960,13 @@ pub struct RedisSpec {
     /// This trades data for a bound. Anything not consumed within the window
     /// is deleted, so the value has to exceed the longest consumer outage you
     /// intend to survive, and it must also exceed how long a single upload can
-    /// take: the temp key an upload builds carries this same TTL, so a value
-    /// below the upload duration would expire the write in flight.
+    /// take: the temp key an upload builds carries this same TTL, and an
+    /// upload that outlives it fails rather than publishing a key that was
+    /// recreated without its first chunks.
+    ///
+    /// Unset, the temp key still expires, after an hour, so an upload that
+    /// stops part way (its client gone, the process gone) never leaves a key
+    /// behind for good. Nothing else cleans those up.
     ///
     /// Zero disables expiry. One second is the smallest value that enables it,
     /// and any value that small is almost certainly a mistake.

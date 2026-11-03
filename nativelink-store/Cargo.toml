@@ -4,7 +4,7 @@ lints.workspace = true
 [package]
 edition = "2024"
 name = "nativelink-store"
-version = "1.7.7"
+version = "1.8.3"
 
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
@@ -90,7 +90,9 @@ prost = { version = "0.14.4", default-features = false }
 rand = { version = "0.9.0", default-features = false, features = [
   "thread_rng",
 ] }
-redis = { version = "1.0.0", default-features = false, features = [
+# 1.0.2 fixes async cluster transaction replies used to publish uploads atomically.
+# https://github.com/redis-rs/redis-rs/pull/1901
+redis = { version = "1.0.2", default-features = false, features = [
   "ahash",
   "cluster-async",
   "connection-manager",
@@ -111,7 +113,7 @@ rustls-pki-types = { version = "1.13.1", default-features = false }
 serde = { version = "1.0.219", default-features = false }
 serde_json = { version = "1.0.140", default-features = false }
 sha2 = { version = "0.10.8", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "fs",
   "io-util",
   "rt-multi-thread",
@@ -173,12 +175,13 @@ rand = { version = "0.9.0", default-features = false, features = [
   "small_rng",
   "thread_rng",
 ] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring"] }
 redis-test = { version = "1.0.0", default-features = false, features = ["aio"] }
 rlimit = { version = "0.10.2", default-features = false }
 serde_json = { version = "1.0.140", default-features = false }
 tar = { version = "0.4.44", default-features = false }
 tempfile = { version = "3.8.1", default-features = false }
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.53.3", features = [
   "process",
   "sync",
   "test-util",
@@ -186,7 +189,7 @@ tokio = { version = "1.52.2", features = [
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
-zip = { version = "8.0.0", default-features = false, features = [
+zip = { version = "9.0.0", default-features = false, features = [
   "deflate-flate2-zlib-rs",
 ] }
 

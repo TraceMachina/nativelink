@@ -12,13 +12,95 @@ interface ContributorsResult {
   fromCache: boolean;
 }
 
+// Snapshot of the top contributors on 2026-10-26, shown when GitHub is unreachable.
 const FALLBACK: Contributor[] = [
-  { login: "aaronmondal", avatar_url: "https://github.com/aaronmondal.png?size=80", html_url: "https://github.com/aaronmondal", contributions: 0 },
-  { login: "allada", avatar_url: "https://github.com/allada.png?size=80", html_url: "https://github.com/allada", contributions: 0 },
-  { login: "blaise-d", avatar_url: "https://github.com/blaise-d.png?size=80", html_url: "https://github.com/blaise-d", contributions: 0 },
+  {
+    login: "aaronmondal",
+    avatar_url: "https://github.com/aaronmondal.png?size=80",
+    html_url: "https://github.com/aaronmondal",
+    contributions: 288,
+  },
+  {
+    login: "astaplegun",
+    avatar_url: "https://github.com/astaplegun.png?size=80",
+    html_url: "https://github.com/astaplegun",
+    contributions: 245,
+  },
+  {
+    login: "palfrey",
+    avatar_url: "https://github.com/palfrey.png?size=80",
+    html_url: "https://github.com/palfrey",
+    contributions: 229,
+  },
+  {
+    login: "MarcusSorealheis",
+    avatar_url: "https://github.com/MarcusSorealheis.png?size=80",
+    html_url: "https://github.com/MarcusSorealheis",
+    contributions: 224,
+  },
+  {
+    login: "amankrx",
+    avatar_url: "https://github.com/amankrx.png?size=80",
+    html_url: "https://github.com/amankrx",
+    contributions: 161,
+  },
+  {
+    login: "chrisstaite-menlo",
+    avatar_url: "https://github.com/chrisstaite-menlo.png?size=80",
+    html_url: "https://github.com/chrisstaite-menlo",
+    contributions: 68,
+  },
+  {
+    login: "SchahinRohani",
+    avatar_url: "https://github.com/SchahinRohani.png?size=80",
+    html_url: "https://github.com/SchahinRohani",
+    contributions: 59,
+  },
+  {
+    login: "blakehatch",
+    avatar_url: "https://github.com/blakehatch.png?size=80",
+    html_url: "https://github.com/blakehatch",
+    contributions: 43,
+  },
+  {
+    login: "adam-singer",
+    avatar_url: "https://github.com/adam-singer.png?size=80",
+    html_url: "https://github.com/adam-singer",
+    contributions: 36,
+  },
+  {
+    login: "zbirenbaum",
+    avatar_url: "https://github.com/zbirenbaum.png?size=80",
+    html_url: "https://github.com/zbirenbaum",
+    contributions: 23,
+  },
+  {
+    login: "jaroeichler",
+    avatar_url: "https://github.com/jaroeichler.png?size=80",
+    html_url: "https://github.com/jaroeichler",
+    contributions: 23,
+  },
+  {
+    login: "corcillo",
+    avatar_url: "https://github.com/corcillo.png?size=80",
+    html_url: "https://github.com/corcillo",
+    contributions: 18,
+  },
 ];
 
-export async function getContributors(repo = "TraceMachina/nativelink"): Promise<ContributorsResult> {
+/** Accounts not shown on the community page. */
+const HIDDEN_LOGINS = new Set(["allada"]);
+
+/** Drops bots and hidden accounts from a GitHub contributors listing. */
+export { FALLBACK as FALLBACK_CONTRIBUTORS };
+
+export function visibleContributors(contributors: Contributor[]): Contributor[] {
+  return contributors.filter((c) => c.type !== "Bot" && !HIDDEN_LOGINS.has(c.login));
+}
+
+export async function getContributors(
+  repo = "TraceMachina/nativelink",
+): Promise<ContributorsResult> {
   const url = `https://api.github.com/repos/${repo}/contributors?per_page=30`;
   try {
     const res = await fetch(url, {
@@ -36,7 +118,7 @@ export async function getContributors(repo = "TraceMachina/nativelink"): Promise
     }
 
     const json = (await res.json()) as Contributor[];
-    const filtered = json.filter((c) => c.type !== "Bot");
+    const filtered = visibleContributors(json);
     return {
       contributors: filtered,
       total: filtered.length,
@@ -55,9 +137,9 @@ export interface RepoStats {
 }
 
 const FALLBACK_STATS: RepoStats = {
-  stars: 4200,
-  forks: 280,
-  openIssues: 92,
+  stars: 1624,
+  forks: 254,
+  openIssues: 174,
   fromCache: true,
 };
 

@@ -45,6 +45,8 @@ Makefile
 [Mm]onorepo
 Nvidia
 Omniverse
+O'Reilly
+Oreilly
 NVMe
 hello@nativelink.com
 [Nn]ative[Ll]ink

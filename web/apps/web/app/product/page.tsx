@@ -8,6 +8,8 @@ import {
   Section,
 } from "@nativelink/ui";
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
+import { CtaButton } from "@/components/cta-button";
+import { GET_STARTED, TALK_TO_US } from "@/lib/cta";
 
 export const metadata = { title: "Product" };
 
@@ -140,12 +142,8 @@ export default function ProductPage() {
                 that grow faster than you can provision them.
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-3">
-                <Button size="lg" asChild>
-                  <a href="/docs">Start in 10 minutes</a>
-                </Button>
-                <Button size="lg" variant="outline" asChild>
-                  <a href="mailto:contact@tracemachina.com">Talk to us</a>
-                </Button>
+                <CtaButton cta={GET_STARTED} />
+                <CtaButton cta={TALK_TO_US} variant="outline" />
               </div>
             </div>
           </Reveal>

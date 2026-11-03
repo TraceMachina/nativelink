@@ -1,7 +1,17 @@
 {
   "name": "nativelink-azurite-test-runner",
   "dependencies": {
-    "azurite": "3.36.0"
+    "azurite": "3.37.0"
   },
-  "private": true
+  "overrides": {
+    "@azure/msal-node": "^7.1.0",
+    "body-parser": "^2.4.0",
+    "follow-redirects": "^1.16.1",
+    "moment": "^2.31.0",
+    "uuid": "^11.1.1"
+  },
+  "private": true,
+  "scripts": {
+    "test": "node --test dependency-security.test.cjs"
+  }
 }

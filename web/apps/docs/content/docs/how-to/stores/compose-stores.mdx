@@ -126,6 +126,10 @@ and rejects the write on a mismatch. Reads pass straight through to the
 backend unchecked, so this protects what enters the store, not what a backend
 later hands back.
 
+In development builds, an upload failure from the backend keeps its error
+status when the verification store's forwarding channel closes as a consequence. Size
+and hash mismatches still return `InvalidArgument`.
+
 <SourceLink file="nativelink-store/src/verify_store.rs" symbol="VerifyStore" />
 
 ```json5
@@ -210,6 +214,12 @@ This is store-level compression, on the way to the backend. It is a different
 thing from [remote cache compression](/how-to/stores/compression), which
 compresses on the wire between the client and NativeLink. The two are
 independent and can both be on.
+
+In development builds, existence checks for present digest keys report the
+digest's uncompressed size. This lets a `fast_slow` store refill a raw cache
+tier from the compressed backend using the correct transfer size. String keys
+still report the stored, compressed size; they do not declare an uncompressed
+length, so that combination still needs separate handling.
 
 ### `dedup`: store the changed parts only [#dedup--store-the-changed-parts-only]
 
@@ -309,6 +319,20 @@ The wrapper is opt-in: stores not wrapped by it are built without it and pay
 none of its hot-path timing cost. Wrap the layer whose behaviour you actually
 want to see, not every layer.
 
+In development builds, `allow_remove: true` lets repair requests pass through
+the wrapper. It defaults to `false`, preserving the backend's copy when a size
+check detects bad content. Enable it only on disposable cache tiers with a
+separate correct copy to refill from. Keep it disabled on a filesystem or memory
+tier that holds the only copy: those stores cannot infer their role and will
+evict when asked. Put the wrapper around that tier, inside the verifier.
+
+This setting only gates repair requests passing through the wrapper. It does
+not change the backend's own eviction policy or make an Azure origin repairable.
+`removed=true` means a cached copy was removed; it does not prove the durable
+copy is correct. A corrupt origin still needs explicit, targeted repair.
+
+<SourceLink file="nativelink-store/src/cache_metrics_store.rs" symbol="CacheMetricsStore" />
+
 ### The three with nothing to configure [#the-three-with-nothing-to-configure]
 
 `memory` takes an `eviction_policy` and nothing else. It is the right fast half
@@ -318,6 +342,15 @@ restart.
 `grpc` points at another REAPI cache upstream, and can attach `headers` and
 forward selected headers from the incoming request. Use it to front an existing
 cache.
+
+In development builds, uncompressed CAS uploads through the store interface
+return `Unavailable` after a transient upstream failure so the caller can
+restart the full blob from offset zero. Once streaming starts, the store
+cannot replay the whole blob and does not resume by replaying its last two
+messages. Permanent upstream errors keep their original status. Direct
+ByteStream proxy writes retain their existing resume behavior.
+
+<SourceLink file="nativelink-store/src/grpc_store.rs" symbol="GrpcStore" />
 
 Development builds also support `grpc.store_type: "event_sink"` for forwarding
 BEP and origin events to a dedicated receiver. This mode accepts string keys
@@ -338,6 +371,35 @@ provides neither exactly-once processing nor a durable publisher recovery ledger
 
 `noop` takes nothing at all and discards everything written to it, reporting
 every read as a miss. It is how you deliberately turn a half of something off.
+
+## Upload integrity [#upload-integrity]
+
+Development builds validate the declared transfer size before publishing an
+upload. A stream that ends early, exceeds its declared size, or disconnects
+must not replace an existing value with incomplete content. `ExactSize`
+requires equality; `MaxSize` is an upper bound. These checks use the transfer
+size, because Action Cache values and compressed or deduplicated data can
+have a different length from the digest used as their storage key.
+
+ByteStream writes also require the byte count declared in the CAS resource
+name. A `grpc` CAS store skips uploads of the canonical empty blob, which the
+[REAPI specification](https://github.com/bazelbuild/remote-apis/blob/main/build/bazel/remote/execution/v2/remote_execution.proto)
+defines as always available. This does not permit an empty upload under a
+nonempty digest.
+
+A `fast_slow` cache fill checks the length reported by the slow tier before
+committing the fast copy. A lazy backend can skip that size lookup, so keep
+`verify` in the CAS composition to check the digest and its expected size.
+Compression and deduplication check their input before committing the encoded
+value or index. Size checks alone do not detect corruption of the same length.
+
+These changes prevent new incomplete writes; they do not repair existing
+objects. Cache eviction can remove a bad local copy while leaving the durable
+object intact. A corrupt durable object needs explicit, targeted repair after
+its contents and expected digest have been checked.
+
+Development implementation: [transfer size validation](https://github.com/TraceMachina/nativelink/blob/b7883e35eda1e66de537db19d3a4d61df2cf5cc7/nativelink-util/src/store_trait.rs)
+and [cache fills](https://github.com/TraceMachina/nativelink/blob/b7883e35eda1e66de537db19d3a4d61df2cf5cc7/nativelink-store/src/fast_slow_store.rs).
 
 ## The order the layers go in [#the-order-the-layers-go-in]
 

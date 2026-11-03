@@ -128,6 +128,55 @@ export default function ResourcesPage() {
         </Reveal>
       </Section>
 
+      {/* BOOKS */}
+      <Section width="default" className="border-t border-border/60 pb-20 pt-16">
+        <Reveal>
+          <div className="mb-8">
+            <Eyebrow className="mb-3">Books and publications</Eyebrow>
+            <h2 className="text-balance text-3xl font-semibold leading-[1.1] tracking-[-0.025em] md:text-4xl">
+              Free reading from the team
+            </h2>
+          </div>
+          <a
+            href="/resources/oreilly-bazel-book"
+            className="group flex flex-col items-center gap-8 overflow-hidden rounded-3xl border border-border bg-surface p-8 no-underline transition-all hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-[0_30px_80px_-30px_rgb(var(--nl-color-brand)/0.35)] md:flex-row md:p-10"
+          >
+            <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-2xl bg-brand-soft text-brand">
+              <svg
+                width="40"
+                height="40"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20 M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15Z"
+                />
+              </svg>
+            </div>
+            <div className="flex flex-1 flex-col gap-3 text-center md:text-left">
+              <h3 className="text-2xl font-semibold tracking-tight text-foreground">
+                Extending Bazel to Its Full Potential
+              </h3>
+              <p className="max-w-[52ch] text-[15px] leading-relaxed text-muted-foreground">
+                Free O'Reilly e-book on cloud builds, parallelization, remote execution, and
+                NativeLink — by Brian Moakley and Marcus Eagan.
+              </p>
+              <span className="inline-flex items-center justify-center gap-1.5 font-mono text-sm text-brand md:justify-start">
+                Download free{" "}
+                <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+                  →
+                </span>
+              </span>
+            </div>
+          </a>
+        </Reveal>
+      </Section>
+
       {/* FROM THE TEAM — full blog listing */}
       <section className="border-t border-border/60 bg-surface-elevated/40">
         <Section width="default" className="pt-24 pb-4">
