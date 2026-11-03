@@ -80,6 +80,7 @@ jobs:
           sanitizer: address
 
       - name: Run fuzzer
+        id: run_fuzzer
         uses: >- # v1
           google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1
         with:
@@ -87,3 +88,24 @@ jobs:
           fuzz-seconds: 600
           mode: batch
           sanitizer: address
+
+      - name: Summarize fuzz result
+        if: always()
+        env:
+          FUZZ_RESULT: ${{ steps.run_fuzzer.outcome }}
+          FUZZ_TARGET: ${{ matrix.target }}
+        run: |
+          {
+            printf '## Fuzz summary: `%s`\n\n' "$FUZZ_TARGET"
+            printf '| Field | Value |\n'
+            printf '| --- | --- |\n'
+            printf '| Target | `%s` |\n' "$FUZZ_TARGET"
+            printf '| Sanitizer | address |\n'
+            printf '| Budget | 600 seconds |\n'
+            printf '| Result | **%s** |\n' "$FUZZ_RESULT"
+            if [[ "$FUZZ_RESULT" == success ]]; then
+              printf '| Interpretation | No reportable crash observed during this run |\n'
+            else
+              printf '| Interpretation | Fuzzing did not complete successfully; inspect the job log and artifacts |\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

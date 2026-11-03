@@ -210,7 +210,7 @@ point the person at that address rather than guess.`,
   },
   {
     path: "/agents",
-    title: "For agents and intelligent collaborators",
+    title: "For agents",
     description:
       "Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.",
     body: `NativeLink is built to be read by agents as well as people. This page

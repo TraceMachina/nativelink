@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import sys
 
-fsl_license = re.compile(r"""// Copyright \d{4}(?:-\d{4})? The NativeLink Authors. All rights reserved.
+fsl_license = re.compile(r"""// Copyright \d{4}(?:-\d{4})? Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License \(the "License"\);
 // you may not use this file except in compliance with the License.
