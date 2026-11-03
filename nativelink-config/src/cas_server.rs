@@ -286,6 +286,25 @@ pub struct ExecutionConfig {
     /// must use a runtime supporting this execution scope before enabling it.
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub experimental_buck2_invocation_isolation: bool,
+
+    /// Seconds between re-sends of the operation's current state on an
+    /// `Execute` or `WaitExecution` stream that has produced no stage
+    /// change. The Remote Execution API permits duplicate updates, and the
+    /// periodic message gives the client and every intermediary (an L7 load
+    /// balancer, for example) proof the stream is alive. Without it the
+    /// server is silent for as long as an action sits queued or executing,
+    /// so a client holding a connection whose server side is gone waits
+    /// until its own timeout rather than failing when the path died.
+    ///
+    /// Default: 0 (disabled, no heartbeats are sent)
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "is_default",
+        alias = "execute_stream_heartbeat"
+    )]
+    pub execute_stream_heartbeat_s: usize,
+
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
     /// This value must be a CAS store reference.
@@ -1440,7 +1459,9 @@ pub struct LocalWorkerConfig {
     /// pod's cgroup limit does. On cgroup v2 the container cgroup carries
     /// `memory.oom.group`, so the kernel's kill takes the worker and every
     /// action on it; this one takes only the offender and fails it with
-    /// `FailedPrecondition`. Linux only; accepted and ignored elsewhere.
+    /// `FailedPrecondition`. The memory pressure kill reads a cgroup and is
+    /// Linux only; on Windows the disk axis is not sampled, and a kill ends
+    /// the action's own process rather than every process in it.
     /// Actions run through a persistent worker are not covered, since that
     /// process outlives the action and serves others. With either axis on,
     /// the worker reads an action's platform properties from the
