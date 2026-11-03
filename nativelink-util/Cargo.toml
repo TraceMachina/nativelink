@@ -6,6 +6,13 @@ edition = "2024"
 name = "nativelink-util"
 version = "1.8.3"
 
+[features]
+# Wires tokio-console's instrumentation layer into telemetry, for live async
+# task dumps on a running server (debug builds only). Build with
+# RUSTFLAGS="--cfg tokio_unstable" or tokio emits nothing; the feature
+# enforces that at compile time.
+tokio_console = ["dep:console-subscriber"]
+
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
@@ -77,6 +84,7 @@ tonic = { version = "0.14.0", features = [
 ], default-features = false }
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
+console-subscriber = { version = "0.5", optional = true }
 tracing-opentelemetry = { version = "0.33.0", default-features = false, features = [
   "metrics",
 ] }
