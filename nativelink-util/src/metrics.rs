@@ -554,7 +554,7 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
         execute_stream_drops: meter
             .u64_counter("execution.stream.drops")
             .with_description(
-                "Execute/WaitExecution response streams dropped before the operation finished: client disconnects, and streams a shutdown or an intermediary tore down",
+                "Execute/WaitExecution response streams dropped before the operation finished: client disconnects, plus streams torn down by a server shutdown or an intermediary",
             )
             .with_unit("{stream}")
             .build(),

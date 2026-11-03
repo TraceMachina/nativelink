@@ -287,15 +287,14 @@ pub struct ExecutionConfig {
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub experimental_buck2_invocation_isolation: bool,
 
-    /// Re-send the operation's current state on an `Execute` or
-    /// `WaitExecution` stream every this many seconds while no stage change
-    /// happens. The
-    /// Remote Execution API permits duplicate updates, and the periodic
-    /// message gives the client and every intermediary (an L7 load balancer,
-    /// for example) proof the stream is alive. Without it the server is
-    /// silent for as long as an action sits queued or executing, so a client
-    /// holding a connection whose server side is gone waits until its own
-    /// timeout rather than failing when the path died.
+    /// Seconds between re-sends of the operation's current state on an
+    /// `Execute` or `WaitExecution` stream that has produced no stage
+    /// change. The Remote Execution API permits duplicate updates, and the
+    /// periodic message gives the client and every intermediary (an L7 load
+    /// balancer, for example) proof the stream is alive. Without it the
+    /// server is silent for as long as an action sits queued or executing,
+    /// so a client holding a connection whose server side is gone waits
+    /// until its own timeout rather than failing when the path died.
     ///
     /// Default: 0 (disabled, no heartbeats are sent)
     #[serde(

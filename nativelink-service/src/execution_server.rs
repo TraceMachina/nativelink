@@ -44,8 +44,8 @@ use nativelink_store::ac_utils::get_and_decode_digest;
 use nativelink_store::existence_cache_store::ExistenceCacheStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::action_messages::{
-    ActionInfo, ActionStage, ActionUniqueKey, ActionUniqueQualifier, DEFAULT_EXECUTION_PRIORITY,
-    OperationId, TypeUrl,
+    ActionInfo, ActionStage, ActionState, ActionUniqueKey, ActionUniqueQualifier,
+    DEFAULT_EXECUTION_PRIORITY, OperationId, TypeUrl,
 };
 use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
@@ -415,6 +415,23 @@ impl ExecutionServer {
         OperationsServer::new(self)
     }
 
+    /// Converts one action state into the client's `Operation`, with the
+    /// side effects every sent update carries. The bool says whether the
+    /// operation is finished.
+    async fn operation_from_update(
+        action_update: Arc<ActionState>,
+        client_operation_id: &OperationId,
+        cas_store: &Store,
+    ) -> (Operation, bool) {
+        debug!(?action_update, "Execute Resp Stream");
+        forget_missing_input(cas_store, &action_update.stage).await;
+        let finished = action_update.stage.is_finished();
+        (
+            action_update.as_operation(client_operation_id.clone()),
+            finished,
+        )
+    }
+
     /// Waits for the next update and converts it for the client. The bool
     /// says whether the stream is over (a finished stage or an error).
     async fn next_operation(
@@ -424,13 +441,10 @@ impl ExecutionServer {
     ) -> (Result<Operation, Status>, bool) {
         match action_listener.changed().await {
             Ok((action_update, _maybe_origin_metadata)) => {
-                debug!(?action_update, "Execute Resp Stream");
-                forget_missing_input(cas_store, &action_update.stage).await;
-                let finished = action_update.stage.is_finished();
-                (
-                    Ok(action_update.as_operation(client_operation_id.clone())),
-                    finished,
-                )
+                let (operation, finished) =
+                    Self::operation_from_update(action_update, client_operation_id, cas_store)
+                        .await;
+                (Ok(operation), finished)
             }
             Err(err) => {
                 error!(?err, "Error in action_listener stream");
@@ -474,8 +488,12 @@ impl ExecutionServer {
                 // state as their first update too; duplicates are permitted.
                 match action_listener.as_state().await {
                     Ok((state, _maybe_origin_metadata)) => {
-                        let finished = state.stage.is_finished();
-                        let operation = state.as_operation(task_client_operation_id.clone());
+                        let (operation, finished) = Self::operation_from_update(
+                            state,
+                            &task_client_operation_id,
+                            &cas_store,
+                        )
+                        .await;
                         if tx.send(Ok(operation)).await.is_err() || finished {
                             return;
                         }
@@ -505,13 +523,17 @@ impl ExecutionServer {
                 }),
                 move |maybe_state| async move {
                     let mut state = maybe_state?;
-                    let received = if let Some(last_operation) = state.last_operation.clone() {
+                    let received = if state.last_operation.is_some() {
                         match tokio::time::timeout(interval, state.rx.recv()).await {
                             Ok(received) => received,
                             // No update within the interval: re-send the last
                             // state. `recv()` is cancel-safe, so no update is
                             // lost, and the listener keeps running in its task.
-                            Err(_elapsed) => return Some((Ok(last_operation), Some(state))),
+                            Err(_elapsed) => {
+                                let heartbeat =
+                                    state.last_operation.clone().expect("checked is_some above");
+                                return Some((Ok(heartbeat), Some(state)));
+                            }
                         }
                     } else {
                         state.rx.recv().await
@@ -525,7 +547,16 @@ impl ExecutionServer {
                             Some((Ok(operation), (!finished).then_some(state)))
                         }
                         Some(Err(err)) => Some((Err(err), None)),
-                        None => None,
+                        // The producer only returns after a terminal item or
+                        // when this side is gone, so an empty channel here
+                        // means the drive task died (a panic). Surface an
+                        // error rather than a clean, successful-looking end.
+                        None => Some((
+                            Err(Status::internal(
+                                "Execute stream update task ended before the operation finished",
+                            )),
+                            None,
+                        )),
                     }
                 },
             ))

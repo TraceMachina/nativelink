@@ -401,17 +401,25 @@ async fn wait_execution_heartbeats_while_idle() -> Result<(), Box<dyn core::erro
     );
     let mut response_stream = request_res?.into_inner();
 
+    // Two items arrive immediately: the seed the drive task sends from
+    // as_state(), and the one update changed() yields before going silent.
     let first = response_stream
         .next()
         .await
         .expect("stream ended before first update")?;
     assert_eq!(first.name, operation_name);
     assert!(!first.done);
+    let duplicate = response_stream
+        .next()
+        .await
+        .expect("stream ended before the first changed() update")?;
+    assert_eq!(duplicate.name, first.name);
 
-    // No stage change follows, so the next items can only be heartbeats:
-    // the same operation state again, at the interval (paused time
-    // auto-advances to the timer).
+    // No stage change follows, so the next items can only be timer-driven
+    // heartbeats: the same operation state, each a full interval later on
+    // the paused clock (auto-advance jumps to the timer).
     for _ in 0..2 {
+        let before = tokio::time::Instant::now();
         let heartbeat = response_stream
             .next()
             .await
@@ -419,6 +427,10 @@ async fn wait_execution_heartbeats_while_idle() -> Result<(), Box<dyn core::erro
         assert_eq!(heartbeat.name, first.name);
         assert_eq!(heartbeat.metadata, first.metadata);
         assert!(!heartbeat.done);
+        assert!(
+            before.elapsed() >= core::time::Duration::from_secs(1),
+            "heartbeat arrived without the interval elapsing, so it was not timer-driven",
+        );
     }
 
     Ok(())
