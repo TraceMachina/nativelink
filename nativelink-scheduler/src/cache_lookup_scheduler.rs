@@ -34,7 +34,7 @@ use nativelink_util::operation_state_manager::{
     ActionStateResult, ActionStateResultStream, ClientStateManager, OperationFilter,
 };
 use nativelink_util::origin_event::{
-    BAZEL_METADATA_KEY, OriginMetadata, request_metadata_from_baggage,
+    BAZEL_METADATA_KEY, OriginMetadata, record_action_cache_miss, request_metadata_from_baggage,
 };
 use nativelink_util::store_trait::Store;
 use opentelemetry::baggage::BaggageExt;
@@ -307,7 +307,14 @@ impl CacheLookupScheduler {
                     // fault) degrades to execution too: a cache fault must never
                     // fail the request, only cost a redundant execution. The
                     // error itself still reaches operators via the log.
-                    if err.code != Code::NotFound {
+                    if err.code == Code::NotFound {
+                        record_action_cache_miss(
+                            "cache_lookup_scheduler",
+                            action_info.unique_qualifier.instance_name(),
+                            action_info.unique_qualifier.digest_function(),
+                            action_info.unique_qualifier.digest(),
+                        );
+                    } else {
                         warn!(?err, "Cache lookup failed; falling through to execution");
                     }
                 }

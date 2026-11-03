@@ -29,7 +29,8 @@ use nativelink_store::ac_utils::{ESTIMATED_DIGEST_SIZE, get_and_decode_digest};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
-use nativelink_util::digest_hasher::make_ctx_for_hash_func;
+use nativelink_util::digest_hasher::{digest_hasher_func_from_context, make_ctx_for_hash_func};
+use nativelink_util::origin_event::record_action_cache_miss;
 use nativelink_util::store_trait::{Store, StoreLike};
 use opentelemetry::context::FutureExt;
 use prost::Message;
@@ -109,8 +110,15 @@ impl AcServer {
             Ok(action_result) => Ok(Response::new(action_result)),
             Err(mut e) => {
                 if e.code == Code::NotFound {
-                    // `get_action_result` is frequent to get NotFound errors, so remove all
-                    // messages to save space.
+                    // A miss is the common case on a cold cache, so it is recorded
+                    // on its own debug target rather than logged here, and the
+                    // error messages are dropped to save space on the wire.
+                    record_action_cache_miss(
+                        "ac_server",
+                        instance_name,
+                        digest_hasher_func_from_context(),
+                        digest,
+                    );
                     e.messages.clear();
                 }
                 Err(e)
