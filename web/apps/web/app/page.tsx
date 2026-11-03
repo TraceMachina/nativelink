@@ -1,4 +1,5 @@
 import { ArchitectureDiagram } from "@/components/architecture-diagram";
+import { CtaButton } from "@/components/cta-button";
 import {
   CitrixLogo,
   MenloSecurityLogo,
@@ -18,6 +19,8 @@ import {
   Section,
   VideoFacade,
 } from "@nativelink/ui";
+import { CLONE_THE_REPO, GET_STARTED, TALK_TO_US } from "@/lib/cta";
+import { Badge, Button, Eyebrow, HeroVisual, Marquee, Reveal, Section } from "@nativelink/ui";
 
 export const metadata = {
   title: "NativeLink — Build infrastructure for the agentic era",
@@ -76,6 +79,41 @@ const customerLogos = [
   },
 ];
 
+/**
+ * Social proof with a face, a company and a source. Only quotes that are
+ * attributed in public, and only outcomes from published case studies.
+ */
+const testimonials = [
+  {
+    quote: "NativeLink is the simplest way to get fast builds with Chromium.",
+    name: "Christopher Staite",
+    role: "Principal Engineer, Menlo Security",
+    initials: "CS",
+    Logo: MenloSecurityLogo,
+    logoClassName: "h-8",
+    source: { label: "Read the case study", href: "/resources/blog/case-study-menlo-security" },
+  },
+  {
+    quote: "Running NativeLink in production with great results. Great work folks.",
+    name: "Mustafa Gezen",
+    role: "Rocky Linux",
+    initials: "MG",
+    Logo: null,
+    logoClassName: "",
+    source: { label: "rockylinux.org", href: "https://rockylinux.org/" },
+  },
+];
+
+const outcome = {
+  value: "2 days → 2 hours",
+  label:
+    "Chromium-based browser build at a Fortune 50 manufacturer, with NativeLink remote execution and caching.",
+  source: {
+    label: "Read the case study",
+    href: "/resources/blog/case-study-fortune-50-manufacturer",
+  },
+};
+
 const stats = [
   {
     value: "4-15×",
@@ -112,7 +150,16 @@ const features = [
 
 const securityFeature = {
   title: "Secure by default.",
-  body: "SSO, signed inputs, end-to-end packet integrity. Your source, your artifacts, and your supply chain stay locked down.",
+  body: "Your source, your artifacts, and your supply chain stay locked down.",
+  // The six capabilities behind the claim, the same six the Product page lists.
+  points: [
+    { label: "SSO / SAML", body: "Okta, Azure AD, Google Workspace" },
+    { label: "End-to-end TLS", body: "mTLS between every hop" },
+    { label: "Content-addressed", body: "Every artifact tamper-evident by hash" },
+    { label: "Signed inputs", body: "Worker inputs and outputs signed" },
+    { label: "Hermetic builds", body: "No surprise dependencies mid-build" },
+    { label: "Audit trails", body: "Provenance for every action result" },
+  ],
 };
 
 const benefits = [
@@ -181,23 +228,12 @@ export default function HomePage() {
                 production by thousands of developers.
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
-                <Button size="lg" asChild>
-                  <a
-                    href="https://github.com/TraceMachina/nativelink"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Clone the repo <span aria-hidden="true">→</span>
-                  </a>
-                </Button>
-                <Button size="lg" variant="outline" asChild>
-                  <a href="/docs" target="_blank" rel="noreferrer">
-                    Start free
-                  </a>
-                </Button>
-                <Button size="lg" variant="ghost" asChild>
-                  <a href="/contact">Talk to us</a>
-                </Button>
+                <CtaButton cta={GET_STARTED} />
+                <CtaButton cta={TALK_TO_US} variant="outline" />
+                <CtaButton cta={CLONE_THE_REPO} variant="link">
+                  {" "}
+                  <span aria-hidden="true">→</span>
+                </CtaButton>
               </div>
             </Reveal>
 
@@ -288,20 +324,75 @@ export default function HomePage() {
         </Reveal>
       </Section>
 
-      <Section width="narrow" className="border-b border-border/60 py-24 text-center">
+      <Section width="default" className="border-b border-border/60 py-24">
         <Reveal>
-          <blockquote className="text-balance border-l-4 border-foreground pl-6 text-left text-2xl font-semibold leading-[1.3] tracking-[-0.02em] md:text-[36px]">
-            "Running NativeLink in production with great results. Great work folks."
-          </blockquote>
-          <p className="mt-6 font-mono text-sm text-muted-foreground">
-            Mustafa Gezen — Rocky Linux
-          </p>
+          <div className="mx-auto mb-12 max-w-[720px] text-center">
+            <Eyebrow className="mb-4">In production</Eyebrow>
+            <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
+              Running where the builds are hardest.
+            </h2>
+          </div>
         </Reveal>
-      </Section>
 
-      <Section width="default" className="border-b border-border/60 pt-16 pb-12">
-        <Reveal>
-          <p className="mb-10 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
+        <div className="grid gap-5 lg:grid-cols-3">
+          {testimonials.map((t, i) => (
+            <Reveal key={t.name} delay={i * 0.06}>
+              <figure className="flex h-full flex-col rounded-2xl border border-border bg-surface p-8">
+                <blockquote className="flex-1 text-balance text-xl font-semibold leading-[1.35] tracking-[-0.02em] text-foreground md:text-2xl">
+                  “{t.quote}”
+                </blockquote>
+                <figcaption className="mt-8 flex items-center gap-4">
+                  <span
+                    aria-hidden="true"
+                    className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand-soft font-mono text-sm font-semibold text-brand"
+                  >
+                    {t.initials}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[15px] font-semibold text-foreground">
+                      {t.name}
+                    </span>
+                    <span className="block text-sm text-muted-foreground">{t.role}</span>
+                  </span>
+                  {t.Logo ? (
+                    <t.Logo className={`${t.logoClassName} w-auto shrink-0 text-foreground/70`} />
+                  ) : null}
+                </figcaption>
+                <a
+                  href={t.source.href}
+                  target={t.source.href.startsWith("http") ? "_blank" : undefined}
+                  rel={t.source.href.startsWith("http") ? "noreferrer" : undefined}
+                  className="mt-4 inline-flex min-h-11 items-center gap-1 font-mono text-[12px] text-brand underline-offset-4 hover:underline"
+                >
+                  {t.source.label} <span aria-hidden="true">→</span>
+                </a>
+              </figure>
+            </Reveal>
+          ))}
+
+          <Reveal delay={0.12}>
+            <article className="flex h-full flex-col rounded-2xl border border-brand/35 bg-brand-soft/40 p-8 shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.45)]">
+              <Badge variant="brand" className="self-start">
+                Case study
+              </Badge>
+              <p className="mt-8 font-mono text-3xl font-semibold leading-none tracking-tight text-brand md:text-4xl">
+                {outcome.value}
+              </p>
+              <p className="mt-4 flex-1 text-[15px] leading-relaxed text-muted-foreground">
+                {outcome.label}
+              </p>
+              <a
+                href={outcome.source.href}
+                className="mt-4 inline-flex min-h-11 items-center gap-1 font-mono text-[12px] text-brand underline-offset-4 hover:underline"
+              >
+                {outcome.source.label} <span aria-hidden="true">→</span>
+              </a>
+            </article>
+          </Reveal>
+        </div>
+
+        <Reveal delay={0.1}>
+          <p className="mt-16 mb-8 text-center font-mono text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
             Some companies we are building with
           </p>
           <ul className="flex flex-wrap items-center justify-center gap-x-12 gap-y-8 md:gap-x-16">
@@ -323,7 +414,9 @@ export default function HomePage() {
         </Reveal>
       </Section>
 
-      <Section width="default" className="py-28">
+      {/* overflow-x-clip: the dashboard panel's glow halo reaches 32px past the panel, which is
+          wider than the page padding on a phone. */}
+      <Section width="default" className="overflow-x-clip py-28">
         <Reveal>
           <div className="mx-auto mb-14 max-w-[720px] text-center">
             <Eyebrow className="mb-4">What you get</Eyebrow>
@@ -355,18 +448,36 @@ export default function HomePage() {
             ))}
           </div>
           <Reveal delay={0.12}>
-            <article className="flex h-full flex-col justify-between rounded-2xl border border-brand/35 bg-brand-soft/40 p-8 shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.45)]">
+            <article className="flex h-full flex-col rounded-2xl border border-brand/35 bg-brand-soft/40 p-8 shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.45)]">
               <Badge variant="brand" className="self-start">
                 Secure by default
               </Badge>
-              <div>
-                <h3 className="mt-8 text-3xl font-semibold leading-tight tracking-tight text-foreground md:text-4xl">
-                  {securityFeature.title}
-                </h3>
-                <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-                  {securityFeature.body}
-                </p>
-              </div>
+              <h3 className="mt-6 text-2xl font-semibold leading-tight tracking-tight text-foreground">
+                {securityFeature.title}
+              </h3>
+              <p className="mt-4 text-base leading-relaxed text-muted-foreground md:text-lg">
+                {securityFeature.body}
+              </p>
+              <ul className="mt-8 grid flex-1 content-start gap-x-6 gap-y-4 sm:grid-cols-2">
+                {securityFeature.points.map((point) => (
+                  <li key={point.label} className="flex items-start gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand text-[11px] text-brand-foreground"
+                    >
+                      ✓
+                    </span>
+                    <span>
+                      <span className="block font-mono text-sm font-semibold text-foreground">
+                        {point.label}
+                      </span>
+                      <span className="block text-sm leading-relaxed text-muted-foreground">
+                        {point.body}
+                      </span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </article>
           </Reveal>
         </div>

@@ -384,7 +384,7 @@ The `private` server consists of a `listener` object and a `services` object. Th
 <details>
   <summary>Complete Example </summary>
 
-Below, you will find a fully tested example that you can also find in [basic_cas.json](basic_cas.json)
+Below, you will find a fully tested example that you can also find in [basic_cas.json5](basic_cas.json5)
 
 ```json5
 
