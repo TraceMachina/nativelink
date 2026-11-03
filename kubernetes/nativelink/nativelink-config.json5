@@ -143,6 +143,8 @@
             remote_execution: {
               scheduler: "MAIN_SCHEDULER",
             },
+            // Accept zstd blobs from `--remote_cache_compression`.
+            remote_cache_compression: true,
           },
         ],
         execution: [
@@ -184,6 +186,8 @@
             remote_execution: {
               scheduler: "MAIN_SCHEDULER",
             },
+            // Accept zstd blobs from `--remote_cache_compression`.
+            remote_cache_compression: true,
           },
         ],
         execution: [
