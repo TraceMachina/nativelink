@@ -18,14 +18,15 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use futures::stream;
+use futures::{StreamExt, stream};
 use nativelink_config::cas_server::{ExecutionConfig, WithInstanceName};
 use nativelink_config::stores::{MemorySpec, StoreSpec};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::Execution;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    Action, Command, ExecuteRequest, RequestMetadata, ToolDetails, digest_function,
+    Action, Command, ExecuteRequest, RequestMetadata, ToolDetails, WaitExecutionRequest,
+    digest_function,
 };
 use nativelink_proto::google::longrunning::operations_server::Operations;
 use nativelink_proto::google::longrunning::{
@@ -83,6 +84,21 @@ fn make_execution_server_with_isolation(
     store_manager: &StoreManager,
     isolation: bool,
 ) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
+    make_execution_server_inner(store_manager, isolation, 0)
+}
+
+fn make_execution_server_with_heartbeat(
+    store_manager: &StoreManager,
+    heartbeat_s: usize,
+) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
+    make_execution_server_inner(store_manager, false, heartbeat_s)
+}
+
+fn make_execution_server_inner(
+    store_manager: &StoreManager,
+    isolation: bool,
+    heartbeat_s: usize,
+) -> Result<(ExecutionServer, Arc<MockActionScheduler>), Error> {
     let mock_scheduler = Arc::new(MockActionScheduler::new());
     let mut action_schedulers: HashMap<String, Arc<dyn KnownPlatformPropertyProvider>> =
         HashMap::new();
@@ -92,6 +108,7 @@ fn make_execution_server_with_isolation(
             instance_name: INSTANCE_NAME.to_string(),
             config: ExecutionConfig {
                 experimental_buck2_invocation_isolation: isolation,
+                execute_stream_heartbeat_s: heartbeat_s,
                 cas_store: "main_cas".to_string(),
                 scheduler: "main_scheduler".to_string(),
             },
@@ -320,6 +337,89 @@ async fn operations_wait_operation_finishes() -> Result<(), Box<dyn core::error:
     let operation = request_res?.into_inner();
     assert_eq!(operation.name, operation_name);
     assert!(operation.done);
+
+    Ok(())
+}
+
+/// With a heartbeat configured, a stream whose operation produces no stage
+/// changes re-sends the last state at the interval instead of going silent,
+/// so the client and every intermediary see a live stream.
+#[nativelink_test(start_paused = true)]
+async fn wait_execution_heartbeats_while_idle() -> Result<(), Box<dyn core::error::Error>> {
+    struct QueuedThenSilent {
+        state: Arc<ActionState>,
+        sent_first: bool,
+    }
+
+    #[async_trait]
+    impl ActionStateResult for QueuedThenSilent {
+        async fn as_state(&self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+            Ok((self.state.clone(), None))
+        }
+
+        async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
+            if !self.sent_first {
+                self.sent_first = true;
+                return Ok((self.state.clone(), None));
+            }
+            futures::future::pending().await
+        }
+
+        async fn as_action_info(&self) -> Result<(Arc<ActionInfo>, Option<OriginMetadata>), Error> {
+            Err(make_err!(
+                Code::Unimplemented,
+                "as_action_info not implemented"
+            ))
+        }
+    }
+
+    let store_manager = make_store_manager().await?;
+    let (execution_server, mock_scheduler) =
+        make_execution_server_with_heartbeat(&store_manager, 1)?;
+
+    let operation_name = format!("{INSTANCE_NAME}/heartbeat_operation_id");
+    let mock_result = QueuedThenSilent {
+        state: Arc::new(ActionState {
+            client_operation_id: OperationId::from("heartbeat_operation_id"),
+            stage: ActionStage::Queued,
+            action_digest: DigestInfo::new([0u8; 32], 0),
+            last_transition_timestamp: SystemTime::UNIX_EPOCH,
+        }),
+        sent_first: false,
+    };
+    let stream: ActionStateResultStream = Box::pin(stream::once(async move {
+        let result: Box<dyn ActionStateResult> = Box::new(mock_result);
+        result
+    }));
+
+    let request_fut = execution_server.wait_execution(Request::new(WaitExecutionRequest {
+        name: operation_name.clone(),
+    }));
+    let (request_res, _) = tokio::join!(
+        request_fut,
+        mock_scheduler.expect_filter_operations(Ok(stream)),
+    );
+    let mut response_stream = request_res?.into_inner();
+
+    let first = response_stream
+        .next()
+        .await
+        .expect("stream ended before first update")?;
+    assert_eq!(first.name, operation_name);
+    assert!(!first.done);
+
+    // No stage change follows, so the next items can only be heartbeats:
+    // the same operation state again, at the interval (paused time
+    // auto-advances to the timer).
+    for _ in 0..2 {
+        let heartbeat = response_stream
+            .next()
+            .await
+            .expect("stream went silent instead of heartbeating")?;
+        assert_eq!(heartbeat.name, first.name);
+        assert_eq!(heartbeat.metadata, first.metadata);
+        assert!(!heartbeat.done);
+    }
 
     Ok(())
 }

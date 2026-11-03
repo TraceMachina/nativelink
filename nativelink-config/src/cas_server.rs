@@ -286,6 +286,26 @@ pub struct ExecutionConfig {
     /// must use a runtime supporting this execution scope before enabling it.
     #[serde(default, deserialize_with = "convert_boolean_with_shellexpand")]
     pub experimental_buck2_invocation_isolation: bool,
+
+    /// Re-send the operation's current state on an `Execute` or
+    /// `WaitExecution` stream every this many seconds while no stage change
+    /// happens. The
+    /// Remote Execution API permits duplicate updates, and the periodic
+    /// message gives the client and every intermediary (an L7 load balancer,
+    /// for example) proof the stream is alive. Without it the server is
+    /// silent for as long as an action sits queued or executing, so a client
+    /// holding a connection whose server side is gone waits until its own
+    /// timeout rather than failing when the path died.
+    ///
+    /// Default: 0 (disabled, no heartbeats are sent)
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "is_default",
+        alias = "execute_stream_heartbeat"
+    )]
+    pub execute_stream_heartbeat_s: usize,
+
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
     /// This value must be a CAS store reference.

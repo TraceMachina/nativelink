@@ -49,6 +49,7 @@ use nativelink_util::action_messages::{
 };
 use nativelink_util::common::{self, DigestInfo};
 use nativelink_util::digest_hasher::{DigestHasher, DigestHasherFunc, make_ctx_for_hash_func};
+use nativelink_util::metrics::record_execute_stream_drop;
 use nativelink_util::operation_state_manager::{ActionStateResult, OperationFilter};
 use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_from_baggage};
 use nativelink_util::store_trait::{Store, StoreLike};
@@ -58,7 +59,7 @@ use opentelemetry::context::FutureExt;
 use opentelemetry_semantic_conventions::attribute::ENDUSER_ID;
 use prost::Message as _;
 use tonic::{Code, Request, Response, Status};
-use tracing::{Instrument, Level, debug, error, error_span, instrument, warn};
+use tracing::{Instrument, Level, debug, error, error_span, info, instrument, warn};
 
 /// Result of a synchronous `Execute` decision before the async
 /// scheduling stream begins. Stream is the happy path; Reject is a
@@ -203,6 +204,10 @@ struct InstanceInfo {
     scheduler: Arc<dyn KnownPlatformPropertyProvider>,
     cas_store: Store,
     buck2_invocation_isolation: bool,
+    /// Re-send the current operation state on an otherwise idle `Execute`
+    /// or `WaitExecution` stream at this interval. `None` sends no
+    /// heartbeats.
+    execute_stream_heartbeat: Option<Duration>,
 }
 
 impl fmt::Debug for InstanceInfo {
@@ -320,6 +325,49 @@ pub struct ExecutionServer {
 
 type ExecuteStream = Pin<Box<dyn Stream<Item = Result<Operation, Status>> + Send>>;
 
+/// Watches an `Execute`/`WaitExecution` response stream so a client that walks
+/// away is recorded. tonic drops the stream on disconnect without running
+/// any handler code, so the `Drop` impl is the only place the server can
+/// see it; the operation's fate after this is the scheduler's client
+/// keepalive timeout, which the dropped subscriber stops refreshing.
+struct ExecuteStreamMonitor {
+    inner: ExecuteStream,
+    operation_id: String,
+    finished: bool,
+}
+
+impl Stream for ExecuteStreamMonitor {
+    type Item = Result<Operation, Status>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        let poll = this.inner.as_mut().poll_next(cx);
+        if let core::task::Poll::Ready(item) = &poll {
+            match item {
+                Some(Ok(operation)) if operation.done => this.finished = true,
+                Some(Err(_)) | None => this.finished = true,
+                Some(Ok(_)) => {}
+            }
+        }
+        poll
+    }
+}
+
+impl Drop for ExecuteStreamMonitor {
+    fn drop(&mut self) {
+        if !self.finished {
+            info!(
+                operation_id = %self.operation_id,
+                "Client execute stream dropped before the operation finished"
+            );
+            record_execute_stream_drop();
+        }
+    }
+}
+
 impl ExecutionServer {
     pub fn new(
         configs: &[WithInstanceName<ExecutionConfig>],
@@ -347,6 +395,8 @@ impl ExecutionServer {
                     scheduler,
                     cas_store,
                     buck2_invocation_isolation: config.experimental_buck2_invocation_isolation,
+                    execute_stream_heartbeat: (config.execute_stream_heartbeat_s > 0)
+                        .then(|| Duration::from_secs(config.execute_stream_heartbeat_s as u64)),
                 },
             );
         }
@@ -365,29 +415,68 @@ impl ExecutionServer {
         nl_client_operation_id: &NativelinkOperationId,
         action_listener: Box<dyn ActionStateResult>,
         cas_store: Store,
+        heartbeat_interval: Option<Duration>,
     ) -> impl Stream<Item = Result<Operation, Status>> + Send + use<> {
+        struct StreamState {
+            action_listener: Box<dyn ActionStateResult>,
+            /// The last update sent, re-sent as the heartbeat. `None` until
+            /// the first update, which the subscription yields immediately.
+            last_operation: Option<Operation>,
+        }
         let client_operation_id = OperationId::from(nl_client_operation_id.to_string());
-        unfold(Some(action_listener), move |maybe_action_listener| {
-            let client_operation_id = client_operation_id.clone();
-            let cas_store = cas_store.clone();
-            async move {
-                let mut action_listener = maybe_action_listener?;
-                match action_listener.changed().await {
-                    Ok((action_update, _maybe_origin_metadata)) => {
-                        debug!(?action_update, "Execute Resp Stream");
-                        forget_missing_input(&cas_store, &action_update.stage).await;
-                        Some((
-                            Ok(action_update.as_operation(client_operation_id)),
-                            (!action_update.stage.is_finished()).then_some(action_listener),
-                        ))
-                    }
-                    Err(err) => {
-                        error!(?err, "Error in action_listener stream");
-                        Some((Err(err.into()), None))
+        let inner = unfold(
+            Some(StreamState {
+                action_listener,
+                last_operation: None,
+            }),
+            move |maybe_state| {
+                let client_operation_id = client_operation_id.clone();
+                let cas_store = cas_store.clone();
+                async move {
+                    let mut state = maybe_state?;
+                    let changed = if let (Some(interval), Some(last_operation)) =
+                        (heartbeat_interval, state.last_operation.as_ref())
+                    {
+                        match tokio::time::timeout(interval, state.action_listener.changed()).await
+                        {
+                            Ok(changed) => changed,
+                            // No stage change within the interval: re-send the
+                            // last state. Recreating `changed()` is safe here;
+                            // the subscriber keeps its subscription and re-reads
+                            // the record on entry, so a lost wakeup surfaces on
+                            // the next call rather than being dropped.
+                            Err(_elapsed) => {
+                                let heartbeat = last_operation.clone();
+                                return Some((Ok(heartbeat), Some(state)));
+                            }
+                        }
+                    } else {
+                        state.action_listener.changed().await
+                    };
+                    match changed {
+                        Ok((action_update, _maybe_origin_metadata)) => {
+                            debug!(?action_update, "Execute Resp Stream");
+                            forget_missing_input(&cas_store, &action_update.stage).await;
+                            let finished = action_update.stage.is_finished();
+                            let operation = action_update.as_operation(client_operation_id);
+                            if !finished && heartbeat_interval.is_some() {
+                                state.last_operation = Some(operation.clone());
+                            }
+                            Some((Ok(operation), (!finished).then_some(state)))
+                        }
+                        Err(err) => {
+                            error!(?err, "Error in action_listener stream");
+                            Some((Err(err.into()), None))
+                        }
                     }
                 }
-            }
-        })
+            },
+        );
+        ExecuteStreamMonitor {
+            inner: Box::pin(inner),
+            operation_id: nl_client_operation_id.to_string(),
+            finished: false,
+        }
     }
 
     async fn inner_execute(
@@ -520,6 +609,7 @@ impl ExecutionServer {
             ),
             action_listener,
             instance_info.cas_store.clone(),
+            instance_info.execute_stream_heartbeat,
         )))
     }
 
@@ -559,6 +649,7 @@ impl ExecutionServer {
             &nl_operation_id,
             rx,
             instance_info.cas_store.clone(),
+            instance_info.execute_stream_heartbeat,
         ))
     }
 }
