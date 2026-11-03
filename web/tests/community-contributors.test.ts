@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "@jest/globals";
+import type { Contributor } from "../apps/web/lib/github";
 import {
-  type Contributor,
   FALLBACK_CONTRIBUTORS,
   visibleContributors,
 } from "../apps/web/lib/github";

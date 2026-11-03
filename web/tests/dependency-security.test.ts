@@ -1,7 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "@jest/globals";
 import katex from "katex";
 import sharp from "sharp";
 import { SourceMapConsumer } from "source-map-js";
+import {compare as semverCompare} from 'semver';
 
 test("KaTeX ignores inherited trust while rendering ordinary math", () => {
   // GHSA-238p-pmpm-9mq7: the options prototype must not enable trusted HTML.
@@ -43,7 +44,7 @@ test("installed Next.js and DOMPurify include the October 2026 fixes", () => {
   // GHSA-2464-fhr4-w9xw, GHSA-673q-mjm6-r5xr, GHSA-p3m5-59mp-jv5r: fixed in Next.js 16.4.1.
   // GHSA-c6gr-qvv4-5v3f, GHSA-cg2g-xh64-v4q7, GHSA-mrv2-3pqr-j5jr: fixed in DOMPurify 3.4.17.
   const atLeast = (version: string, minimum: string) =>
-    Bun.semver.order(version, minimum) >= 0;
+    semverCompare(version, minimum) >= 0;
   for (const app of ["web", "docs"]) {
     const { version } = require(
       require.resolve("next/package.json", { paths: [`${import.meta.dir}/../apps/${app}`] }),

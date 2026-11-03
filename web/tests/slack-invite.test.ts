@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import type { NextRequest } from "next/server";
 import { POST } from "../apps/web/app/api/slack-invite/route";
 import { emailFormatError } from "../apps/web/lib/email";
@@ -37,7 +37,7 @@ type FetchCall = { url: string; body: Record<string, unknown> };
 
 function mockFetch(responses: Record<string, () => Response>) {
   const calls: FetchCall[] = [];
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, body: JSON.parse(String(init?.body)) });
     const path = new URL(url).pathname;

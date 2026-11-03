@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "@jest/globals";
 import type { NextRequest } from "next/server";
 import { POST } from "../apps/web/app/api/mail/route";
 import { workEmailError } from "../apps/web/lib/book-download";
 import { recordBookDownload } from "../apps/web/lib/mail";
 import { createRateLimiter } from "../apps/web/lib/rate-limit";
+import { jest } from "@jest/globals";
 
 const INVALID = "Please enter a valid email address";
 const PERSONAL = "Please use your work email address";
@@ -60,7 +61,7 @@ type FetchCall = { url: string; body: Record<string, unknown> };
 
 function mockFetch(responses: Record<string, () => Response>) {
   const calls: FetchCall[] = [];
-  globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, body: JSON.parse(String(init?.body)) });
     const path = new URL(url).pathname;

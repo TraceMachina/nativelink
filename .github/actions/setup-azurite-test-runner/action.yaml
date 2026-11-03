@@ -15,6 +15,6 @@ runs:
       working-directory: nativelink-store/tests/azurite_runner
 
     - name: Test Azurite dependencies
-      run: bun run test
+      run: pnpm run test
       shell: bash -euo pipefail {0}
       working-directory: nativelink-store/tests/azurite_runner
