@@ -169,7 +169,7 @@ point the person at that address rather than guess.
 
 # https://nativelink.com/agents
 
-**For agents and intelligent collaborators**: Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
+**For agents**: Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
 
 NativeLink is built to be read by agents as well as people. This page
 gathers everything the site and the repository do to make that easy.
@@ -251,8 +251,9 @@ Three places to be part of NativeLink:
 
 - **Read the docs** at https://docs.nativelink.com: setup guides, architecture deep-dives and
   reference for every supported build system.
-- **Join the Slack** (https://forms.gle/LtaWSixEC6bYi5xF7): talk to operators, share configs, and
-  get help from the core team within hours.
+- **Join the Slack** (https://nativelink.com/community#slack): leave your email and the team sends an
+  invite, usually within a day. Then talk to operators, share configs, and
+  get help from the core team.
 - **Clone the repo** at https://github.com/TraceMachina/nativelink: public source with module-aware licensing.
   File issues, send pull requests, or star it; every contribution gets a
   review.
@@ -297,7 +298,7 @@ Pick a channel:
 - **Legal:** legal@tracemachina.com for contracts, licensing and legal
   enquiries.
 - **GitHub:** https://github.com/TraceMachina/nativelink.
-- **Slack:** https://forms.gle/LtaWSixEC6bYi5xF7.
+- **Slack:** https://nativelink.com/community#slack.
 - **Post:** PO Box 60676, 265 Cambridge Ave, Palo Alto, CA 94306.
 
 Office hours are Monday to Friday, 9 am to 6 pm Pacific. Outside them email
@@ -355,6 +356,7 @@ history. Privacy requests go to privacy@tracemachina.com.
 
 **Blog**: every post, newest first. The full text of each is in /llms-full.txt.
 
+- [The Bomb in Your Bill of Materials](https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials) (2026-11-03): Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes.
 - [The Inaugural RE API Fellow](https://nativelink.com/resources/blog/re-api-fellow) (2026-09-08): When people first see the open source NativeLink repository on GitHub, they think about CI: continuous integration, the practice of building and testing software every time someone pushes a change.…
 - [How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink](https://nativelink.com/resources/blog/case-study-menlo-security) (2026-08-28): "NativeLink is the simplest way to get fast builds with Chromium." Christopher Staite, Principal Engineer, Menlo Security
 - [From One Robot to 1,000 with rules_omniverse](https://nativelink.com/resources/blog/rules-omniverse-0-3-0) (2026-08-27): Today we are releasing our first official Bazel ruleset for physical AI. It is built to carry robotics work from research to production.
@@ -500,7 +502,7 @@ look finished and are not.
   not a number on the website, and an assistant asked about it should send
   the person there rather than estimate.
 - Security reports: security@tracemachina.com. Legal: legal@tracemachina.com.
-- Community: the NativeLink Slack, https://forms.gle/LtaWSixEC6bYi5xF7.
+- Community: the NativeLink Slack, https://nativelink.com/community#slack.
 
 
 # NativeLink: abridged documentation corpus
@@ -4006,6 +4008,21 @@ but the walk is narrowed first: a `WorkerCapabilityIndex` (an inverted index
 over `Exact` and `Priority` properties) produces the candidate set, and only
 that set is scanned in LRU order, checking availability and `Minimum`
 va…
+
+#### Choosing a snapshot store
+
+`snapshot_store` names an entry in **this scheduler process's top-level `stores`**.
+It does not create a store or reference another CAS process's configuration. A
+missing name or failed startup write/read probe warns and leaves learning in
+memory for that process's lifetime. Fix the configuration or backend and restart
+to enable persistence; unsaved measurements are lost on restart.
+
+#### Waiting for an autoscaled size class
+
+Learned sizing selects from the configured class ladder, including a class whose
+pool currently has no connected workers. The retry escalator separately caps its
+memory ceiling at the largest connected worker advertisement; a size class is not
+an inventory of pools that can be provisioned.
 
 ### Platform properties are typed, and `Minimum` is a resource pool
 

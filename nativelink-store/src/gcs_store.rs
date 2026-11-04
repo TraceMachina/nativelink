@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ use tracing::warn;
 use crate::cas_utils::is_zero_digest;
 use crate::gcs_client::client::{GcsClient, GcsOperations};
 use crate::gcs_client::types::{
-    CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST,
+    CHUNK_SIZE, DEFAULT_CONCURRENT_UPLOADS, DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST, MAX_UPLOAD_SIZE,
     MIN_MULTIPART_SIZE, ObjectPath,
 };
 
@@ -233,6 +233,10 @@ where
 
     fn optimized_for(&self, optimization: StoreOptimizations) -> bool {
         matches!(optimization, StoreOptimizations::LazyExistenceOnSync)
+    }
+
+    fn max_upload_size(&self) -> u64 {
+        MAX_UPLOAD_SIZE
     }
 
     async fn update(

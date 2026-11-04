@@ -220,4 +220,23 @@ in {
     types = ["rust"];
     pass_filenames = false;
   };
+
+  # Check Github actions for hashes
+  check-hashes = {
+    description = "Check Github action hashes";
+    enable = true;
+    entry = let
+      python-with-yaml = pkgs.python3.withPackages (ps:
+        with ps; [
+          pyyaml
+        ]);
+      script = pkgs.writeShellScriptBin "check-github-hashes" ''
+        set -eu
+
+        ${python-with-yaml}/bin/python $(${flake-root}/bin/flake-root)/tools/github_action_hashes.py
+      '';
+    in "${script}/bin/check-github-hashes";
+    files = "^.github/.*$";
+    pass_filenames = false;
+  };
 }
