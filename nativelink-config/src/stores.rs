@@ -1023,9 +1023,10 @@ pub struct FastSlowSpec {
     /// result, a rebuild of that action — while an unbounded wait hands
     /// every existence check a wedged writer's fate. Size it under your
     /// clients' own deadlines (Bazel's default `--remote_timeout` is 60)
-    /// and above your slow store's usual worst-case write.
-    /// `0` waits indefinitely, the behavior before this field existed.
-    /// Default: 30
+    /// and above your slow store's usual worst-case write; 30 is a sound
+    /// starting point. Unset or `0` waits indefinitely — the behavior
+    /// before this field existed — so nothing changes until it is set.
+    /// Default: 0 (wait indefinitely)
     #[serde(default)]
     pub has_slow_write_wait_timeout_s: Option<usize>,
 }
