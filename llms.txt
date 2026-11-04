@@ -35,6 +35,7 @@ at https://docs.nativelink.com/llms.txt, https://docs.nativelink.com/llms-small.
 
 ## Blog, case studies and announcements
 
+- [The Bomb in Your Bill of Materials](https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials) (2026-11-03): Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes.
 - [The Inaugural RE API Fellow](https://nativelink.com/resources/blog/re-api-fellow) (2026-09-08): When people first see the open source NativeLink repository on GitHub, they think about CI: continuous integration, the practice of building and testing software every time someone pushes a change.…
 - [How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink](https://nativelink.com/resources/blog/case-study-menlo-security) (2026-08-28): "NativeLink is the simplest way to get fast builds with Chromium." Christopher Staite, Principal Engineer, Menlo Security
 - [From One Robot to 1,000 with rules_omniverse](https://nativelink.com/resources/blog/rules-omniverse-0-3-0) (2026-08-27): Today we are releasing our first official Bazel ruleset for physical AI. It is built to carry robotics work from research to production.
