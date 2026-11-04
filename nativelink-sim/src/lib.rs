@@ -26,6 +26,7 @@
 pub mod actions;
 pub mod checker;
 pub mod clock;
+pub mod fleet;
 pub mod net;
 pub mod property;
 pub mod scenario;
