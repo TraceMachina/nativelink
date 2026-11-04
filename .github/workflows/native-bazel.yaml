@@ -4,10 +4,17 @@ name: CI / Bazel
 on:
   # Check Bazel 8 compatibility and Redis topologies before merging.
   # CI / NativeLink runs the project-pinned Bazel suite separately.
+  # Web-only changes are covered by CI / Web and skip the Bazel lanes.
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'web/**'
+      - '.github/styles/**'
   push:
     branches: [main]
+    paths-ignore:
+      - 'web/**'
+      - '.github/styles/**'
   schedule:
     - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
   workflow_dispatch:
