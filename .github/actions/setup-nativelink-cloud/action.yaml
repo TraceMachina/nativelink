@@ -40,13 +40,13 @@ inputs:
       so it must never carry more than cache_read. Kill switch is revoking
       the key server-side; rotation is editing this default.
     required: false
-    default: "66532088547d98bfb5b0b41e8d5cbfea8b5da1bc1e23e776f9cefc12654c6cb6"
+    default: "5d44c36fa55137d03386168e991c0108f52666137e51f32c1e57b3bfa9472873"
   public-claim-base:
     description: >-
       Claim endpoint base for the public read-only path. Committed default
       for the same reason as public-read-key.
     required: false
-    default: "marcus-eagan-h6a62e.staging.scdev.nativelink.net"
+    default: "tom-parker-shemilt-de8baz.dev.nativelink.net"
   ci-mode:
     description: >-
       Kill switch, normally passed as vars.NATIVELINK_CI_MODE. Empty or 'off'
