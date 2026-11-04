@@ -103,6 +103,18 @@ test("follow-redirects strips declared sensitive headers containing regex metach
 	assert.equal(headers["x-trace"], "kept");
 });
 
+test("follow-redirects strips declared sensitive headers from an array built in another realm", async () => {
+	// GHSA-mrwp-f3q8-3g9p: an array from another JavaScript realm failed the
+	// Array.isArray check, so the sensitive list was silently emptied.
+	const sensitiveHeaders = require("node:vm").runInNewContext("['X-Api-Key']");
+	const headers = await headersAfterCrossHostRedirect({
+		headers: { "X-Api-Key": "secret", "X-Trace": "kept" },
+		sensitiveHeaders,
+	});
+	assert.equal(headers["x-api-key"], undefined);
+	assert.equal(headers["x-trace"], "kept");
+});
+
 // GHSA-27r3-jxmh-p828: a compressed body followed by trailing bytes was read
 // and answered normally, and the trailing bytes then reached the decompression
 // stream body-parser had left piped with no error listener, which took the
@@ -215,5 +227,40 @@ test("@azure/identity resolves an MSAL Node that rejects instance-aware confiden
 				},
 			}),
 		{ errorCode: "unsupported_cca_instance_aware" },
+	);
+});
+
+// GHSA-6pq8-jhm2-2vcw: qs.stringify with arrayFormat "comma" threw an uncaught
+// TypeError for an array element whose own toString is not callable. Express
+// resolves qs for query and body handling, so the patched version arrives
+// through the override in package.json.
+test("Express resolves a qs that stringifies comma arrays with a non-callable toString", () => {
+	const expressRequire = createRequire(
+		azuriteRequire.resolve("express/package.json"),
+	);
+	const { version } = expressRequire("qs/package.json");
+	const [major, minor, patch] = version.split(".").map(Number);
+	assert.ok(
+		major > 6 ||
+			(major === 6 && (minor > 16 || (minor === 16 && patch >= 1))),
+		`qs ${version} predates the GHSA-6pq8-jhm2-2vcw fix in 6.16.1`,
+	);
+});
+
+test("qs.stringify does not throw on a comma-array element with a non-callable toString", () => {
+	const qs = createRequire(azuriteRequire.resolve("express/package.json"))("qs");
+	assert.doesNotThrow(() =>
+		qs.stringify({ ids: [{ toString: 1 }, "b"] }, { arrayFormat: "comma" }),
+	);
+});
+
+// GHSA-mrwp-f3q8-3g9p: the redirect-header fix ships in follow-redirects 1.16.2.
+test("axios resolves a follow-redirects that protects sensitive headers across realms", () => {
+	const axiosRequire = createRequire(require.resolve("axios/package.json"));
+	const { version } = axiosRequire("follow-redirects/package.json");
+	const [major, minor, patch] = version.split(".").map(Number);
+	assert.ok(
+		major > 1 || (major === 1 && (minor > 16 || (minor === 16 && patch >= 2))),
+		`follow-redirects ${version} predates the GHSA-mrwp-f3q8-3g9p fix in 1.16.2`,
 	);
 });
