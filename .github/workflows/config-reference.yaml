@@ -20,13 +20,13 @@ name: Docs / Regenerate config
 on:
   push:
     tags:
-      - 'v1.*'
+      - "v1.*"
   # Manual entry point to (re)generate docs for an existing tag, e.g. to
   # backfill a release where this workflow failed.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to regenerate the config reference for (e.g. v1.6.1) or blank for all'
+        description: "Existing release tag to regenerate the config reference for (e.g. v1.6.1) or blank for all"
         required: false # Blank to allow full regen
         type: string
   # Weekly docs regeneration to catch any cases where we've made updates but haven't changed anything

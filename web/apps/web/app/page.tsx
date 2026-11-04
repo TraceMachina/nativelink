@@ -90,10 +90,14 @@ const testimonials = [
     initials: "CS",
     Logo: MenloSecurityLogo,
     logoClassName: "h-8",
-    source: { label: "Read the case study", href: "/resources/blog/case-study-menlo-security" },
+    source: {
+      label: "Read the case study",
+      href: "/resources/blog/case-study-menlo-security",
+    },
   },
   {
-    quote: "Running NativeLink in production with great results. Great work folks.",
+    quote:
+      "Running NativeLink in production with great results. Great work folks.",
     name: "Mustafa Gezen",
     role: "Rocky Linux",
     initials: "MG",
@@ -154,7 +158,10 @@ const securityFeature = {
   points: [
     { label: "SSO / SAML", body: "Okta, Azure AD, Google Workspace" },
     { label: "End-to-end TLS", body: "mTLS between every hop" },
-    { label: "Content-addressed", body: "Every artifact tamper-evident by hash" },
+    {
+      label: "Content-addressed",
+      body: "Every artifact tamper-evident by hash",
+    },
     { label: "Signed inputs", body: "Worker inputs and outputs signed" },
     { label: "Hermetic builds", body: "No surprise dependencies mid-build" },
     { label: "Audit trails", body: "Provenance for every action result" },
@@ -214,7 +221,9 @@ export default function HomePage() {
         <Section width="default" className="pt-20 pb-20 md:pt-28">
           <div className="grid items-center gap-14 lg:grid-cols-[1fr_1.1fr]">
             <Reveal>
-              <Eyebrow className="mb-5">Build infrastructure for the agentic era</Eyebrow>
+              <Eyebrow className="mb-5">
+                Build infrastructure for the agentic era
+              </Eyebrow>
               <h1 className="text-balance text-[44px] font-semibold leading-[1.02] tracking-[-0.04em] text-foreground md:text-[68px]">
                 When agents write your code,{" "}
                 <span className="bg-gradient-to-r from-brand via-brand to-brand-strong bg-clip-text text-transparent">
@@ -222,9 +231,10 @@ export default function HomePage() {
                 </span>
               </h1>
               <p className="mt-6 max-w-[620px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                NativeLink is the parallel compute platform that keeps builds fast while your
-                codebase and your agents multiply. Rust-powered, open source, and trusted in
-                production by thousands of developers.
+                NativeLink is the parallel compute platform that keeps builds
+                fast while your codebase and your agents multiply. Rust-powered,
+                open source, and trusted in production by thousands of
+                developers.
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
                 <CtaButton cta={GET_STARTED} />
@@ -264,27 +274,38 @@ export default function HomePage() {
         </div>
       </section>
 
-      <Section id="mcp" width="default" className="scroll-mt-20 border-b border-border/60 py-28">
+      <Section
+        id="mcp"
+        width="default"
+        className="scroll-mt-20 border-b border-border/60 py-28"
+      >
         <Reveal>
           <div className="mx-auto mb-12 max-w-[760px] text-center">
-            <Eyebrow className="mb-4">Built for AI-assisted development</Eyebrow>
+            <Eyebrow className="mb-4">
+              Built for AI-assisted development
+            </Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
               Wire NativeLink into your AI coding agent.
             </h2>
             <p className="mx-auto mt-6 max-w-[640px] text-base leading-relaxed text-muted-foreground md:text-lg">
-              The NativeLink MCP server gives Claude Code, Cursor, and Codex five real tools, so
-              your agent can configure remote caching, pull docs, and tune builds without leaving
-              the editor.
+              The NativeLink MCP server gives Claude Code, Cursor, and Codex
+              five real tools, so your agent can configure remote caching, pull
+              docs, and tune builds without leaving the editor.
             </p>
             <p className="mx-auto mt-4 max-w-[640px] text-sm leading-relaxed text-muted">
-              The MCP server is part of NativeLink Enterprise and requires an Enterprise licence.
+              The MCP server is part of NativeLink Enterprise and requires an
+              Enterprise licence.
             </p>
             <div className="mt-6 flex flex-wrap justify-center gap-3">
               {/* whitespace-normal: the Button base is nowrap, and this label is wider than a phone. */}
-              <Button variant="link" asChild className="whitespace-normal text-center">
+              <Button
+                variant="link"
+                asChild
+                className="whitespace-normal text-center"
+              >
                 <a href="/agents">
-                  Everything we offer agents: llms.txt, skills, and how to contribute{" "}
-                  <span aria-hidden="true">→</span>
+                  Everything we offer agents: llms.txt, skills, and how to
+                  contribute <span aria-hidden="true">→</span>
                 </a>
               </Button>
             </div>
@@ -296,8 +317,12 @@ export default function HomePage() {
             <McpDemo />
             <div className="mt-6 flex flex-col items-center justify-between gap-4 rounded-2xl border border-border bg-surface px-6 py-5 text-center sm:flex-row sm:text-left">
               <p className="text-[15px] leading-relaxed text-muted-foreground">
-                Add <span className="font-mono text-foreground">nativelink-mcp</span> to Claude
-                Code, Cursor or Codex. It ships with NativeLink Enterprise.
+                Add{" "}
+                <span className="font-mono text-foreground">
+                  nativelink-mcp
+                </span>{" "}
+                to Claude Code, Cursor or Codex. It ships with NativeLink
+                Enterprise.
               </p>
               <Button variant="outline" asChild className="shrink-0">
                 <a href="/contact">Talk to us</a>
@@ -315,8 +340,12 @@ export default function HomePage() {
                 <div className="font-mono text-4xl font-semibold leading-none tracking-tight text-brand md:text-5xl">
                   {stat.value}
                 </div>
-                <div className="text-base font-semibold text-foreground">{stat.label}</div>
-                <div className="text-sm leading-relaxed text-muted">{stat.body}</div>
+                <div className="text-base font-semibold text-foreground">
+                  {stat.label}
+                </div>
+                <div className="text-sm leading-relaxed text-muted">
+                  {stat.body}
+                </div>
               </div>
             ))}
           </div>
@@ -351,16 +380,24 @@ export default function HomePage() {
                     <span className="block text-[15px] font-semibold text-foreground">
                       {t.name}
                     </span>
-                    <span className="block text-sm text-muted-foreground">{t.role}</span>
+                    <span className="block text-sm text-muted-foreground">
+                      {t.role}
+                    </span>
                   </span>
                   {t.Logo ? (
-                    <t.Logo className={`${t.logoClassName} w-auto shrink-0 text-foreground/70`} />
+                    <t.Logo
+                      className={`${t.logoClassName} w-auto shrink-0 text-foreground/70`}
+                    />
                   ) : null}
                 </figcaption>
                 <a
                   href={t.source.href}
-                  target={t.source.href.startsWith("http") ? "_blank" : undefined}
-                  rel={t.source.href.startsWith("http") ? "noreferrer" : undefined}
+                  target={
+                    t.source.href.startsWith("http") ? "_blank" : undefined
+                  }
+                  rel={
+                    t.source.href.startsWith("http") ? "noreferrer" : undefined
+                  }
                   className="mt-4 inline-flex min-h-11 items-center gap-1 font-mono text-[12px] text-brand underline-offset-4 hover:underline"
                 >
                   {t.source.label} <span aria-hidden="true">→</span>
@@ -482,24 +519,29 @@ export default function HomePage() {
         </div>
       </Section>
 
-      <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-28">
+      <Section
+        width="default"
+        className="border-y border-border/60 bg-surface-elevated/40 py-28"
+      >
         <Reveal>
           <div className="mx-auto max-w-[900px] text-center">
             <Eyebrow className="mb-4">
               Programmatic build infrastructure for the agentic era
             </Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
-              When agents commit code, the build system is the last honest checkpoint.
+              When agents commit code, the build system is the last honest
+              checkpoint.
             </h2>
             <div className="mx-auto mt-6 max-w-[760px] space-y-4 text-base leading-relaxed text-muted-foreground md:text-lg">
               <p>
-                AI agents commit faster than humans can review and pull dependencies humans never
-                would. NativeLink turns every build into structured, observable data, with every
-                artifact hashed, every dependency traceable, and every action programmable.
+                AI agents commit faster than humans can review and pull
+                dependencies humans never would. NativeLink turns every build
+                into structured, observable data, with every artifact hashed,
+                every dependency traceable, and every action programmable.
               </p>
               <p>
-                The substrate your security, compliance, and observability tools have been waiting
-                for. At agent speed.
+                The substrate your security, compliance, and observability tools
+                have been waiting for. At agent speed.
               </p>
             </div>
           </div>
@@ -525,7 +567,9 @@ export default function HomePage() {
           {benefits.map((benefit, i) => (
             <Reveal key={benefit.title} delay={i * 0.06}>
               <article className="h-full rounded-2xl border border-border bg-surface p-8">
-                <div className="mb-6 font-mono text-xs text-brand">0{i + 1}</div>
+                <div className="mb-6 font-mono text-xs text-brand">
+                  0{i + 1}
+                </div>
                 <h3 className="text-2xl font-semibold leading-tight tracking-tight text-foreground">
                   {benefit.title}
                 </h3>
@@ -538,15 +582,18 @@ export default function HomePage() {
         </div>
       </Section>
 
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-28">
+      <Section
+        width="default"
+        className="border-t border-border/60 bg-surface-elevated/40 py-28"
+      >
         <Reveal>
           <div className="mx-auto mb-14 max-w-[840px] text-center">
             <Eyebrow className="mb-4">
               Built for the codebases that shape the physical world
             </Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              From silicon to simulation, NativeLink runs the builds that ship and the ones agents
-              are writing next.
+              From silicon to simulation, NativeLink runs the builds that ship
+              and the ones agents are writing next.
             </h2>
           </div>
         </Reveal>

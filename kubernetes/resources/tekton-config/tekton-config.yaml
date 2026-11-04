@@ -8,8 +8,8 @@ spec:
   targetNamespace: tekton-pipelines
   pruner:
     resources:
-    - pipelinerun
-    - taskrun
+      - pipelinerun
+      - taskrun
     keep: 100
     # Clean up every 20 minutes.
     schedule: "*/20 * * * *"

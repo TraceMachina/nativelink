@@ -43,7 +43,12 @@ export interface SitePage {
 /** A section of the docs corpus, as built by web/apps/docs/scripts/gen-llms.mjs. */
 export interface DocsSection {
   title: string | null;
-  pages: { url: string; title: string; description: string; external?: boolean }[];
+  pages: {
+    url: string;
+    title: string;
+    description: string;
+    external?: boolean;
+  }[];
 }
 
 export interface DocsCorpus {
@@ -334,7 +339,8 @@ below with its own URL under /resources/blog.`,
   {
     path: "/contact",
     title: "Contact",
-    description: "Real engineers reply. Email or Slack; replies usually within a few hours.",
+    description:
+      "Real engineers reply. Email or Slack; replies usually within a few hours.",
     body: `Pick a channel:
 
 - **General and sales:** ${CONTACT_EMAIL}. Questions, comments, or a
@@ -578,7 +584,14 @@ function docsIndex(sections: DocsSection[]): string[] {
 }
 
 function pageBlock(page: SitePage): string[] {
-  return ["", `# ${SITE}${page.path}`, "", `**${page.title}**: ${page.description}`, "", page.body];
+  return [
+    "",
+    `# ${SITE}${page.path}`,
+    "",
+    `**${page.title}**: ${page.description}`,
+    "",
+    page.body,
+  ];
 }
 
 export function renderIndex(docs: DocsCorpus): string {
@@ -698,7 +711,9 @@ export function renderFull(docs: DocsCorpus): string {
   ];
   for (const post of posts) {
     lines.push("", `# ${postUrl(post)}`, "");
-    lines.push(`**${post.title}**${post.pubDate ? ` (${post.pubDate})` : ""}: ${post.excerpt}`);
+    lines.push(
+      `**${post.title}**${post.pubDate ? ` (${post.pubDate})` : ""}: ${post.excerpt}`,
+    );
     lines.push("", post.body.trim());
   }
   lines.push("", "", docs.full.trimEnd());

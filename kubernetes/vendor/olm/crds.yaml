@@ -2144,12 +2144,14 @@ spec:
                                                                     description: The label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       Represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists, DoesNotExist. Gt, and Lt.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       An array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. If the operator is Gt or Lt, the values
@@ -2176,12 +2178,14 @@ spec:
                                                                     description: The label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       Represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists, DoesNotExist. Gt, and Lt.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       An array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. If the operator is Gt or Lt, the values
@@ -2235,12 +2239,14 @@ spec:
                                                                     description: The label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       Represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists, DoesNotExist. Gt, and Lt.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       An array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. If the operator is Gt or Lt, the values
@@ -2267,12 +2273,14 @@ spec:
                                                                     description: The label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       Represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists, DoesNotExist. Gt, and Lt.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       An array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. If the operator is Gt or Lt, the values
@@ -2325,7 +2333,8 @@ spec:
                                                                   description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
                                                                   type: array
                                                                   items:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       A label selector requirement is a selector that contains values, a key, and an operator that
                                                                       relates the key and values.
                                                                     type: object
@@ -2337,12 +2346,14 @@ spec:
                                                                         description: key is the label key that the selector applies to.
                                                                         type: string
                                                                       operator:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           operator represents a key's relationship to a set of values.
                                                                           Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                         type: string
                                                                       values:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           values is an array of string values. If the operator is In or NotIn,
                                                                           the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                           the values array must be empty. This array is replaced during a strategic
@@ -2353,7 +2364,8 @@ spec:
                                                                         x-kubernetes-list-type: atomic
                                                                   x-kubernetes-list-type: atomic
                                                                 matchLabels:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
                                                                     map is equivalent to an element of matchExpressions, whose key field is "key", the
                                                                     operator is "In", and the values array contains only "value". The requirements are ANDed.
@@ -2404,7 +2416,8 @@ spec:
                                                                   description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
                                                                   type: array
                                                                   items:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       A label selector requirement is a selector that contains values, a key, and an operator that
                                                                       relates the key and values.
                                                                     type: object
@@ -2416,12 +2429,14 @@ spec:
                                                                         description: key is the label key that the selector applies to.
                                                                         type: string
                                                                       operator:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           operator represents a key's relationship to a set of values.
                                                                           Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                         type: string
                                                                       values:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           values is an array of string values. If the operator is In or NotIn,
                                                                           the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                           the values array must be empty. This array is replaced during a strategic
@@ -2432,7 +2447,8 @@ spec:
                                                                         x-kubernetes-list-type: atomic
                                                                   x-kubernetes-list-type: atomic
                                                                 matchLabels:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
                                                                     map is equivalent to an element of matchExpressions, whose key field is "key", the
                                                                     operator is "In", and the values array contains only "value". The requirements are ANDed.
@@ -2509,12 +2525,14 @@ spec:
                                                                     description: key is the label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       operator represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       values is an array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. This array is replaced during a strategic
@@ -2588,12 +2606,14 @@ spec:
                                                                     description: key is the label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       operator represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       values is an array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. This array is replaced during a strategic
@@ -2670,7 +2690,8 @@ spec:
                                                                   description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
                                                                   type: array
                                                                   items:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       A label selector requirement is a selector that contains values, a key, and an operator that
                                                                       relates the key and values.
                                                                     type: object
@@ -2682,12 +2703,14 @@ spec:
                                                                         description: key is the label key that the selector applies to.
                                                                         type: string
                                                                       operator:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           operator represents a key's relationship to a set of values.
                                                                           Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                         type: string
                                                                       values:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           values is an array of string values. If the operator is In or NotIn,
                                                                           the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                           the values array must be empty. This array is replaced during a strategic
@@ -2698,7 +2721,8 @@ spec:
                                                                         x-kubernetes-list-type: atomic
                                                                   x-kubernetes-list-type: atomic
                                                                 matchLabels:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
                                                                     map is equivalent to an element of matchExpressions, whose key field is "key", the
                                                                     operator is "In", and the values array contains only "value". The requirements are ANDed.
@@ -2749,7 +2773,8 @@ spec:
                                                                   description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
                                                                   type: array
                                                                   items:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       A label selector requirement is a selector that contains values, a key, and an operator that
                                                                       relates the key and values.
                                                                     type: object
@@ -2761,12 +2786,14 @@ spec:
                                                                         description: key is the label key that the selector applies to.
                                                                         type: string
                                                                       operator:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           operator represents a key's relationship to a set of values.
                                                                           Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                         type: string
                                                                       values:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           values is an array of string values. If the operator is In or NotIn,
                                                                           the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                           the values array must be empty. This array is replaced during a strategic
@@ -2777,7 +2804,8 @@ spec:
                                                                         x-kubernetes-list-type: atomic
                                                                   x-kubernetes-list-type: atomic
                                                                 matchLabels:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
                                                                     map is equivalent to an element of matchExpressions, whose key field is "key", the
                                                                     operator is "In", and the values array contains only "value". The requirements are ANDed.
@@ -2854,12 +2882,14 @@ spec:
                                                                     description: key is the label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       operator represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       values is an array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. This array is replaced during a strategic
@@ -2933,12 +2963,14 @@ spec:
                                                                     description: key is the label key that the selector applies to.
                                                                     type: string
                                                                   operator:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       operator represents a key's relationship to a set of values.
                                                                       Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                     type: string
                                                                   values:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       values is an array of string values. If the operator is In or NotIn,
                                                                       the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                       the values array must be empty. This array is replaced during a strategic
@@ -3096,7 +3128,7 @@ spec:
                                                               - resource
                                                             properties:
                                                               containerName:
-                                                                description: 'Container name: required for volumes, optional for env vars'
+                                                                description: "Container name: required for volumes, optional for env vars"
                                                                 type: string
                                                               divisor:
                                                                 description: Specifies the output format of the exposed resources, defaults to "1"
@@ -3106,7 +3138,7 @@ spec:
                                                                   - type: string
                                                                 x-kubernetes-int-or-string: true
                                                               resource:
-                                                                description: 'Required: resource to select'
+                                                                description: "Required: resource to select"
                                                                 type: string
                                                             x-kubernetes-map-type: atomic
                                                           secretKeyRef:
@@ -3251,7 +3283,8 @@ spec:
                                                                   - value
                                                                 properties:
                                                                   name:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       The header field name.
                                                                       This will be canonicalized upon output, so case-variant names will be understood as the same header.
                                                                     type: string
@@ -3296,7 +3329,7 @@ spec:
                                                             - port
                                                           properties:
                                                             host:
-                                                              description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                              description: "Optional: Host name to connect to, defaults to the pod IP."
                                                               type: string
                                                             port:
                                                               description: |-
@@ -3357,7 +3390,8 @@ spec:
                                                                   - value
                                                                 properties:
                                                                   name:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       The header field name.
                                                                       This will be canonicalized upon output, so case-variant names will be understood as the same header.
                                                                     type: string
@@ -3402,7 +3436,7 @@ spec:
                                                             - port
                                                           properties:
                                                             host:
-                                                              description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                              description: "Optional: Host name to connect to, defaults to the pod IP."
                                                               type: string
                                                             port:
                                                               description: |-
@@ -3532,7 +3566,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -3738,7 +3772,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -4181,7 +4215,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -4536,7 +4570,7 @@ spec:
                                                               - resource
                                                             properties:
                                                               containerName:
-                                                                description: 'Container name: required for volumes, optional for env vars'
+                                                                description: "Container name: required for volumes, optional for env vars"
                                                                 type: string
                                                               divisor:
                                                                 description: Specifies the output format of the exposed resources, defaults to "1"
@@ -4546,7 +4580,7 @@ spec:
                                                                   - type: string
                                                                 x-kubernetes-int-or-string: true
                                                               resource:
-                                                                description: 'Required: resource to select'
+                                                                description: "Required: resource to select"
                                                                 type: string
                                                             x-kubernetes-map-type: atomic
                                                           secretKeyRef:
@@ -4687,7 +4721,8 @@ spec:
                                                                   - value
                                                                 properties:
                                                                   name:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       The header field name.
                                                                       This will be canonicalized upon output, so case-variant names will be understood as the same header.
                                                                     type: string
@@ -4732,7 +4767,7 @@ spec:
                                                             - port
                                                           properties:
                                                             host:
-                                                              description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                              description: "Optional: Host name to connect to, defaults to the pod IP."
                                                               type: string
                                                             port:
                                                               description: |-
@@ -4793,7 +4828,8 @@ spec:
                                                                   - value
                                                                 properties:
                                                                   name:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       The header field name.
                                                                       This will be canonicalized upon output, so case-variant names will be understood as the same header.
                                                                     type: string
@@ -4838,7 +4874,7 @@ spec:
                                                             - port
                                                           properties:
                                                             host:
-                                                              description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                              description: "Optional: Host name to connect to, defaults to the pod IP."
                                                               type: string
                                                             port:
                                                               description: |-
@@ -4964,7 +5000,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -5158,7 +5194,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -5581,7 +5617,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -5970,7 +6006,7 @@ spec:
                                                               - resource
                                                             properties:
                                                               containerName:
-                                                                description: 'Container name: required for volumes, optional for env vars'
+                                                                description: "Container name: required for volumes, optional for env vars"
                                                                 type: string
                                                               divisor:
                                                                 description: Specifies the output format of the exposed resources, defaults to "1"
@@ -5980,7 +6016,7 @@ spec:
                                                                   - type: string
                                                                 x-kubernetes-int-or-string: true
                                                               resource:
-                                                                description: 'Required: resource to select'
+                                                                description: "Required: resource to select"
                                                                 type: string
                                                             x-kubernetes-map-type: atomic
                                                           secretKeyRef:
@@ -6125,7 +6161,8 @@ spec:
                                                                   - value
                                                                 properties:
                                                                   name:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       The header field name.
                                                                       This will be canonicalized upon output, so case-variant names will be understood as the same header.
                                                                     type: string
@@ -6170,7 +6207,7 @@ spec:
                                                             - port
                                                           properties:
                                                             host:
-                                                              description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                              description: "Optional: Host name to connect to, defaults to the pod IP."
                                                               type: string
                                                             port:
                                                               description: |-
@@ -6231,7 +6268,8 @@ spec:
                                                                   - value
                                                                 properties:
                                                                   name:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       The header field name.
                                                                       This will be canonicalized upon output, so case-variant names will be understood as the same header.
                                                                     type: string
@@ -6276,7 +6314,7 @@ spec:
                                                             - port
                                                           properties:
                                                             host:
-                                                              description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                              description: "Optional: Host name to connect to, defaults to the pod IP."
                                                               type: string
                                                             port:
                                                               description: |-
@@ -6406,7 +6444,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -6612,7 +6650,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -7055,7 +7093,7 @@ spec:
                                                         - port
                                                       properties:
                                                         host:
-                                                          description: 'Optional: Host name to connect to, defaults to the pod IP.'
+                                                          description: "Optional: Host name to connect to, defaults to the pod IP."
                                                           type: string
                                                         port:
                                                           description: |-
@@ -8061,7 +8099,7 @@ spec:
                                                     - diskURI
                                                   properties:
                                                     cachingMode:
-                                                      description: 'cachingMode is the Host Caching mode: None, Read Only, Read Write.'
+                                                      description: "cachingMode is the Host Caching mode: None, Read Only, Read Write."
                                                       type: string
                                                     diskName:
                                                       description: diskName is the Name of the data disk in the blob storage
@@ -8077,7 +8115,7 @@ spec:
                                                       type: string
                                                       default: ext4
                                                     kind:
-                                                      description: 'kind expected values are Shared: multiple blob disks per storage account  Dedicated: single blob disk per storage account  Managed: azure managed data disk (only in managed availability set). defaults to shared'
+                                                      description: "kind expected values are Shared: multiple blob disks per storage account  Dedicated: single blob disk per storage account  Managed: azure managed data disk (only in managed availability set). defaults to shared"
                                                       type: string
                                                     readOnly:
                                                       description: |-
@@ -8123,7 +8161,7 @@ spec:
                                                         type: string
                                                       x-kubernetes-list-type: atomic
                                                     path:
-                                                      description: 'path is Optional: Used as the mounted root, rather than the full Ceph tree, default is /'
+                                                      description: "path is Optional: Used as the mounted root, rather than the full Ceph tree, default is /"
                                                       type: string
                                                     readOnly:
                                                       description: |-
@@ -8341,7 +8379,7 @@ spec:
                                                           - path
                                                         properties:
                                                           fieldRef:
-                                                            description: 'Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported.'
+                                                            description: "Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported."
                                                             type: object
                                                             required:
                                                               - fieldPath
@@ -8364,7 +8402,7 @@ spec:
                                                             type: integer
                                                             format: int32
                                                           path:
-                                                            description: 'Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the ''..'' path. Must be utf-8 encoded. The first item of the relative path must not start with ''..'''
+                                                            description: "Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the '..' path. Must be utf-8 encoded. The first item of the relative path must not start with '..'"
                                                             type: string
                                                           resourceFieldRef:
                                                             description: |-
@@ -8375,7 +8413,7 @@ spec:
                                                               - resource
                                                             properties:
                                                               containerName:
-                                                                description: 'Container name: required for volumes, optional for env vars'
+                                                                description: "Container name: required for volumes, optional for env vars"
                                                                 type: string
                                                               divisor:
                                                                 description: Specifies the output format of the exposed resources, defaults to "1"
@@ -8385,7 +8423,7 @@ spec:
                                                                   - type: string
                                                                 x-kubernetes-int-or-string: true
                                                               resource:
-                                                                description: 'Required: resource to select'
+                                                                description: "Required: resource to select"
                                                                 type: string
                                                             x-kubernetes-map-type: atomic
                                                       x-kubernetes-list-type: atomic
@@ -8508,7 +8546,8 @@ spec:
                                                                 - name
                                                               properties:
                                                                 apiGroup:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     APIGroup is the group for the resource being referenced.
                                                                     If APIGroup is not specified, the specified Kind must be in the core API group.
                                                                     For any other third-party types, APIGroup is required.
@@ -8551,7 +8590,8 @@ spec:
                                                                 - name
                                                               properties:
                                                                 apiGroup:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     APIGroup is the group for the resource being referenced.
                                                                     If APIGroup is not specified, the specified Kind must be in the core API group.
                                                                     For any other third-party types, APIGroup is required.
@@ -8563,7 +8603,8 @@ spec:
                                                                   description: Name is the name of resource being referenced
                                                                   type: string
                                                                 namespace:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     Namespace is the namespace of resource being referenced
                                                                     Note that when a namespace is specified, a gateway.networking.k8s.io/ReferenceGrant object is required in the referent namespace to allow that namespace's owner to accept the reference. See the ReferenceGrant documentation for details.
                                                                     (Alpha) This field requires the CrossNamespaceVolumeDataSource feature gate to be enabled.
@@ -8578,7 +8619,8 @@ spec:
                                                               type: object
                                                               properties:
                                                                 limits:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     Limits describes the maximum amount of compute resources allowed.
                                                                     More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
                                                                   type: object
@@ -8589,7 +8631,8 @@ spec:
                                                                       - type: string
                                                                     x-kubernetes-int-or-string: true
                                                                 requests:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     Requests describes the minimum amount of compute resources required.
                                                                     If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
                                                                     otherwise to an implementation-defined value. Requests cannot exceed Limits.
@@ -8609,7 +8652,8 @@ spec:
                                                                   description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
                                                                   type: array
                                                                   items:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       A label selector requirement is a selector that contains values, a key, and an operator that
                                                                       relates the key and values.
                                                                     type: object
@@ -8621,12 +8665,14 @@ spec:
                                                                         description: key is the label key that the selector applies to.
                                                                         type: string
                                                                       operator:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           operator represents a key's relationship to a set of values.
                                                                           Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                         type: string
                                                                       values:
-                                                                        description: |-
+                                                                        description:
+                                                                          |-
                                                                           values is an array of string values. If the operator is In or NotIn,
                                                                           the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                           the values array must be empty. This array is replaced during a strategic
@@ -8637,7 +8683,8 @@ spec:
                                                                         x-kubernetes-list-type: atomic
                                                                   x-kubernetes-list-type: atomic
                                                                 matchLabels:
-                                                                  description: |-
+                                                                  description:
+                                                                    |-
                                                                     matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
                                                                     map is equivalent to an element of matchExpressions, whose key field is "key", the
                                                                     operator is "In", and the values array contains only "value". The requirements are ANDed.
@@ -8684,7 +8731,7 @@ spec:
                                                         Ex. "ext4", "xfs", "ntfs". Implicitly inferred to be "ext4" if unspecified.
                                                       type: string
                                                     lun:
-                                                      description: 'lun is Optional: FC target lun number'
+                                                      description: "lun is Optional: FC target lun number"
                                                       type: integer
                                                       format: int32
                                                     readOnly:
@@ -8693,7 +8740,7 @@ spec:
                                                         the ReadOnly setting in VolumeMounts.
                                                       type: boolean
                                                     targetWWNs:
-                                                      description: 'targetWWNs is Optional: FC target worldwide names (WWNs)'
+                                                      description: "targetWWNs is Optional: FC target worldwide names (WWNs)"
                                                       type: array
                                                       items:
                                                         type: string
@@ -8725,7 +8772,7 @@ spec:
                                                         Ex. "ext4", "xfs", "ntfs". The default filesystem depends on FlexVolume script.
                                                       type: string
                                                     options:
-                                                      description: 'options is Optional: this field holds extra command options if any.'
+                                                      description: "options is Optional: this field holds extra command options if any."
                                                       type: object
                                                       additionalProperties:
                                                         type: string
@@ -9134,7 +9181,8 @@ spec:
                                                                     description: matchExpressions is a list of label selector requirements. The requirements are ANDed.
                                                                     type: array
                                                                     items:
-                                                                      description: |-
+                                                                      description:
+                                                                        |-
                                                                         A label selector requirement is a selector that contains values, a key, and an operator that
                                                                         relates the key and values.
                                                                       type: object
@@ -9146,12 +9194,14 @@ spec:
                                                                           description: key is the label key that the selector applies to.
                                                                           type: string
                                                                         operator:
-                                                                          description: |-
+                                                                          description:
+                                                                            |-
                                                                             operator represents a key's relationship to a set of values.
                                                                             Valid operators are In, NotIn, Exists and DoesNotExist.
                                                                           type: string
                                                                         values:
-                                                                          description: |-
+                                                                          description:
+                                                                            |-
                                                                             values is an array of string values. If the operator is In or NotIn,
                                                                             the values array must be non-empty. If the operator is Exists or DoesNotExist,
                                                                             the values array must be empty. This array is replaced during a strategic
@@ -9162,7 +9212,8 @@ spec:
                                                                           x-kubernetes-list-type: atomic
                                                                     x-kubernetes-list-type: atomic
                                                                   matchLabels:
-                                                                    description: |-
+                                                                    description:
+                                                                      |-
                                                                       matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
                                                                       map is equivalent to an element of matchExpressions, whose key field is "key", the
                                                                       operator is "In", and the values array contains only "value". The requirements are ANDed.
@@ -9217,7 +9268,8 @@ spec:
                                                                       description: key is the key to project.
                                                                       type: string
                                                                     mode:
-                                                                      description: |-
+                                                                      description:
+                                                                        |-
                                                                         mode is Optional: mode bits used to set permissions on this file.
                                                                         Must be an octal value between 0000 and 0777 or a decimal value between 0 and 511.
                                                                         YAML accepts both octal and decimal values, JSON requires decimal values for mode bits.
@@ -9227,7 +9279,8 @@ spec:
                                                                       type: integer
                                                                       format: int32
                                                                     path:
-                                                                      description: |-
+                                                                      description:
+                                                                        |-
                                                                         path is the relative path of the file to map the key to.
                                                                         May not be an absolute path.
                                                                         May not contain the path element '..'.
@@ -9261,7 +9314,7 @@ spec:
                                                                     - path
                                                                   properties:
                                                                     fieldRef:
-                                                                      description: 'Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported.'
+                                                                      description: "Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported."
                                                                       type: object
                                                                       required:
                                                                         - fieldPath
@@ -9274,7 +9327,8 @@ spec:
                                                                           type: string
                                                                       x-kubernetes-map-type: atomic
                                                                     mode:
-                                                                      description: |-
+                                                                      description:
+                                                                        |-
                                                                         Optional: mode bits used to set permissions on this file, must be an octal value
                                                                         between 0000 and 0777 or a decimal value between 0 and 511.
                                                                         YAML accepts both octal and decimal values, JSON requires decimal values for mode bits.
@@ -9284,10 +9338,11 @@ spec:
                                                                       type: integer
                                                                       format: int32
                                                                     path:
-                                                                      description: 'Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the ''..'' path. Must be utf-8 encoded. The first item of the relative path must not start with ''..'''
+                                                                      description: "Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the '..' path. Must be utf-8 encoded. The first item of the relative path must not start with '..'"
                                                                       type: string
                                                                     resourceFieldRef:
-                                                                      description: |-
+                                                                      description:
+                                                                        |-
                                                                         Selects a resource of the container: only resources limits and requests
                                                                         (limits.cpu, limits.memory, requests.cpu and requests.memory) are currently supported.
                                                                       type: object
@@ -9295,7 +9350,7 @@ spec:
                                                                         - resource
                                                                       properties:
                                                                         containerName:
-                                                                          description: 'Container name: required for volumes, optional for env vars'
+                                                                          description: "Container name: required for volumes, optional for env vars"
                                                                           type: string
                                                                         divisor:
                                                                           description: Specifies the output format of the exposed resources, defaults to "1"
@@ -9305,7 +9360,7 @@ spec:
                                                                             - type: string
                                                                           x-kubernetes-int-or-string: true
                                                                         resource:
-                                                                          description: 'Required: resource to select'
+                                                                          description: "Required: resource to select"
                                                                           type: string
                                                                       x-kubernetes-map-type: atomic
                                                                 x-kubernetes-list-type: atomic
@@ -9334,7 +9389,8 @@ spec:
                                                                       description: key is the key to project.
                                                                       type: string
                                                                     mode:
-                                                                      description: |-
+                                                                      description:
+                                                                        |-
                                                                         mode is Optional: mode bits used to set permissions on this file.
                                                                         Must be an octal value between 0000 and 0777 or a decimal value between 0 and 511.
                                                                         YAML accepts both octal and decimal values, JSON requires decimal values for mode bits.
@@ -9344,7 +9400,8 @@ spec:
                                                                       type: integer
                                                                       format: int32
                                                                     path:
-                                                                      description: |-
+                                                                      description:
+                                                                        |-
                                                                         path is the relative path of the file to map the key to.
                                                                         May not be an absolute path.
                                                                         May not contain the path element '..'.
@@ -12723,7 +12780,7 @@ spec:
                                   - resource
                                 properties:
                                   containerName:
-                                    description: 'Container name: required for volumes, optional for env vars'
+                                    description: "Container name: required for volumes, optional for env vars"
                                     type: string
                                   divisor:
                                     description: Specifies the output format of the exposed resources, defaults to "1"
@@ -12733,7 +12790,7 @@ spec:
                                       - type: string
                                     x-kubernetes-int-or-string: true
                                   resource:
-                                    description: 'Required: resource to select'
+                                    description: "Required: resource to select"
                                     type: string
                                 x-kubernetes-map-type: atomic
                               secretKeyRef:
@@ -13084,7 +13141,7 @@ spec:
                               - diskURI
                             properties:
                               cachingMode:
-                                description: 'cachingMode is the Host Caching mode: None, Read Only, Read Write.'
+                                description: "cachingMode is the Host Caching mode: None, Read Only, Read Write."
                                 type: string
                               diskName:
                                 description: diskName is the Name of the data disk in the blob storage
@@ -13100,7 +13157,7 @@ spec:
                                 type: string
                                 default: ext4
                               kind:
-                                description: 'kind expected values are Shared: multiple blob disks per storage account  Dedicated: single blob disk per storage account  Managed: azure managed data disk (only in managed availability set). defaults to shared'
+                                description: "kind expected values are Shared: multiple blob disks per storage account  Dedicated: single blob disk per storage account  Managed: azure managed data disk (only in managed availability set). defaults to shared"
                                 type: string
                               readOnly:
                                 description: |-
@@ -13146,7 +13203,7 @@ spec:
                                   type: string
                                 x-kubernetes-list-type: atomic
                               path:
-                                description: 'path is Optional: Used as the mounted root, rather than the full Ceph tree, default is /'
+                                description: "path is Optional: Used as the mounted root, rather than the full Ceph tree, default is /"
                                 type: string
                               readOnly:
                                 description: |-
@@ -13364,7 +13421,7 @@ spec:
                                     - path
                                   properties:
                                     fieldRef:
-                                      description: 'Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported.'
+                                      description: "Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported."
                                       type: object
                                       required:
                                         - fieldPath
@@ -13387,7 +13444,7 @@ spec:
                                       type: integer
                                       format: int32
                                     path:
-                                      description: 'Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the ''..'' path. Must be utf-8 encoded. The first item of the relative path must not start with ''..'''
+                                      description: "Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the '..' path. Must be utf-8 encoded. The first item of the relative path must not start with '..'"
                                       type: string
                                     resourceFieldRef:
                                       description: |-
@@ -13398,7 +13455,7 @@ spec:
                                         - resource
                                       properties:
                                         containerName:
-                                          description: 'Container name: required for volumes, optional for env vars'
+                                          description: "Container name: required for volumes, optional for env vars"
                                           type: string
                                         divisor:
                                           description: Specifies the output format of the exposed resources, defaults to "1"
@@ -13408,7 +13465,7 @@ spec:
                                             - type: string
                                           x-kubernetes-int-or-string: true
                                         resource:
-                                          description: 'Required: resource to select'
+                                          description: "Required: resource to select"
                                           type: string
                                       x-kubernetes-map-type: atomic
                                 x-kubernetes-list-type: atomic
@@ -13707,7 +13764,7 @@ spec:
                                   Ex. "ext4", "xfs", "ntfs". Implicitly inferred to be "ext4" if unspecified.
                                 type: string
                               lun:
-                                description: 'lun is Optional: FC target lun number'
+                                description: "lun is Optional: FC target lun number"
                                 type: integer
                                 format: int32
                               readOnly:
@@ -13716,7 +13773,7 @@ spec:
                                   the ReadOnly setting in VolumeMounts.
                                 type: boolean
                               targetWWNs:
-                                description: 'targetWWNs is Optional: FC target worldwide names (WWNs)'
+                                description: "targetWWNs is Optional: FC target worldwide names (WWNs)"
                                 type: array
                                 items:
                                   type: string
@@ -13748,7 +13805,7 @@ spec:
                                   Ex. "ext4", "xfs", "ntfs". The default filesystem depends on FlexVolume script.
                                 type: string
                               options:
-                                description: 'options is Optional: this field holds extra command options if any.'
+                                description: "options is Optional: this field holds extra command options if any."
                                 type: object
                                 additionalProperties:
                                   type: string
@@ -14284,7 +14341,7 @@ spec:
                                               - path
                                             properties:
                                               fieldRef:
-                                                description: 'Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported.'
+                                                description: "Required: Selects a field of the pod: only annotations, labels, name, namespace and uid are supported."
                                                 type: object
                                                 required:
                                                   - fieldPath
@@ -14307,7 +14364,7 @@ spec:
                                                 type: integer
                                                 format: int32
                                               path:
-                                                description: 'Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the ''..'' path. Must be utf-8 encoded. The first item of the relative path must not start with ''..'''
+                                                description: "Required: Path is  the relative path name of the file to be created. Must not be absolute or contain the '..' path. Must be utf-8 encoded. The first item of the relative path must not start with '..'"
                                                 type: string
                                               resourceFieldRef:
                                                 description: |-
@@ -14318,7 +14375,7 @@ spec:
                                                   - resource
                                                 properties:
                                                   containerName:
-                                                    description: 'Container name: required for volumes, optional for env vars'
+                                                    description: "Container name: required for volumes, optional for env vars"
                                                     type: string
                                                   divisor:
                                                     description: Specifies the output format of the exposed resources, defaults to "1"
@@ -14328,7 +14385,7 @@ spec:
                                                       - type: string
                                                     x-kubernetes-int-or-string: true
                                                   resource:
-                                                    description: 'Required: resource to select'
+                                                    description: "Required: resource to select"
                                                     type: string
                                                 x-kubernetes-map-type: atomic
                                           x-kubernetes-list-type: atomic

@@ -2,10 +2,10 @@
   /* 8px rhythm. Tailwind v4 already gives us a spacing scale;
    * these names exist for semantic uses (sections, hero) outside utility classes.
    */
-  --nl-space-section-y: 5rem;       /* 80px */
-  --nl-space-hero-y: 7.5rem;        /* 120px */
-  --nl-container-max: 75rem;        /* 1200px content max */
+  --nl-space-section-y: 5rem; /* 80px */
+  --nl-space-hero-y: 7.5rem; /* 120px */
+  --nl-container-max: 75rem; /* 1200px content max */
   --nl-hero-headline-max: 53.125rem; /* 850px */
   --nl-hero-subtitle-max: 34.375rem; /* 550px */
-  --nl-touch-min: 2.75rem;          /* 44px WCAG minimum */
+  --nl-touch-min: 2.75rem; /* 44px WCAG minimum */
 }

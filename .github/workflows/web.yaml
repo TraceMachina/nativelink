@@ -4,21 +4,21 @@ on:
   push:
     branches: [main]
     paths:
-      - 'web/**'
-      - '**/*.md'
-      - 'nativelink-config/**'
-      - 'tools/**'
-      - '**/*.lock'
-      - '**/*.nix'
+      - "web/**"
+      - "**/*.md"
+      - "nativelink-config/**"
+      - "tools/**"
+      - "**/*.lock"
+      - "**/*.nix"
   pull_request:
     branches: [main]
     paths:
-      - 'web/**'
-      - '**/*.md'
-      - 'nativelink-config/**'
-      - 'tools/**'
-      - '**/*.lock'
-      - '**/*.nix'
+      - "web/**"
+      - "**/*.md"
+      - "nativelink-config/**"
+      - "tools/**"
+      - "**/*.lock"
+      - "**/*.nix"
 
 permissions: read-all
 

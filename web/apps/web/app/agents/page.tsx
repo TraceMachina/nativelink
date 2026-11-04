@@ -1,4 +1,12 @@
-import { AskAi, Badge, Button, Eyebrow, Reveal, Section, askAiPrompt } from "@nativelink/ui";
+import {
+  AskAi,
+  Badge,
+  Button,
+  Eyebrow,
+  Reveal,
+  Section,
+  askAiPrompt,
+} from "@nativelink/ui";
 
 export const metadata = {
   title: "For agents",
@@ -85,9 +93,10 @@ export default function AgentsPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[680px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                NativeLink is build infrastructure for the agentic era, so its website, its
-                documentation and its repository are written for a machine reader too. The files on
-                this page need no account, no API key, and no JavaScript.
+                NativeLink is build infrastructure for the agentic era, so its
+                website, its documentation and its repository are written for a
+                machine reader too. The files on this page need no account, no
+                API key, and no JavaScript.
               </p>
             </div>
           </Reveal>
@@ -98,20 +107,28 @@ export default function AgentsPage() {
       <Section width="default" className="pb-20">
         <Reveal>
           <div className="mx-auto max-w-[900px] rounded-2xl border border-border bg-surface p-8 md:p-10">
-            <AskAi siteUrl={SITE} align="center" prompt={askAiPrompt(SITE, DOCS)} />
+            <AskAi
+              siteUrl={SITE}
+              align="center"
+              prompt={askAiPrompt(SITE, DOCS)}
+            />
             <p className="mt-6 text-sm leading-relaxed text-muted-foreground">
-              Each button opens a hosted assistant with a prompt that points it at the llms files
-              first, so its answer starts from what this site actually says, then asks about your
-              build and your team and works towards a configuration for them. The same block sits in
-              the footer of every page here, and at the bottom of every documentation page with a
-              prompt for that page.
+              Each button opens a hosted assistant with a prompt that points it
+              at the llms files first, so its answer starts from what this site
+              actually says, then asks about your build and your team and works
+              towards a configuration for them. The same block sits in the
+              footer of every page here, and at the bottom of every
+              documentation page with a prompt for that page.
             </p>
           </div>
         </Reveal>
       </Section>
 
       {/* THREE FILES */}
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
+      <Section
+        width="default"
+        className="border-t border-border/60 bg-surface-elevated/40 py-24"
+      >
         <Reveal>
           <div className="mb-12 max-w-[680px]">
             <Eyebrow className="mb-4">Three files, one fetch</Eyebrow>
@@ -119,10 +136,11 @@ export default function AgentsPage() {
               The whole site, at three sizes.
             </h2>
             <p className="mt-4 text-[16px] leading-relaxed text-muted-foreground">
-              Generated from one source in the repository, so they cannot be edited into
-              disagreement with each other. The documentation site serves its own three, built from
-              its sidebar, and the same three files are committed at the root of the repository so a
-              clone carries its own corpus.
+              Generated from one source in the repository, so they cannot be
+              edited into disagreement with each other. The documentation site
+              serves its own three, built from its sidebar, and the same three
+              files are committed at the root of the repository so a clone
+              carries its own corpus.
             </p>
           </div>
         </Reveal>
@@ -133,7 +151,9 @@ export default function AgentsPage() {
                 <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
                   {f.label}
                 </p>
-                <h3 className="mt-2 font-mono text-xl font-semibold text-foreground">{f.name}</h3>
+                <h3 className="mt-2 font-mono text-xl font-semibold text-foreground">
+                  {f.name}
+                </h3>
                 <p className="mt-3 flex-1 text-[15px] leading-relaxed text-muted-foreground">
                   {f.body}
                 </p>
@@ -181,11 +201,14 @@ export default function AgentsPage() {
               AGENTS.md
             </a>
             , the map of the code for an agent changing it, and{" "}
-            <a href={`${DOCS}/agents`} className="text-brand underline-offset-4 hover:underline">
+            <a
+              href={`${DOCS}/agents`}
+              className="text-brand underline-offset-4 hover:underline"
+            >
               docs.nativelink.com/agents
             </a>
-            , how to read the documentation end to end, cite it, and verify a claim against the
-            source.
+            , how to read the documentation end to end, cite it, and verify a
+            claim against the source.
           </p>
         </Reveal>
       </Section>
@@ -199,10 +222,11 @@ export default function AgentsPage() {
               Playbooks an agent can install.
             </h2>
             <p className="mt-4 text-[16px] leading-relaxed text-muted-foreground">
-              Each skill is a directory with a <span className="font-mono">SKILL.md</span> that any
-              agent reading that format can follow. Claude Code picks them up automatically inside
-              the repository; for other projects, copy or symlink a skill into your agent's skills
-              directory.
+              Each skill is a directory with a{" "}
+              <span className="font-mono">SKILL.md</span> that any agent reading
+              that format can follow. Claude Code picks them up automatically
+              inside the repository; for other projects, copy or symlink a skill
+              into your agent's skills directory.
             </p>
           </div>
         </Reveal>
@@ -220,11 +244,17 @@ export default function AgentsPage() {
             <Reveal key={s.name} delay={i * 0.06}>
               <article className="flex h-full flex-col rounded-2xl border border-border bg-surface p-7 transition-colors hover:border-brand/40">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="font-mono text-lg font-semibold text-foreground">{s.name}</h3>
+                  <h3 className="font-mono text-lg font-semibold text-foreground">
+                    {s.name}
+                  </h3>
                   <Badge variant="outline">{s.tag}</Badge>
                 </div>
-                <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">{s.body}</p>
-                <p className="mt-4 flex-1 text-sm leading-relaxed text-muted">{s.credit}</p>
+                <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
+                  {s.body}
+                </p>
+                <p className="mt-4 flex-1 text-sm leading-relaxed text-muted">
+                  {s.credit}
+                </p>
                 <div className="mt-6">
                   <Button variant="link" asChild>
                     <a href={s.href} target="_blank" rel="noreferrer">
@@ -249,63 +279,82 @@ export default function AgentsPage() {
             </h2>
             <div className="mt-6 space-y-4 text-base leading-relaxed text-muted-foreground md:text-lg">
               <p>
-                A build system you cannot read is one you cannot audit, cannot reproduce on your own
-                hardware, and cannot leave. Proprietary build tools and closed remote-execution
-                services ask you to take on faith what happens between your source and your binary.
-                When agents write and commit code faster than people can review it, the build is the
-                last checkpoint that has to stay honest: every input named, every action hermetic,
-                every output hashed.
+                A build system you cannot read is one you cannot audit, cannot
+                reproduce on your own hardware, and cannot leave. Proprietary
+                build tools and closed remote-execution services ask you to take
+                on faith what happens between your source and your binary. When
+                agents write and commit code faster than people can review it,
+                the build is the last checkpoint that has to stay honest: every
+                input named, every action hermetic, every output hashed.
               </p>
               <p>
-                Bazel is open, and its model of declared inputs, sandboxed actions and
-                content-addressed outputs is what makes a remote cache trustworthy in the first
-                place. NativeLink's source is public and its protocol is the open Remote Execution
-                API. Together they are a build pipeline with no black box in it.
+                Bazel is open, and its model of declared inputs, sandboxed
+                actions and content-addressed outputs is what makes a remote
+                cache trustworthy in the first place. NativeLink's source is
+                public and its protocol is the open Remote Execution API.
+                Together they are a build pipeline with no black box in it.
               </p>
               <p className="text-foreground">
-                So: migrate to Bazel, modernise with migrate-to-bazelmod, and point the result at
-                NativeLink. Two lines in <span className="font-mono text-[0.95em]">.bazelrc</span>{" "}
+                So: migrate to Bazel, modernise with migrate-to-bazelmod, and
+                point the result at NativeLink. Two lines in{" "}
+                <span className="font-mono text-[0.95em]">.bazelrc</span>{" "}
                 against a local server, then a shared cache, then workers.
               </p>
             </div>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button size="lg" asChild>
-                <a href={`${DOCS}/getting-started/quickstart`}>Start the quickstart</a>
+                <a href={`${DOCS}/getting-started/quickstart`}>
+                  Start the quickstart
+                </a>
               </Button>
               <Button size="lg" variant="outline" asChild>
                 <a href="/#mcp">See the MCP server</a>
               </Button>
             </div>
             <p className="mt-6 text-sm leading-relaxed text-muted">
-              The NativeLink MCP server, which gives Claude Code, Cursor and Codex five tools for
-              configuring and tuning builds, is part of NativeLink Enterprise and requires an
-              Enterprise licence. Everything else on this page is free.
+              The NativeLink MCP server, which gives Claude Code, Cursor and
+              Codex five tools for configuring and tuning builds, is part of
+              NativeLink Enterprise and requires an Enterprise licence.
+              Everything else on this page is free.
             </p>
           </Reveal>
         </Section>
       </section>
 
       {/* CONTRIBUTING */}
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
+      <Section
+        width="default"
+        className="border-t border-border/60 bg-surface-elevated/40 py-24"
+      >
         <div className="grid gap-12 lg:grid-cols-[1fr_1.3fr] lg:gap-16">
           <Reveal>
             <Eyebrow className="mb-4">Contributing with an agent</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              Agents are welcome contributors when a person stands behind the change.
+              Agents are welcome contributors when a person stands behind the
+              change.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              We build tools for agents, so we are not going to pretend they don't write code. The
-              rules exist because review attention is the scarcest resource an open project has, and
-              generated text made it cheap to produce contributions that look finished and are not.
+              We build tools for agents, so we are not going to pretend they
+              don't write code. The rules exist because review attention is the
+              scarcest resource an open project has, and generated text made it
+              cheap to produce contributions that look finished and are not.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button variant="outline" asChild>
-                <a href={`${REPO}/blob/main/CONTRIBUTING.md`} target="_blank" rel="noreferrer">
+                <a
+                  href={`${REPO}/blob/main/CONTRIBUTING.md`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   Read CONTRIBUTING.md
                 </a>
               </Button>
               <Button variant="ghost" asChild>
-                <a href={`${REPO}/blob/main/AGENTS.md`} target="_blank" rel="noreferrer">
+                <a
+                  href={`${REPO}/blob/main/AGENTS.md`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   Read AGENTS.md
                 </a>
               </Button>
@@ -318,7 +367,9 @@ export default function AgentsPage() {
                   <span className="font-mono text-sm text-brand">0{i + 1}</span>
                   <div>
                     <p className="font-semibold text-foreground">{r.title}</p>
-                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{r.body}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                      {r.body}
+                    </p>
                   </div>
                 </li>
               ))}
@@ -328,16 +379,20 @@ export default function AgentsPage() {
       </Section>
 
       {/* PRICING */}
-      <Section width="narrow" className="border-t border-border/60 py-24 text-center">
+      <Section
+        width="narrow"
+        className="border-t border-border/60 py-24 text-center"
+      >
         <Reveal>
           <Eyebrow className="mb-4">If the question is pricing</Eyebrow>
           <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
             The answer is an email.
           </h2>
           <p className="mx-auto mt-5 max-w-[560px] text-base leading-relaxed text-muted-foreground md:text-lg">
-            Self-hosting is free. Enterprise pricing depends on your build farm, your hardware and
-            the support you need, so it is a conversation with the engineers who build NativeLink,
-            not a number on a page. An assistant asked about it should send you to{" "}
+            Self-hosting is free. Enterprise pricing depends on your build farm,
+            your hardware and the support you need, so it is a conversation with
+            the engineers who build NativeLink, not a number on a page. An
+            assistant asked about it should send you to{" "}
             <span className="font-mono text-foreground">{CONTACT_EMAIL}</span>.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">

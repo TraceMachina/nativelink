@@ -105,21 +105,21 @@ please raise an issue so that we can clarify this document.
 6. Finally, configure `git` to sign your commits with the keys you set up
    previously. Create a `.gitconfig` file in your home directory like so:
 
-    ```ini
-    [user]
-         name = Your Full Name
-         email = the-email-you-use-on-github@example.com
-         signingkey = ~/.ssh/your_private_signing_key
+   ```ini
+   [user]
+        name = Your Full Name
+        email = the-email-you-use-on-github@example.com
+        signingkey = ~/.ssh/your_private_signing_key
 
-    [gpg]
-         format = ssh  # Or gpg if you use a GPG key.
+   [gpg]
+        format = ssh  # Or gpg if you use a GPG key.
 
-    [commit]
-         gpgsign = true
+   [commit]
+        gpgsign = true
 
-    [tag]
-         gpgsign = true
-    ```
+   [tag]
+        gpgsign = true
+   ```
 
 ## Local development setup
 
@@ -346,33 +346,33 @@ If you use VS Code, you can configure the following `tasks.json` file to automat
       "command": "bazel",
       "args": ["run", "@rules_rust//tools/rust_analyzer:gen_rust_project"],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
       },
       "group": "build",
       "problemMatcher": [],
       "presentation": {
         "reveal": "never",
-        "panel": "dedicated"
+        "panel": "dedicated",
       },
       "runOptions": {
-        "runOn": "folderOpen"
+        "runOn": "folderOpen",
       },
-      "dependsOn": "Build nativelink"
+      "dependsOn": "Build nativelink",
     },
     {
       "label": "Build nativelink",
       "command": "bazel",
       "args": ["build", "//:nativelink"],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": "${workspaceFolder}",
       },
       "group": "build",
       "presentation": {
         "reveal": "silent",
-        "panel": "shared"
-      }
-    }
-  ]
+        "panel": "shared",
+      },
+    },
+  ],
 }
 ```
 
@@ -380,7 +380,7 @@ And to configure rust-analyzer to use that project, set this in your `.vscode/se
 
 ```jsonc
 {
-     "rust-analyzer.linkedProjects": ["rust-project.json"]
+  "rust-analyzer.linkedProjects": ["rust-project.json"],
 }
 ```
 
@@ -549,7 +549,7 @@ most automatically generated changelogs provide.
    workflow, which regenerates the docs and opens a PR against `main` with
    auto-merge enabled. Check that the PR appeared and merged; if the workflow
    failed, either re-run it from `Actions → Regenerate config reference → Run
-   workflow` (entering the tag) or fall back to the manual procedure below.
+workflow` (entering the tag) or fall back to the manual procedure below.
 
    Passing the new tag updates `web/apps/docs/lib/config-versions.ts`, which
    determines the latest version shown in the docs UI, rewrites
@@ -597,7 +597,7 @@ most automatically generated changelogs provide.
    Make sure to include migration instructions for all breaking changes.
 
    Explicitly list whatever changes you think are worth mentioning as `Major
-   changes`. This is a fairly free-form section that doesn't have any explicit
+changes`. This is a fairly free-form section that doesn't have any explicit
    requirements other than being a best-effort summary of notable changes.
 
 10. Once all notes are in line, click `Publish Release`.

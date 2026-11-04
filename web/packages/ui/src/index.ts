@@ -1,5 +1,11 @@
 export { Button, buttonVariants, type ButtonProps } from "./components/button";
-export { Card, CardHeader, CardTitle, CardBody, CardFooter } from "./components/card";
+export {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardBody,
+  CardFooter,
+} from "./components/card";
 export { Section } from "./components/section";
 export { Prose } from "./components/prose";
 export { Logo } from "./components/logo";
@@ -17,7 +23,12 @@ export { VideoFacade } from "./components/video-facade";
 export { FinalCTA } from "./components/final-cta";
 export { FAQ, type FAQItem } from "./components/faq";
 export { Reveal } from "./components/reveal";
-export { ThemeProvider, useTheme, themeInitScript, type Theme } from "./components/theme-provider";
+export {
+  ThemeProvider,
+  useTheme,
+  themeInitScript,
+  type Theme,
+} from "./components/theme-provider";
 export { ThemeToggle } from "./components/theme-toggle";
 export { AskAi, type AskAiProps, askAiPrompt } from "./components/ask-ai";
 export { Counter } from "./components/counter";

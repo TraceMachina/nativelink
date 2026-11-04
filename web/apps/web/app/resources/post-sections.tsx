@@ -25,7 +25,13 @@ export function postToCard(post: Post): PostCardData {
   };
 }
 
-export function PostCard({ card, index }: { card: PostCardData; index: number }) {
+export function PostCard({
+  card,
+  index,
+}: {
+  card: PostCardData;
+  index: number;
+}) {
   return (
     <Reveal delay={(index % 2) * 0.04}>
       <a
@@ -45,11 +51,16 @@ export function PostCard({ card, index }: { card: PostCardData; index: number })
           <h3 className="text-xl font-semibold leading-tight tracking-tight text-foreground">
             {card.title}
           </h3>
-          <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">{card.excerpt}</p>
+          <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+            {card.excerpt}
+          </p>
         </div>
         <div className="mt-6 inline-flex items-center gap-1.5 font-mono text-sm text-brand">
           {card.cta}{" "}
-          <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+          <span
+            aria-hidden="true"
+            className="transition-transform group-hover:translate-x-1"
+          >
             →
           </span>
         </div>

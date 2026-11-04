@@ -60,7 +60,11 @@ export function VideoFacade({
           className="group absolute inset-0 flex cursor-pointer flex-col justify-between p-6 text-left text-brand-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-foreground/80 md:p-8"
         >
           {posterSrc ? (
-            <img src={posterSrc} alt="" className="absolute inset-0 h-full w-full object-cover" />
+            <img
+              src={posterSrc}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover"
+            />
           ) : (
             <>
               <span className="absolute inset-0 bg-gradient-to-br from-brand via-brand to-brand-strong" />
@@ -77,7 +81,13 @@ export function VideoFacade({
           </span>
 
           <span className="relative mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-background text-brand shadow-[0_12px_40px_-8px_rgb(0_0_0_/_0.45)] transition-transform duration-300 group-hover:scale-105 md:h-20 md:w-20">
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <svg
+              width="26"
+              height="26"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path d="M8 5.5v13l11-6.5-11-6.5Z" />
             </svg>
           </span>
@@ -87,7 +97,9 @@ export function VideoFacade({
               {title}
             </span>
             {subtitle ? (
-              <span className="mt-1.5 block text-sm leading-relaxed opacity-85">{subtitle}</span>
+              <span className="mt-1.5 block text-sm leading-relaxed opacity-85">
+                {subtitle}
+              </span>
             ) : null}
           </span>
         </button>

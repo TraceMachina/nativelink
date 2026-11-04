@@ -15,7 +15,7 @@ inputs:
       NativeLink Cloud API key. Empty (fork PRs have no secrets) disables the
       setup entirely.
     required: false
-    default: ''
+    default: ""
   claim-base:
     description: >-
       Claim endpoint base as <claim>.<domain>, normally passed from
@@ -23,14 +23,14 @@ inputs:
       grpcs://cas-, bes-, and scheduler- endpoints from it. Empty disables
       the setup.
     required: false
-    default: ''
+    default: ""
   bes-results-url:
     description: >-
       Optional console URL prefix for invocation links, normally passed from
       secrets.NATIVELINK_STAGING_BES_RESULTS_URL. Omitted from the build when
       empty.
     required: false
-    default: ''
+    default: ""
   public-read-key:
     description: >-
       World-readable cache_read-only API key used when api-key/claim-base are
@@ -40,13 +40,13 @@ inputs:
       so it must never carry more than cache_read. Kill switch is revoking
       the key server-side; rotation is editing this default.
     required: false
-    default: '66532088547d98bfb5b0b41e8d5cbfea8b5da1bc1e23e776f9cefc12654c6cb6'
+    default: "66532088547d98bfb5b0b41e8d5cbfea8b5da1bc1e23e776f9cefc12654c6cb6"
   public-claim-base:
     description: >-
       Claim endpoint base for the public read-only path. Committed default
       for the same reason as public-read-key.
     required: false
-    default: 'marcus-eagan-h6a62e.staging.scdev.nativelink.net'
+    default: "marcus-eagan-h6a62e.staging.scdev.nativelink.net"
   ci-mode:
     description: >-
       Kill switch, normally passed as vars.NATIVELINK_CI_MODE. Empty or 'off'
@@ -54,7 +54,7 @@ inputs:
       exec: on. The canary workflow pins this to 'cache'/'rbe' so it stays
       live while regular lanes are dark.
     required: false
-    default: ''
+    default: ""
   mode:
     description: >-
       'read' (PR lanes; never uploads action results) or 'write' (main-branch
@@ -66,7 +66,7 @@ inputs:
       'on' requests remote execution. Honored only when ci-mode is 'rbe', and
       only on Linux runners.
     required: false
-    default: 'off'
+    default: "off"
   container-image:
     description: >-
       Exec property attached when remote execution is honored. Must
