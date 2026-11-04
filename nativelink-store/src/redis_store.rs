@@ -2605,13 +2605,12 @@ where
                 // while checking moves both or neither, so replacement_state
                 // compares them strictly, with no tolerance a short scan
                 // could hide inside.
-                let (original_docs, info) = match original_kind {
-                    IndexKind::Missing => (None, ft_info(connection.clone(), &replacement).await?),
-                    _ => {
-                        let (original_info, replacement_info) =
-                            ft_info_pair(connection.clone(), original, &replacement).await?;
-                        (Some(original_info.num_docs), replacement_info)
-                    }
+                let (original_docs, info) = if original_kind == IndexKind::Missing {
+                    (None, ft_info(connection.clone(), &replacement).await?)
+                } else {
+                    let (original_info, replacement_info) =
+                        ft_info_pair(connection.clone(), original, &replacement).await?;
+                    (Some(original_info.num_docs), replacement_info)
                 };
                 let state = index_migration::replacement_state(info, original_docs);
                 if state == Replacement::Incomplete {
