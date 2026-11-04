@@ -94,8 +94,12 @@ const HIDDEN_LOGINS = new Set(["allada"]);
 /** Drops bots and hidden accounts from a GitHub contributors listing. */
 export { FALLBACK as FALLBACK_CONTRIBUTORS };
 
-export function visibleContributors(contributors: Contributor[]): Contributor[] {
-  return contributors.filter((c) => c.type !== "Bot" && !HIDDEN_LOGINS.has(c.login));
+export function visibleContributors(
+  contributors: Contributor[],
+): Contributor[] {
+  return contributors.filter(
+    (c) => c.type !== "Bot" && !HIDDEN_LOGINS.has(c.login),
+  );
 }
 
 export async function getContributors(
@@ -114,7 +118,11 @@ export async function getContributors(
     });
 
     if (!res.ok) {
-      return { contributors: FALLBACK, total: FALLBACK.length, fromCache: true };
+      return {
+        contributors: FALLBACK,
+        total: FALLBACK.length,
+        fromCache: true,
+      };
     }
 
     const json = (await res.json()) as Contributor[];
@@ -143,7 +151,9 @@ const FALLBACK_STATS: RepoStats = {
   fromCache: true,
 };
 
-export async function getRepoStats(repo = "TraceMachina/nativelink"): Promise<RepoStats> {
+export async function getRepoStats(
+  repo = "TraceMachina/nativelink",
+): Promise<RepoStats> {
   try {
     const res = await fetch(`https://api.github.com/repos/${repo}`, {
       headers: {

@@ -1,4 +1,5 @@
-export const BOOK_DOWNLOAD_URL = "https://endflakytests.com/OReilly_Extending_Bazel_Nativelink.pdf";
+export const BOOK_DOWNLOAD_URL =
+  "https://endflakytests.com/OReilly_Extending_Bazel_Nativelink.pdf";
 
 import { emailFormatError } from "./email";
 

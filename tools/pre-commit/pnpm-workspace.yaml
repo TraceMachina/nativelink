@@ -1,0 +1,3 @@
+overrides:
+  postcss-selector-parser: "6.1.5"
+  source-map-js: "1.2.2"

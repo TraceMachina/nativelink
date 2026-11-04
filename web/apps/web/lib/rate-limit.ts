@@ -9,7 +9,13 @@ const MAX_TRACKED_KEYS = 10_000;
  * Fixed-window limiter held in memory. On serverless each instance keeps its own
  * counts, so this bounds abuse per instance rather than globally.
  */
-export function createRateLimiter({ limit, windowMs }: { limit: number; windowMs: number }) {
+export function createRateLimiter({
+  limit,
+  windowMs,
+}: {
+  limit: number;
+  windowMs: number;
+}) {
   const windows = new Map<string, Window>();
 
   return function allow(key: string, now: number = Date.now()): boolean {

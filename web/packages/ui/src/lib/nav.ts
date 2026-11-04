@@ -35,7 +35,10 @@ export function normalizeNavPath(hrefOrPath: string): string {
  * Home (`/`) is exact-only. Other internal paths match themselves and nested
  * routes (`/resources` on `/resources/blog/slug`). External URLs never match.
  */
-export function isCurrentNavHref(href: string, currentPath: string | undefined): boolean {
+export function isCurrentNavHref(
+  href: string,
+  currentPath: string | undefined,
+): boolean {
   if (!currentPath) {
     return false;
   }

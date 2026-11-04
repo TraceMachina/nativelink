@@ -28,11 +28,16 @@
 
 /** Escape the two characters MDX treats specially in plain text. */
 function escapeMdxText(text) {
-  return text.replace(/</g, "&lt;").replace(/\{/g, "&#123;").replace(/\}/g, "&#125;");
+  return text
+    .replace(/</g, "&lt;")
+    .replace(/\{/g, "&#123;")
+    .replace(/\}/g, "&#125;");
 }
 
 function autolinkText(url) {
-  if (url === "https://docs.rs/hyper/latest/hyper/server/conn/struct.Http.html") {
+  if (
+    url === "https://docs.rs/hyper/latest/hyper/server/conn/struct.Http.html"
+  ) {
     return "hyper HTTP server docs";
   }
   return url;
@@ -71,7 +76,12 @@ function defaultFromDescription(md) {
   const explicitDefault = /Default:\s*([^\n]+)/.exec(md);
   if (!explicitDefault) return "";
 
-  const value = explicitDefault[1].trim().match(/^(.+?)(?:\.\s|$)/)?.[1]?.trim().replace(/\.$/, "") || "";
+  const value =
+    explicitDefault[1]
+      .trim()
+      .match(/^(.+?)(?:\.\s|$)/)?.[1]
+      ?.trim()
+      .replace(/\.$/, "") || "";
   return /^none\b/i.test(value) ? "" : value;
 }
 
@@ -85,35 +95,37 @@ function stripDescriptionDefault(md) {
 }
 
 function normalizeMarkdown(md) {
-  return md
-    .replace(/Example JSON Config/g, "Example JSON5 config")
+  return (
+    md
+      .replace(/Example JSON Config/g, "Example JSON5 config")
 
-    // Fixed now in stores, but buggy up to 1.6.1
-    .replace(/`NetApp` ONTAP S3/, "NetApp ONTAP S3:")
-    .replace(/`NetApp` ONTAP S3 store/, "NetApp ONTAP S3 store")
+      // Fixed now in stores, but buggy up to 1.6.1
+      .replace(/`NetApp` ONTAP S3/, "NetApp ONTAP S3:")
+      .replace(/`NetApp` ONTAP S3 store/, "NetApp ONTAP S3 store")
 
-    .replace(/```json(?=\n)/g, "```json5")
-    .replace(
-      /will result in:\nAttempt - Delay\n1\s+0ms\n2\s+75ms - 125ms\n3\s+150ms - 250ms\n4\s+300ms - 500ms\n5\s+600ms - 1s\n6\s+1\.2s - 2s\n7\s+2\.4s - 4s\n8\s+4\.8s - 8s/g,
-      [
-        "will result in:",
-        "",
-        "| Attempt | Delay |",
-        "| --- | --- |",
-        "| 1 | 0 ms |",
-        "| 2 | 75 to 125 ms |",
-        "| 3 | 150 to 250 ms |",
-        "| 4 | 300 to 500 ms |",
-        "| 5 | 600 ms to 1 s |",
-        "| 6 | 1.2 to 2 s |",
-        "| 7 | 2.4 to 4 s |",
-        "| 8 | 4.8 to 8 s |",
-      ].join("\n"),
-    )
-    .replace(
-      /Remember that to get total results is additive, meaning the above results\nwould mean a single request would have a total delay of 9\.525s - 15\.875s\./g,
-      "\nThe total delay is additive, so this example produces 9.525 to 15.875 s of total delay for a single request.",
-    );
+      .replace(/```json(?=\n)/g, "```json5")
+      .replace(
+        /will result in:\nAttempt - Delay\n1\s+0ms\n2\s+75ms - 125ms\n3\s+150ms - 250ms\n4\s+300ms - 500ms\n5\s+600ms - 1s\n6\s+1\.2s - 2s\n7\s+2\.4s - 4s\n8\s+4\.8s - 8s/g,
+        [
+          "will result in:",
+          "",
+          "| Attempt | Delay |",
+          "| --- | --- |",
+          "| 1 | 0 ms |",
+          "| 2 | 75 to 125 ms |",
+          "| 3 | 150 to 250 ms |",
+          "| 4 | 300 to 500 ms |",
+          "| 5 | 600 ms to 1 s |",
+          "| 6 | 1.2 to 2 s |",
+          "| 7 | 2.4 to 4 s |",
+          "| 8 | 4.8 to 8 s |",
+        ].join("\n"),
+      )
+      .replace(
+        /Remember that to get total results is additive, meaning the above results\nwould mean a single request would have a total delay of 9\.525s - 15\.875s\./g,
+        "\nThe total delay is additive, so this example produces 9.525 to 15.875 s of total delay for a single request.",
+      )
+  );
 }
 
 function normalizeProseText(text) {
@@ -137,7 +149,10 @@ function normalizeProseText(text) {
     .replace(/\bhttp\/2\b/g, "HTTP/2")
     .replace(/\bhttp\/1\.1\b/g, "HTTP/1.1")
     .replace(/\bHttp\/2\b/g, "HTTP/2")
-    .replace(/\bAdvanced Http server configuration\b/g, "Advanced HTTP server configuration")
+    .replace(
+      /\bAdvanced Http server configuration\b/g,
+      "Advanced HTTP server configuration",
+    )
     .replace(
       /\bAdvanced Http configurations\. These are generally should not be set\./g,
       "Advanced HTTP configuration. These generally should not be set.",
@@ -148,8 +163,14 @@ function normalizeProseText(text) {
       /\bFor documentation on what each of these do, see the hyper documentation:/g,
       "For documentation on these settings, see the hyper documentation:",
     )
-    .replace(/\bThis configuration will be used to to restrict\b/g, "This configuration will be used to restrict")
-    .replace(/\bA scheduler that simply forwards\b/g, "A scheduler that forwards")
+    .replace(
+      /\bThis configuration will be used to to restrict\b/g,
+      "This configuration will be used to restrict",
+    )
+    .replace(
+      /\bA scheduler that simply forwards\b/g,
+      "A scheduler that forwards",
+    )
     .replace(/\bThe the value\b/g, "The value")
     .replace(/\bset to -1 to disable\b/g, "set to `-1` to disable")
     .replace(/TODO\(.+\)/, "")
@@ -238,7 +259,8 @@ function typeLink(name, known) {
 function typeToString(s, known) {
   if (!s || typeof s !== "object") return "any";
   if (s.$ref) return typeLink(refName(s.$ref), known);
-  if (Array.isArray(s.allOf) && s.allOf.length === 1) return typeToString(s.allOf[0], known);
+  if (Array.isArray(s.allOf) && s.allOf.length === 1)
+    return typeToString(s.allOf[0], known);
 
   const union = s.anyOf || s.oneOf;
   if (union) {
@@ -249,7 +271,10 @@ function typeToString(s, known) {
   const type = s.type;
   if (Array.isArray(type)) {
     const nn = type.filter((t) => t !== "null");
-    const base = typeToString({ ...s, type: nn.length === 1 ? nn[0] : nn }, known);
+    const base = typeToString(
+      { ...s, type: nn.length === 1 ? nn[0] : nn },
+      known,
+    );
     return base;
   }
 
@@ -288,7 +313,8 @@ function defaultCell(p) {
 
 function classify(def) {
   if (def.oneOf) {
-    if (def.oneOf.every((b) => b && b.const !== undefined)) return "string-enum";
+    if (def.oneOf.every((b) => b && b.const !== undefined))
+      return "string-enum";
     const tagged = def.oneOf.every(
       (b) =>
         b &&
@@ -333,7 +359,7 @@ function renderObject(name, def, known) {
 function renderTaggedEnum(name, def, known) {
   // Drop StoreSpec in favour of NamedStoreConfig
   if (name == "StoreSpec") {
-    return ""
+    return "";
   }
 
   const out = [`## ${displayName(name)}`, ""];
@@ -343,7 +369,10 @@ function renderTaggedEnum(name, def, known) {
   if (def.properties && Object.keys(def.properties).length > 0) {
     out.push("**Common fields**", "", renderPropsTable(def, known));
   }
-  out.push("Plus exactly one of the following variants (the key selects the variant):", "");
+  out.push(
+    "Plus exactly one of the following variants (the key selects the variant):",
+    "",
+  );
   for (const branch of def.oneOf) {
     const key = branch.required[0];
     const payload = branch.properties[key];
@@ -358,11 +387,13 @@ function enumDescription(name, value, description) {
   if (description) return description;
   // Backfill for versions up to 1.5.1 that don't have comments for RedisMode
   if (name === "RedisMode") {
-    return {
-      cluster: "Use Redis Cluster.",
-      sentinel: "Use Redis Sentinel.",
-      standard: "Use a standalone Redis server.",
-    }[value] || "";
+    return (
+      {
+        cluster: "Use Redis Cluster.",
+        sentinel: "Use Redis Sentinel.",
+        standard: "Use a standalone Redis server.",
+      }[value] || ""
+    );
   }
   return "";
 }
@@ -377,7 +408,8 @@ function renderStringEnum(name, def) {
     "| Value | Description |",
     "| --- | --- |",
     ...variants.map(
-      (v) => `| \`${JSON.stringify(v.value)}\` | ${cellText(enumDescription(name, v.value, v.description))} |`,
+      (v) =>
+        `| \`${JSON.stringify(v.value)}\` | ${cellText(enumDescription(name, v.value, v.description))} |`,
     ),
     "",
   );
@@ -407,12 +439,16 @@ function unionBranchType(branch, known) {
 function renderUnion(name, def, known) {
   const out = [`## ${displayName(name)}`, ""];
   if (name == "ExperimentalCloudObjectSpec") {
-    out.push("See [`experimental_cloud_object_store`](#experimental_cloud_object_store) for details")
+    out.push(
+      "See [`experimental_cloud_object_store`](#experimental_cloud_object_store) for details",
+    );
   } else {
     if (def.description) out.push(sanitizeMarkdown(def.description), "");
     out.push("One of:", "");
     for (const branch of def.oneOf) {
-      const desc = branch.description ? ` — ${cellText(branch.description)}` : "";
+      const desc = branch.description
+        ? ` — ${cellText(branch.description)}`
+        : "";
       out.push(`- ${unionBranchType(branch, known)}${desc}`);
     }
   }

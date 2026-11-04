@@ -6,7 +6,10 @@ import { SourceMapConsumer } from "source-map-js";
 test("KaTeX ignores inherited trust while rendering ordinary math", () => {
   // GHSA-238p-pmpm-9mq7: the options prototype must not enable trusted HTML.
   const options = Object.create({ trust: true });
-  const html = katex.renderToString("\\href{javascript:alert(1)}{link}", options);
+  const html = katex.renderToString(
+    "\\href{javascript:alert(1)}{link}",
+    options,
+  );
   expect(html).not.toContain('href="javascript:');
   expect(katex.renderToString("x^2 + y^2")).toContain('class="katex"');
 });
@@ -46,9 +49,13 @@ test("installed Next.js and DOMPurify include the October 2026 fixes", () => {
     Bun.semver.order(version, minimum) >= 0;
   for (const app of ["web", "docs"]) {
     const { version } = require(
-      require.resolve("next/package.json", { paths: [`${import.meta.dir}/../apps/${app}`] }),
+      require.resolve("next/package.json", {
+        paths: [`${import.meta.dir}/../apps/${app}`],
+      }),
     );
     expect(atLeast(version, "16.4.1")).toBe(true);
   }
-  expect(atLeast(require("dompurify/package.json").version, "3.4.17")).toBe(true);
+  expect(atLeast(require("dompurify/package.json").version, "3.4.17")).toBe(
+    true,
+  );
 });

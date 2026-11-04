@@ -46,13 +46,17 @@ export function askAiPrompt(
     "deployment for it, citing the matching documentation pages.",
     "If more than one developer will share the deployment, tell me that its metrics and",
     "persistent-worker modules are Business Source Licensed and that I should email",
-    "contact@nativelink.com for Enterprise pricing on them.",
+    "contact@tracemachina.com for Enterprise pricing on them.",
   ].join(" ");
 }
 
 /** Where a query lands for each assistant. Every one of these accepts a `q`
  *  parameter that pre-fills the first message. */
-const assistants: { name: string; url: (q: string) => string; icon: ReactNode }[] = [
+const assistants: {
+  name: string;
+  url: (q: string) => string;
+  icon: ReactNode;
+}[] = [
   {
     name: "ChatGPT",
     url: (q) => `https://chatgpt.com/?q=${q}`,
@@ -110,7 +114,8 @@ const files: { name: string; path: string; description: string }[] = [
   {
     name: "llms.txt",
     path: "/llms.txt",
-    description: "the link index: every page with a one-line description, in reading order",
+    description:
+      "the link index: every page with a one-line description, in reading order",
   },
   {
     name: "llms-small.txt",
@@ -180,10 +185,15 @@ export function AskAi({
         className,
       )}
     >
-      <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{heading}</p>
+      <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+        {heading}
+      </p>
 
       <ul
-        className={cn("flex flex-wrap gap-2", align === "center" && "justify-center")}
+        className={cn(
+          "flex flex-wrap gap-2",
+          align === "center" && "justify-center",
+        )}
         aria-label="Open this site in an AI assistant"
       >
         {assistants.map((a) => (
@@ -204,7 +214,10 @@ export function AskAi({
       </ul>
 
       <ul
-        className={cn("flex flex-wrap gap-2", align === "center" && "justify-center")}
+        className={cn(
+          "flex flex-wrap gap-2",
+          align === "center" && "justify-center",
+        )}
         aria-label="Machine-readable copies of this site"
       >
         {files.map((f) => (

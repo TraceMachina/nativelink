@@ -28,7 +28,9 @@ Everything this repository and its sites do for a machine reader, in one place:
   `bun --filter @nativelink/docs gen:llms`) to fold the docs corpus in, and
   the root copies are kept current by the "Regenerate llms files" workflow.
   Never hand-edit them; the prose for the marketing pages lives in
-  `web/apps/web/lib/llms.ts`.
+  `web/apps/web/lib/llms.ts`. Fetch order for an agent: the index first,
+  the small file for most questions, the full file only when the small one
+  lacks the answer; cite documentation by URL.
 - **Skills** under `.claude/skills/`, in the `SKILL.md` format:
   `migrate-to-bazelmod` (move a Bazel project from `WORKSPACE` to
   `MODULE.bazel`) and the five `nativelink-*` playbooks for changing this
@@ -91,19 +93,19 @@ A single binary can run any combination of these, configured in JSON5.
 
 ## Crate map (where things live)
 
-| Crate | Owns |
-| ----- | ---- |
-| `nativelink` (root, `src/bin/nativelink.rs`) | The server binary; wires config to running services. |
-| `nativelink-config` | JSON5 config schema. Stores in `src/stores.rs`, server/worker in `src/cas_server.rs`. Source of truth for the config reference. |
-| `nativelink-service` | gRPC services: CAS, AC, Execution, Capabilities, ByteStream, Worker API, BEP, health, fetch/push. |
-| `nativelink-store` | Every store implementation: filesystem, memory, redis, S3/R2/GCS/Azure/OCI/Mongo, and the composition stores (`fast_slow`, `shard`, `size_partitioning`, `compression`, `dedup`, `existence_cache`, `verify`, `ref`). |
-| `nativelink-scheduler` | Scheduler internals: matching engine, awaited-action DB, worker registry, state manager, retries. |
-| `nativelink-worker` | Worker: action execution, input materialization, sandboxing/namespaces, directory cache. |
-| `nativelink-util` | Shared utilities: `fs`/`fs_util`, `evicting_map`, `action_messages`, digests, and the OTLP metrics (`metrics.rs`). |
-| `nativelink-proto` | Generated protobufs (REAPI + NativeLink extensions). |
-| `nativelink-metric` / `nativelink-macro` | The `#[metric]` component-metrics derive system and proc macros. |
-| `nativelink-error` | The `Error` type and `ResultExt`. |
-| `nativelink-test` / `nativelink-redis-tester` | Test harness (`nativelink_test`) and Redis test tooling. |
+| Crate                                         | Owns                                                                                                                                                                                                                  |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nativelink` (root, `src/bin/nativelink.rs`)  | The server binary; wires config to running services.                                                                                                                                                                  |
+| `nativelink-config`                           | JSON5 config schema. Stores in `src/stores.rs`, server/worker in `src/cas_server.rs`. Source of truth for the config reference.                                                                                       |
+| `nativelink-service`                          | gRPC services: CAS, AC, Execution, Capabilities, ByteStream, Worker API, BEP, health, fetch/push.                                                                                                                     |
+| `nativelink-store`                            | Every store implementation: filesystem, memory, redis, S3/R2/GCS/Azure/OCI/Mongo, and the composition stores (`fast_slow`, `shard`, `size_partitioning`, `compression`, `dedup`, `existence_cache`, `verify`, `ref`). |
+| `nativelink-scheduler`                        | Scheduler internals: matching engine, awaited-action DB, worker registry, state manager, retries.                                                                                                                     |
+| `nativelink-worker`                           | Worker: action execution, input materialization, sandboxing/namespaces, directory cache.                                                                                                                              |
+| `nativelink-util`                             | Shared utilities: `fs`/`fs_util`, `evicting_map`, `action_messages`, digests, and the OTLP metrics (`metrics.rs`).                                                                                                    |
+| `nativelink-proto`                            | Generated protobufs (REAPI + NativeLink extensions).                                                                                                                                                                  |
+| `nativelink-metric` / `nativelink-macro`      | The `#[metric]` component-metrics derive system and proc macros.                                                                                                                                                      |
+| `nativelink-error`                            | The `Error` type and `ResultExt`.                                                                                                                                                                                     |
+| `nativelink-test` / `nativelink-redis-tester` | Test harness (`nativelink_test`) and Redis test tooling.                                                                                                                                                              |
 
 ## Where to change what
 
@@ -128,18 +130,18 @@ that the source of truth is always in the repo, and the doc either regenerates
 from it or cites it, never restates it by hand. Every path in the right-hand
 column is a real page under `web/apps/docs/content/docs/`.
 
-| You changed | Source of truth | Doc that must follow |
-| ----------- | --------------- | -------------------- |
-| A config field or its doc comment | `nativelink-config/src/{stores,cas_server}.rs` | `reference/nativelink-config/*`; regenerate with `gen:config-reference`, never hand-edit |
-| A store's behavior or defaults | `nativelink-store/src/*` | the backend page under `how-to/stores/`, plus `reference/nativelink-config/store-overview` if the composition model moved |
-| A metric name, type, or label | `nativelink-util/src/metrics.rs` and its call sites | `reference/metrics` (regenerate with `gen:metrics-reference`) and `operate/observability` |
-| A CLI flag or `NL_*` env var | the binary's arg parsing | `reference/cli-and-env` |
-| A gRPC service or the set of services a server exposes | `nativelink-service/src/*_server.rs` | `configuration/servers-and-services`, which names every service as the config spells it |
-| Scheduler matching or platform-property semantics | `nativelink-scheduler/src` | `remote-execution/platform-properties`, and `explanations/architecture` if the model changed rather than the mechanics |
-| Worker sandboxing or input materialization | `nativelink-worker/src/running_actions_manager.rs` | `explanations/architecture` and `operate/security-hardening`; the second one states what the sandbox is *not* |
-| The licence header on a file, or `LICENSE` | the headers themselves | `reference/oss-and-enterprise`, which is the only place the licence split is explained |
-| The canonical production config | `deployment-examples/`, `nativelink-config/examples/` | `operate/production-config`; the snippets are lifted from there, not invented |
-| A page's URL | `web/apps/docs/content/docs/**/meta.json` | add a redirect in `web/apps/docs/next.config.mjs` |
+| You changed                                            | Source of truth                                       | Doc that must follow                                                                                                      |
+| ------------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| A config field or its doc comment                      | `nativelink-config/src/{stores,cas_server}.rs`        | `reference/nativelink-config/*`; regenerate with `gen:config-reference`, never hand-edit                                  |
+| A store's behavior or defaults                         | `nativelink-store/src/*`                              | the backend page under `how-to/stores/`, plus `reference/nativelink-config/store-overview` if the composition model moved |
+| A metric name, type, or label                          | `nativelink-util/src/metrics.rs` and its call sites   | `reference/metrics` (regenerate with `gen:metrics-reference`) and `operate/observability`                                 |
+| A CLI flag or `NL_*` env var                           | the binary's arg parsing                              | `reference/cli-and-env`                                                                                                   |
+| A gRPC service or the set of services a server exposes | `nativelink-service/src/*_server.rs`                  | `configuration/servers-and-services`, which names every service as the config spells it                                   |
+| Scheduler matching or platform-property semantics      | `nativelink-scheduler/src`                            | `remote-execution/platform-properties`, and `explanations/architecture` if the model changed rather than the mechanics    |
+| Worker sandboxing or input materialization             | `nativelink-worker/src/running_actions_manager.rs`    | `explanations/architecture` and `operate/security-hardening`; the second one states what the sandbox is _not_             |
+| The licence header on a file, or `LICENSE`             | the headers themselves                                | `reference/oss-and-enterprise`, which is the only place the licence split is explained                                    |
+| The canonical production config                        | `deployment-examples/`, `nativelink-config/examples/` | `operate/production-config`; the snippets are lifted from there, not invented                                             |
+| A page's URL                                           | `web/apps/docs/content/docs/**/meta.json`             | add a redirect in `web/apps/docs/next.config.mjs`                                                                         |
 
 ## Build, test, verify
 
@@ -198,12 +200,12 @@ Six things a docs change has to satisfy:
 
 Four things under `web/apps/docs` are generated. Regenerate them; never hand-edit:
 
-| Generated | From | Command |
-| --------- | ---- | ------- |
-| `content/docs/reference/nativelink-config/*` | the `nativelink-config` crate, via `build-schema` | `gen:config-reference` |
-| `content/docs/reference/metrics.mdx` | `nativelink-util/src/metrics.rs` and its call sites | `gen:metrics-reference` |
-| `content/docs/reference/changelog.md` | the repository-root `CHANGELOG.md` | `gen:changelog` |
-| `public/llms.txt`, `public/llms-small.txt`, `public/llms-full.txt` | the navigation and page frontmatter | `gen:llms` |
+| Generated                                                          | From                                                | Command                 |
+| ------------------------------------------------------------------ | --------------------------------------------------- | ----------------------- |
+| `content/docs/reference/nativelink-config/*`                       | the `nativelink-config` crate, via `build-schema`   | `gen:config-reference`  |
+| `content/docs/reference/metrics.mdx`                               | `nativelink-util/src/metrics.rs` and its call sites | `gen:metrics-reference` |
+| `content/docs/reference/changelog.md`                              | the repository-root `CHANGELOG.md`                  | `gen:changelog`         |
+| `public/llms.txt`, `public/llms-small.txt`, `public/llms-full.txt` | the navigation and page frontmatter                 | `gen:llms`              |
 
 The last two are gitignored and rebuilt by `dev` and `build`, so they cannot be
 committed in a stale state.

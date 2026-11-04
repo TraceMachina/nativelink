@@ -407,7 +407,7 @@ fn is_default<T: Default + PartialEq>(t: &T) -> bool {
     *t == Default::default()
 }
 
-#[derive(Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ByteStreamConfig {
@@ -440,6 +440,33 @@ pub struct ByteStreamConfig {
         alias = "persist_stream_on_disconnect_timeout"
     )]
     pub persist_stream_on_disconnect_timeout_s: usize,
+
+    /// Recover a resumed upload (a write whose first offset is nonzero) that
+    /// reaches an instance holding no state for its UUID, which happens when
+    /// several instances sit behind a load balancer without session affinity.
+    /// When the blob already exists in the store, the write completes
+    /// immediately; otherwise the client receives UNAVAILABLE, re-queries the
+    /// write status (an instance holding the upload answers with its offset,
+    /// any other answers 0) and resumes or restarts from there. With this
+    /// off, such a resume fails the upload with a non-retryable
+    /// "out of order data" error.
+    ///
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub recover_unknown_uuid_resumes: bool,
+}
+
+// Not derived: the derive would default `recover_unknown_uuid_resumes` to
+// false, diverging from the deserialization default above.
+impl Default for ByteStreamConfig {
+    fn default() -> Self {
+        Self {
+            cas_store: StoreRefName::default(),
+            max_bytes_per_stream: 0,
+            persist_stream_on_disconnect_timeout_s: 0,
+            recover_unknown_uuid_resumes: true,
+        }
+    }
 }
 
 // Older bytestream config. All fields are as per the newer docs, but this requires
