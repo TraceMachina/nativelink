@@ -53,14 +53,14 @@ use redis::cluster::ClusterClient;
 use redis::cluster_async::ClusterConnection;
 use redis::sentinel::{SentinelClient, SentinelNodeConnectionInfo, SentinelServerType};
 use redis::{
-    AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, ScanOptions, Script, SetExpiry,
-    SetOptions, Value, pipe,
+    AsyncCommands, AsyncIter, Client, IntoConnectionInfo, PushInfo, RedisError, ScanOptions,
+    Script, SetExpiry, SetOptions, Value, pipe,
 };
 use serde::Deserialize;
 use serde::de::IntoDeserializer;
 use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace, warn};
@@ -69,13 +69,13 @@ use uuid::Uuid;
 
 use crate::cas_utils::is_zero_digest;
 use crate::redis_utils::index_migration::{
-    self, IndexKind, Replacement, Step, drop_keeping_documents, index_kind, is_out_of_memory,
-    migrated_name,
+    self, IndexKind, Replacement, Step, drop_keeping_documents, index_kind, is_cursor_lost,
+    is_out_of_memory, migrated_name,
 };
 use crate::redis_utils::sorted_index::{self, SortedIndexState, SortedRead};
 use crate::redis_utils::{
     FtAggregateCursor, FtAggregateOptions, FtCreateOptions, SearchSchema, ft_aggregate, ft_create,
-    ft_info, ft_info_indexing, ft_search_count,
+    ft_info, ft_info_indexing, ft_info_pair, ft_search_count,
 };
 
 /// The default size of the read chunk when reading data from Redis.
@@ -100,7 +100,7 @@ const MAX_REDIS_RETRY_ATTEMPTS: u32 = 5;
 /// dropped/refused connection, an IO error, or a write that hit a freshly
 /// demoted replica. Anything else (e.g. a real protocol/logic error) is
 /// returned as-is.
-fn is_retryable_redis_error(err: &redis::RedisError) -> bool {
+fn is_retryable_redis_error(err: &RedisError) -> bool {
     err.is_connection_dropped()
         || err.is_connection_refusal()
         || err.is_io_error()
@@ -158,7 +158,7 @@ const TEMP_KEY_TTL: Duration = Duration::from_hours(1);
 /// `RENAME` of a key that is not there. On a retried publish that means
 /// the first attempt applied before its reply was lost, or the failover
 /// lost the temp key; the caller tells the two apart by the final key.
-fn is_no_such_key(err: &redis::RedisError) -> bool {
+fn is_no_such_key(err: &RedisError) -> bool {
     err.kind() == redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError)
         && err
             .detail()
@@ -478,6 +478,14 @@ where
     /// Loaded on first use (`EVALSHA` falls back to loading it).
     sorted_script: Script,
 
+    /// Lets one read at a time run [`Self::migration_step`]. Concurrent
+    /// reads whose cached name has expired would otherwise each repeat the
+    /// `FT.DEBUG`/`FT.INFO` checks — and, while a replacement backfills with
+    /// no original left, each sit in its own `FT.INFO` poll — against a
+    /// Redis that is already memory-stressed. Waiters re-read the cache the
+    /// winner refreshed instead.
+    index_migration_gate: AsyncMutex<()>,
+
     /// A manager for subscriptions to keys in Redis.
     subscription_manager: Arc<RedisSubscriptionManager>,
 
@@ -623,6 +631,7 @@ where
             index_names: Mutex::new(HashMap::new()),
             sorted_index: None,
             sorted_script: Script::new(LUA_VERSION_SET_SORTED_SCRIPT),
+            index_migration_gate: AsyncMutex::new(()),
             health_check_timeout,
             key_ttl,
             has_remove_callback_subscribe: OnceCell::const_new(),
@@ -2157,7 +2166,7 @@ const INDEX_READY_POLL: Duration = Duration::from_millis(50);
 
 /// `FT.CREATE` of an index that exists: `RediSearch` answers an `Index`
 /// extension error saying so, which a create that races another node gets.
-fn is_index_already_exists(err: &redis::RedisError) -> bool {
+fn is_index_already_exists(err: &RedisError) -> bool {
     err.kind() == redis::ErrorKind::Extension
         && err.code() == Some("Index")
         && err
@@ -2639,6 +2648,15 @@ where
         {
             return name.clone();
         }
+        // One reader checks; the rest wait here and take the answer it
+        // cached, instead of a herd of FT.DEBUG/FT.INFO calls (and, in
+        // Step::WaitForReplacement, a herd of ready polls).
+        let _gate = self.index_migration_gate.lock().await;
+        if let Some((name, until)) = self.index_names.lock().get(&original)
+            && Instant::now() < *until
+        {
+            return name.clone();
+        }
         let (name, trust) = match self.migration_step::<K>(&original).await {
             Ok(decided) => decided,
             Err(err) => {
@@ -2683,14 +2701,18 @@ where
         let replacement_state = match index_kind(&mut connection, &replacement).await? {
             IndexKind::Missing => None,
             IndexKind::Persistent => {
-                // The original's count is read first: a write that lands
-                // between the two reads then adds to the replacement, never
-                // only to the original.
-                let original_docs = match original_kind {
-                    IndexKind::Missing => None,
-                    _ => Some(ft_info(connection.clone(), original).await?.num_docs),
+                // Both counts in one MULTI/EXEC: a key written or deleted
+                // while checking moves both or neither, so replacement_state
+                // compares them strictly, with no tolerance a short scan
+                // could hide inside.
+                let (original_docs, info) = match original_kind {
+                    IndexKind::Missing => (None, ft_info(connection.clone(), &replacement).await?),
+                    _ => {
+                        let (original_info, replacement_info) =
+                            ft_info_pair(connection.clone(), original, &replacement).await?;
+                        (Some(original_info.num_docs), replacement_info)
+                    }
                 };
-                let info = ft_info(connection.clone(), &replacement).await?;
                 let state = index_migration::replacement_state(info, original_docs);
                 if state == Replacement::Incomplete {
                     error!(
@@ -2698,7 +2720,7 @@ where
                         %replacement,
                         replacement_docs = info.num_docs,
                         ?original_docs,
-                        hash_indexing_failures = info.hash_indexing_failures,
+                        hash_indexing_failures = ?info.hash_indexing_failures,
                         "The replacement index does not hold every key; reads stay on the \
                          original. Check Redis memory, then drop the replacement with \
                          `FT.DROPINDEX {replacement} _FORCEKEEPDOCS` to build it again"
@@ -2925,6 +2947,156 @@ where
             }
         }
     }
+
+    /// Opens one aggregate read over `K`'s index for
+    /// `search_by_index_prefix`: resolves which index to read, runs
+    /// `FT.AGGREGATE` on it, and recovers a stale resolved name, a moved
+    /// master and a missing index. The returned stream pages the cursor; an
+    /// error from a later page ends it.
+    async fn open_index_rows<K: SchedulerIndexProvider + Send>(
+        &self,
+        index_value: &str,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Value, RedisError>> + Send>>, Error> {
+        let index_name = self.read_index_name::<K>().await;
+        let run_ft_aggregate = |connection_manager: C, index_name: String| async {
+            ft_aggregate(
+                connection_manager,
+                index_name,
+                if index_value.is_empty() {
+                    "*".to_string()
+                } else {
+                    format!("@{}:{{ {} }}", K::INDEX_NAME, index_value)
+                },
+                FtAggregateOptions {
+                    load: vec![DATA_FIELD_NAME.into(), VERSION_FIELD_NAME.into()],
+                    cursor: FtAggregateCursor {
+                        count: self.max_count_per_cursor,
+                        max_idle: CURSOR_IDLE_MS,
+                    },
+                    sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
+                    sort_desc: K::SORT_DESCENDING,
+                },
+            )
+            .await
+        };
+        let run_ft_create = |connection_manager: C, index_name: String| async {
+            let (create_options, schema) = index_definition::<K>();
+            ft_create(connection_manager, index_name, create_options, schema).await
+        };
+
+        let (connection_manager, connect_id) = self.connection_manager.get_connection().await?;
+        let stream = match run_ft_aggregate(connection_manager.clone(), index_name.clone()).await {
+            // A demoted master answers READONLY and a dead/old master drops the
+            // connection or times the command out. Both mean the master moved
+            // (Sentinel failover) — re-resolve it and retry rather than letting
+            // the scheduler's matching loop spin on a stale handle. (A missing
+            // index is not retryable here; it falls through to the create path
+            // below, which creates the index and retries the aggregate inline.)
+            Err(err) if is_retryable_redis_error(&err) => {
+                let (connection_manager, _connect_id) =
+                    self.connection_manager.reconnect(connect_id).await?;
+                run_ft_aggregate(connection_manager, index_name.clone())
+                    .await
+                    .err_tip(|| {
+                        format!(
+                            "Error with reconnected ft_aggregate in RedisStore::search_by_index_prefix({index_name})"
+                        )
+                    })
+            }
+            Err(_) => {
+                // The index this read was given may have just been retired
+                // by another process finishing the migration. Creating it
+                // again would bring back the index the migration removed and
+                // read it before it is full; ask again which index to read.
+                let moved = if self.migrate_temporary_indexes {
+                    self.forget_index_name::<K>();
+                    let current = self.read_index_name::<K>().await;
+                    (current != index_name).then_some(current)
+                } else {
+                    None
+                };
+                // A failure on the re-resolved name falls through to the
+                // create path below only when that name is the original,
+                // which the ordinary path owns and may recreate — the
+                // behavior every failure had before the migration existed.
+                // A replacement is never created here: it would come back
+                // empty and be read before it is full. `index_name` is
+                // rebound so the create path works on whatever index the
+                // migration settled on.
+                let (index_name, resolved) = match moved {
+                    Some(current) => {
+                        let result = run_ft_aggregate(connection_manager.clone(), current.clone())
+                            .await
+                            .err_tip(|| {
+                                format!(
+                                    "Error with re-resolved ft_aggregate in RedisStore::search_by_index_prefix({current})"
+                                )
+                            });
+                        let recreate =
+                            result.is_err() && current == Self::original_index_name::<K>();
+                        (current, (!recreate).then_some(result))
+                    }
+                    None => (index_name, None),
+                };
+                if let Some(result) = resolved {
+                    result
+                } else {
+                    let (connection_manager, result) =
+                        match run_ft_create(connection_manager.clone(), index_name.clone()).await {
+                            Err(err) if is_retryable_redis_error(&err) => {
+                                let (connection_manager, _connect_id) =
+                                    self.connection_manager.reconnect(connect_id).await?;
+                                (
+                                    connection_manager.clone(),
+                                    run_ft_create(connection_manager, index_name.clone()).await,
+                                )
+                            }
+                            result => (connection_manager, result),
+                        };
+
+                    // RediSearch returns ErrorKind::Extension with code "Index"
+                    // and detail along the lines of "Index already exists" when
+                    // FT.CREATE races with another node.
+                    let create_result = result.or_else(|e| {
+                        if is_index_already_exists(&e) {
+                            Ok(())
+                        } else {
+                            Err(e).err_tip(|| {
+                                format!(
+                                    "Error with ft_create in RedisStore::search_by_index_prefix({index_name})"
+                                )
+                            })
+                        }
+                    });
+
+                    // FT.CREATE returns before the index holds the keys that
+                    // already exist; RediSearch scans them in the background.
+                    // An aggregate in that window reads a partial index, and
+                    // for the scheduler's queue that is a queue with actions
+                    // missing, so wait for the scan to finish first. The wait
+                    // is bounded; past it the aggregate runs anyway and the next
+                    // pass re-reads.
+                    if create_result.is_ok() {
+                        wait_for_index_ready(connection_manager.clone(), &index_name).await;
+                    }
+
+                    let run_result = run_ft_aggregate(connection_manager, index_name.clone())
+                        .await
+                        .err_tip(|| {
+                            format!(
+                                "Error with second ft_aggregate in RedisStore::search_by_index_prefix({index_name})"
+                            )
+                        });
+
+                    // Creating the index will race which is ok. If it fails to create, we only
+                    // error if the second ft_aggregate call fails and fails to create.
+                    run_result.or_else(move |e| create_result.merge(Err(e)))
+                }
+            }
+            Ok(stream) => Ok(stream),
+        }?;
+        Ok(Box::pin(stream))
+    }
 }
 
 impl<C, M> SchedulerStore for RedisStore<C, M>
@@ -3137,152 +3309,73 @@ where
         K: SchedulerIndexProvider + SchedulerStoreDecodeTo + Send,
         <K as SchedulerStoreDecodeTo>::DecodeOutput: Send,
     {
-        let index_value = index.index_value();
-        try_sanitize(index_value.as_ref())
+        let index_value = index.index_value().into_owned();
+        try_sanitize(index_value.as_str())
             .then_some(())
             .err_tip(|| {
                 format!("In RedisStore::search_by_index_prefix::try_sanitize - {index_value:?}")
             })?;
-        if let Some(read) = self.sorted_read::<K>(index_value.as_ref()).await {
+        if let Some(read) = self.sorted_read::<K>(index_value.as_str()).await {
             return Ok(read.into_stream().left_stream());
         }
-        let index_name = self.read_index_name::<K>().await;
-        let run_ft_aggregate = |connection_manager: C, index_name: String| async {
-            ft_aggregate(
-                connection_manager,
-                index_name,
-                if index_value.is_empty() {
-                    "*".to_string()
-                } else {
-                    format!("@{}:{{ {} }}", K::INDEX_NAME, index_value)
-                },
-                FtAggregateOptions {
-                    load: vec![DATA_FIELD_NAME.into(), VERSION_FIELD_NAME.into()],
-                    cursor: FtAggregateCursor {
-                        count: self.max_count_per_cursor,
-                        max_idle: CURSOR_IDLE_MS,
-                    },
-                    sort_by: K::MAYBE_SORT_KEY.map_or_else(Vec::new, |v| vec![format!("@{v}")]),
-                    sort_desc: K::SORT_DESCENDING,
-                },
-            )
-            .await
-        };
-        let run_ft_create = |connection_manager: C| async {
-            let (create_options, schema) = index_definition::<K>();
-            ft_create(
-                connection_manager,
-                index_name.clone(),
-                create_options,
-                schema,
-            )
-            .await
-        };
-
-        let (connection_manager, connect_id) = self.connection_manager.get_connection().await?;
-        let stream = match run_ft_aggregate(connection_manager.clone(), index_name.clone()).await {
-            // A demoted master answers READONLY and a dead/old master drops the
-            // connection or times the command out. Both mean the master moved
-            // (Sentinel failover) — re-resolve it and retry rather than letting
-            // the scheduler's matching loop spin on a stale handle. (A missing
-            // index is not retryable here; it falls through to the create path
-            // below, which creates the index and retries the aggregate inline.)
-            Err(err) if is_retryable_redis_error(&err) => {
-                let (connection_manager, _connect_id) =
-                    self.connection_manager.reconnect(connect_id).await?;
-                run_ft_aggregate(connection_manager, index_name.clone())
-                    .await
-                    .err_tip(|| {
-                        format!(
-                            "Error with reconnected ft_aggregate in RedisStore::search_by_index_prefix({index_name})"
-                        )
-                    })
-            }
-            Err(_) => {
-                // The index this read was given may have just been retired
-                // by another process finishing the migration. Creating it
-                // again would bring back the index the migration removed and
-                // read it before it is full; ask again which index to read.
-                let moved = if self.migrate_temporary_indexes {
-                    self.forget_index_name::<K>();
-                    let current = self.read_index_name::<K>().await;
-                    (current != index_name).then_some(current)
-                } else {
-                    None
-                };
-                if let Some(current) = moved {
-                    run_ft_aggregate(connection_manager, current.clone())
-                        .await
-                        .err_tip(|| {
-                            format!(
-                                "Error with re-resolved ft_aggregate in RedisStore::search_by_index_prefix({current})"
-                            )
-                        })
-                } else {
-                    let (connection_manager, result) =
-                        match run_ft_create(connection_manager.clone()).await {
-                            Err(err) if is_retryable_redis_error(&err) => {
-                                let (connection_manager, _connect_id) =
-                                    self.connection_manager.reconnect(connect_id).await?;
-                                (
-                                    connection_manager.clone(),
-                                    run_ft_create(connection_manager).await,
-                                )
-                            }
-                            result => (connection_manager, result),
-                        };
-
-                    // RediSearch returns ErrorKind::Extension with code "Index"
-                    // and detail along the lines of "Index already exists" when
-                    // FT.CREATE races with another node.
-                    let create_result = result.or_else(|e| {
-                        if is_index_already_exists(&e) {
-                            Ok(())
-                        } else {
-                            Err(e).err_tip(|| {
-                                format!(
-                                    "Error with ft_create in RedisStore::search_by_index_prefix({index_name})"
-                                )
-                            })
+        let rows = self.open_index_rows::<K>(&index_value).await?;
+        // Retiring a migrated index closes the cursors other processes still
+        // hold on it, and that failure arrives on whatever page this reader
+        // asks for next — past open_index_rows' initial-aggregate recovery.
+        // Start the read over on whichever index the migration settled on,
+        // once: rows already seen come again, which readers of the queue
+        // tolerate (every row names an action whose state is checked on
+        // use), where erroring out here fails the caller's whole pass.
+        let stream = futures::stream::unfold(
+            (Some(rows), index_value, true, self),
+            move |(mut rows, index_value, mut may_restart, store)| async move {
+                loop {
+                    match rows.as_mut()?.next().await {
+                        Some(Ok(row)) => {
+                            return Some((Ok(row), (rows, index_value, may_restart, store)));
                         }
-                    });
-
-                    // FT.CREATE returns before the index holds the keys that
-                    // already exist; RediSearch scans them in the background.
-                    // An aggregate in that window reads a partial index, and
-                    // for the scheduler's queue that is a queue with actions
-                    // missing, so wait for the scan to finish first. The wait
-                    // is bounded; past it the aggregate runs anyway and the next
-                    // pass re-reads.
-                    if create_result.is_ok() {
-                        wait_for_index_ready(connection_manager.clone(), &index_name).await;
+                        Some(Err(err))
+                            if may_restart
+                                && store.migrate_temporary_indexes
+                                && is_cursor_lost(&err) =>
+                        {
+                            may_restart = false;
+                            info!(
+                                %index_value,
+                                ?err,
+                                "A page read lost its index or cursor (an index another \
+                                 process retired loses both); starting the read over"
+                            );
+                            store.forget_index_name::<K>();
+                            match store.open_index_rows::<K>(&index_value).await {
+                                Ok(reopened) => rows = Some(reopened),
+                                Err(reopen_err) => {
+                                    return Some((
+                                        Err(reopen_err.merge(err)),
+                                        (None, index_value, may_restart, store),
+                                    ));
+                                }
+                            }
+                        }
+                        Some(Err(err)) => {
+                            return Some((
+                                Err(Error::from(err)).err_tip(
+                                    || "Error in stream of in RedisStore::search_by_index_prefix",
+                                ),
+                                (None, index_value, may_restart, store),
+                            ));
+                        }
+                        None => return None,
                     }
-
-                    let run_result = run_ft_aggregate(connection_manager, index_name.clone())
-                        .await
-                        .err_tip(|| {
-                        format!(
-                            "Error with second ft_aggregate in RedisStore::search_by_index_prefix({index_name})"
-                        )
-                    });
-
-                    // Creating the index will race which is ok. If it fails to create, we only
-                    // error if the second ft_aggregate call fails and fails to create.
-                    run_result.or_else(move |e| create_result.merge(Err(e)))
                 }
-            }
-            Ok(stream) => Ok(stream),
-        }?;
+            },
+        );
 
         Ok(stream
             .filter_map(|result| async move {
                 let raw_redis_map = match result {
                     Ok(v) => v,
-                    Err(e) => {
-                        return Some(Err(Error::from(e)).err_tip(
-                            || "Error in stream of in RedisStore::search_by_index_prefix",
-                        ));
-                    }
+                    Err(e) => return Some(Err(e)),
                 };
 
                 if matches!(raw_redis_map, Value::Int(_)) {

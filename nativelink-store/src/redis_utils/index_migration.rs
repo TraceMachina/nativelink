@@ -156,28 +156,36 @@ pub(crate) enum Replacement {
 
 /// Judges a replacement that `FT.INFO` describes as `info` against the
 /// original's key count (`None` when there is no original to compare with).
-/// Actions deleted between the two `FT.INFO` calls can leave the
-/// replacement a little short, so a shortfall of 1% plus two is allowed; a
-/// scan that stopped early is short by far more. A false alarm only delays
-/// the cutover to the next check.
+///
+/// The comparison is strict: both indexes cover the same key prefix and both
+/// take live writes, so at any one instant a complete replacement holds at
+/// least every key the original does. The caller reads the two counts in one
+/// `MULTI`/`EXEC` ([`super::ft_info_pair`]) so they are from the same
+/// instant, which is what makes strictness correct — no tolerance for racing
+/// deletes, and therefore no tolerance a short scan could hide inside. Any
+/// shortfall, and any reported indexing failure, keeps the original.
 pub(crate) const fn replacement_state(info: FtInfo, original_docs: Option<u64>) -> Replacement {
     if info.indexing {
         return Replacement::Backfilling;
     }
-    if info.hash_indexing_failures > 0 {
+    if matches!(info.hash_indexing_failures, Some(failed) if failed != 0) {
         return Replacement::Incomplete;
     }
     match original_docs {
-        Some(original) => {
-            let slack = original / 100 + 2;
-            if info.num_docs.saturating_add(slack) < original {
-                Replacement::Incomplete
-            } else {
-                Replacement::Complete
-            }
-        }
-        None => Replacement::Complete,
+        Some(original) if info.num_docs < original => Replacement::Incomplete,
+        _ => Replacement::Complete,
     }
+}
+
+/// The server ended an open cursor because the index under it went away —
+/// what a reader still paging the original sees when another process
+/// finishes the migration and retires it (`FT.DROPINDEX` closes the index's
+/// cursors even with `_FORCEKEEPDOCS`), and what a long-idle cursor sees
+/// after the server reaps it. Both mean the rows read so far are fine and
+/// the read can start over; nothing else about the error is known.
+pub(crate) fn is_cursor_lost(err: &RedisError) -> bool {
+    let text = error_text(err);
+    text.contains("dropped") || text.contains("unknown index") || text.contains("cursor")
 }
 
 /// What a read should do, from the state of the original index and of its
@@ -256,6 +264,29 @@ mod tests {
     }
 
     #[test]
+    fn a_cursor_ended_under_a_reader_is_recognized() {
+        // The message redis-stack-server 7.4.0-v0 sends when FT.DROPINDEX
+        // closes an index's open cursors, and the two ways a cursor read
+        // fails after the server already forgot index or cursor.
+        for text in [
+            "The index was dropped while the cursor was idle",
+            "Unknown index name",
+            "Cursor not found",
+        ] {
+            // The kind is irrelevant: the classifier reads only the text.
+            let err =
+                RedisError::from((redis::ErrorKind::UnexpectedReturnType, "", text.to_string()));
+            assert!(is_cursor_lost(&err), "{text}");
+        }
+        let other = RedisError::from((
+            redis::ErrorKind::UnexpectedReturnType,
+            "",
+            "OOM command not allowed when used memory > 'maxmemory'".to_string(),
+        ));
+        assert!(!is_cursor_lost(&other));
+    }
+
+    #[test]
     fn a_persistent_or_missing_index_is_left_to_the_ordinary_path() {
         assert_eq!(plan(IndexKind::Persistent, None), Step::UseOriginal);
         assert_eq!(plan(IndexKind::Missing, None), Step::UseOriginal);
@@ -312,28 +343,60 @@ mod tests {
         let complete = FtInfo {
             indexing: false,
             num_docs: 26_150,
-            hash_indexing_failures: 0,
+            hash_indexing_failures: Some(0),
         };
         assert_eq!(
             replacement_state(complete, Some(26_150)),
             Replacement::Complete
         );
-        // A write or two between the FT.INFO calls is not a shortfall.
+        // Holding more than the original (keys written since it was judged
+        // last) is complete too.
         assert_eq!(
-            replacement_state(complete, Some(26_170)),
+            replacement_state(complete, Some(26_100)),
             Replacement::Complete
         );
-        // A scan that stopped early is.
+        // The counts come from one MULTI/EXEC, so ANY shortfall is keys the
+        // scan skipped, not a racing delete: one short of 26_150 (well
+        // inside the 1%-plus-two tolerance an earlier version allowed, and
+        // `indexing 0` with zero reported failures) must keep the original.
+        let one_short = FtInfo {
+            num_docs: 26_149,
+            ..complete
+        };
         assert_eq!(
-            replacement_state(complete, Some(30_000)),
+            replacement_state(one_short, Some(26_150)),
+            Replacement::Incomplete
+        );
+        // The same at a size where the old tolerance was dominated by its
+        // flat "+2": two of four.
+        let two_of_four = FtInfo {
+            num_docs: 2,
+            ..complete
+        };
+        assert_eq!(
+            replacement_state(two_of_four, Some(4)),
             Replacement::Incomplete
         );
         let failed = FtInfo {
-            hash_indexing_failures: 1,
+            hash_indexing_failures: Some(1),
             ..complete
         };
         assert_eq!(
             replacement_state(failed, Some(26_150)),
+            Replacement::Incomplete
+        );
+        // A server that does not report hash_indexing_failures is judged by
+        // the strict count alone, the same as one that reports zero.
+        let unreported = FtInfo {
+            hash_indexing_failures: None,
+            ..complete
+        };
+        assert_eq!(
+            replacement_state(unreported, Some(26_150)),
+            Replacement::Complete
+        );
+        assert_eq!(
+            replacement_state(unreported, Some(26_151)),
             Replacement::Incomplete
         );
         let scanning = FtInfo {

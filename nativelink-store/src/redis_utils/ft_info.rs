@@ -39,8 +39,11 @@ pub(crate) struct FtInfo {
     pub(crate) num_docs: u64,
     /// Keys the index failed to take, for instance on running out of
     /// memory. A scan can stop with `indexing 0` and keys missing; this and
-    /// `num_docs` are how that shows. Zero when the server does not report it.
-    pub(crate) hash_indexing_failures: u64,
+    /// `num_docs` are how that shows. `None` when the server does not report
+    /// it, which is not the same as zero; `num_docs` is judged the same
+    /// strict way either way, so the field only ever adds a reason to
+    /// distrust an index, never one to trust it.
+    pub(crate) hash_indexing_failures: Option<u64>,
 }
 
 pub(crate) async fn ft_info<C>(mut connection_manager: C, index: &str) -> Result<FtInfo, RedisError>
@@ -54,6 +57,30 @@ where
     parse_ft_info(&value)
 }
 
+/// Both indexes' `FT.INFO` in one `MULTI`/`EXEC`, so the two describe the
+/// same instant: a key written or deleted while checking moves both counts
+/// or neither. Two separate calls would let a delete land between them and
+/// leave the second index legitimately short of the first, which could only
+/// be absorbed by a count tolerance — and a tolerance cannot be told apart
+/// from an index that quietly skipped that many keys.
+pub(crate) async fn ft_info_pair<C>(
+    mut connection_manager: C,
+    first: &str,
+    second: &str,
+) -> Result<(FtInfo, FtInfo), RedisError>
+where
+    C: ConnectionLike + Send,
+{
+    let mut pipe = redis::pipe();
+    pipe.atomic()
+        .cmd("FT.INFO")
+        .arg(first)
+        .cmd("FT.INFO")
+        .arg(second);
+    let (first, second): (Value, Value) = pipe.query_async(&mut connection_manager).await?;
+    Ok((parse_ft_info(&first)?, parse_ft_info(&second)?))
+}
+
 /// `FT.INFO` answers a flat key-value array on RESP2 and a map on RESP3.
 fn parse_ft_info(value: &Value) -> Result<FtInfo, RedisError> {
     let indexing = number(value, "indexing").ok_or_else(|| {
@@ -65,7 +92,7 @@ fn parse_ft_info(value: &Value) -> Result<FtInfo, RedisError> {
     Ok(FtInfo {
         indexing: indexing != 0,
         num_docs,
-        hash_indexing_failures: number(value, "hash_indexing_failures").unwrap_or(0),
+        hash_indexing_failures: number(value, "hash_indexing_failures"),
     })
 }
 
@@ -133,7 +160,7 @@ mod tests {
             FtInfo {
                 indexing: false,
                 num_docs: 26_150,
-                hash_indexing_failures: 3
+                hash_indexing_failures: Some(3)
             }
         );
         let resp3 = Value::Map(vec![
@@ -145,7 +172,8 @@ mod tests {
             FtInfo {
                 indexing: true,
                 num_docs: 12,
-                hash_indexing_failures: 0
+                // Absent is reported as absent, never as zero.
+                hash_indexing_failures: None
             }
         );
         assert!(parse_ft_info(&Value::Array(vec![bulk("num_docs"), bulk("1")])).is_err());
