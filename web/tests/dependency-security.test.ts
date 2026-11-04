@@ -2,7 +2,6 @@ import { expect, test } from "@jest/globals";
 import katex from "katex";
 import sharp from "sharp";
 import { SourceMapConsumer } from "source-map-js";
-import {compare as semverCompare} from 'semver';
 
 test("KaTeX ignores inherited trust while rendering ordinary math", () => {
   // GHSA-238p-pmpm-9mq7: the options prototype must not enable trusted HTML.
