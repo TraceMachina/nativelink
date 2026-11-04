@@ -156,6 +156,22 @@ async fn create_index(url: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Reads until a read is served from the sorted set. The reconcile a read
+/// triggers runs detached (so a matcher pass never pays for the walk
+/// inline), which is why a test that needs the set readable waits here
+/// first: the first read spawns the walk and is served through `RediSearch`.
+async fn settle<Db: AwaitedActionDb>(db: &Db, url: &str) -> Result<(), Error> {
+    for _ in 0..200 {
+        reset_stats(url).await;
+        queued(db).await?;
+        if calls(url, "ZRANGE").await > 0 {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no read was served from the sorted set within the deadline");
+}
+
 fn action(seed: u8, priority: i32, insert_ms: u64) -> Arc<ActionInfo> {
     let insert = SystemTime::UNIX_EPOCH + Duration::from_millis(insert_ms);
     Arc::new(ActionInfo {
@@ -233,6 +249,7 @@ async fn a_maintained_queue_is_read_from_the_set_in_dispatch_order() -> Result<(
     add_four(&db).await?;
     assert_eq!(zcard(&url, QUEUED_SET).await, 4);
 
+    settle(&db, &url).await?;
     reset_stats(&url).await;
     assert_eq!(queued(&db).await?, EXPECTED);
     assert!(
@@ -256,7 +273,9 @@ async fn a_queue_written_before_the_set_existed_is_backfilled() -> Result<(), Er
     assert_eq!(zcard(&url, QUEUED_SET).await, 0);
 
     let sorted = open_db(&url, Some(sorted(true)), 0).await?;
+    // The first read spawns the backfill and is served through RediSearch.
     assert_eq!(queued(&sorted).await?, EXPECTED);
+    settle(&sorted, &url).await?;
     assert_eq!(zcard(&url, QUEUED_SET).await, 4);
     Ok(())
 }
@@ -268,6 +287,7 @@ async fn a_dispatched_action_leaves_the_queued_set() -> Result<(), Error> {
     create_index(&url).await?;
     let db = open_db(&url, Some(sorted(true)), 0).await?;
     let subscribers = add_four(&db).await?;
+    settle(&db, &url).await?;
 
     // client-c, the highest priority, starts executing.
     let mut awaited = subscribers[3].borrow().await?;
@@ -294,7 +314,7 @@ async fn a_stale_member_is_skipped_and_removed() -> Result<(), Error> {
     create_index(&url).await?;
     let db = open_db(&url, Some(sorted(true)), 0).await?;
     add_four(&db).await?;
-    queued(&db).await?;
+    settle(&db, &url).await?;
 
     // Sorts first, and names a key that is not there.
     let ghost = "ffffffffffffffffffffffffffffffff:aa_ghost";
@@ -324,6 +344,7 @@ async fn a_lost_set_does_not_read_as_an_empty_queue() -> Result<(), Error> {
     create_index(&url).await?;
     let db = open_db(&url, Some(sorted(true)), 0).await?;
     add_four(&db).await?;
+    settle(&db, &url).await?;
     assert_eq!(queued(&db).await?, EXPECTED);
 
     // Evicted, or lost with its server, while the hashes survived.
@@ -344,6 +365,7 @@ async fn pages_lose_and_duplicate_nothing() -> Result<(), Error> {
     // One member per page: every boundary is a page boundary.
     let db = open_db(&url, Some(sorted(true)), 1).await?;
     add_four(&db).await?;
+    settle(&db, &url).await?;
     assert_eq!(queued(&db).await?, EXPECTED);
     Ok(())
 }

@@ -470,8 +470,9 @@ where
     /// migration recreates is retired again.
     index_names: Mutex<HashMap<String, (String, Instant)>>,
     /// See [`RedisSpec::experimental_sorted_index`]. `None` leaves every
-    /// read and write exactly as without it.
-    sorted_index: Option<SortedIndexState>,
+    /// read and write exactly as without it. Shared with the background
+    /// reconcile walks this store spawns.
+    sorted_index: Option<Arc<SortedIndexState>>,
 
     /// [`LUA_VERSION_SET_SORTED_SCRIPT`], invoked only with `sorted_index`.
     /// Loaded on first use (`EVALSHA` falls back to loading it).
@@ -642,7 +643,7 @@ where
     #[must_use]
     pub fn with_sorted_index(mut self, spec: &RedisSortedIndexSpec) -> Self {
         info!(?spec, "Redis experimental sorted index enabled");
-        self.sorted_index = Some(SortedIndexState::new(spec));
+        self.sorted_index = Some(Arc::new(SortedIndexState::new(spec)));
         self
     }
 
@@ -2812,59 +2813,97 @@ where
         }
     }
 
-    /// Reconciles `set` when it is due. See `sorted_index::reconcile`.
+    /// Spawns the reconcile of `set` when one is due; see
+    /// `sorted_index::reconcile`. The walk runs detached: the pass that
+    /// triggered it reads through `RediSearch` meanwhile, instead of paying
+    /// the full index walk inline — the very latency the sorted index
+    /// exists to avoid — at startup and once every reconcile interval. The
+    /// claim records a dropped or panicked walk as failed.
     async fn reconcile_sorted<K: SchedulerIndexProvider>(
         &self,
-        sorted_index: &SortedIndexState,
+        sorted_index: &Arc<SortedIndexState>,
         set: &str,
         index_value: &str,
     ) {
         let Some(index) = SortedIndex::of::<K>() else {
             return;
         };
-        if !sorted_index.claim_reconcile(set) {
+        let Some(claim) = sorted_index.claim_reconcile(set) else {
             return;
-        }
-        let started = Instant::now();
-        let result = async {
-            let (mut connection, _) = self.connection_manager.get_connection().await?;
-            let ft_index = self.count_index_name::<K>();
-            // Serving reads from the set takes them off the index, and a
-            // temporary index that goes unqueried expires, deleting every
-            // hash it covers. A set that never reconciles is never read.
-            if let Ok(IndexKind::Temporary(_)) = index_kind(&mut connection, &ft_index).await {
-                return Err(make_err!(
-                    Code::FailedPrecondition,
-                    "{ft_index} is a temporary index: set migrate_temporary_indexes and let it \
-                     finish before the sorted index is read"
-                ));
-            }
-            sorted_index::reconcile(
-                connection,
-                ft_index,
-                format!("@{}:{{ {} }}", K::INDEX_NAME, index_value),
-                set,
-                &index,
-                self.max_count_per_cursor,
-            )
-            .await
-        }
-        .await;
-        match result {
-            Ok(added) => {
-                info!(%set, added, elapsed = ?started.elapsed(), "Reconciled the sorted index");
-                sorted_index.finish_reconcile(set, true);
-            }
+        };
+        let connection = match self.connection_manager.get_connection().await {
+            Ok((connection, _)) => connection,
             Err(err) => {
-                warn!(%set, ?err, "Sorted-index reconcile failed; retrying shortly");
-                sorted_index.finish_reconcile(set, false);
+                warn!(%set, ?err, "No connection for a sorted-index reconcile; retrying shortly");
+                claim.finish(false);
+                return;
             }
-        }
+        };
+        let ft_index = self.count_index_name::<K>();
+        let query = format!("@{}:{{ {} }}", K::INDEX_NAME, index_value);
+        let set = set.to_string();
+        let index_value = index_value.to_string();
+        let batch = self.max_count_per_cursor;
+        background_spawn!("redis_sorted_index_reconcile", async move {
+            let started = Instant::now();
+            let mut connection = connection;
+            let result = async {
+                // Serving reads from the set takes them off the index, and a
+                // temporary index that goes unqueried expires, deleting every
+                // hash it covers. A set that never reconciles is never read —
+                // and a server that refuses the check (some managed Redis
+                // refuse FT.DEBUG) proves nothing, so it refuses the set too:
+                // failing open here would move the queued reads that keep a
+                // temporary index alive.
+                match index_kind(&mut connection, &ft_index).await {
+                    Ok(IndexKind::Persistent | IndexKind::Missing) => {}
+                    Ok(IndexKind::Temporary(_)) => {
+                        return Err(make_err!(
+                            Code::FailedPrecondition,
+                            "{ft_index} is a temporary index: set migrate_temporary_indexes and \
+                             let it finish before the sorted index is read"
+                        ));
+                    }
+                    Err(err) => {
+                        return Err(Error::from(err)).err_tip(|| {
+                            format!(
+                                "{ft_index} could not be checked for TEMPORARY (FT.DEBUG TTL); \
+                                 refusing the sorted index rather than risk moving the reads \
+                                 that keep a temporary index alive"
+                            )
+                        });
+                    }
+                }
+                sorted_index::reconcile(
+                    connection,
+                    ft_index,
+                    query,
+                    &set,
+                    &index,
+                    &index_value,
+                    batch,
+                )
+                .await
+            }
+            .await;
+            match result {
+                Ok((added, removed)) => {
+                    info!(%set, added, removed, elapsed = ?started.elapsed(), "Reconciled the sorted index");
+                    claim.finish(true);
+                }
+                Err(err) => {
+                    warn!(%set, ?err, "Sorted-index reconcile failed; retrying shortly");
+                    claim.finish(false);
+                }
+            }
+        });
     }
 
     /// `ZCARD` of the set a count of `K` for `index_value` would be served
-    /// from, when there is one. Counts members a read has not yet found
-    /// stale, which only a write that bypassed the script leaves.
+    /// from, when there is one. May count members whose action is gone —
+    /// eviction, or a write that bypassed the script — until a read pages
+    /// past them or the next reconcile prunes them, so an overcount lasts at
+    /// most one reconcile interval.
     async fn sorted_count<K: SchedulerIndexProvider>(&self, index_value: &str) -> Option<u64> {
         let sorted_index = self.sorted_index.as_ref()?;
         let set = sorted_index.readable_set::<K>(&self.key_prefix, index_value)?;

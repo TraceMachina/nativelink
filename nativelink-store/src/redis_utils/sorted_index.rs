@@ -32,7 +32,7 @@
 use core::marker::PhantomData;
 use core::time::Duration;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
 use bytes::Bytes;
@@ -138,6 +138,8 @@ struct Reconcile {
     last_attempt: Instant,
     succeeded_once: bool,
     last_failed: bool,
+    /// A claim is out and has neither finished nor been dropped.
+    in_flight: bool,
 }
 
 impl SortedIndexState {
@@ -163,8 +165,12 @@ impl SortedIndexState {
     }
 
     /// Claims the reconcile of `set` when one is due, so concurrent readers
-    /// in this process do not all walk the index at once.
-    pub(crate) fn claim_reconcile(&self, set: &str) -> bool {
+    /// in this process do not all walk the index at once. The claim must be
+    /// finished with its outcome; one that is dropped unfinished — the
+    /// walk's future was dropped, or it panicked — counts as failed, so the
+    /// next attempt comes after `RECONCILE_RETRY` rather than the walk being
+    /// mistaken for a fresh success for a whole interval.
+    pub(crate) fn claim_reconcile(self: &Arc<Self>, set: &str) -> Option<ReconcileClaim> {
         let now = Instant::now();
         let mut reconciles = self.reconciles.lock();
         let due = reconciles.get(set).is_none_or(|r| {
@@ -173,26 +179,33 @@ impl SortedIndexState {
             } else {
                 self.reconcile_interval
             };
-            now.duration_since(r.last_attempt) >= wait
+            !r.in_flight && now.duration_since(r.last_attempt) >= wait
         });
-        if due {
-            let succeeded_once = reconciles.get(set).is_some_and(|r| r.succeeded_once);
-            reconciles.insert(
-                set.to_string(),
-                Reconcile {
-                    last_attempt: now,
-                    succeeded_once,
-                    last_failed: false,
-                },
-            );
+        if !due {
+            return None;
         }
-        due
+        let succeeded_once = reconciles.get(set).is_some_and(|r| r.succeeded_once);
+        reconciles.insert(
+            set.to_string(),
+            Reconcile {
+                last_attempt: now,
+                succeeded_once,
+                last_failed: false,
+                in_flight: true,
+            },
+        );
+        Some(ReconcileClaim {
+            state: Arc::clone(self),
+            set: set.to_string(),
+            finished: false,
+        })
     }
 
-    pub(crate) fn finish_reconcile(&self, set: &str, ok: bool) {
+    fn finish_reconcile(&self, set: &str, ok: bool) {
         if let Some(r) = self.reconciles.lock().get_mut(set) {
             r.succeeded_once |= ok;
             r.last_failed = !ok;
+            r.in_flight = false;
         }
     }
 
@@ -240,6 +253,31 @@ impl SortedIndexState {
     }
 }
 
+/// An exclusive claim on one set's reconcile. [`Self::finish`] records the
+/// outcome; a claim dropped unfinished is recorded as failed (see
+/// [`SortedIndexState::claim_reconcile`]).
+#[derive(Debug)]
+pub(crate) struct ReconcileClaim {
+    state: Arc<SortedIndexState>,
+    set: String,
+    finished: bool,
+}
+
+impl ReconcileClaim {
+    pub(crate) fn finish(mut self, ok: bool) {
+        self.finished = true;
+        self.state.finish_reconcile(&self.set, ok);
+    }
+}
+
+impl Drop for ReconcileClaim {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.state.finish_reconcile(&self.set, false);
+        }
+    }
+}
+
 /// The extra arguments `LUA_VERSION_SET_SORTED_SCRIPT` takes, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SortedWrite {
@@ -273,17 +311,23 @@ pub(crate) fn split_member(member: &str) -> Option<(&str, &str)> {
     member.split_once(':')
 }
 
-/// Adds every key the index holds for `query` to `set`. Idempotent: adding
-/// an existing member is a no-op. A member added here for an action that
-/// moves before the next read is stale, and that read drops it.
+/// Adds every key the index holds for `query` to `set`, then removes the
+/// members no live hash matches. Idempotent: adding an existing member is a
+/// no-op, and the removal re-checks every hash in-script, so a live member
+/// is never removed. The removal is what keeps `ZCARD` (the sorted count)
+/// honest: a read prunes only the stale members it pages past, so ghosts
+/// left by eviction, or by a writer that bypassed the script, would
+/// otherwise overcount the queue forever. `value` is the index value `set`
+/// holds (what `query` selects). Returns `(added, removed)`.
 pub(crate) async fn reconcile<C>(
     connection: C,
     ft_index: String,
     query: String,
     set: &str,
     index: &SortedIndex,
+    value: &str,
     batch: u64,
-) -> Result<u64, Error>
+) -> Result<(u64, u64), Error>
 where
     C: ConnectionLike + Clone + Send,
 {
@@ -293,11 +337,9 @@ where
         ft_index,
         query,
         FtAggregateOptions {
-            load: vec![
-                "@__key".into(),
-                index.index_name.into(),
-                index.sort_key.into(),
-            ],
+            // The query already filters on the index field, so only the key
+            // and the sort key are loaded.
+            load: vec!["@__key".into(), index.sort_key.into()],
             cursor: FtAggregateCursor {
                 count: batch,
                 max_idle: RECONCILE_CURSOR_IDLE_MS,
@@ -328,7 +370,45 @@ where
         }
     }
     added += zadd(&mut writer, set, &mut pending).await?;
-    Ok(added)
+
+    // ZSCAN pages the whole set (resilient to members removed under it) and
+    // the stale script keeps every member whose hash still matches.
+    let mut removed = 0u64;
+    let mut cursor = 0u64;
+    loop {
+        let (next, entries): (u64, Vec<String>) = redis::cmd("ZSCAN")
+            .arg(set)
+            .arg(cursor)
+            .arg("COUNT")
+            .arg(batch)
+            .query_async(&mut writer)
+            .await
+            .map_err(Error::from)
+            .err_tip(|| "In sorted_index::reconcile ZSCAN")?;
+        // Entries alternate member, score.
+        let members: Vec<String> = entries
+            .chunks_exact(2)
+            .map(|pair| pair[0].clone())
+            .collect();
+        if !members.is_empty() {
+            removed += remove_stale(
+                &mut writer,
+                set,
+                index.index_name,
+                index.sort_key,
+                value,
+                &members,
+            )
+            .await
+            .map_err(Error::from)
+            .err_tip(|| "In sorted_index::reconcile remove_stale")?;
+        }
+        cursor = next;
+        if cursor == 0 {
+            break;
+        }
+    }
+    Ok((added, removed))
 }
 
 async fn zadd<C: ConnectionLike + Send>(
@@ -649,21 +729,44 @@ mod tests {
 
     #[test]
     fn a_set_is_read_only_after_a_reconcile_succeeds() {
-        let state = SortedIndexState::new(&spec(&["queued"]));
+        let state = Arc::new(SortedIndexState::new(&spec(&["queued"])));
         let set = "nlsq:aa_state:queued";
         assert!(!state.has_reconciled(set));
-        assert!(state.claim_reconcile(set));
+        let claim = state.claim_reconcile(set).expect("the first claim is due");
         // Claimed: a second reader in this process does not walk too.
-        assert!(!state.claim_reconcile(set));
-        state.finish_reconcile(set, false);
+        assert!(state.claim_reconcile(set).is_none());
+        claim.finish(false);
         assert!(!state.has_reconciled(set));
         // A failure is retried after RECONCILE_RETRY, not by the next read.
-        assert!(!state.claim_reconcile(set));
+        assert!(state.claim_reconcile(set).is_none());
         state.finish_reconcile(set, true);
         assert!(state.has_reconciled(set));
         // A later failure does not unread a set that reconciled once.
         state.finish_reconcile(set, false);
         assert!(state.has_reconciled(set));
+    }
+
+    #[test]
+    fn an_unfinished_claim_blocks_and_its_drop_records_a_failure() {
+        let state = Arc::new(SortedIndexState::new(&RedisSortedIndexSpec {
+            reconcile_interval_s: 0,
+            ..spec(&["queued"])
+        }));
+        let set = "nlsq:aa_state:queued";
+        let claim = state.claim_reconcile(set).expect("the first claim is due");
+        // In flight: not even a zero interval lets a second walk start.
+        assert!(state.claim_reconcile(set).is_none());
+        claim.finish(true);
+        assert!(state.has_reconciled(set));
+        // Finished: with a zero interval the next claim is due at once.
+        let claim = state
+            .claim_reconcile(set)
+            .expect("due again after a finish");
+        drop(claim);
+        // The dropped walk was recorded as a failure, so the next attempt
+        // waits RECONCILE_RETRY; counting it as a fresh success would make
+        // this claim due at once under the zero interval.
+        assert!(state.claim_reconcile(set).is_none());
     }
 
     #[test]
@@ -746,5 +849,103 @@ mod tests {
             .query_async(&mut con)
             .await
             .unwrap();
+    }
+
+    /// Against a real Redis. The reconcile prunes members no live hash
+    /// matches and keeps the rest: reads prune only what they page past, so
+    /// without this a ghost (eviction, or a writer that bypassed the
+    /// script) would overcount `ZCARD` — the sorted count — forever.
+    #[nativelink_macro::nativelink_test]
+    async fn a_reconcile_prunes_ghost_members() {
+        let Ok(url) = std::env::var("NATIVELINK_REDIS_TEST_URL") else {
+            return;
+        };
+        let client = redis::Client::open(url).unwrap();
+        let mut con = client.get_multiplexed_async_connection().await.unwrap();
+        let set = "nlsq:pp_state:queued";
+        let ft = "pp__state_sort_key_test";
+        let live_key = "pp_test_live";
+        let live = "00000000000000000000000000000001:pp_test_live";
+        let ghost = "ffffffffffffffffffffffffffffffff:pp_test_ghost";
+        let _ = redis::cmd("FT.DROPINDEX")
+            .arg(ft)
+            .arg("_FORCEKEEPDOCS")
+            .query_async::<Value>(&mut con)
+            .await;
+        let _: () = redis::pipe()
+            .del(&[set, live_key])
+            .zadd(set, ghost, 0)
+            .hset_multiple(
+                live_key,
+                &[
+                    (DATA_FIELD_NAME, "x"),
+                    ("state", "queued"),
+                    ("sort_key", "00000000000000000000000000000001"),
+                ],
+            )
+            .query_async(&mut con)
+            .await
+            .unwrap();
+        let _: () = redis::cmd("FT.CREATE")
+            .arg(ft)
+            .arg("ON")
+            .arg("HASH")
+            .arg("PREFIX")
+            .arg(1)
+            .arg("pp_")
+            .arg("SCHEMA")
+            .arg("state")
+            .arg("TAG")
+            .arg("sort_key")
+            .arg("TAG")
+            .arg("SORTABLE")
+            .query_async(&mut con)
+            .await
+            .unwrap();
+        // Wait out the background scan that follows FT.CREATE.
+        for _ in 0..200 {
+            let info = crate::redis_utils::ft_info(con.clone(), ft).await.unwrap();
+            if !info.indexing && info.num_docs == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let index = SortedIndex {
+            key_prefix: "pp_",
+            index_name: "state",
+            sort_key: "sort_key",
+        };
+        let (added, removed) = reconcile(
+            con.clone(),
+            ft.to_string(),
+            "@state:{ queued }".to_string(),
+            set,
+            &index,
+            "queued",
+            2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(added, 1, "the live action should have been backfilled");
+        assert_eq!(removed, 1, "the ghost should have been pruned");
+        let left: Vec<String> = redis::cmd("ZRANGE")
+            .arg(set)
+            .arg(0)
+            .arg(-1)
+            .query_async(&mut con)
+            .await
+            .unwrap();
+        assert_eq!(left, vec![live.to_string()]);
+        let _: () = redis::cmd("DEL")
+            .arg(&[set, live_key])
+            .query_async(&mut con)
+            .await
+            .unwrap();
+        let _ = redis::cmd("FT.DROPINDEX")
+            .arg(ft)
+            .arg("_FORCEKEEPDOCS")
+            .query_async::<Value>(&mut con)
+            .await;
     }
 }
