@@ -28,7 +28,9 @@ Everything this repository and its sites do for a machine reader, in one place:
   `bun --filter @nativelink/docs gen:llms`) to fold the docs corpus in, and
   the root copies are kept current by the "Regenerate llms files" workflow.
   Never hand-edit them; the prose for the marketing pages lives in
-  `web/apps/web/lib/llms.ts`.
+  `web/apps/web/lib/llms.ts`. Fetch order for an agent: the index first,
+  the small file for most questions, the full file only when the small one
+  lacks the answer; cite documentation by URL.
 - **Skills** under `.claude/skills/`, in the `SKILL.md` format:
   `migrate-to-bazelmod` (move a Bazel project from `WORKSPACE` to
   `MODULE.bazel`) and the five `nativelink-*` playbooks for changing this
