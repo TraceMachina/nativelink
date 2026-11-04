@@ -1,6 +1,7 @@
 import { cn } from "../lib/cn";
-import { isCurrentNavHref } from "../lib/nav";
+import { isCurrentNavHref, leavesSite } from "../lib/nav";
 import { Button } from "./button";
+import { ExternalLinkIcon } from "./external-link-icon";
 import { Logo } from "./logo";
 import { MobileNav } from "./mobile-nav";
 import { ThemeToggle } from "./theme-toggle";
@@ -9,13 +10,6 @@ export interface NavLink {
   label: string;
   href: string;
 }
-
-const opensInNewTab = (label: string, href: string) =>
-  label === "Docs" ||
-  label === "Get started" ||
-  label === "Start free" ||
-  href === "/docs" ||
-  href.startsWith("http");
 
 interface SiteHeaderProps {
   links?: NavLink[];
@@ -27,19 +21,25 @@ interface SiteHeaderProps {
   className?: string;
 }
 
-const defaultLinks: NavLink[] = [
+/**
+ * The primary nav, in order. Every entry also appears in the footer under the
+ * same label (see `defaultFooterColumns`), so a page is never "Company" in one
+ * place and "About" in another. Items that leave the site come last and are
+ * marked as such. Careers lives in the footer only.
+ */
+export const defaultNavLinks: NavLink[] = [
   { label: "Product", href: "/product" },
   { label: "Pricing", href: "/pricing" },
   { label: "Company", href: "/company" },
-  { label: "Careers", href: "/careers" },
   { label: "Community", href: "/community" },
   { label: "Resources", href: "/resources" },
+  { label: "Contact", href: "/contact" },
   { label: "Docs", href: "/docs" },
   { label: "Enterprise", href: "https://enterprise.nativelink.com" },
 ];
 
 export function SiteHeader({
-  links = defaultLinks,
+  links = defaultNavLinks,
   ctaLabel = "Get started",
   ctaHref = "/docs",
   githubHref = "https://github.com/TraceMachina/nativelink",
@@ -47,6 +47,7 @@ export function SiteHeader({
   className,
 }: SiteHeaderProps) {
   const homeCurrent = isCurrentNavHref("/", currentPath);
+  const ctaExternal = leavesSite(ctaHref);
 
   return (
     <header
@@ -82,24 +83,37 @@ export function SiteHeader({
           aria-label="Primary"
           className="pointer-events-none absolute left-1/2 hidden -translate-x-1/2 xl:block"
         >
-          <ul className="pointer-events-auto flex items-center gap-1 rounded-full border border-border/70 bg-surface/60 px-1.5 backdrop-blur">
+          {/* The active pill sits inside the track with the same 4px inset on
+              every side as the gap between items, so it is the same distance
+              from the border as from its neighbours. Both shapes are fully
+              rounded, which keeps the inner radius concentric with the outer. */}
+          <ul className="pointer-events-auto flex items-center gap-1 rounded-full border border-border/70 bg-surface/60 p-1 backdrop-blur">
             {links.map((link) => {
               const current = isCurrentNavHref(link.href, currentPath);
+              const external = leavesSite(link.href);
               return (
                 <li key={link.href}>
                   <a
                     href={link.href}
-                    target={opensInNewTab(link.label, link.href) ? "_blank" : undefined}
-                    rel={opensInNewTab(link.label, link.href) ? "noreferrer" : undefined}
+                    target={external ? "_blank" : undefined}
+                    rel={external ? "noreferrer" : undefined}
                     aria-current={current ? "page" : undefined}
                     className={cn(
-                      "inline-flex h-9 items-center rounded-full px-3.5 text-[13px] font-medium transition-colors",
+                      "inline-flex h-8 items-center gap-1 rounded-full px-3.5 text-[13px] font-medium transition-colors",
+                      // Optical padding. The arrow's stroke ends ~1.75px inside
+                      // its 10px box, so a label that ends in it reads as having
+                      // ~2px more trailing space than one that ends in a letter.
+                      // That shows at the right edge of the bar, where the gap
+                      // after "Enterprise ↗" looked looser than the gap before
+                      // "Product". Pull the right padding in by that amount.
+                      external && "pr-3",
                       current
                         ? "bg-brand-soft text-brand"
                         : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground",
                     )}
                   >
                     {link.label}
+                    {external ? <ExternalLinkIcon /> : null}
                   </a>
                 </li>
               );
@@ -127,10 +141,11 @@ export function SiteHeader({
           <Button asChild size="sm" variant="primary" className="hidden xl:inline-flex">
             <a
               href={ctaHref}
-              target={opensInNewTab(ctaLabel, ctaHref) ? "_blank" : undefined}
-              rel={opensInNewTab(ctaLabel, ctaHref) ? "noreferrer" : undefined}
+              target={ctaExternal ? "_blank" : undefined}
+              rel={ctaExternal ? "noreferrer" : undefined}
             >
               {ctaLabel}
+              {ctaExternal ? <ExternalLinkIcon className="opacity-90" /> : null}
             </a>
           </Button>
 

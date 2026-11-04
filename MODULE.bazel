@@ -1,6 +1,6 @@
 module(
     name = "nativelink",
-    version = "1.8.2",
+    version = "1.8.3",
 )
 
 bazel_dep(name = "rules_cc", version = "0.2.22")

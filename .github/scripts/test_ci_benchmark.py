@@ -28,8 +28,9 @@ class BenchmarkTest(unittest.TestCase):
 
     def test_primary_ci_dispatches_builds_without_a_hosted_baseline(self):
         workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        cluster_job = workflow.split('  cluster:', 1)[1]
         for hosted_build in ('matrix:', 'baseline', 'prepare-nix', 'setup-bazel', 'bazel test'):
-            self.assertNotIn(hosted_build, workflow)
+            self.assertNotIn(hosted_build, cluster_job)
         self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
         self.assertIn("inputs.repetitions || '1'", workflow)
         self.assertIn('group: cluster-ci-${{ github.ref }}', workflow)
@@ -39,6 +40,16 @@ class BenchmarkTest(unittest.TestCase):
         pinned_version = Path('.bazelversion').read_text().strip()
         self.assertNotIn(f'bazel_version: {pinned_version}',
                          Path('.github/workflows/native-bazel.yaml').read_text())
+
+    def test_pull_requests_build_without_cluster_credentials(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        pr_job = workflow.split('  pull-request:', 1)[1].split('  cluster:', 1)[0]
+        self.assertIn("if: github.event_name == 'pull_request'", pr_job)
+        for privileged_setting in ('environment:', 'secrets.', 'id-token:', 'cluster_ci.py'):
+            self.assertNotIn(privileged_setting, pr_job)
+        self.assertIn('./tools/bazel-retry.sh test //...', pr_job)
+        self.assertIn('--lockfile_mode=error', pr_job)
+        self.assertNotIn('USE_BAZEL_VERSION', pr_job)
 
     def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
         with tempfile.TemporaryDirectory() as directory:

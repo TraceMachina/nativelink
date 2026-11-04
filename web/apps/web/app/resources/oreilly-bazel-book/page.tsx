@@ -1,5 +1,5 @@
 import { BookDownloadForm } from "@/components/book-download-form";
-import { Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { Breadcrumbs, Eyebrow, Reveal, Section } from "@nativelink/ui";
 import type { Metadata } from "next";
 import Image from "next/image";
 
@@ -54,6 +54,10 @@ export default function OreillyBazelBookPage() {
         <Section width="default" className="pt-24 pb-16 md:pt-32">
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
+              <Breadcrumbs
+                className="mb-6 justify-center"
+                items={[{ label: "Resources", href: "/resources" }, { label: "O'Reilly e-book" }]}
+              />
               <Eyebrow className="mb-5">Free O'Reilly e-book</Eyebrow>
               <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-[64px]">
                 Extending Bazel to Its Full Potential

@@ -1,6 +1,8 @@
 name: CI / NativeLink
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: ['**']
     paths-ignore:
@@ -18,14 +20,57 @@ permissions:
   contents: read
 
 # Keep the filename stable: the federated identity is bound to this workflow.
-# The hosted job dispatches work; Nix, downloads and Bazel stay on the cluster.
-# Outside fork workflows require repository approval and do not receive this
-# environment or its credentials.
+# Branch builds dispatch to the cluster. PR merge commits run on hosted runners
+# without the cluster environment or credentials, including approved fork PRs.
 concurrency:
   group: cluster-ci-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  pull-request:
+    if: github.event_name == 'pull_request'
+    name: NativeLink / Linux (PR)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
+
+      - name: Setup NativeLink Cloud
+        id: setup-nativelink-cloud
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          # Use the public read-only cache on every PR, including forks.
+          mode: read
+          exec: 'off'
+
+      - name: Setup Bazel
+        uses: >- # v0.19.0
+          bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: ${{ steps.setup-nativelink-cloud.outputs.enabled == 'false' }}
+
+      - name: Show Bazel version
+        run: bazel --version
+
+      - name: Run project-pinned Bazel tests
+        run: |
+          ./tools/bazel-retry.sh test //... \
+            --config=nl-toolchain \
+            --config=nl-quiet \
+            --lockfile_mode=error \
+            --verbose_failures
+
   cluster:
     if: >-
       github.repository == 'TraceMachina/nativelink' &&
