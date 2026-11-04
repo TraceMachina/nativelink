@@ -81,7 +81,10 @@ export function getAllPosts(): Post[] {
         image: typeof data.image === "string" ? data.image : undefined,
         pubDate: typeof data.pubDate === "string" ? data.pubDate : "",
         readTime: typeof data.readTime === "string" ? data.readTime : undefined,
-        excerpt: deriveExcerpt(body),
+        excerpt:
+          typeof data.excerpt === "string" && data.excerpt.trim()
+            ? data.excerpt.trim()
+            : deriveExcerpt(body),
         body,
       };
     })

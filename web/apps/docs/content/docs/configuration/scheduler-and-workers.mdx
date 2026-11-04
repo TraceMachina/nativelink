@@ -223,7 +223,7 @@ SIGKILL from the kernel with the last memory sample within 10% of the limit),
 `KILLED_TIMEOUT` or `KILLED_EXTERNAL`, plus wall time and the reservation the
 action ran under. The scheduler logs every kill outcome with its mnemonic.
 
-**`resource_enforcement`** (off by default, Linux only) makes the worker hold an
+**`resource_enforcement`** (off by default) makes the worker hold an
 action to the memory reservation the scheduler placed it by. With
 `memory: soft` the worker kills the action's process group once two
 consecutive samples exceed `memory_kb` plus `memory_headroom_percent`
@@ -234,7 +234,8 @@ limit in half a second can still reach the cgroup limit first; the
 reservations admitted onto a worker must also sum to less than its limit
 with the headroom included. Without it the kill comes from the pod's cgroup limit,
 and on cgroup v2 that kill takes the worker and every action on it, not just
-the one that grew. The sample is the group's proportional set size, so a
+the one that grew. The sample is the group's proportional set size (on
+macOS the physical footprint, on Windows the private commit charge), so a
 parent's pages shared with its forked children count once. Actions run
 through a persistent worker are not covered: that process outlives the action
 and serves others, so only the pod's limit bounds it. With enforcement on, the

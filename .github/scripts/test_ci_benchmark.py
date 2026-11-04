@@ -51,6 +51,22 @@ class BenchmarkTest(unittest.TestCase):
         self.assertIn('--lockfile_mode=error', pr_job)
         self.assertNotIn('USE_BAZEL_VERSION', pr_job)
 
+    def test_web_only_changes_skip_bazel_lanes(self):
+        # A pull request that only touches web/ is covered by CI / Web. The
+        # Bazel lanes must filter it out at the trigger, not in a job `if`,
+        # so no Bazel run is spawned at all.
+        for workflow in ('parallel-cluster-ci.yaml', 'native-bazel.yaml',
+                         'sanitizers.yaml', 'clusterfuzzlite.yaml'):
+            text = Path('.github/workflows', workflow).read_text()
+            triggers = text.split('\non:\n', 1)[1].split('\njobs:\n', 1)[0].splitlines()
+            start = triggers.index('  pull_request:') + 1
+            end = next((i for i, line in enumerate(triggers[start:], start)
+                        if line.strip() and not line.startswith('    ')), len(triggers))
+            pull_request = '\n'.join(triggers[start:end])
+            self.assertIn("    paths-ignore:\n      - 'web/**'", pull_request, workflow)
+        web = Path('.github/workflows/web.yaml').read_text()
+        self.assertIn("  pull_request:\n    branches: [main]\n    paths:\n      - 'web/**'", web)
+
     def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'cluster.json'
