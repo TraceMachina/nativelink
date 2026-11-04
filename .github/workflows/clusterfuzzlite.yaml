@@ -7,11 +7,14 @@ on:
   # as in #3028), when a release is published, and on demand. Ordinary
   # pull requests do not run it.
   schedule:
-    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   release:
     types: [published]
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "web/**"
+      - ".github/styles/**"
   workflow_dispatch:
 
 permissions: read-all

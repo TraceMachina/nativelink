@@ -22,11 +22,13 @@ docker compose -f
 ```
 
 1. Start the multi-worker deployment:
+
 ```sh
 docker compose -f docker-compose-multi-worker.yml up -d
 ```
 
 2. Test with Bazel:
+
 ```sh
 bazel build //... \
   --remote_cache=grpc://127.0.0.1:50051 \
@@ -41,37 +43,40 @@ bazel build //... \
 **All workers MUST share the same CAS storage path.** This is the most common configuration error.
 
 **Important:** When starting workers, you'll see this validation warning:
+
 ```
 Starting worker 'worker-1'. IMPORTANT: If running multiple workers, all workers
 must share the same CAS storage path to avoid 'Object not found' errors.
 ```
 
 ✅ **Correct Configuration:**
+
 ```yaml
 services:
   worker-1:
     volumes:
-      - cas-data:/data/cas  # Shared volume
+      - cas-data:/data/cas # Shared volume
   worker-2:
     volumes:
-      - cas-data:/data/cas  # Same shared volume
+      - cas-data:/data/cas # Same shared volume
   worker-3:
     volumes:
-      - cas-data:/data/cas  # Same shared volume
+      - cas-data:/data/cas # Same shared volume
 
 volumes:
-  cas-data:  # Single shared volume for all workers
+  cas-data: # Single shared volume for all workers
 ```
 
 ❌ **Incorrect Configuration (causes "Object not found" errors):**
+
 ```yaml
 services:
   worker-1:
     volumes:
-      - ./data/worker-1/cas:/data/cas  # Isolated path
+      - ./data/worker-1/cas:/data/cas # Isolated path
   worker-2:
     volumes:
-      - ./data/worker-2/cas:/data/cas  # Different isolated path
+      - ./data/worker-2/cas:/data/cas # Different isolated path
 ```
 
 ### Worker Configuration (worker-shared-cas.json5)
@@ -88,24 +93,24 @@ services:
         temp_path: "/tmp/${WORKER_NAME}/temp",
         eviction_policy: {
           max_bytes: 10000000000,
-        }
-      }
-    }
+        },
+      },
+    },
   ],
   workers: [
     {
       local: {
         name: "${WORKER_NAME}",
-        cas_fast_slow_store: "SHARED_CAS",  // All workers use same store
+        cas_fast_slow_store: "SHARED_CAS", // All workers use same store
         // Work directory should be worker-specific
         work_directory: "/tmp/${WORKER_NAME}/work",
         platform_properties: {
           cpu_count: { values: ["2"] },
-          memory_gb: { values: ["2"] }
-        }
-      }
-    }
-  ]
+          memory_gb: { values: ["2"] },
+        },
+      },
+    },
+  ],
 }
 ```
 
@@ -116,6 +121,7 @@ services:
 ## Scaling Workers
 
 ### Dynamic Scaling
+
 ```sh
 # Scale to 5 workers
 docker-compose -f docker-compose-multi-worker.yml up -d --scale worker=5
@@ -125,22 +131,26 @@ docker-compose -f docker-compose-multi-worker.yml up -d --scale worker=2
 ```
 
 ### Resource Limits
+
 Each worker is configured with:
+
 - CPU: 2 cores (configurable)
 - Memory: 2GB (configurable)
 
 Adjust in `docker-compose-multi-worker.yml`:
+
 ```yaml
 deploy:
   resources:
     limits:
-      cpus: '4'    # Increase to 4 cores
-      memory: 4G   # Increase to 4GB
+      cpus: "4" # Increase to 4 cores
+      memory: 4G # Increase to 4GB
 ```
 
 ## Monitoring
 
 ### View Logs
+
 ```sh
 # All workers
 docker-compose -f docker-compose-multi-worker.yml logs -f
@@ -153,6 +163,7 @@ docker-compose -f docker-compose-multi-worker.yml logs -f scheduler
 ```
 
 ### Check Status
+
 ```sh
 # View all containers
 docker-compose -f docker-compose-multi-worker.yml ps
@@ -165,7 +176,9 @@ docker exec -it $(docker-compose -f docker-compose-multi-worker.yml ps -q worker
 ## Troubleshooting
 
 ### "Object not found" Errors
+
 **Symptom:** Workers fail with enhanced error message:
+
 ```
 Object 7fd25e01d12373a2d1712e446881c9246a9698da4e7eafecdaeeaaff62195a82-148
 not found in either fast or slow store. If using multiple workers, ensure
@@ -175,23 +188,28 @@ all workers share the same CAS storage path.
 **Cause:** Workers are using different CAS paths
 
 **Solution:**
+
 1. Check volume mounts: `docker inspect <worker-container> | grep -A 5 Mounts`
 2. Ensure all workers mount the same `cas-data` volume
 3. Verify `content_path` is identical in all worker configurations
 4. Use the validated `test-multi-worker-simple.json5` as reference
 
 ### Workers Not Executing Jobs
+
 **Symptom:** Jobs queue but workers remain idle
 
 **Solution:**
+
 1. Check scheduler connectivity: `docker logs scheduler | grep -i error`
 2. Verify worker registration: `docker logs worker-1 | grep "Connected to scheduler"`
 3. Check network: `docker network ls`
 
 ### Performance Issues
+
 **Symptom:** Builds slower with multiple workers
 
 **Solution:**
+
 1. Check disk I/O: `docker stats`
 2. Consider using SSD-backed storage
 3. Increase cache size in `eviction_policy`
@@ -202,6 +220,7 @@ all workers share the same CAS storage path.
 ### Local Testing with All-in-One Configuration
 
 #### Option 1: Using Docker (Recommended)
+
 ```sh
 # Run nativelink using the Docker image you built
 docker run --rm -it \
@@ -219,6 +238,7 @@ bazel build //:nativelink \
 ```
 
 #### Option 2: Build and Run Locally (Advanced)
+
 ```sh
 # Build nativelink locally first
 cargo build --release
@@ -235,6 +255,7 @@ bazel build //:nativelink \
 ```
 
 ### Basic Test
+
 ```sh
 # Build a simple target
 bazel build //src:hello_world \
@@ -246,6 +267,7 @@ docker-compose -f docker-compose-multi-worker.yml logs | grep "Executing action"
 ```
 
 ### Stress Test
+
 ```sh
 # Build entire project with parallel jobs
 bazel build //... \
@@ -257,6 +279,7 @@ bazel build //... \
 ## Production Considerations
 
 For production deployments:
+
 1. Use persistent volumes backed by SSD
 2. Implement health checks in docker-compose.yml
 3. Use external storage (NFS, S3, etc.) for CAS

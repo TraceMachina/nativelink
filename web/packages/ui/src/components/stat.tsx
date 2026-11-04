@@ -7,7 +7,13 @@ interface StatProps extends React.HTMLAttributes<HTMLDivElement> {
   accent?: boolean;
 }
 
-export function Stat({ value, label, accent = false, className, ...props }: StatProps) {
+export function Stat({
+  value,
+  label,
+  accent = false,
+  className,
+  ...props
+}: StatProps) {
   return (
     <div className={cn("flex flex-col gap-2", className)} {...props}>
       <div

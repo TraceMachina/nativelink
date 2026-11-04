@@ -8,10 +8,10 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - ".github/styles/**"
+      - "web/**"
   schedule:
-    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
 permissions: read-all
@@ -76,8 +76,8 @@ jobs:
     needs: coverage
     runs-on: ubuntu-24.04
     permissions:
-      pages: write      # to deploy to GitHub Pages
-      id-token: write   # to authenticate to GitHub Pages
+      pages: write # to deploy to GitHub Pages
+      id-token: write # to authenticate to GitHub Pages
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

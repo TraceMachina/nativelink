@@ -4,8 +4,8 @@ kind: Kustomization
 nameSuffix: -siso-chromium
 
 components:
-- ../../components/worker
+  - ../../components/worker
 
 images:
-- name: nativelink-worker
-  newName: nativelink-worker-siso-chromium
+  - name: nativelink-worker
+    newName: nativelink-worker-siso-chromium

@@ -32,7 +32,11 @@ const nextConfig = {
 
     return [
       { source: "/docs", destination: target, permanent: false },
-      { source: "/docs/:path*", destination: `${target}/:path*`, permanent: false },
+      {
+        source: "/docs/:path*",
+        destination: `${target}/:path*`,
+        permanent: false,
+      },
     ];
   },
 };

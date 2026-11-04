@@ -38,10 +38,10 @@ services:
     volumes:
       - ./cluster.conf:/etc/cluster.conf
     command: >
-        redis-server /etc/cluster.conf
+      redis-server /etc/cluster.conf
     healthcheck:
       interval: 2s
-      retries: '3'
+      retries: "3"
       test: ["CMD", "redis-cli", "-p", "7000", "-c", "ping"]
       timeout: 5s
 
@@ -52,10 +52,10 @@ services:
     volumes:
       - ./cluster.conf:/etc/cluster.conf
     command: >
-        redis-server /etc/cluster.conf
+      redis-server /etc/cluster.conf
     healthcheck:
       interval: 2s
-      retries: '3'
+      retries: "3"
       test: ["CMD", "redis-cli", "-p", "7000", "-c", "ping"]
       timeout: 5s
 
@@ -66,10 +66,10 @@ services:
     volumes:
       - ./cluster.conf:/etc/cluster.conf
     command: >
-        redis-server /etc/cluster.conf
+      redis-server /etc/cluster.conf
     healthcheck:
       interval: 2s
-      retries: '3'
+      retries: "3"
       test: ["CMD", "redis-cli", "-p", "7000", "-c", "ping"]
       timeout: 5s
 
@@ -80,10 +80,10 @@ services:
     volumes:
       - ./cluster.conf:/etc/cluster.conf
     command: >
-        redis-server /etc/cluster.conf
+      redis-server /etc/cluster.conf
     healthcheck:
       interval: 2s
-      retries: '3'
+      retries: "3"
       test: ["CMD", "redis-cli", "-p", "7000", "-c", "ping"]
       timeout: 5s
 
@@ -94,10 +94,10 @@ services:
     volumes:
       - ./cluster.conf:/etc/cluster.conf
     command: >
-        redis-server /etc/cluster.conf
+      redis-server /etc/cluster.conf
     healthcheck:
       interval: 2s
-      retries: '3'
+      retries: "3"
       test: ["CMD", "redis-cli", "-p", "7000", "-c", "ping"]
       timeout: 5s
 
@@ -108,10 +108,10 @@ services:
     volumes:
       - ./cluster.conf:/etc/cluster.conf
     command: >
-        redis-server /etc/cluster.conf
+      redis-server /etc/cluster.conf
     healthcheck:
       interval: 2s
-      retries: '3'
+      retries: "3"
       test: ["CMD", "redis-cli", "-p", "7000", "-c", "ping"]
       timeout: 5s
 
@@ -128,7 +128,7 @@ services:
       - cluster-node-6:7000
       - --cluster-yes
       - --cluster-replicas
-      - '1'
+      - "1"
     depends_on:
       cluster-node-1:
         condition: service_healthy

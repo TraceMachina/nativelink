@@ -27,9 +27,9 @@ export default function LicensePage() {
                 NativeLink Licensing
               </h1>
               <p className="mx-auto mt-5 max-w-[650px] text-base leading-relaxed text-muted-foreground md:text-lg">
-                NativeLink is a monorepo with module-aware licensing. Most code is
-                FSL-Apache; selected commercial modules use the Business Source
-                License.
+                NativeLink is a monorepo with module-aware licensing. Most code
+                is FSL-Apache; selected commercial modules use the Business
+                Source License.
               </p>
             </div>
           </Reveal>
@@ -60,33 +60,42 @@ export default function LicensePage() {
 
           <article className="prose-styles max-w-[68ch]">
             <Reveal>
-              <h2 id="overview" className="scroll-mt-24 text-3xl font-semibold tracking-tight text-foreground">
+              <h2
+                id="overview"
+                className="scroll-mt-24 text-3xl font-semibold tracking-tight text-foreground"
+              >
                 Overview
               </h2>
               <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
-                Most NativeLink modules are licensed under
-                FSL-1.1-Apache-2.0. That license allows internal use,
-                modification, and redistribution for non-competing purposes, then
-                grants an Apache 2.0 future license on the schedule described in
-                the repository license.
+                Most NativeLink modules are licensed under FSL-1.1-Apache-2.0.
+                That license allows internal use, modification, and
+                redistribution for non-competing purposes, then grants an Apache
+                2.0 future license on the schedule described in the repository
+                license.
               </p>
               <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
                 NativeLink is not a single-license repository. Some files and
-                modules carry their own source headers, and those headers control
-                the license for that code.
+                modules carry their own source headers, and those headers
+                control the license for that code.
               </p>
 
-              <h3 id="individual-cache" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
+              <h3
+                id="individual-cache"
+                className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground"
+              >
                 Individual Cache Use
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
-                Developers using NativeLink for an individual cache do not need a
-                commercial license. That path is meant to stay simple: run the
+                Developers using NativeLink for an individual cache do not need
+                a commercial license. That path is meant to stay simple: run the
                 cache locally or on infrastructure you control, point your build
                 tool at it, and keep your loop fast.
               </p>
 
-              <h3 id="commercial-modules" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
+              <h3
+                id="commercial-modules"
+                className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground"
+              >
                 Commercial Modules
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
@@ -96,12 +105,15 @@ export default function LicensePage() {
                 Enterprise or a separate commercial license.
               </p>
               <p className="mt-4 text-[15px] leading-relaxed text-muted-foreground">
-                The separate commercial license is intentionally very inexpensive.
-                It is there to keep the project sustainable without putting
-                friction in front of individual developers.
+                The separate commercial license is intentionally very
+                inexpensive. It is there to keep the project sustainable without
+                putting friction in front of individual developers.
               </p>
 
-              <h3 id="contributors" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
+              <h3
+                id="contributors"
+                className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground"
+              >
                 Contributor Waivers
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
@@ -110,18 +122,23 @@ export default function LicensePage() {
                 maintainers before depending on a waiver.
               </p>
 
-              <h3 id="source" className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground">
+              <h3
+                id="source"
+                className="mt-10 scroll-mt-24 text-xl font-semibold tracking-tight text-foreground"
+              >
                 Source of Truth
               </h3>
               <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
-                The repository
-                {" "}
-                <a href="https://github.com/TraceMachina/nativelink/blob/main/LICENSE">LICENSE</a>
-                {" "}
-                file and source headers are the authoritative licensing text. For
-                commercial terms, contact
-                {" "}
-                <a href="mailto:contact@tracemachina.com">contact@tracemachina.com</a>.
+                The repository{" "}
+                <a href="https://github.com/TraceMachina/nativelink/blob/main/LICENSE">
+                  LICENSE
+                </a>{" "}
+                file and source headers are the authoritative licensing text.
+                For commercial terms, contact{" "}
+                <a href="mailto:contact@tracemachina.com">
+                  contact@tracemachina.com
+                </a>
+                .
               </p>
             </Reveal>
           </article>

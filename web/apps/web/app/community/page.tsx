@@ -1,6 +1,13 @@
 import { SlackJoinForm } from "@/components/slack-join-form";
 import { getContributors, getRepoStats } from "@/lib/github";
-import { Badge, Button, Counter, Eyebrow, Reveal, Section } from "@nativelink/ui";
+import {
+  Badge,
+  Button,
+  Counter,
+  Eyebrow,
+  Reveal,
+  Section,
+} from "@nativelink/ui";
 import Image from "next/image";
 
 export const metadata = { title: "Community" };
@@ -59,7 +66,10 @@ const channels = [
 ];
 
 export default async function CommunityPage() {
-  const [{ contributors, total }, stats] = await Promise.all([getContributors(), getRepoStats()]);
+  const [{ contributors, total }, stats] = await Promise.all([
+    getContributors(),
+    getRepoStats(),
+  ]);
   const starsK = stats.stars / 1000;
 
   return (
@@ -79,8 +89,8 @@ export default async function CommunityPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[600px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Operators, contributors, and the engineers who build NativeLink — all in the same
-                room.
+                Operators, contributors, and the engineers who build NativeLink
+                — all in the same room.
               </p>
             </div>
           </Reveal>
@@ -88,7 +98,10 @@ export default async function CommunityPage() {
       </section>
 
       {/* GITHUB STATS BAR */}
-      <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-10">
+      <Section
+        width="default"
+        className="border-y border-border/60 bg-surface-elevated/40 py-10"
+      >
         <Reveal>
           <div className="grid grid-cols-2 gap-y-6 text-center md:grid-cols-4">
             <div>
@@ -181,9 +194,9 @@ export default async function CommunityPage() {
               Join the NativeLink Slack.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              The workspace is invite-only. Leave your email and someone on the team sends you an
-              invite, usually within a day. Operators, contributors and the core team are all in
-              there.
+              The workspace is invite-only. Leave your email and someone on the
+              team sends you an invite, usually within a day. Operators,
+              contributors and the core team are all in there.
             </p>
           </Reveal>
           <Reveal delay={0.1}>
@@ -198,11 +211,12 @@ export default async function CommunityPage() {
           <div className="mx-auto mb-12 max-w-[680px] text-center">
             <Eyebrow className="mb-4">Thank you</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
-              We love our <span className="text-brand">{total} contributors</span>.
+              We love our{" "}
+              <span className="text-brand">{total} contributors</span>.
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              From kernel-level optimizations to typo fixes — every PR gets reviewed and credited.
-              Pulled live from{" "}
+              From kernel-level optimizations to typo fixes — every PR gets
+              reviewed and credited. Pulled live from{" "}
               <a
                 href="https://github.com/TraceMachina/nativelink/graphs/contributors"
                 target="_blank"
@@ -258,8 +272,8 @@ export default async function CommunityPage() {
                 Send us your handle, we'll send you swag.
               </h3>
               <p className="mx-auto mt-3 max-w-[480px] text-[15px] text-muted-foreground">
-                Merged a PR? Helped someone on Slack? Wrote a tutorial? Join the Slack and tell us
-                your handle there; our team will be in touch.
+                Merged a PR? Helped someone on Slack? Wrote a tutorial? Join the
+                Slack and tell us your handle there; our team will be in touch.
               </p>
               <div className="mt-6 flex justify-center">
                 <Button size="lg" asChild>
