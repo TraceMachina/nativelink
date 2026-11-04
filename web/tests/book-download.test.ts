@@ -73,8 +73,13 @@ function mockFetch(responses: Record<string, () => Response>) {
 const ok = () => Response.json({ id: "1" });
 const realFetch = globalThis.fetch;
 const savedEnv = { ...process.env };
+let errorLogs: any[] = [];
 
 beforeEach(() => {
+  errorLogs = [];
+  jest.spyOn(console, "error").mockImplementation((...args) => {
+    errorLogs.push(args);
+  });
   process.env.RESEND_API_KEY = "re_test";
   Reflect.deleteProperty(process.env, "RESEND_SEGMENT_ID");
 });
@@ -82,6 +87,8 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = realFetch;
   process.env = { ...savedEnv };
+  jest.clearAllMocks();
+  jest.restoreAllMocks();
 });
 
 describe("recordBookDownload", () => {
@@ -112,16 +119,19 @@ describe("recordBookDownload", () => {
     const calls = mockFetch({ "/contacts": () => new Response(null, { status: 500 }) });
     await expect(recordBookDownload(download)).rejects.toThrow("Failed to store contact");
     expect(calls).toHaveLength(1);
+    expect(errorLogs).toEqual([])
   });
 
   test("a failed notification does not fail the download", async () => {
     mockFetch({ "/contacts": ok, "/emails": () => new Response(null, { status: 500 }) });
     await expect(recordBookDownload(download)).resolves.toBeUndefined();
+    expect(errorLogs).toEqual([["Failed to send download notification:", 500]])
   });
 
   test("requires RESEND_API_KEY", async () => {
     Reflect.deleteProperty(process.env, "RESEND_API_KEY");
     await expect(recordBookDownload(download)).rejects.toThrow("RESEND_API_KEY");
+    expect(errorLogs).toEqual([])
   });
 });
 
@@ -154,6 +164,7 @@ describe("POST /api/mail", () => {
   test("returns 500 when Resend is not configured", async () => {
     Reflect.deleteProperty(process.env, "RESEND_API_KEY");
     expect((await post(JSON.stringify({ email: "reader@corp.com" }))).status).toBe(500);
+    expect(errorLogs).toEqual([["Error recording book download:", new Error("RESEND_API_KEY is not configured")]])
   });
 
   test("returns 429 after five requests from one address", async () => {

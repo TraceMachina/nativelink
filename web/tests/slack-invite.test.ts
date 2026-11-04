@@ -49,14 +49,21 @@ function mockFetch(responses: Record<string, () => Response>) {
 const ok = () => Response.json({ id: "1" });
 const realFetch = globalThis.fetch;
 const savedEnv = { ...process.env };
+let errorLogs: any[] = [];
 
 beforeEach(() => {
+  errorLogs = [];
+  jest.spyOn(console, "error").mockImplementation((...args) => {
+    errorLogs.push(args);
+  });
   process.env.RESEND_API_KEY = "re_test";
 });
 
 afterEach(() => {
   globalThis.fetch = realFetch;
   process.env = { ...savedEnv };
+  jest.clearAllMocks();
+  jest.restoreAllMocks();
 });
 
 describe("sendSlackInviteRequest", () => {
@@ -101,6 +108,7 @@ describe("POST /api/slack-invite", () => {
     const markup = await post(JSON.stringify({ email: "<svg/onload=alert(1)>@evil.com" }));
     expect(markup.status).toBe(400);
     expect((await markup.json()).error).toBe(INVALID);
+    expect(errorLogs).toEqual([]);
   });
 
   test("accepts a consumer address and returns 200 once the team has been emailed", async () => {
@@ -111,10 +119,16 @@ describe("POST /api/slack-invite", () => {
   });
 
   test("returns 500 when Resend fails or is not configured", async () => {
-    mockFetch({ "/emails": () => new Response(null, { status: 500 }) });
+    mockFetch({ "/emails": () => new Response(null, { status: 500, statusText: "bad emails" }) });
     expect((await post(JSON.stringify({ email: "someone@example.com" }))).status).toBe(500);
     Reflect.deleteProperty(process.env, "RESEND_API_KEY");
     expect((await post(JSON.stringify({ email: "someone@example.com" }))).status).toBe(500);
+    expect(errorLogs).toEqual([
+      ["Slack invite request failed:",
+    new Error("Failed to send Slack invite request: 500 bad emails")],
+    ["Slack invite request failed:",
+    new Error("RESEND_API_KEY is not configured")]
+    ]);
   });
 
   test("returns 429 after five requests from one address", async () => {
@@ -124,5 +138,6 @@ describe("POST /api/slack-invite", () => {
     }
     expect((await post(body, "192.0.2.10")).status).toBe(429);
     expect((await post(body, "192.0.2.11")).status).toBe(400);
+    expect(errorLogs).toEqual([]);
   });
 });

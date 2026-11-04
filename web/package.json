@@ -8,7 +8,7 @@
     "@typescript/native": "npm:typescript@^7.0.2",
     "jest": "^30.5.2",
     "katex": "^0.18.2",
-    "next": "~16.3.3",
+    "next": "~16.4.1",
     "semver": "^7.8.5",
     "sharp": "^0.35.5",
     "source-map-js": "^1.2.2",

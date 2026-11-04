@@ -56,7 +56,9 @@ jobs:
           retry_wait_seconds: 10
           command: |
             cd web
-            nix develop --impure --command pnpm install --frozen-lockfile
+            nix develop --impure --command bash -c "
+              pnpm install --frozen-lockfile && pnpm dedupe
+            "
           shell: bash
 
       - name: Test Build
