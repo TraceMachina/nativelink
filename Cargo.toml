@@ -124,7 +124,7 @@ unconditional-recursion = "deny"
 # tokio gates its task instrumentation behind; the tokio_console feature
 # checks it, so declare it as expected.
 unexpected_cfgs = { level = "deny", check-cfg = ["cfg(tokio_unstable)"] }
-unknown-lints = "allow"                     # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
+unknown-lints = "allow"                                                   # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
 unnameable-test-items = "deny"
 unsafe-op-in-unsafe-fn = "deny"
 unstable-syntax-pre-expansion = "deny"
