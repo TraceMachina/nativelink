@@ -73,11 +73,12 @@ mod tests {
     use nativelink_store::memory_store::MemoryStore;
     #[cfg(target_family = "unix")]
     use nativelink_util::action_messages::DirectoryInfo;
+    #[cfg(target_family = "unix")]
+    use nativelink_util::action_messages::STORE_UNREACHABLE_ERROR_TIP;
     #[cfg_attr(target_family = "windows", allow(unused_imports))]
     use nativelink_util::action_messages::SymlinkInfo;
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
-        STORE_UNREACHABLE_ERROR_TIP,
     };
     #[cfg(target_family = "unix")]
     use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
