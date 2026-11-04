@@ -1,4 +1,4 @@
-// Copyright 2026 Trace Machina, Inc. All rights reserved.
+// Copyright 2026 The NativeLink Authors. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -203,10 +203,22 @@ async fn settle() {
 }
 
 async fn open_db(url: &str, migrate: bool) -> Result<impl AwaitedActionDb, Error> {
+    open_db_paged(url, migrate, 0).await
+}
+
+/// `max_count_per_cursor` rows per cursor page; `0` is the default size. `1`
+/// keeps a read's cursor open on the server between rows, which is how a
+/// read can be caught mid-queue by the cutover.
+async fn open_db_paged(
+    url: &str,
+    migrate: bool,
+    max_count_per_cursor: u64,
+) -> Result<impl AwaitedActionDb, Error> {
     let spec = RedisSpec {
         addresses: vec![url.to_string()],
         experimental_pub_sub_channel: Some("temporary_index_channel".to_string()),
         migrate_temporary_indexes: migrate,
+        max_count_per_cursor,
         ..Default::default()
     };
     StoreAwaitedActionDb::new(
@@ -269,18 +281,24 @@ async fn queued<Db: AwaitedActionDb>(db: &Db) -> Result<Vec<(i32, u64)>, Error> 
     let mut stream = core::pin::pin!(stream);
     let mut order = Vec::new();
     while let Some(subscriber) = stream.next().await {
-        let awaited = subscriber?.borrow().await?;
-        let info = awaited.action_info();
-        let ms = u64::try_from(
-            info.insert_timestamp
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap();
-        order.push((info.priority, ms));
+        order.push(priority_and_insert(subscriber?).await?);
     }
     Ok(order)
+}
+
+async fn priority_and_insert(
+    subscriber: impl AwaitedActionSubscriber,
+) -> Result<(i32, u64), Error> {
+    let awaited = subscriber.borrow().await?;
+    let info = awaited.action_info();
+    let ms = u64::try_from(
+        info.insert_timestamp
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    Ok((info.priority, ms))
 }
 
 /// A queue written by an older release: its state index temporary and full
@@ -432,6 +450,120 @@ async fn an_incomplete_replacement_never_retires_the_original() -> Result<(), Er
         "the original was retired for a replacement without its keys"
     );
     assert!(ttl(&url, &original).await.is_some());
+    assert_eq!(action_keys(&url).await, keys);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_replacement_short_by_one_key_never_retires_the_original() -> Result<(), Error> {
+    let Some(url) = test_url() else { return Ok(()) };
+    let (original, keys) = inherited_queue(&url).await?;
+    let replacement = format!("{original}_p");
+    // A replacement created without the initial scan and then fed three of
+    // the four keys by rewrites: done indexing, zero reported failures, and
+    // short by exactly one — inside the 1%-plus-two count tolerance an
+    // earlier version of the completeness check allowed.
+    let _: () = cmd(
+        &url,
+        &[
+            "FT.CREATE",
+            &replacement,
+            "ON",
+            "HASH",
+            "PREFIX",
+            "1",
+            "aa_",
+            "SKIPINITIALSCAN",
+            "SCHEMA",
+            "state",
+            "TAG",
+            "sort_key",
+            "TAG",
+            "SORTABLE",
+        ],
+    )
+    .await
+    .unwrap();
+    let mut con = raw(&url).await;
+    for key in &keys[..3] {
+        let fields: Vec<(String, Vec<u8>)> = redis::cmd("HGETALL")
+            .arg(key)
+            .query_async(&mut con)
+            .await
+            .unwrap();
+        let mut pipe = redis::pipe();
+        pipe.atomic().cmd("DEL").arg(key).ignore();
+        pipe.cmd("HSET").arg(key).arg(&fields).ignore();
+        let _: () = pipe.query_async(&mut con).await.unwrap();
+    }
+    wait_backfilled(&url, &replacement).await;
+    assert_eq!(
+        info_field(&url, &replacement, "num_docs").await,
+        3,
+        "setup: the replacement does not model a short scan"
+    );
+    assert_eq!(
+        info_field(&url, &replacement, "hash_indexing_failures").await,
+        0,
+        "setup: a reported failure would be caught without the counts"
+    );
+
+    let db = open_db(&url, true).await?;
+    assert_eq!(queued(&db).await?, EXPECTED);
+    settle().await;
+    assert_eq!(queued(&db).await?, EXPECTED);
+    assert_eq!(
+        state_indexes(&url).await,
+        vec![original.clone(), replacement],
+        "a replacement missing a key retired the original"
+    );
+    assert!(ttl(&url, &original).await.is_some());
+    assert_eq!(action_keys(&url).await, keys);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_read_held_across_the_cutover_recovers_the_whole_queue() -> Result<(), Error> {
+    let Some(url) = test_url() else { return Ok(()) };
+    let (original, keys) = inherited_queue(&url).await?;
+    let replacement = format!("{original}_p");
+
+    // One row per cursor page, so the read below still holds a live cursor
+    // on the original when another process retires it. Its first read also
+    // starts the migration.
+    let a = open_db_paged(&url, true, 1).await?;
+    let stream = a
+        .get_range_of_actions(
+            SortedAwaitedActionState::Queued,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            true,
+        )
+        .await?;
+    let mut stream = core::pin::pin!(stream);
+    let first = priority_and_insert(stream.next().await.unwrap()?).await?;
+    assert_eq!(first, EXPECTED[0]);
+
+    // Another process finds the replacement complete and retires the
+    // original while the read above is parked between pages. Dropping an
+    // index closes its open cursors even with _FORCEKEEPDOCS.
+    wait_backfilled(&url, &replacement).await;
+    settle().await;
+    let b = open_db(&url, true).await?;
+    assert_eq!(queued(&b).await?, EXPECTED);
+    assert_eq!(state_indexes(&url).await, vec![replacement.clone()]);
+
+    // The parked read's next page fails on the server. The read must start
+    // over on the replacement instead of aborting: every action comes back
+    // (the row already seen among them), in order.
+    let mut rest = Vec::new();
+    while let Some(subscriber) = stream.next().await {
+        rest.push(priority_and_insert(subscriber?).await?);
+    }
+    assert_eq!(
+        rest, EXPECTED,
+        "the read interrupted by the cutover did not recover the whole queue"
+    );
     assert_eq!(action_keys(&url).await, keys);
     Ok(())
 }
