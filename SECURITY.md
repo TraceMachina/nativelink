@@ -9,10 +9,12 @@ vulnerabilities. Please send a report if something doesn't look right.
 ## Supported versions
 
 <!-- vale Vale.Terms = NO -->
+
 We support the [most recent tagged version](https://github.com/TraceMachina/nativelink/releases/latest), primarily via
 the Docker images, but also the other install methods listed there. We also publish, but don't directly support per-commit
 Docker images for everything on `main`. For anything more than this, please contact <marcus@tracemachina.com> for commercial
 support, or [join our Slack](https://forms.gle/LtaWSixEC6bYi5xF7) for community support.
+
 <!-- vale Vale.Terms = Yes -->
 
 ## Reporting a vulnerability
@@ -20,7 +22,9 @@ support, or [join our Slack](https://forms.gle/LtaWSixEC6bYi5xF7) for community 
 Prefer reporting vulnerabilities via [GitHub](https://github.com/TraceMachina/nativelink/security).
 
 <!-- vale Vale.Terms = NO -->
+
 If you'd rather communicate via email please contact <marcus@tracemachina.com>, <tom@tracemachina.com> or <aman@tracemachina.com>.
+
 <!-- vale Vale.Terms = Yes -->
 
 ## Vulnerability disclosure and advisories

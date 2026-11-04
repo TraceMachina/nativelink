@@ -39,7 +39,11 @@ test("file sizes are read from disk, never typed by hand", () => {
 });
 
 test("the three files are listed in fetch order, index first", () => {
-  expect(LLMS_FILES.map((f) => f.name)).toEqual(["llms.txt", "llms-small.txt", "llms-full.txt"]);
+  expect(LLMS_FILES.map((f) => f.name)).toEqual([
+    "llms.txt",
+    "llms-small.txt",
+    "llms-full.txt",
+  ]);
   expect(LLMS_FILES[0]?.when).toMatch(/first/);
   expect(LLMS_FILES[2]?.when).toMatch(/only when/);
 });

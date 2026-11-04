@@ -6,12 +6,12 @@ into `content/docs/`, keep the structure, replace the content.
 These files live outside `content/docs/` on purpose: `source.config.ts`
 publishes everything under that directory, and a template is not a page.
 
-| Archetype | Use it when the reader wants to | File |
-|---|---|---|
-| Tutorial | learn by doing, on a guaranteed happy path | `tutorial.mdx` |
-| How-to | accomplish one specific task they already have | `how-to.mdx` |
+| Archetype   | Use it when the reader wants to                  | File              |
+| ----------- | ------------------------------------------------ | ----------------- |
+| Tutorial    | learn by doing, on a guaranteed happy path       | `tutorial.mdx`    |
+| How-to      | accomplish one specific task they already have   | `how-to.mdx`      |
 | Explanation | understand why something is shaped the way it is | `explanation.mdx` |
-| Reference | look up an exact fact | `reference.mdx` |
+| Reference   | look up an exact fact                            | `reference.mdx`   |
 
 Three rules cut across all four.
 

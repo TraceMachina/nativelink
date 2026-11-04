@@ -37,7 +37,10 @@ export const LLMS_FILES: LlmsFile[] = [
 ];
 
 /** Bytes on disk of a generated llms file, or null if it has not been generated. */
-export function llmsFileBytes(name: LlmsFile["name"], publicDir = join(process.cwd(), "public")) {
+export function llmsFileBytes(
+  name: LlmsFile["name"],
+  publicDir = join(process.cwd(), "public"),
+) {
   try {
     return statSync(join(publicDir, name)).size;
   } catch {

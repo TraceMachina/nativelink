@@ -63,9 +63,9 @@ class BenchmarkTest(unittest.TestCase):
             end = next((i for i, line in enumerate(triggers[start:], start)
                         if line.strip() and not line.startswith('    ')), len(triggers))
             pull_request = '\n'.join(triggers[start:end])
-            self.assertIn("    paths-ignore:\n      - 'web/**'", pull_request, workflow)
+            self.assertIn("    paths-ignore:\n      - \"web/**\"", pull_request, workflow)
         web = Path('.github/workflows/web.yaml').read_text()
-        self.assertIn("  pull_request:\n    branches: [main]\n    paths:\n      - 'web/**'", web)
+        self.assertIn("  pull_request:\n    branches: [main]\n    paths:\n      - \"web/**\"", web)
 
     def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
         with tempfile.TemporaryDirectory() as directory:

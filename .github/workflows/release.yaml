@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing release tag to build, sign and attach assets to (e.g. v1.5.2).'
+        description: "Existing release tag to build, sign and attach assets to (e.g. v1.5.2)."
         required: true
         type: string
 

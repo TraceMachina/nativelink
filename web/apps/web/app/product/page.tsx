@@ -21,7 +21,10 @@ const pillars = [
     metric: "10B+",
     metricLabel: "requests / month",
     icon: (
-      <path d="M3 5C3 3 6 3 12 3C18 3 21 3 21 5V19C21 21 18 21 12 21C6 21 3 21 3 19V5Z M3 5C3 7 6 7 12 7C18 7 21 7 21 5 M3 12C3 14 6 14 12 14C18 14 21 14 21 12" strokeLinejoin="round" />
+      <path
+        d="M3 5C3 3 6 3 12 3C18 3 21 3 21 5V19C21 21 18 21 12 21C6 21 3 21 3 19V5Z M3 5C3 7 6 7 12 7C18 7 21 7 21 5 M3 12C3 14 6 14 12 14C18 14 21 14 21 12"
+        strokeLinejoin="round"
+      />
     ),
   },
   {
@@ -31,7 +34,13 @@ const pillars = [
     metric: "4-15×",
     metricLabel: "faster builds",
     icon: (
-      <><circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" /><path d="M9 6h6M9 18h6M6 9v6M18 9v6" /></>
+      <>
+        <circle cx="6" cy="6" r="3" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <circle cx="18" cy="18" r="3" />
+        <path d="M9 6h6M9 18h6M6 9v6M18 9v6" />
+      </>
     ),
   },
   {
@@ -41,7 +50,11 @@ const pillars = [
     metric: "<10m",
     metricLabel: "time to first hit",
     icon: (
-      <path d="M6 18H4C2.9 18 2 17.1 2 16C2 14.9 2.9 14 4 14H4.2C4.7 11.7 6.7 10 9 10C11.3 10 13.3 11.7 13.8 14H14C15.1 14 16 14.9 16 16C16 17.1 15.1 18 14 18H6Z M16 13L18 11L20 13M18 11V18" strokeLinejoin="round" strokeLinecap="round" />
+      <path
+        d="M6 18H4C2.9 18 2 17.1 2 16C2 14.9 2.9 14 4 14H4.2C4.7 11.7 6.7 10 9 10C11.3 10 13.3 11.7 13.8 14H14C15.1 14 16 14.9 16 16C16 17.1 15.1 18 14 18H6Z M16 13L18 11L20 13M18 11V18"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
     ),
   },
   {
@@ -51,7 +64,11 @@ const pillars = [
     metric: "0",
     metricLabel: "GC pauses",
     icon: (
-      <path d="M12 3L4 7v6c0 4 4 7 8 8 4-1 8-4 8-8V7L12 3Z M9 12l2 2 4-4" strokeLinejoin="round" strokeLinecap="round" />
+      <path
+        d="M12 3L4 7v6c0 4 4 7 8 8 4-1 8-4 8-8V7L12 3Z M9 12l2 2 4-4"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
     ),
   },
 ];
@@ -61,7 +78,10 @@ const integrationGroups = [
     label: "AI coding platforms",
     items: ["Claude Code", "Copilot Workspace", "Devin", "Cursor", "Windsurf"],
   },
-  { label: "Languages", items: ["C++", "Rust", "Python", "Go", "Java", "Kotlin", "Swift"] },
+  {
+    label: "Languages",
+    items: ["C++", "Rust", "Python", "Go", "Java", "Kotlin", "Swift"],
+  },
   {
     label: "Build systems",
     items: ["Bazel", "Buck2", "Siso", "Soong", "Pants", "Goma", "CMake (recc)"],
@@ -74,10 +94,22 @@ const integrationGroups = [
 const securityPoints = [
   { label: "SSO / SAML", body: "Okta, Azure AD, Google Workspace." },
   { label: "End-to-end TLS", body: "mTLS between every hop in the pipeline." },
-  { label: "Content-addressed", body: "Every artifact tamper-evident by hash." },
-  { label: "Signed inputs", body: "Worker inputs and outputs cryptographically signed." },
-  { label: "Hermetic builds", body: "No surprise dependencies pulled mid-build." },
-  { label: "Audit trails", body: "Queryable provenance for every action result." },
+  {
+    label: "Content-addressed",
+    body: "Every artifact tamper-evident by hash.",
+  },
+  {
+    label: "Signed inputs",
+    body: "Worker inputs and outputs cryptographically signed.",
+  },
+  {
+    label: "Hermetic builds",
+    body: "No surprise dependencies pulled mid-build.",
+  },
+  {
+    label: "Audit trails",
+    body: "Queryable provenance for every action result.",
+  },
 ];
 
 const faqItems: FAQItem[] = [
@@ -137,9 +169,9 @@ export default function ProductPage() {
                 </span>
               </h1>
               <p className="mx-auto mt-6 max-w-[700px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                NativeLink unifies remote caching, remote execution, and observability
-                into a single Rust-native platform — built to keep up with codebases
-                that grow faster than you can provision them.
+                NativeLink unifies remote caching, remote execution, and
+                observability into a single Rust-native platform — built to keep
+                up with codebases that grow faster than you can provision them.
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-3">
                 <CtaButton cta={GET_STARTED} />
@@ -158,7 +190,10 @@ export default function ProductPage() {
       </section>
 
       {/* PILLARS */}
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
+      <Section
+        width="default"
+        className="border-t border-border/60 bg-surface-elevated/40 py-24"
+      >
         <Reveal>
           <div className="mb-14 max-w-[600px]">
             <Eyebrow className="mb-4">The platform</Eyebrow>
@@ -174,7 +209,15 @@ export default function ProductPage() {
               <article className="group relative h-full overflow-hidden rounded-2xl border border-border bg-surface p-8 transition-all hover:border-brand/40 hover:shadow-[0_24px_60px_-30px_rgb(var(--nl-color-brand)/0.4)]">
                 <div className="flex items-start justify-between">
                   <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-soft text-brand transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                    <svg
+                      width="22"
+                      height="22"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      aria-hidden="true"
+                    >
                       {p.icon}
                     </svg>
                   </div>
@@ -212,9 +255,9 @@ export default function ProductPage() {
               <span className="text-brand">Provenance at every step.</span>
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              When humans commit code, you need traceability. When agents commit code,
-              you need it doubly. NativeLink makes every input explicit and every
-              output verifiable.
+              When humans commit code, you need traceability. When agents commit
+              code, you need it doubly. NativeLink makes every input explicit
+              and every output verifiable.
             </p>
             <div className="mt-8 flex flex-wrap gap-2">
               <Badge variant="success">SOC 2 in progress</Badge>
@@ -248,7 +291,10 @@ export default function ProductPage() {
       </Section>
 
       {/* INTEGRATIONS */}
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
+      <Section
+        width="default"
+        className="border-t border-border/60 bg-surface-elevated/40 py-24"
+      >
         <Reveal>
           <div className="mx-auto mb-12 max-w-[680px] text-center">
             <Eyebrow className="mb-4">Integrations</Eyebrow>
@@ -287,13 +333,15 @@ export default function ProductPage() {
           <Reveal>
             <Eyebrow className="mb-5">Proof at scale</Eyebrow>
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-[56px]">
-              LLVM builds <span className="text-brand">4× faster</span> on NativeLink.
+              LLVM builds <span className="text-brand">4× faster</span> on
+              NativeLink.
             </h2>
             <p className="mx-auto mt-6 max-w-[620px] text-base leading-relaxed text-muted-foreground md:text-lg">
-              LLVM contributors are using NativeLink with CMake and recc to distribute
-              builds of clang and the LLVM toolchain — cutting full-project compile
-              time from 17 minutes to 4. No build-system migration. No proprietary
-              client. Just your existing CMake setup, pointed at NativeLink.
+              LLVM contributors are using NativeLink with CMake and recc to
+              distribute builds of clang and the LLVM toolchain — cutting
+              full-project compile time from 17 minutes to 4. No build-system
+              migration. No proprietary client. Just your existing CMake setup,
+              pointed at NativeLink.
             </p>
             <div className="mt-10 grid grid-cols-3 gap-6">
               <div>
@@ -306,13 +354,17 @@ export default function ProductPage() {
                 <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
                   17m → 4m
                 </div>
-                <div className="mt-1 text-xs text-muted">full project compile</div>
+                <div className="mt-1 text-xs text-muted">
+                  full project compile
+                </div>
               </div>
               <div>
                 <div className="font-mono text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
                   0
                 </div>
-                <div className="mt-1 text-xs text-muted">build-system rewrite</div>
+                <div className="mt-1 text-xs text-muted">
+                  build-system rewrite
+                </div>
               </div>
             </div>
             <div className="mt-10 flex justify-center">
@@ -345,7 +397,10 @@ export default function ProductPage() {
             <FAQ items={faqItems} />
             <p className="mt-8 text-center text-sm text-muted-foreground">
               For more details, see the{" "}
-              <a href="/docs" className="text-brand underline-offset-4 hover:underline">
+              <a
+                href="/docs"
+                className="text-brand underline-offset-4 hover:underline"
+              >
                 NativeLink documentation
               </a>
               .

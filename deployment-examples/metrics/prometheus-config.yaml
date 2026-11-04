@@ -10,8 +10,8 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: 'nativelink-cluster'
-    environment: 'production'
+    cluster: "nativelink-cluster"
+    environment: "production"
 
 # Enable OTLP receiver (requires --web.enable-otlp-receiver flag)
 otlp:
@@ -50,20 +50,20 @@ otlp:
 # Scrape configurations
 scrape_configs:
   # Scrape the OTEL Collector's Prometheus endpoint
-  - job_name: 'otel-collector'
+  - job_name: "otel-collector"
     static_configs:
-      - targets: ['otel-collector:9090']
+      - targets: ["otel-collector:9090"]
     metric_relabel_configs:
       # Add nativelink prefix to all metrics from collector
       - source_labels: [__name__]
-        regex: '(nativelink_.*)'
+        regex: "(nativelink_.*)"
         target_label: __name__
-        replacement: '${1}'
+        replacement: "${1}"
 
   # Scrape Prometheus's own metrics
-  - job_name: 'prometheus'
+  - job_name: "prometheus"
     static_configs:
-      - targets: ['localhost:9090']
+      - targets: ["localhost:9090"]
 
   # Optional: Direct scrape of NativeLink instances (if metrics endpoint is exposed)
   # - job_name: 'nativelink-direct'
@@ -79,7 +79,8 @@ rule_files:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: ['alertmanager:9093']
+        - targets: ["alertmanager:9093"]
+
 
 # Example recording rules for NativeLink metrics
 # Save this as a separate file: rules/nativelink-recording-rules.yml
