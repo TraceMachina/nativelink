@@ -3,7 +3,7 @@ name: CI / Canary
 
 on:
   schedule:
-    - cron: '17 6 * * *'
+    - cron: "17 6 * * *"
   workflow_dispatch:
   pull_request:
     branches: [main]
@@ -172,5 +172,5 @@ jobs:
 
       - name: Run upload-dependent integration tests
         env:
-          NL_LOCAL_UPLOADS: '1'
+          NL_LOCAL_UPLOADS: "1"
         run: ./run_integration_tests.sh chunking_cache_test.sh simple_cache_test.sh

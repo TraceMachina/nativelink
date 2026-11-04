@@ -110,6 +110,12 @@ pub struct ByteStreamMetrics {
     /// Uploads whose client went away after the last byte; their commit
     /// finished on a task of its own.
     pub uploads_finished_in_background: AtomicU64,
+    /// Resumes for a UUID this instance did not hold whose blob already
+    /// existed, answered as complete.
+    pub unknown_uuid_resumes_completed: AtomicU64,
+    /// Resumes for a UUID this instance did not hold whose blob did not
+    /// exist, answered UNAVAILABLE so the client re-queries and restarts.
+    pub unknown_uuid_resumes_restarted: AtomicU64,
 }
 
 impl MetricsComponent for ByteStreamMetrics {
@@ -216,6 +222,18 @@ impl MetricsComponent for ByteStreamMetrics {
             MetricKind::Counter,
             "Uploads whose client went away after the last byte and whose commit finished on its own task"
         );
+        publish!(
+            "unknown_uuid_resumes_completed",
+            &self.unknown_uuid_resumes_completed,
+            MetricKind::Counter,
+            "Resumes for a UUID this instance did not hold whose blob already existed, answered as complete"
+        );
+        publish!(
+            "unknown_uuid_resumes_restarted",
+            &self.unknown_uuid_resumes_restarted,
+            MetricKind::Counter,
+            "Resumes for a UUID this instance did not hold whose blob did not exist, answered UNAVAILABLE for a restart"
+        );
 
         Ok(MetricPublishKnownKindData::Component)
     }
@@ -274,6 +292,8 @@ pub struct InstanceInfo {
     _sweeper_handle: Arc<JoinHandleDropGuard<()>>,
     /// Whether this instance supports Bazel remote cache compression.
     remote_cache_compression_enabled: bool,
+    /// See [`ByteStreamConfig::recover_unknown_uuid_resumes`].
+    recover_unknown_uuid_resumes: bool,
 }
 
 impl Debug for InstanceInfo {
@@ -674,6 +694,7 @@ impl ByteStreamServer {
             metrics,
             _sweeper_handle: Arc::new(sweeper_handle),
             remote_cache_compression_enabled,
+            recover_unknown_uuid_resumes: config.recover_unknown_uuid_resumes,
         })
     }
 
@@ -1692,6 +1713,48 @@ impl ByteStream for ByteStreamServer {
             stream.resource_info.compressor.as_deref(),
             instance.remote_cache_compression_enabled,
         )?;
+
+        // A resume that reaches an instance holding no state for its UUID —
+        // several instances behind a load balancer without session affinity
+        // route each request independently — would otherwise fail the upload
+        // with a non-retryable "out of order data" error, because the fresh
+        // stream expects offset 0. Answer it so the client can finish: done
+        // when the blob already exists, or retryable so the client re-queries
+        // the write status (an instance holding the upload answers with its
+        // offset, any other answers 0) and resumes or restarts from there.
+        if instance.recover_unknown_uuid_resumes
+            && wire_compressor == compressor::Value::Identity
+            && stream.first_msg_write_offset().unwrap_or(0) > 0
+            && let Some(resource_uuid) = stream.resource_info.uuid.as_deref()
+            && !instance
+                .active_uploads
+                .lock()
+                .contains_key(&parse_uuid_to_key(resource_uuid))
+        {
+            if store
+                .has(digest)
+                .await
+                .err_tip(|| "Checking blob existence for an unknown-UUID resume")?
+                .is_some()
+            {
+                instance
+                    .metrics
+                    .unknown_uuid_resumes_completed
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(Response::new(WriteResponse {
+                    committed_size: expected_size.try_into().unwrap_or(i64::MAX),
+                }));
+            }
+            instance
+                .metrics
+                .unknown_uuid_resumes_restarted
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(make_err!(
+                Code::Unavailable,
+                "No upload state for {resource_uuid} on this instance; query the write status and resume from the reported offset"
+            )
+            .into());
+        }
 
         // For compressed uploads, stream compressed wire bytes through the
         // decoder and store the resulting raw bytes.

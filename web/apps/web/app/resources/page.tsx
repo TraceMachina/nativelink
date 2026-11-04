@@ -6,7 +6,8 @@ export const metadata = { title: "Resources" };
 
 const featuredPost = {
   tag: "Case study",
-  title: "How LLVM cut clang compile time from 17 minutes to 4 with NativeLink + recc.",
+  title:
+    "How LLVM cut clang compile time from 17 minutes to 4 with NativeLink + recc.",
   excerpt:
     "LLVM contributors needed faster iteration without rewriting their CMake setup. They pointed recc at a NativeLink cluster and saw 4× speedups on first try.",
   date: "March 14, 2026",
@@ -35,7 +36,8 @@ export default function ResourcesPage() {
     (p) => p.tags.includes("announcements") && !p.tags.includes("case-studies"),
   );
   const others = posts.filter(
-    (p) => !p.tags.includes("case-studies") && !p.tags.includes("announcements"),
+    (p) =>
+      !p.tags.includes("case-studies") && !p.tags.includes("announcements"),
   );
 
   return (
@@ -55,8 +57,9 @@ export default function ResourcesPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Case studies, conference talks, and write-ups from the team building NativeLink —
-                plus highlights from the broader community.
+                Case studies, conference talks, and write-ups from the team
+                building NativeLink — plus highlights from the broader
+                community.
               </p>
             </div>
           </Reveal>
@@ -117,7 +120,9 @@ export default function ResourcesPage() {
                         <div className="bg-gradient-to-br from-brand to-brand-strong bg-clip-text font-mono text-5xl font-semibold text-transparent md:text-6xl">
                           4m
                         </div>
-                        <div className="mt-1 text-xs text-brand">With NativeLink</div>
+                        <div className="mt-1 text-xs text-brand">
+                          With NativeLink
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -129,7 +134,10 @@ export default function ResourcesPage() {
       </Section>
 
       {/* BOOKS */}
-      <Section width="default" className="border-t border-border/60 pb-20 pt-16">
+      <Section
+        width="default"
+        className="border-t border-border/60 pb-20 pt-16"
+      >
         <Reveal>
           <div className="mb-8">
             <Eyebrow className="mb-3">Books and publications</Eyebrow>
@@ -163,12 +171,15 @@ export default function ResourcesPage() {
                 Extending Bazel to Its Full Potential
               </h3>
               <p className="max-w-[52ch] text-[15px] leading-relaxed text-muted-foreground">
-                Free O'Reilly e-book on cloud builds, parallelization, remote execution, and
-                NativeLink — by Brian Moakley and Marcus Eagan.
+                Free O'Reilly e-book on cloud builds, parallelization, remote
+                execution, and NativeLink — by Brian Moakley and Marcus Eagan.
               </p>
               <span className="inline-flex items-center justify-center gap-1.5 font-mono text-sm text-brand md:justify-start">
                 Download free{" "}
-                <span aria-hidden="true" className="transition-transform group-hover:translate-x-1">
+                <span
+                  aria-hidden="true"
+                  className="transition-transform group-hover:translate-x-1"
+                >
                   →
                 </span>
               </span>

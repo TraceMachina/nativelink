@@ -3,12 +3,12 @@ name: "Security / CodeQL"
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   schedule:
     # Non-peak hour 1:21 AM on Saturdays.
-    - cron: '21 1 * * 6'
+    - cron: "21 1 * * 6"
 
 permissions: read-all
 
@@ -29,21 +29,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ 'javascript-typescript', 'python' ]
+        language: ["javascript-typescript", "python"]
 
     steps:
-    - name: Checkout
-      uses: >- # v6.0.2
-        actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-    - name: Initialize CodeQL
-      uses: >- # v3.28.9
-        github/codeql-action/init@9e8d0789d4a0fa9ceb6b1738f7e269594bdd67f0
-      with:
-        languages: ${{ matrix.language }}
+      - name: Initialize CodeQL
+        uses: >- # v3.28.9
+          github/codeql-action/init@9e8d0789d4a0fa9ceb6b1738f7e269594bdd67f0
+        with:
+          languages: ${{ matrix.language }}
 
-    - name: Perform CodeQL Analysis
-      uses: >- # v3.28.9
-        github/codeql-action/analyze@9e8d0789d4a0fa9ceb6b1738f7e269594bdd67f0
-      with:
-        category: "/language:${{matrix.language}}"
+      - name: Perform CodeQL Analysis
+        uses: >- # v3.28.9
+          github/codeql-action/analyze@9e8d0789d4a0fa9ceb6b1738f7e269594bdd67f0
+        with:
+          category: "/language:${{matrix.language}}"

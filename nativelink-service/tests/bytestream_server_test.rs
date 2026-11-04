@@ -155,6 +155,7 @@ fn make_bytestream_server_with_remote_cache_compression(
                 cas_store: "main_cas".to_string(),
                 persist_stream_on_disconnect_timeout_s: 0,
                 max_bytes_per_stream: 1024,
+                ..Default::default()
             },
         }]
     });
@@ -2531,5 +2532,87 @@ async fn retry_that_sees_the_commit_finish_and_then_disconnects_is_not_parked()
         .expect("task panicked")?
         .into_inner();
     assert_eq!(response.committed_size, i64::try_from(WRITE_DATA.len())?);
+    Ok(())
+}
+
+/// A resume that lands on an instance holding no state for its UUID (several
+/// instances behind a load balancer that routes each request independently)
+/// must fail retryably, so the client re-queries the write status and
+/// restarts, instead of the non-retryable "out of order data" error a fresh
+/// stream expecting offset 0 would produce.
+#[nativelink_test]
+async fn unknown_uuid_resume_restarts_when_blob_is_missing()
+-> Result<(), Box<dyn core::error::Error>> {
+    const DATA: &[u8] = b"0123456789";
+    const SPLIT: usize = 5;
+    let resource_name = make_resource_name(DATA.len());
+    let bs_server = Arc::new(
+        make_bytestream_server(make_store_manager().await?.as_ref(), None)
+            .expect("Failed to make server"),
+    );
+
+    // This instance never saw the upload begin; the client resumes here.
+    let (tx, join) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: i64::try_from(SPLIT)?,
+        finish_write: true,
+        data: DATA[SPLIT..].into(),
+    })?))
+    .await?;
+
+    let status_code = tokio::time::timeout(core::time::Duration::from_secs(5), join)
+        .await
+        .expect("resume hung")
+        .expect("task panicked")
+        .expect_err("a resume with no local state and no stored blob must fail")
+        .code();
+    assert_eq!(
+        status_code,
+        Code::Unavailable,
+        "The client must see a retryable status so it re-queries and restarts"
+    );
+    drop(tx);
+    Ok(())
+}
+
+/// The same landing, but the blob already exists (the instance holding the
+/// upload finished it): the write completes immediately with the full
+/// committed size.
+#[nativelink_test]
+async fn unknown_uuid_resume_completes_when_blob_exists() -> Result<(), Box<dyn core::error::Error>>
+{
+    const DATA: &[u8] = b"0123456789";
+    const SPLIT: usize = 5;
+    let resource_name = make_resource_name(DATA.len());
+    let store_manager = make_store_manager().await?;
+    let bs_server = Arc::new(
+        make_bytestream_server(store_manager.as_ref(), None).expect("Failed to make server"),
+    );
+    let store = store_manager.get_store("main_cas").unwrap();
+    store
+        .update_oneshot(DigestInfo::try_new(HASH1, DATA.len())?, DATA.into())
+        .await?;
+
+    let (tx, join) = make_stream_and_writer_spawn(bs_server, None);
+    tx.send(Frame::data(encode_stream_proto(&WriteRequest {
+        resource_name,
+        write_offset: i64::try_from(SPLIT)?,
+        finish_write: true,
+        data: DATA[SPLIT..].into(),
+    })?))
+    .await?;
+
+    let response = tokio::time::timeout(core::time::Duration::from_secs(5), join)
+        .await
+        .expect("resume hung")
+        .expect("task panicked")?
+        .into_inner();
+    assert_eq!(
+        response.committed_size,
+        i64::try_from(DATA.len())?,
+        "An already-stored blob answers the resume as complete"
+    );
+    drop(tx);
     Ok(())
 }

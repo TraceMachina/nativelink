@@ -7,7 +7,9 @@ const allowRequest = createRateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
 
 // Vercel sets x-forwarded-for itself, so the first entry is the real client address.
 function clientIp(request: NextRequest): string {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  return (
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown"
+  );
 }
 
 export async function POST(request: NextRequest) {

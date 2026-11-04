@@ -124,9 +124,9 @@ export default function CareersPage() {
               appreciated contribution.
             </p>
             <p>
-              We prioritize a love of build systems, low latency, an interest
-              in Rust, and experience with Rust or C++. None of it needs to be
-              on a resume: it can be in your commits.
+              We prioritize a love of build systems, low latency, an interest in
+              Rust, and experience with Rust or C++. None of it needs to be on a
+              resume: it can be in your commits.
             </p>
           </div>
         </Reveal>

@@ -102,13 +102,17 @@ export function SiteFooter({
 }: SiteFooterProps) {
   const year = new Date().getFullYear();
   return (
-    <footer className={cn("border-t border-border/60 bg-background", className)}>
+    <footer
+      className={cn("border-t border-border/60 bg-background", className)}
+    >
       <div className="mx-auto grid w-full max-w-[1200px] grid-cols-2 gap-x-8 gap-y-12 px-6 py-16 sm:grid-cols-4 lg:grid-cols-[1.5fr_repeat(4,1fr)]">
         <div className="col-span-2 flex flex-col gap-4 sm:col-span-4 lg:col-span-1">
           <a href="/" aria-label="NativeLink — home" className="inline-flex">
             <Logo size="md" />
           </a>
-          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">{tagline}</p>
+          <p className="max-w-[20rem] text-sm leading-relaxed text-muted-foreground">
+            {tagline}
+          </p>
         </div>
 
         {columns.map((col) => (
