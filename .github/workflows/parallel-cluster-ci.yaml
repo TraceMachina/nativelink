@@ -1,8 +1,12 @@
 name: CI / NativeLink
 
 on:
+  # Web-only changes are covered by CI / Web and skip the Bazel lanes.
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'web/**'
+      - '.github/styles/**'
   push:
     branches: ['**']
     paths-ignore:
