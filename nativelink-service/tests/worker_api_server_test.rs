@@ -1374,3 +1374,120 @@ pub async fn a_slow_result_does_not_stop_the_stream_reads_test()
     summary_after_report(&test_context, 8).await;
     Ok(())
 }
+
+fn plain_scheduler(
+    worker_timeout: u64,
+) -> (
+    Arc<ApiWorkerScheduler>,
+    HashMap<String, Arc<dyn WorkerScheduler>>,
+    WorkerApiConfig,
+) {
+    const SCHEDULER_NAME: &str = "PLAIN_SCHEDULER";
+    let scheduler = ApiWorkerScheduler::new(
+        Arc::new(MockWorkerStateManager::new()),
+        Arc::new(PlatformPropertyManager::new(HashMap::new())),
+        WorkerAllocationStrategy::default(),
+        None,
+        None,
+        None,
+        Arc::new(Notify::new()),
+        worker_timeout,
+        60,
+        0,
+        Arc::new(WorkerRegistry::new()),
+        None,
+        None,
+        false,
+        Duration::from_secs(15),
+        "scheduler".to_string(),
+    );
+    let mut schedulers: HashMap<String, Arc<dyn WorkerScheduler>> = HashMap::new();
+    schedulers.insert(SCHEDULER_NAME.to_string(), scheduler.clone());
+    let config = WorkerApiConfig {
+        scheduler: SCHEDULER_NAME.to_string(),
+        disable_kill_revoked_operations: true,
+        kill_revoked_operations_interval_s: 0,
+    };
+    (scheduler, schedulers, config)
+}
+
+/// Connects a worker with `prefix` and returns the id the scheduler gave it.
+async fn connect_with_prefix(
+    server: &WorkerApiServer,
+    prefix: &str,
+) -> Result<(WorkerId, ConnectWorkerStream, mpsc::Sender<Update>), Error> {
+    let (tx, rx) = mpsc::channel(1);
+    tx.send(Update::ConnectWorkerRequest(ConnectWorkerRequest {
+        worker_id_prefix: prefix.to_string(),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    let update_stream = Box::pin(futures::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|update| {
+            (
+                Ok(UpdateForScheduler {
+                    update: Some(update),
+                }),
+                rx,
+            )
+        })
+    }));
+    let mut stream = server
+        .inner_connect_worker_for_testing(update_stream)
+        .await?
+        .into_inner();
+    let first = stream
+        .next()
+        .await
+        .err_tip(|| "Expected a first message")?
+        .err_tip(|| "Expected success")?
+        .update;
+    let Some(update_for_worker::Update::ConnectionResult(result)) = first else {
+        return Err(make_err!(
+            nativelink_error::Code::Internal,
+            "Expected ConnectionResult, got {first:?}"
+        ));
+    };
+    Ok((result.worker_id.into(), stream, tx))
+}
+
+#[nativelink_test]
+async fn worker_ids_come_from_the_worker_id_fn() -> Result<(), Box<dyn core::error::Error>> {
+    let (_scheduler, schedulers, config) = plain_scheduler(BASE_WORKER_TIMEOUT_S);
+    let next = Arc::new(Mutex::new(0));
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?
+            .with_worker_id_fn(Box::new(move || {
+                let mut next = next.lock().unwrap();
+                *next += 1;
+                format!("w{next}")
+            }));
+    let (first, _first_stream, _first_tx) = connect_with_prefix(&server, "pool-").await?;
+    let (second, _second_stream, _second_tx) = connect_with_prefix(&server, "pool-").await?;
+    assert_eq!(first, WorkerId::from("pool-w1".to_string()));
+    assert_eq!(second, WorkerId::from("pool-w2".to_string()));
+    Ok(())
+}
+
+/// The eviction timer reads the clock it is given, not the wall clock: a
+/// worker seen at 10 s is gone the first tick after the clock reads past
+/// its timeout.
+#[nativelink_test(start_paused = true)]
+async fn spawned_timers_evict_on_the_injected_clock() -> Result<(), Box<dyn core::error::Error>> {
+    let (scheduler, schedulers, config) = plain_scheduler(BASE_WORKER_TIMEOUT_S);
+    let server =
+        WorkerApiServer::new_with_now_fn(&config, &schedulers, Box::new(static_now_fn), [1u8; 6])?;
+    let (worker_id, _stream, _tx) = connect_with_prefix(&server, "").await?;
+    assert!(scheduler.contains_worker_for_test(&worker_id).await);
+
+    // Before the timers run, nothing evicts.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(scheduler.contains_worker_for_test(&worker_id).await);
+
+    let late: NowFn = Box::new(|| Ok(Duration::from_secs(BASE_NOW_S + BASE_WORKER_TIMEOUT_S + 1)));
+    WorkerApiServer::spawn_timers(&config, &schedulers, &Arc::new(late));
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert!(!scheduler.contains_worker_for_test(&worker_id).await);
+    Ok(())
+}
