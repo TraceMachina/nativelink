@@ -81,8 +81,8 @@ pub struct FastSlowStore {
     // still running, is no longer visible here — at worst a duplicate
     // upload, never a wrong answer.
     in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<InFlightSlowWrite>>>,
-    /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` waits
-    /// indefinitely.
+    /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` (unset
+    /// or configured 0) waits indefinitely: the deadline is opt-in.
     has_slow_write_wait_timeout: Option<Duration>,
     /// See [`FastSlowSpec::leader_inactivity_timeout_s`]. `None` never
     /// times a fill out.
@@ -224,9 +224,8 @@ impl FastSlowStore {
             populating_digests: Mutex::new(HashMap::new()),
             in_flight_slow_writes: Mutex::new(HashMap::new()),
             has_slow_write_wait_timeout: match spec.has_slow_write_wait_timeout_s {
-                Some(0) => None,
+                None | Some(0) => None,
                 Some(secs) => Some(Duration::from_secs(secs as u64)),
-                None => Some(DEFAULT_HAS_SLOW_WRITE_WAIT_TIMEOUT),
             },
             leader_inactivity_timeout: (spec.leader_inactivity_timeout_s > 0)
                 .then(|| Duration::from_secs(spec.leader_inactivity_timeout_s as u64)),
@@ -1273,14 +1272,5 @@ struct FastSlowStoreMetrics {
 /// deadline fired (e.g. Bazel's `--remote_timeout`), turning a
 /// single slow read into a fan-out of `DEADLINE_EXCEEDED` errors.
 const LEADER_WAIT_TIMEOUT: Duration = Duration::from_mins(1);
-
-/// Default for [`FastSlowSpec::has_slow_write_wait_timeout_s`]: how long
-/// `has` waits on a key whose slow write is still in flight before
-/// reporting it missing, measured from when the write registered.
-/// Deliberately under typical client deadlines (Bazel's default
-/// `--remote_timeout` is 60s): the degraded answer has to arrive while the
-/// client is still listening, or every timeout here surfaces as the
-/// client's own `DEADLINE_EXCEEDED` instead of a re-upload.
-const DEFAULT_HAS_SLOW_WRITE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 default_health_status_indicator!(FastSlowStore);
