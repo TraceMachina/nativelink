@@ -24,7 +24,10 @@
 // --------------------------------------------------------------------------
 
 function escapeMdxText(text) {
-  return text.replace(/</g, "&lt;").replace(/\{/g, "&#123;").replace(/\}/g, "&#125;");
+  return text
+    .replace(/</g, "&lt;")
+    .replace(/\{/g, "&#123;")
+    .replace(/\}/g, "&#125;");
 }
 
 function escapeTableCell(text) {
@@ -46,7 +49,9 @@ function prose(md) {
   return md
     .split(/(`[^`]*`)/g)
     .map((segment) =>
-      segment.startsWith("`") && segment.endsWith("`") ? segment : escapeMdxText(segment),
+      segment.startsWith("`") && segment.endsWith("`")
+        ? segment
+        : escapeMdxText(segment),
     )
     .join("");
 }
@@ -79,7 +84,9 @@ function sourceLink(githubBase, ref, file, line) {
 
 function siteList(sites, githubBase, ref) {
   if (!sites.length) return "—";
-  return sites.map((s) => sourceLink(githubBase, ref, s.file, s.line)).join(", ");
+  return sites
+    .map((s) => sourceLink(githubBase, ref, s.file, s.line))
+    .join(", ");
 }
 
 // --------------------------------------------------------------------------
@@ -137,7 +144,9 @@ function renderNeverEmitted(inventory, githubBase, ref) {
 
   const rows = dead.map(({ m }) => {
     const refs = m.artifacts.length
-      ? m.artifacts.map((a) => sourceLink(githubBase, ref, a.file, a.line)).join(", ")
+      ? m.artifacts
+          .map((a) => sourceLink(githubBase, ref, a.file, a.line))
+          .join(", ")
       : "—";
     return `| \`${m.otelName}\` | \`${m.promName ?? m.promNameGuess}\` | ${refs} |`;
   });
@@ -152,7 +161,9 @@ function renderNeverEmitted(inventory, githubBase, ref) {
   if (withRefs.length) {
     out.push(
       `<Callout type="warn" title="The shipped observability examples query ${
-        withRefs.length === 1 ? "a series that does not exist" : "series that do not exist"
+        withRefs.length === 1
+          ? "a series that does not exist"
+          : "series that do not exist"
       }">`,
       "",
       `  ${withRefs
@@ -260,7 +271,9 @@ function renderAttributes(inventory, githubBase, ref) {
       "",
     );
   }
-  const enums = inventory.valueEnums.filter((e) => e.variants.some((v) => v.doc));
+  const enums = inventory.valueEnums.filter((e) =>
+    e.variants.some((v) => v.doc),
+  );
   for (const e of enums) {
     out.push(`### \`${e.attribute ?? e.name}\` values`, "");
     out.push(
@@ -398,12 +411,12 @@ export function metricsToMdx(inventory, opts) {
     "",
     "## Where to go next",
     "",
-    "<NextStep href=\"/operate/observability\" title=\"Wire up the telemetry pipeline\">",
+    '<NextStep href="/operate/observability" title="Wire up the telemetry pipeline">',
     "  The collector, the exporter interval and the queries worth alerting on: the",
     "  operational half of this reference.",
     "</NextStep>",
     "",
-    "<NextStep href=\"/reference/nativelink-config\" title=\"Configuration reference\" kind=\"aside\">",
+    '<NextStep href="/reference/nativelink-config" title="Configuration reference" kind="aside">',
     "  Every configuration field, generated the same way from the same source of",
     "  truth.",
     "</NextStep>",

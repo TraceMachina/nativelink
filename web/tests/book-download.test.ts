@@ -27,7 +27,15 @@ describe("workEmailError", () => {
   });
 
   test("rejects malformed addresses", () => {
-    for (const email of ["", "a@b", "a@.com", "a@b.", "a@b..com", "a b@c.com", "a@@b.com"]) {
+    for (const email of [
+      "",
+      "a@b",
+      "a@.com",
+      "a@b.",
+      "a@b..com",
+      "a b@c.com",
+      "a@@b.com",
+    ]) {
       expect(workEmailError(email)).toBe(INVALID);
     }
   });
@@ -61,12 +69,14 @@ type FetchCall = { url: string; body: Record<string, unknown> };
 
 function mockFetch(responses: Record<string, () => Response>) {
   const calls: FetchCall[] = [];
-  globalThis.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const url = String(input);
-    calls.push({ url, body: JSON.parse(String(init?.body)) });
-    const path = new URL(url).pathname;
-    return responses[path]?.() ?? new Response(null, { status: 500 });
-  }) as unknown as typeof fetch;
+  globalThis.fetch = jest.fn(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, body: JSON.parse(String(init?.body)) });
+      const path = new URL(url).pathname;
+      return responses[path]?.() ?? new Response(null, { status: 500 });
+    },
+  ) as unknown as typeof fetch;
   return calls;
 }
 
@@ -92,14 +102,20 @@ afterEach(() => {
 });
 
 describe("recordBookDownload", () => {
-  const download = { email: "<b>x</b>@corp.com", time: "2026-10-26T00:00:00.000Z" };
+  const download = {
+    email: "<b>x</b>@corp.com",
+    time: "2026-10-26T00:00:00.000Z",
+  };
 
   test("stores the contact and sends only a plain-text internal notification", async () => {
     process.env.RESEND_SEGMENT_ID = "seg_1";
     const calls = mockFetch({ "/contacts": ok, "/emails": ok });
     await recordBookDownload(download);
 
-    expect(calls.map((c) => new URL(c.url).pathname)).toEqual(["/contacts", "/emails"]);
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual([
+      "/contacts",
+      "/emails",
+    ]);
     expect(calls[0].body).toEqual({
       email: download.email,
       unsubscribed: false,
@@ -111,27 +127,39 @@ describe("recordBookDownload", () => {
   });
 
   test("treats an existing contact as stored", async () => {
-    mockFetch({ "/contacts": () => new Response(null, { status: 409 }), "/emails": ok });
+    mockFetch({
+      "/contacts": () => new Response(null, { status: 409 }),
+      "/emails": ok,
+    });
     await expect(recordBookDownload(download)).resolves.toBeUndefined();
   });
 
   test("fails when the contact cannot be stored", async () => {
-    const calls = mockFetch({ "/contacts": () => new Response(null, { status: 500 }) });
-    await expect(recordBookDownload(download)).rejects.toThrow("Failed to store contact");
+    const calls = mockFetch({
+      "/contacts": () => new Response(null, { status: 500 }),
+    });
+    await expect(recordBookDownload(download)).rejects.toThrow(
+      "Failed to store contact",
+    );
     expect(calls).toHaveLength(1);
-    expect(errorLogs).toEqual([])
+    expect(errorLogs).toEqual([]);
   });
 
   test("a failed notification does not fail the download", async () => {
-    mockFetch({ "/contacts": ok, "/emails": () => new Response(null, { status: 500 }) });
+    mockFetch({
+      "/contacts": ok,
+      "/emails": () => new Response(null, { status: 500 }),
+    });
     await expect(recordBookDownload(download)).resolves.toBeUndefined();
-    expect(errorLogs).toEqual([["Failed to send download notification:", 500]])
+    expect(errorLogs).toEqual([["Failed to send download notification:", 500]]);
   });
 
   test("requires RESEND_API_KEY", async () => {
     Reflect.deleteProperty(process.env, "RESEND_API_KEY");
-    await expect(recordBookDownload(download)).rejects.toThrow("RESEND_API_KEY");
-    expect(errorLogs).toEqual([])
+    await expect(recordBookDownload(download)).rejects.toThrow(
+      "RESEND_API_KEY",
+    );
+    expect(errorLogs).toEqual([]);
   });
 });
 
@@ -141,7 +169,10 @@ describe("POST /api/mail", () => {
     return POST(
       new Request("http://localhost/api/mail", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-forwarded-for": clientIp },
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": clientIp,
+        },
         body,
       }) as unknown as NextRequest,
     );
@@ -149,7 +180,9 @@ describe("POST /api/mail", () => {
 
   test("rejects invalid JSON, markup and consumer domains with 400", async () => {
     expect((await post("{")).status).toBe(400);
-    const markup = await post(JSON.stringify({ email: "<svg/onload=alert(1)>@evil.com" }));
+    const markup = await post(
+      JSON.stringify({ email: "<svg/onload=alert(1)>@evil.com" }),
+    );
     expect(markup.status).toBe(400);
     expect((await markup.json()).error).toBe(INVALID);
     const personal = await post(JSON.stringify({ email: "me@gmail.com" }));
@@ -158,13 +191,22 @@ describe("POST /api/mail", () => {
 
   test("returns 200 once the contact is stored", async () => {
     mockFetch({ "/contacts": ok, "/emails": ok });
-    expect((await post(JSON.stringify({ email: " reader@corp.com " }))).status).toBe(200);
+    expect(
+      (await post(JSON.stringify({ email: " reader@corp.com " }))).status,
+    ).toBe(200);
   });
 
   test("returns 500 when Resend is not configured", async () => {
     Reflect.deleteProperty(process.env, "RESEND_API_KEY");
-    expect((await post(JSON.stringify({ email: "reader@corp.com" }))).status).toBe(500);
-    expect(errorLogs).toEqual([["Error recording book download:", new Error("RESEND_API_KEY is not configured")]])
+    expect(
+      (await post(JSON.stringify({ email: "reader@corp.com" }))).status,
+    ).toBe(500);
+    expect(errorLogs).toEqual([
+      [
+        "Error recording book download:",
+        new Error("RESEND_API_KEY is not configured"),
+      ],
+    ]);
   });
 
   test("returns 429 after five requests from one address", async () => {

@@ -68,12 +68,12 @@ context and must never check out or execute fork code.
 Set `NATIVELINK_CLUSTER_API_KEY` in the environment, using a dedicated build key
 with cache read/write and BEP publishing, without worker registration. Configure:
 
-| Variable | Meaning |
-| --- | --- |
-| `NATIVELINK_CLUSTER_ENDPOINT` | TLS REAPI endpoint, `grpcs://host:443` |
-| `NATIVELINK_CLUSTER_BEP_ENDPOINT` | TLS BEP endpoint |
-| `NATIVELINK_CLUSTER_INSTANCE` | Remote instance name |
-| `NATIVELINK_CLUSTER_RESULTS_URL` | HTTPS build results URL prefix |
+| Variable                          | Meaning                                            |
+| --------------------------------- | -------------------------------------------------- |
+| `NATIVELINK_CLUSTER_ENDPOINT`     | TLS REAPI endpoint, `grpcs://host:443`             |
+| `NATIVELINK_CLUSTER_BEP_ENDPOINT` | TLS BEP endpoint                                   |
+| `NATIVELINK_CLUSTER_INSTANCE`     | Remote instance name                               |
+| `NATIVELINK_CLUSTER_RESULTS_URL`  | HTTPS build results URL prefix                     |
 | `NATIVELINK_CLUSTER_WORKER_IMAGE` | Exact image property advertised by the worker pool |
 
 The cluster lane reserves 1,000 CPU units, 2,000,000 KB memory and 1,000,000 KB

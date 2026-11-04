@@ -7,14 +7,14 @@ on:
   # (head branch `release/vX.Y.Z`, as in #3028) runs it, as do the nightly
   # run of main, a published release, and a manual dispatch.
   schedule:
-    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   release:
     types: [published]
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'web/**'
-      - '.github/styles/**'
+      - "web/**"
+      - ".github/styles/**"
   workflow_dispatch:
 
 permissions: read-all

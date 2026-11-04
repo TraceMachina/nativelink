@@ -7,6 +7,9 @@ settings:
 overrides:
   katex@>=0.11.0 <0.18.2: ^0.18.2
   mdast-util-to-markdown: 2.1.2
+  baseline-browser-mapping: 2.11.35
+  dompurify: ^3.4.17
+  postcss: ^8.5.23
 
 importers:
 
@@ -2250,8 +2253,8 @@ packages:
     resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
     engines: {node: 18 || 20 || >=22}
 
-  baseline-browser-mapping@2.11.29:
-    resolution: {integrity: sha512-YeesxhUmR4h5y5V8KF8iBCqJb8YFrBJ++XBTeGcWIaQOYXGN19JM0FoiOjAhwuDoln8owMgXcWBmgHtYSkky2w==}
+  baseline-browser-mapping@2.11.35:
+    resolution: {integrity: sha512-GNk8KX52CHqeNKGk8+7tZnQab/2k1t/BgrUHPKNdijzpEhF1saPQZHVKb6m5loSAxB39gyrTYw34Qf9CQ3u1qQ==}
     engines: {node: '>=6.0.0'}
     hasBin: true
 
@@ -6058,7 +6061,7 @@ snapshots:
 
   balanced-match@4.0.4: {}
 
-  baseline-browser-mapping@2.11.29: {}
+  baseline-browser-mapping@2.11.35: {}
 
   brace-expansion@2.1.7:
     dependencies:
@@ -6070,7 +6073,7 @@ snapshots:
 
   browserslist@4.29.3:
     dependencies:
-      baseline-browser-mapping: 2.11.29
+      baseline-browser-mapping: 2.11.35
       caniuse-lite: 1.0.30001816
       electron-to-chromium: 1.5.459
       node-releases: 2.0.59
@@ -7835,7 +7838,7 @@ snapshots:
     dependencies:
       '@next/env': 16.4.4
       '@swc/helpers': 0.5.23
-      baseline-browser-mapping: 2.11.29
+      baseline-browser-mapping: 2.11.35
       caniuse-lite: 1.0.30001816
       postcss: 8.5.23
       react: 19.3.1

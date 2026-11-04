@@ -205,16 +205,20 @@ export default async function SecurityPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Our security program is aligned to the SOC 2 framework and covers
-                our organization, our cloud infrastructure, access, and vendors.
-                The controls below describe how we protect your data.
+                Our security program is aligned to the SOC 2 framework and
+                covers our organization, our cloud infrastructure, access, and
+                vendors. The controls below describe how we protect your data.
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-3">
                 <Button size="lg" asChild>
-                  <a href="mailto:security@tracemachina.com">Contact security</a>
+                  <a href="mailto:security@tracemachina.com">
+                    Contact security
+                  </a>
                 </Button>
                 <Button size="lg" variant="outline" asChild>
-                  <a href="mailto:security@tracemachina.com?subject=Report%20request">Request a report</a>
+                  <a href="mailto:security@tracemachina.com?subject=Report%20request">
+                    Request a report
+                  </a>
                 </Button>
               </div>
             </div>
@@ -223,7 +227,10 @@ export default async function SecurityPage() {
       </section>
 
       {/* OPENSSF SCORECARD */}
-      <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-24">
+      <Section
+        width="default"
+        className="border-y border-border/60 bg-surface-elevated/40 py-24"
+      >
         <Reveal>
           <div className="mb-12 max-w-[760px]">
             <Eyebrow className="mb-4">OpenSSF framework</Eyebrow>
@@ -247,7 +254,9 @@ export default async function SecurityPage() {
                     Current OpenSSF Scorecard
                   </p>
                   <p className="mt-3 text-6xl font-semibold tracking-[-0.05em] text-foreground md:text-7xl">
-                    {scorecardScore === null ? "Live" : scorecardScore.toFixed(1)}
+                    {scorecardScore === null
+                      ? "Live"
+                      : scorecardScore.toFixed(1)}
                     {scorecardScore !== null && (
                       <span className="ml-1 text-2xl tracking-normal text-muted-foreground">
                         /10
@@ -276,9 +285,10 @@ export default async function SecurityPage() {
                 >
                   OpenSSF Scorecard
                 </a>{" "}
-                automatically checks open source projects for software supply chain risks and
-                publishes a score out of 10. We maintain our strong result through code review, CI,
-                automated security testing, pinned dependencies, least-privilege workflows, and
+                automatically checks open source projects for software supply
+                chain risks and publishes a score out of 10. We maintain our
+                strong result through code review, CI, automated security
+                testing, pinned dependencies, least-privilege workflows, and
                 signed releases.
               </p>
             </div>
@@ -317,7 +327,11 @@ export default async function SecurityPage() {
 
       {/* CONTROL GROUPS */}
       {groups.map((group) => (
-        <Section key={group.eyebrow} width="default" className="border-b border-border/60 py-24">
+        <Section
+          key={group.eyebrow}
+          width="default"
+          className="border-b border-border/60 py-24"
+        >
           <Reveal>
             <div className="mb-12 max-w-[680px]">
               <Eyebrow className="mb-4">{group.eyebrow}</Eyebrow>
@@ -372,12 +386,14 @@ export default async function SecurityPage() {
               Questions, or something to report?
             </h2>
             <p className="mx-auto mt-5 max-w-[560px] text-base leading-relaxed text-muted-foreground md:text-lg">
-              If you have any questions, comments, or concerns, or wish to report
-              a potential security issue, please contact us.
+              If you have any questions, comments, or concerns, or wish to
+              report a potential security issue, please contact us.
             </p>
             <div className="mt-8 flex justify-center">
               <Button size="lg" asChild>
-                <a href="mailto:security@tracemachina.com">security@tracemachina.com</a>
+                <a href="mailto:security@tracemachina.com">
+                  security@tracemachina.com
+                </a>
               </Button>
             </div>
           </Reveal>

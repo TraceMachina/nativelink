@@ -6,7 +6,9 @@ import { leavesSite } from "../src/lib/nav";
 const footerLinks = defaultFooterColumns.flatMap((column) => column.links);
 
 test("every header destination appears in the footer under the same label", () => {
-  const footerLabelByHref = new Map(footerLinks.map((link) => [link.href, link.label]));
+  const footerLabelByHref = new Map(
+    footerLinks.map((link) => [link.href, link.label]),
+  );
   for (const link of defaultNavLinks) {
     expect(footerLabelByHref.get(link.href)).toBe(link.label);
   }
@@ -20,7 +22,9 @@ test("no destination appears twice in the footer, and no label points two ways",
 });
 
 test("links that leave the site sit at the end of the header", () => {
-  const firstExternal = defaultNavLinks.findIndex((link) => leavesSite(link.href));
+  const firstExternal = defaultNavLinks.findIndex((link) =>
+    leavesSite(link.href),
+  );
   expect(firstExternal).toBeGreaterThan(0);
   for (const link of defaultNavLinks.slice(firstExternal)) {
     expect(leavesSite(link.href)).toBe(true);

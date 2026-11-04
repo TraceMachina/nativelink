@@ -20,11 +20,6 @@
   "engines": {
     "node": ">=20"
   },
-  "overrides": {
-    "baseline-browser-mapping": "2.11.0",
-    "dompurify": "^3.4.17",
-    "postcss": "^8.5.23"
-  },
   "packageManager": "pnpm@11.22.0",
   "private": true,
   "scripts": {

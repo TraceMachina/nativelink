@@ -73,7 +73,9 @@ export function getAllPosts(): Post[] {
       const raw = fs.readFileSync(path.join(POSTS_DIR, file), "utf8");
       const { data, body } = parseFrontmatter(raw);
       const slug =
-        typeof data.slug === "string" && data.slug ? data.slug : file.replace(/\.(md|mdx)$/, "");
+        typeof data.slug === "string" && data.slug
+          ? data.slug
+          : file.replace(/\.(md|mdx)$/, "");
       return {
         slug,
         title: typeof data.title === "string" ? data.title : slug,
@@ -93,7 +95,7 @@ export function getAllPosts(): Post[] {
       if (compare == 0) {
         compare = b.title.localeCompare(a.title);
       }
-      return compare
+      return compare;
     });
 }
 

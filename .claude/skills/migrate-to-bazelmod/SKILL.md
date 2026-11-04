@@ -17,10 +17,10 @@ Primary source: https://bazel.build/external/migration (the official Bazel migra
 
 Branch the strategy based on the answer. Ask explicitly if it isn't clear from the project layout.
 
-| Project type | Strategy |
-|---|---|
-| **Root or consumer module** (apps, services, internal multi-package projects, never depended on by another Bazel module) | Use Bazel modules exclusively. Use newest dependency versions. Section 3. |
-| **Library or rule-set module** (something other modules will `bazel_dep` on, especially anything published to BCR) | Maintain dual WORKSPACE plus Bazel-modules APIs and a min/max dependency version range. Sections 6 and 7. |
+| Project type                                                                                                             | Strategy                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| **Root or consumer module** (apps, services, internal multi-package projects, never depended on by another Bazel module) | Use Bazel modules exclusively. Use newest dependency versions. Section 3.                                 |
+| **Library or rule-set module** (something other modules will `bazel_dep` on, especially anything published to BCR)       | Maintain dual WORKSPACE plus Bazel-modules APIs and a min/max dependency version range. Sections 6 and 7. |
 
 The split matters because consumer-module advice (just upgrade everything) is actively wrong for libraries. It forces downstream consumers into version conflicts they don't want.
 
@@ -81,11 +81,14 @@ Strongly avoid loading `*_deps()` macros into `WORKSPACE.bzlmod`. They cause con
 # WORKSPACE
 workspace(name = "com_foo_bar")
 ```
+
 ↓
+
 ```python
 # MODULE.bazel
 module(name = "bar", repo_name = "com_foo_bar")
 ```
+
 Prefer dropping `@com_foo_bar//foo:bar` references in favor of `//foo:bar`. Only set `repo_name` if you actually need the legacy alias.
 
 ### 4.2 Bazel-module dependencies (everything in BCR)
@@ -96,7 +99,9 @@ http_archive(name = "bazel_skylib", urls=[...], sha256="...")
 load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
 bazel_skylib_workspace()
 ```
+
 ↓
+
 ```python
 # MODULE.bazel
 bazel_dep(name = "bazel_skylib", version = "1.4.2")
@@ -107,6 +112,7 @@ Bazel modules resolve transitive versions via Minimum Version Selection (MVS), s
 ### 4.3 Single-repository fetches (`http_file`, `http_archive` of a non-module project)
 
 **Option A, `use_repo_rule` (simplest, Bazel 6.4+):**
+
 ```python
 # MODULE.bazel
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
@@ -114,6 +120,7 @@ http_file(name = "data_file", url = "...", sha256 = "...")
 ```
 
 **Option B, module extension (needed for any non-trivial logic):**
+
 ```python
 # extensions.bzl
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
@@ -121,6 +128,7 @@ def _impl(_ctx):
     http_file(name = "data_file", url = "...", sha256 = "...")
 non_module_deps = module_extension(implementation = _impl)
 ```
+
 ```python
 # MODULE.bazel
 non_module_deps = use_extension("//:extensions.bzl", "non_module_deps")
@@ -157,6 +165,7 @@ sh_config_extension = module_extension(
     implementation = lambda ctx: sh_config_rule(name = "local_config_sh"),
 )
 ```
+
 ```python
 # MODULE.bazel
 sh_config_ext = use_extension("//:extensions.bzl", "sh_config_extension")
@@ -172,7 +181,9 @@ Note: `register_toolchains` and `register_execution_platforms` can **only** be c
 # WORKSPACE
 local_repository(name = "rules_java", path = "/path/to/rules_java")
 ```
+
 ↓
+
 ```python
 # MODULE.bazel
 bazel_dep(name = "rules_java")
@@ -187,6 +198,7 @@ Caveats: the local directory must have a `MODULE.bazel`. `local_path_override` (
 # WORKSPACE
 bind(name = "openssl", actual = "@my-ssl//src:openssl-lib")
 ```
+
 Migrate either by:
 
 - Replacing every `//external:openssl` with `@my-ssl//src:openssl-lib`, **or**
@@ -199,13 +211,13 @@ Migrate either by:
 
 ### 4.8 Override directives (root module only)
 
-| Need | Use |
-|---|---|
-| Pin to a specific version that's in BCR | `single_version_override(module_name, version=...)` |
-| Use a local checkout | `local_path_override(module_name, path=...)` |
-| Use a fork from git | `git_override(module_name, remote=..., commit=...)` |
-| Use a tarball that isn't in BCR | `archive_override(module_name, urls=..., integrity=...)` |
-| Allow multiple incompatible majors in the graph | `multiple_version_overrides(...)` |
+| Need                                            | Use                                                      |
+| ----------------------------------------------- | -------------------------------------------------------- |
+| Pin to a specific version that's in BCR         | `single_version_override(module_name, version=...)`      |
+| Use a local checkout                            | `local_path_override(module_name, path=...)`             |
+| Use a fork from git                             | `git_override(module_name, remote=..., commit=...)`      |
+| Use a tarball that isn't in BCR                 | `archive_override(module_name, urls=..., integrity=...)` |
+| Allow multiple incompatible majors in the graph | `multiple_version_overrides(...)`                        |
 
 All only work when invoked from the root module.
 
@@ -214,7 +226,7 @@ All only work when invoked from the root module.
 - `bazel sync` is gone under Bazel modules.
 - `bazel fetch` now takes `--repo`, target patterns, or `--all` and is cached. Re-run with `--force` to bust the cache.
 
-### 4.10 Rule-set compatibility check (do this *before* migrating)
+### 4.10 Rule-set compatibility check (do this _before_ migrating)
 
 Every rule set your project depends on (`rules_java`, `rules_go`, `rules_python`, `rules_rust`, `rules_jvm_external`, `rules_oci`) must itself be compatible with Bazel modules. That is, published in BCR with a working `MODULE.bazel`, with toolchain encapsulation (Section 6) that doesn't force you to write dozens of `use_repo` lines. For each dependency:
 
@@ -222,7 +234,7 @@ Every rule set your project depends on (`rules_java`, `rules_go`, `rules_python`
 2. Read the current `MODULE.bazel` example in the README. If the example is hundreds of lines of `use_repo(...)`, plan for a verbose migration or wait for the rule set to encapsulate its toolchains.
 3. If a critical rule set isn't in BCR yet, you have three choices: pin via `archive_override` until they publish, contribute the BCR entry yourself, or stay on WORKSPACE for now.
 
-**Rust specifically, `rules_rust` versus `rules_rs`:** `rules_rs` is the cleaner, more modern Rust rule set and is the recommended target *once you're on Bazel 9*. **Don't migrate to `rules_rs` while still on Bazel 7 or 8.** The design of `rules_rs` assumes Bazel 9 semantics, and on earlier versions you'll fight subtle incompatibilities. The migration order is:
+**Rust specifically, `rules_rust` versus `rules_rs`:** `rules_rs` is the cleaner, more modern Rust rule set and is the recommended target _once you're on Bazel 9_. **Don't migrate to `rules_rs` while still on Bazel 7 or 8.** The design of `rules_rs` assumes Bazel 9 semantics, and on earlier versions you'll fight subtle incompatibilities. The migration order is:
 
 1. Get to Bazel 9 first (with `rules_rust` still in place).
 2. Then swap `rules_rust` for `rules_rs` as a separate, focused change.
@@ -260,7 +272,7 @@ Result: a naive migration forces the consumer to call `use_repo(...)` for every 
 
 ### 6.2 The fix (the "hub repository" pattern)
 
-Move toolchain targets out of the BUILD files of the rule set into a generated repository, and put both the toolchain targets *and* their dependency repositories inside the same module extension. Same scope means no `use_repo` boilerplate for the consumer.
+Move toolchain targets out of the BUILD files of the rule set into a generated repository, and put both the toolchain targets _and_ their dependency repositories inside the same module extension. Same scope means no `use_repo` boilerplate for the consumer.
 
 Concretely:
 
@@ -270,6 +282,7 @@ Concretely:
    - then calls `your_toolchains_repo(name = "your_rules_toolchains", ...)`
 
    This macro is what your **WORKSPACE** users call.
+
 3. Define a module extension that collects tag-class config across the module graph and forwards to `your_toolchains(...)`. This is what your **Bazel-modules** users use.
 4. In the `MODULE.bazel` of your rule set:
    ```python
@@ -280,16 +293,18 @@ Concretely:
    The `//...:all` pattern means consumers don't have to know the package layout. The extension can dynamically generate whatever subset of toolchains the build needs, and `register_toolchains` registers exactly those (and silently no-ops on non-toolchain targets, including an empty repository).
 
 Result, from the `MODULE.bazel` of the consumer:
+
 ```python
 bazel_dep(name = "your_rules", version = "x.y.z")
 your_deps = use_extension("@your_rules//ext:deps.bzl", "your_deps")
 your_deps.something()  # opt into a feature toolchain
 ```
+
 No `use_repo` lines for transitive Maven artifacts. No `register_toolchains` calls in the consumer.
 
 ### 6.3 The `dev_dependency` flag for self-tests
 
-A rule set typically wants more toolchains registered when *building itself* (for tests) than when consumed downstream. Pattern:
+A rule set typically wants more toolchains registered when _building itself_ (for tests) than when consumed downstream. Pattern:
 
 - Always-on extension instance: `use_extension(...)`, which instantiates the empty-or-minimal toolchain repository so `register_toolchains` always succeeds.
 - Self-test extension instance: `use_extension(..., dev_dependency = True)`, which opts into all toolchains needed for the rule set's own tests.
@@ -298,7 +313,7 @@ A rule set typically wants more toolchains registered when *building itself* (fo
 ### 6.4 Why pseudo-target `//...:all` is safe
 
 - `register_toolchains` registers all `toolchain` targets in the set and ignores everything else.
-- An empty top-level `BUILD` file in the generated repository guarantees `//...:all` resolves to *something* (the empty root package), so the call never fails.
+- An empty top-level `BUILD` file in the generated repository guarantees `//...:all` resolves to _something_ (the empty root package), so the call never fails.
 - Pseudo-targets are evaluated in lexicographic package order, which is good enough when each package registers a different `toolchain_type`. If you have multiple toolchains of the same type, encode the discriminator (for example, language version) as a `target_compatible_with` constraint, not as registration order.
 
 ### 6.5 Hide the hub repository behind aliases
@@ -312,6 +327,7 @@ Consumers shouldn't have to type `@your_rules_toolchains//...` directly. For opt
 A specific compatibility trap: a legacy WORKSPACE macro that **computes** a repository name from its arguments and then calls `Label("@" + computed_name)` (often to get `.workspace_root`) **breaks under Bazel modules**, because module extensions can only resolve `Label` for repositories brought into scope via `use_repo`, and the computed name isn't in scope.
 
 Symptom:
+
 ```
 Error: 'workspace_root' is not allowed on invalid Label
     @@[unknown repo 'host_repo' requested from @@]//:host_repo
@@ -335,6 +351,7 @@ toolchain_repo(
     host_repo = "@" + computed_name,   # string, not Label(); see warning
 )
 ```
+
 Inside the rule body: `rctx.attr.host_repo.workspace_root`.
 
 Two cross-cutting traps:
@@ -353,6 +370,7 @@ rctx.file(
     'REPO_PATH = Label("@%s").workspace_root\n' % rctx.attr.host_repo,
 )
 ```
+
 Then load `REPO_PATH` from a generated `BUILD` or `.bzl` in the hub repository. Or, if the host repository already exposes a `.bzl`, `load("@<computed>//:config.bzl", "REPO_PATH")` directly from the `BUILD` of the hub repository.
 
 ### 6A.3 Chain module extensions
@@ -368,6 +386,7 @@ use_repo(config_ext, "your_config")    # stable name, brought into scope
 deps_ext = use_extension("//ext:deps.bzl", "deps_ext")  # loads @your_config//:config.bzl
 use_repo(deps_ext, "your_repo")
 ```
+
 This is heavier but lets you express semantically distinct configuration vs. instantiation phases. Reserve for cases where extensions 6A.1 and 6A.2 don't fit.
 
 ### 6A.4 Generate BUILD files that call a target-generating macro
@@ -379,6 +398,7 @@ Have the generated `BUILD` file in the hub repository `load(...)` and call a mac
 load("@@{MODULE_REPO}//:setup_toolchain.bzl", "setup_repo_path_toolchain")
 setup_repo_path_toolchain(name = "{TOOLCHAIN_NAME}", host_repo = "@{REPO_NAME}")
 ```
+
 Use this when you also want to let downstream users define their own custom toolchains using the same macro. Otherwise prefer 6A.1.
 
 **Recommendation: 6A.1 if Bazel ≥ 7.4, else 6A.2.** Resort to 6A.3 or 6A.4 only with a concrete reason.
@@ -387,7 +407,7 @@ Use this when you also want to let downstream users define their own custom tool
 
 ## 7. Library-module compatibility (rule-set authors)
 
-If your module is depended on by others, especially from BCR, design for both WORKSPACE and Bazel modules, and for a *range* of dependency versions. Forcing immediate Bazel-modules migration or dependency upgrades on your consumers is the fastest way to get them to pin to your old version forever.
+If your module is depended on by others, especially from BCR, design for both WORKSPACE and Bazel modules, and for a _range_ of dependency versions. Forcing immediate Bazel-modules migration or dependency upgrades on your consumers is the fastest way to get them to pin to your old version forever.
 
 ### 7.1 Make the WORKSPACE and Bazel-modules APIs near-identical
 
@@ -407,9 +427,9 @@ Benefits: one implementation, two surfaces; behavior is identical between the tw
 
 ### 7.3 Two dependency macros: `module_deps` and `nonmodule_deps`
 
-| Mode | Module dependencies | Non-module dependencies |
-|---|---|---|
-| WORKSPACE | call `module_deps()` macro | call `nonmodule_deps()` macro |
+| Mode          | Module dependencies                | Non-module dependencies                       |
+| ------------- | ---------------------------------- | --------------------------------------------- |
+| WORKSPACE     | call `module_deps()` macro         | call `nonmodule_deps()` macro                 |
 | Bazel modules | `bazel_dep(...)` in `MODULE.bazel` | wrap `nonmodule_deps()` in a module extension |
 
 Module-dependency version numbers will be duplicated (once in `module_deps.bzl`, once in `bazel_dep`). Non-module-dependency versions are single-sourced.
@@ -448,17 +468,17 @@ The principle: in a library module, `bazel_dep` should pin the **lowest** versio
 
 Compatibility claims need automated verification. Two test layers:
 
-- **Forward-compat layer (Section 8):** the existing test suite runs under multiple Bazel versions, both Bazel-modules and WORKSPACE modes, with the *latest* dependency versions.
-- **Backwards-compat layer (Section 9):** a parameterized smoke test that runs the most representative subset of test targets against pinned *minimum* combinations of dependency versions.
+- **Forward-compat layer (Section 8):** the existing test suite runs under multiple Bazel versions, both Bazel-modules and WORKSPACE modes, with the _latest_ dependency versions.
+- **Backwards-compat layer (Section 9):** a parameterized smoke test that runs the most representative subset of test targets against pinned _minimum_ combinations of dependency versions.
 
 ### 8.1 The `.bazelrc` flags for switching modes
 
 Set common flags so they apply to `build`, `test`, `run`, and `query` consistently. Different flags between commands kills incremental performance.
 
-| Mode | `.bazelrc` |
-|---|---|
-| Bazel modules | `common --noenable_workspace --incompatible_use_plus_in_repo_names` |
-| Legacy WORKSPACE | `common --enable_workspace --noenable_bzlmod` |
+| Mode             | `.bazelrc`                                                          |
+| ---------------- | ------------------------------------------------------------------- |
+| Bazel modules    | `common --noenable_workspace --incompatible_use_plus_in_repo_names` |
+| Legacy WORKSPACE | `common --enable_workspace --noenable_bzlmod`                       |
 
 `--incompatible_use_plus_in_repo_names` matters even on Bazel 7: it switches the canonical-name delimiter from `~` to `+`, dodging a serious Windows performance bug. Drop it once you're Bazel 8+ only.
 
@@ -494,6 +514,7 @@ For a library module, add nested modules under `examples/`, `tests/`, and simila
 - A `.bazelignore` entry **in the parent** for each nested module. Otherwise `//...` tries to descend into them and `local_path_override` with relative parent paths breaks (tracked at `bazelbuild/bazel#22208`).
 
 Pattern in nested `MODULE.bazel`:
+
 ```python
 bazel_dep(name = "your_rules")
 local_path_override(module_name = "your_rules", path = "..")
@@ -504,7 +525,7 @@ local_path_override(module_name = "latest_dependencies", path = "../deps/latest"
 
 ### 8.4 The `latest_dependencies` nested module
 
-To exercise nested modules against the *latest* supported dependencies without polluting the dependency declarations of the root module (which must declare *minimum* versions for downstream consumers, see 7.5), add a tiny nested module like `deps/latest/MODULE.bazel`:
+To exercise nested modules against the _latest_ supported dependencies without polluting the dependency declarations of the root module (which must declare _minimum_ versions for downstream consumers, see 7.5), add a tiny nested module like `deps/latest/MODULE.bazel`:
 
 ```python
 module(
@@ -520,6 +541,7 @@ bazel_dep(name = "rules_java",   version = "<MAX_RULES_JAVA>")
 Each nested test module imports this with `dev_dependency = True`. This avoids the WARNING spam you'd get from putting these maxima in the root module via `local_path_override`.
 
 For nested WORKSPACE files use `local_repository` plus a `latest_deps.bzl`:
+
 ```python
 local_repository(name = "your_rules", path = "..")
 load("@your_rules//path:latest_deps.bzl", "your_rules_dependencies")
@@ -551,11 +573,11 @@ Cross-platform gotcha: escape literal curly braces (`\{`) in Bash regular expres
 
 ## 9. Backwards-compatibility smoke test (library modules)
 
-Goal: assert that specific *minimum* combinations of (Bazel, `rules_java`, protobuf, ...) still build a representative subset of your test targets. This catches "we accidentally now require a newer X" regressions fast.
+Goal: assert that specific _minimum_ combinations of (Bazel, `rules_java`, protobuf, ...) still build a representative subset of your test targets. This catches "we accidentally now require a newer X" regressions fast.
 
 ### 9.1 Design rules
 
-- **Bazel modules only.** Legacy-WORKSPACE setup macros for dependencies like `rules_java` change shape between minor versions (for example, 7.12 to 8.5); replicating that across many version combinations is unmaintainable. The rest of your suite already proves WORKSPACE/Bazel-modules equivalence at the *latest* versions.
+- **Bazel modules only.** Legacy-WORKSPACE setup macros for dependencies like `rules_java` change shape between minor versions (for example, 7.12 to 8.5); replicating that across many version combinations is unmaintainable. The rest of your suite already proves WORKSPACE/Bazel-modules equivalence at the _latest_ versions.
 - **Use a parameterized `MODULE.bazel`.** One template plus per-case substitutions beats N permanent test modules. Add new combinations by adding one test function.
 - **Use `single_version_override` for every dependency in the template.** This is the one legitimate use of it: pin exact versions to assert minimum-combination compatibility. Document that consumers shouldn't normally use `single_version_override`.
 - **Pick a representative target subset.** Exercise every published rule, macro, and toolchain, but you don't need every test from the broader suite. Smoke test = breadth, not depth.
@@ -630,12 +652,12 @@ Every test case should correspond to a documented minimum-version combination in
 
 ## 10. Visibility cheat-sheet
 
-| Source ↓ / Target → | Main repository | Bazel-module repository | Module-extension repository | WORKSPACE repository |
-|---|---|---|---|---|
-| **Main repository** | yes | direct dependencies | direct dependencies | yes |
-| **Bazel-module repository** | only if root depends directly on you | direct dependencies | direct dependencies of the hosting module | direct dependencies of root |
+| Source ↓ / Target →             | Main repository                                     | Bazel-module repository                   | Module-extension repository                                                     | WORKSPACE repository        |
+| ------------------------------- | --------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------- | --------------------------- |
+| **Main repository**             | yes                                                 | direct dependencies                       | direct dependencies                                                             | yes                         |
+| **Bazel-module repository**     | only if root depends directly on you                | direct dependencies                       | direct dependencies of the hosting module                                       | direct dependencies of root |
 | **Module-extension repository** | only if root depends directly on the hosting module | direct dependencies of the hosting module | siblings from the same extension plus direct dependencies of the hosting module | direct dependencies of root |
-| **WORKSPACE repository** | yes | not visible | not visible | yes |
+| **WORKSPACE repository**        | yes                                                 | not visible                               | not visible                                                                     | yes                         |
 
 Edge case: if `@foo` is declared in both `WORKSPACE` and as an apparent name in `MODULE.bazel`, the `MODULE.bazel` one wins for the root module.
 
@@ -679,7 +701,7 @@ If publishing your module:
 - **Toolchain encapsulation without an empty top-level BUILD in the generated repository.** `register_toolchains("@x//...:all")` fails when no packages match. Always emit at least an empty root BUILD.
 - **`Label("@" + computed_name)` in a legacy macro.** Breaks under Bazel modules. See Section 6A.
 - **Passing `Label("@foo")` (object) to a label-typed attribute** that names another extension-instantiated repository. Pass the string `"@foo"`. Hilarity doesn't ensue; head-scratching does.
-- **Forgetting `@` when constructing a Label string.** `Label("foo")` looks like `:foo` in the *current* package and silently resolves wrong.
+- **Forgetting `@` when constructing a Label string.** `Label("foo")` looks like `:foo` in the _current_ package and silently resolves wrong.
 - **Test scripts hard-coding the Bazel version.** Don't. Let the user or CI pick. Sole exception: the dependency-compatibility smoke test.
 - **Leaving generated test modules behind without `bazel clean --expunge_async`.** Eats your disk over weeks. (Voice of experience.)
 - **Skipping the upstream-rule-set compatibility check.** Migration only works if every rule set you depend on (`rules_java`, `rules_go`, `rules_python`, `rules_rust`, `rules_jvm_external`, `rules_oci`) is itself compatible with Bazel modules and published to BCR with a sane `MODULE.bazel` example. Audit them before you start. See Section 4.10. A rule set that hasn't encapsulated its toolchains (Section 6) drags hundreds of `use_repo` lines into your `MODULE.bazel`.

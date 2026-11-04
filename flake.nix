@@ -535,11 +535,14 @@
             else {}
           );
         pre-commit.settings = {
-          hooks = import ./tools/pre-commit-hooks.nix {
+          hooks = import ./tools/pre-commit/hooks.nix {
             inherit pkgs;
             inherit (packages) generate-bazel-rc generate-stores-config;
             nightly-rust = pkgs.rust-bin.nightly.${pkgs.lre.nightly-rust.meta.version};
             flake-root = config.flake-root.package;
+            pnpm-packages = pkgs.callPackage ./tools/pre-commit/prettier-with-packages.nix {
+              inherit (pkgs) pnpm_11;
+            };
           };
         };
         lre = {

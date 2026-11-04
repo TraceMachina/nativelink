@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  test,
+} from "@jest/globals";
 import type { NextRequest } from "next/server";
 import { POST } from "../apps/web/app/api/slack-invite/route";
 import { emailFormatError } from "../apps/web/lib/email";
@@ -19,7 +26,13 @@ describe("emailFormatError", () => {
   });
 
   test("rejects malformed addresses and markup", () => {
-    for (const email of ["", "a@b", "a@.com", "a b@c.com", "<svg/onload=alert(1)>@evil.com"]) {
+    for (const email of [
+      "",
+      "a@b",
+      "a@.com",
+      "a b@c.com",
+      "<svg/onload=alert(1)>@evil.com",
+    ]) {
       expect(emailFormatError(email)).toBe(INVALID);
     }
   });
@@ -37,12 +50,14 @@ type FetchCall = { url: string; body: Record<string, unknown> };
 
 function mockFetch(responses: Record<string, () => Response>) {
   const calls: FetchCall[] = [];
-  globalThis.fetch = jest.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const url = String(input);
-    calls.push({ url, body: JSON.parse(String(init?.body)) });
-    const path = new URL(url).pathname;
-    return responses[path]?.() ?? new Response(null, { status: 500 });
-  }) as unknown as typeof fetch;
+  globalThis.fetch = jest.fn(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, body: JSON.parse(String(init?.body)) });
+      const path = new URL(url).pathname;
+      return responses[path]?.() ?? new Response(null, { status: 500 });
+    },
+  ) as unknown as typeof fetch;
   return calls;
 }
 
@@ -67,14 +82,19 @@ afterEach(() => {
 });
 
 describe("sendSlackInviteRequest", () => {
-  const request = { email: "<b>x</b>@example.com", time: "2026-10-28T00:00:00.000Z" };
+  const request = {
+    email: "<b>x</b>@example.com",
+    time: "2026-10-28T00:00:00.000Z",
+  };
 
   test("emails contact@tracemachina.com as plain text, with the address in the subject", async () => {
     const calls = mockFetch({ "/emails": ok });
     await sendSlackInviteRequest(request);
     expect(calls.map((c) => new URL(c.url).pathname)).toEqual(["/emails"]);
     expect(calls[0].body.to).toEqual(["contact@tracemachina.com"]);
-    expect(calls[0].body.subject).toBe(`Slack invite request: ${request.email}`);
+    expect(calls[0].body.subject).toBe(
+      `Slack invite request: ${request.email}`,
+    );
     expect(calls[0].body.html).toBeUndefined();
     expect(calls[0].body.text).toContain(request.email);
     expect(calls[0].body.text).toContain(request.time);
@@ -82,12 +102,16 @@ describe("sendSlackInviteRequest", () => {
 
   test("fails when the email cannot be sent, because the email is the whole action", async () => {
     mockFetch({ "/emails": () => new Response(null, { status: 500 }) });
-    await expect(sendSlackInviteRequest(request)).rejects.toThrow("Failed to send Slack invite");
+    await expect(sendSlackInviteRequest(request)).rejects.toThrow(
+      "Failed to send Slack invite",
+    );
   });
 
   test("requires RESEND_API_KEY", async () => {
     Reflect.deleteProperty(process.env, "RESEND_API_KEY");
-    await expect(sendSlackInviteRequest(request)).rejects.toThrow("RESEND_API_KEY");
+    await expect(sendSlackInviteRequest(request)).rejects.toThrow(
+      "RESEND_API_KEY",
+    );
   });
 });
 
@@ -97,7 +121,10 @@ describe("POST /api/slack-invite", () => {
     return POST(
       new Request("http://localhost/api/slack-invite", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-forwarded-for": clientIp },
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": clientIp,
+        },
         body,
       }) as unknown as NextRequest,
     );
@@ -105,7 +132,9 @@ describe("POST /api/slack-invite", () => {
 
   test("rejects invalid JSON and malformed addresses with 400", async () => {
     expect((await post("{")).status).toBe(400);
-    const markup = await post(JSON.stringify({ email: "<svg/onload=alert(1)>@evil.com" }));
+    const markup = await post(
+      JSON.stringify({ email: "<svg/onload=alert(1)>@evil.com" }),
+    );
     expect(markup.status).toBe(400);
     expect((await markup.json()).error).toBe(INVALID);
     expect(errorLogs).toEqual([]);
@@ -115,19 +144,32 @@ describe("POST /api/slack-invite", () => {
     const calls = mockFetch({ "/emails": ok });
     const res = await post(JSON.stringify({ email: " someone@gmail.com " }));
     expect(res.status).toBe(200);
-    expect(calls[0].body.subject).toBe("Slack invite request: someone@gmail.com");
+    expect(calls[0].body.subject).toBe(
+      "Slack invite request: someone@gmail.com",
+    );
   });
 
   test("returns 500 when Resend fails or is not configured", async () => {
-    mockFetch({ "/emails": () => new Response(null, { status: 500, statusText: "bad emails" }) });
-    expect((await post(JSON.stringify({ email: "someone@example.com" }))).status).toBe(500);
+    mockFetch({
+      "/emails": () =>
+        new Response(null, { status: 500, statusText: "bad emails" }),
+    });
+    expect(
+      (await post(JSON.stringify({ email: "someone@example.com" }))).status,
+    ).toBe(500);
     Reflect.deleteProperty(process.env, "RESEND_API_KEY");
-    expect((await post(JSON.stringify({ email: "someone@example.com" }))).status).toBe(500);
+    expect(
+      (await post(JSON.stringify({ email: "someone@example.com" }))).status,
+    ).toBe(500);
     expect(errorLogs).toEqual([
-      ["Slack invite request failed:",
-    new Error("Failed to send Slack invite request: 500 bad emails")],
-    ["Slack invite request failed:",
-    new Error("RESEND_API_KEY is not configured")]
+      [
+        "Slack invite request failed:",
+        new Error("Failed to send Slack invite request: 500 bad emails"),
+      ],
+      [
+        "Slack invite request failed:",
+        new Error("RESEND_API_KEY is not configured"),
+      ],
     ]);
   });
 

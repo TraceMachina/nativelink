@@ -104,8 +104,9 @@ export default function ContactPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[600px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Real engineers reply, not a sales-bot tree. Pick a channel, drop us a note, or fill
-                out the form — we usually answer within a few hours.
+                Real engineers reply, not a sales-bot tree. Pick a channel, drop
+                us a note, or fill out the form — we usually answer within a few
+                hours.
               </p>
             </div>
           </Reveal>
@@ -138,7 +139,9 @@ export default function ContactPage() {
                 <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
                   {c.label}
                 </p>
-                <p className="mt-2 font-mono text-sm font-semibold text-foreground">{c.title}</p>
+                <p className="mt-2 font-mono text-sm font-semibold text-foreground">
+                  {c.title}
+                </p>
                 <p className="mt-2 flex-1 text-sm leading-relaxed text-muted-foreground">
                   {c.body}
                 </p>
@@ -154,7 +157,9 @@ export default function ContactPage() {
           <Reveal>
             <div className="space-y-4">
               <Eyebrow className="mb-2">Other ways</Eyebrow>
-              <h3 className="text-2xl font-semibold tracking-tight">Find us elsewhere.</h3>
+              <h3 className="text-2xl font-semibold tracking-tight">
+                Find us elsewhere.
+              </h3>
 
               <ul className="mt-6 space-y-3">
                 {socialLinks.map((s) => (
@@ -182,7 +187,9 @@ export default function ContactPage() {
                         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
                           {s.label}
                         </p>
-                        <p className="mt-1 text-sm text-foreground">{s.handle}</p>
+                        <p className="mt-1 text-sm text-foreground">
+                          {s.handle}
+                        </p>
                       </div>
                       <span
                         aria-hidden="true"
@@ -199,9 +206,12 @@ export default function ContactPage() {
                 <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-brand">
                   Office hours
                 </p>
-                <p className="mt-2 text-sm text-foreground">Mon — Fri · 9 am – 6 pm Pacific</p>
+                <p className="mt-2 text-sm text-foreground">
+                  Mon — Fri · 9 am – 6 pm Pacific
+                </p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Outside hours? Email still works; we'll reply first thing the next business day.
+                  Outside hours? Email still works; we'll reply first thing the
+                  next business day.
                 </p>
               </div>
             </div>

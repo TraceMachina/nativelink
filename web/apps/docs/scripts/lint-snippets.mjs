@@ -102,7 +102,6 @@ function harvestKnownKeys(referencePaths) {
 }
 
 function harvestKnownKeysFrom(text, known) {
-
   // Props-table rows: `| \`field\` | type | … |`
   for (const m of text.matchAll(/^\|\s*`([a-z0-9_]+)`\s*\|/gm)) known.add(m[1]);
   // Tagged-enum variant headings: "### \`fast_slow\`"
@@ -112,7 +111,8 @@ function harvestKnownKeysFrom(text, known) {
   // as authoritative as the tables, and they are the only place some specs get
   // documented at all (see the stub harvest below).
   for (const block of text.matchAll(/^\s*```json5?\n([\s\S]*?)^\s*```\s*$/gm)) {
-    for (const m of block[1].matchAll(/^\s*"([a-z0-9_]+)"\s*:/gm)) known.add(m[1]);
+    for (const m of block[1].matchAll(/^\s*"([a-z0-9_]+)"\s*:/gm))
+      known.add(m[1]);
   }
   // Some specs are rendered as a stub ("## ExperimentalCloudObjectSpec" whose
   // whole body is "See [`experimental_cloud_object_store`](#…) for details")
@@ -120,13 +120,16 @@ function harvestKnownKeysFrom(text, known) {
   // fields exist only as inline code in the narrative section the stub points
   // at, so harvest that section. Scoped deliberately: harvesting inline code
   // from the whole reference would make this lint pass on anything.
-  for (const stub of text.matchAll(/^##\s+\w+\s*\n+See \[`([a-z0-9_]+)`\]\([^)]*\) for details/gm)) {
+  for (const stub of text.matchAll(
+    /^##\s+\w+\s*\n+See \[`([a-z0-9_]+)`\]\([^)]*\) for details/gm,
+  )) {
     const start = text.search(new RegExp(`^###\\s+\`${stub[1]}\`\\s*$`, "m"));
     if (start === -1) continue;
     const rest = text.slice(start + 1);
     const end = rest.search(/^#{2,3}\s/m);
     const section = end === -1 ? rest : rest.slice(0, end);
-    for (const m of section.matchAll(/`([a-z][a-z0-9_]{2,})`/g)) known.add(m[1]);
+    for (const m of section.matchAll(/`([a-z][a-z0-9_]{2,})`/g))
+      known.add(m[1]);
   }
 
   if (known.size < 50) {
@@ -146,14 +149,18 @@ function extractSnippets(text) {
   for (let i = 0; i < lines.length; i++) {
     const fence = /^\s*```(json5|json)\b/.exec(lines[i]);
     if (!fence) continue;
-    const prev = lines
-      .slice(Math.max(0, i - 3), i)
-      .join("\n");
+    const prev = lines.slice(Math.max(0, i - 3), i).join("\n");
     const ignored = prev.includes(IGNORE_MARKER);
     let j = i + 1;
     const body = [];
-    while (j < lines.length && !/^\s*```\s*$/.test(lines[j])) body.push(lines[j++]);
-    snippets.push({ startLine: i + 2, lang: fence[1], body: body.join("\n"), ignored });
+    while (j < lines.length && !/^\s*```\s*$/.test(lines[j]))
+      body.push(lines[j++]);
+    snippets.push({
+      startLine: i + 2,
+      lang: fence[1],
+      body: body.join("\n"),
+      ignored,
+    });
     i = j;
   }
   return snippets;
@@ -251,10 +258,19 @@ function braceBalance(src) {
     else if (c === "}") curly--;
     else if (c === "[") square++;
     else if (c === "]") square--;
-    if (curly < 0 || square < 0) return { ok: false, why: "closes a brace it never opened" };
+    if (curly < 0 || square < 0)
+      return { ok: false, why: "closes a brace it never opened" };
   }
-  if (curly !== 0) return { ok: false, why: `${curly > 0 ? curly : -curly} unmatched \`{\`/\`}\`` };
-  if (square !== 0) return { ok: false, why: `${square > 0 ? square : -square} unmatched \`[\`/\`]\`` };
+  if (curly !== 0)
+    return {
+      ok: false,
+      why: `${curly > 0 ? curly : -curly} unmatched \`{\`/\`}\``,
+    };
+  if (square !== 0)
+    return {
+      ok: false,
+      why: `${square > 0 ? square : -square} unmatched \`[\`/\`]\``,
+    };
   return { ok: true };
 }
 
@@ -262,7 +278,9 @@ function braceBalance(src) {
 
 function main() {
   const known = harvestKnownKeys(REFERENCES);
-  const files = walk(contentDir).filter((f) => !f.includes("reference/nativelink-config/"));
+  const files = walk(contentDir).filter(
+    (f) => !f.includes("reference/nativelink-config/"),
+  );
 
   const problems = [];
   let checked = 0;
@@ -295,7 +313,9 @@ function main() {
           file: rel,
           line: snip.startLine + line - 1,
           message: `\`${key}\` is not a field in the generated configuration reference${
-            parents.length ? ` (under ${parents.map((p) => `\`${p}\``).join(" › ")})` : ""
+            parents.length
+              ? ` (under ${parents.map((p) => `\`${p}\``).join(" › ")})`
+              : ""
           }`,
         });
       }
@@ -313,7 +333,8 @@ function main() {
   }
 
   console.error(`\n${problems.length} problem(s):`);
-  for (const p of problems) console.error(`  ${p.file}:${p.line}  ${p.message}`);
+  for (const p of problems)
+    console.error(`  ${p.file}:${p.line}  ${p.message}`);
   console.error(
     "\nIf a snippet is deliberately not NativeLink config, put " +
       `\`{/* ${IGNORE_MARKER} */}\` on the line before its fence.`,

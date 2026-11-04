@@ -1,6 +1,12 @@
 import { afterAll, describe, expect, test } from "@jest/globals";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -23,7 +29,10 @@ for (const [slug, field] of [
 writeFileSync(
   path.join(postsDir, "article.md"),
   readFileSync(
-    new URL("../apps/web/content/posts/The_Bomb_in_Your_Bill_of_Materials.md", import.meta.url),
+    new URL(
+      "../apps/web/content/posts/The_Bomb_in_Your_Bill_of_Materials.md",
+      import.meta.url,
+    ),
   ),
 );
 
@@ -38,11 +47,17 @@ const result = spawnSync(
   { cwd: root, encoding: "utf8" },
 );
 if (result.status !== 0) throw new Error(result.stderr);
-const posts = JSON.parse(result.stdout) as { slug: string; excerpt: string; body: string }[];
+const posts = JSON.parse(result.stdout) as {
+  slug: string;
+  excerpt: string;
+  body: string;
+}[];
 
 describe("post excerpts", () => {
   test("uses the article's explicit summary instead of its lead image or quotation", () => {
-    const post = posts.find((item) => item.slug === "the-bomb-in-your-bill-of-materials");
+    const post = posts.find(
+      (item) => item.slug === "the-bomb-in-your-bill-of-materials",
+    );
     expect(post?.excerpt).toBe(
       "Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes.",
     );
@@ -51,10 +66,14 @@ describe("post excerpts", () => {
   });
 
   test("preserves automatic summaries for existing articles", () => {
-    expect(posts.find((post) => post.slug === "existing")?.excerpt).toBe(introduction);
+    expect(posts.find((post) => post.slug === "existing")?.excerpt).toBe(
+      introduction,
+    );
   });
 
   test("treats a blank explicit excerpt as an automatic summary", () => {
-    expect(posts.find((post) => post.slug === "blank")?.excerpt).toBe(introduction);
+    expect(posts.find((post) => post.slug === "blank")?.excerpt).toBe(
+      introduction,
+    );
   });
 });

@@ -23,13 +23,18 @@ describe("visibleContributors", () => {
       contributor("allada", "User"),
       contributor("blaise-d", "User"),
     ];
-    expect(visibleContributors(listing).map((c) => c.login)).toEqual(["aaronmondal", "blaise-d"]);
+    expect(visibleContributors(listing).map((c) => c.login)).toEqual([
+      "aaronmondal",
+      "blaise-d",
+    ]);
   });
 });
 
 describe("FALLBACK_CONTRIBUTORS", () => {
   test("is already filtered and carries real contribution counts", () => {
-    expect(visibleContributors(FALLBACK_CONTRIBUTORS)).toEqual(FALLBACK_CONTRIBUTORS);
+    expect(visibleContributors(FALLBACK_CONTRIBUTORS)).toEqual(
+      FALLBACK_CONTRIBUTORS,
+    );
     for (const c of FALLBACK_CONTRIBUTORS) {
       expect(c.contributions).toBeGreaterThan(0);
     }

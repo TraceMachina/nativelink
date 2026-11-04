@@ -6,7 +6,10 @@ import { SourceMapConsumer } from "source-map-js";
 test("KaTeX ignores inherited trust while rendering ordinary math", () => {
   // GHSA-238p-pmpm-9mq7: the options prototype must not enable trusted HTML.
   const options = Object.create({ trust: true });
-  const html = katex.renderToString("\\href{javascript:alert(1)}{link}", options);
+  const html = katex.renderToString(
+    "\\href{javascript:alert(1)}{link}",
+    options,
+  );
   expect(html).not.toContain('href="javascript:');
   expect(katex.renderToString("x^2 + y^2")).toContain('class="katex"');
 });

@@ -20,7 +20,7 @@ jobs:
   get-images-matrix:
     runs-on: ubuntu-24.04
     outputs:
-       matrix: ${{ steps.setmatrix.outputs.matrix }}
+      matrix: ${{ steps.setmatrix.outputs.matrix }}
     steps:
       - name: Checkout
         uses: >- # v6.0.2
@@ -74,7 +74,7 @@ jobs:
         uses: >- # v4.36.2
           github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
         with:
-          sarif_file: 'trivy-results.sarif'
+          sarif_file: "trivy-results.sarif"
         if: ${{ contains(fromJson('["refs/heads/main", "refs/pull/2457/merge"]'), github.ref) }}
 
       - name: Teardown Worker

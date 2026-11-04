@@ -17,13 +17,13 @@ on:
   push:
     branches: [main]
     paths:
-      - 'web/apps/docs/**'
-      - '.github/workflows/docs-lint.yaml'
+      - "web/apps/docs/**"
+      - ".github/workflows/docs-lint.yaml"
   pull_request:
     branches: [main]
     paths:
-      - 'web/apps/docs/**'
-      - '.github/workflows/docs-lint.yaml'
+      - "web/apps/docs/**"
+      - ".github/workflows/docs-lint.yaml"
   # Weekly external link sweep. Thursday 05:17, arbitrary, spread away from
   # the other scheduled jobs.
   schedule:

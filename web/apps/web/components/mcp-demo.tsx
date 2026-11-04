@@ -23,7 +23,10 @@ const tools: Tool[] = [
     output: [
       { text: "# NativeLink Configuration", tone: "comment" },
       { text: "build --remote_cache=grpcs://cas.nativelink.internal" },
-      { text: "build --remote_header=x-nativelink-api-key=<redacted>", tone: "muted" },
+      {
+        text: "build --remote_header=x-nativelink-api-key=<redacted>",
+        tone: "muted",
+      },
       { text: "build --remote_executor=grpcs://scheduler.nativelink.internal" },
       { text: "build --remote_timeout=600" },
       { text: "build --jobs=200" },
@@ -46,7 +49,10 @@ const tools: Tool[] = [
       { text: "   - Set --incompatible_strict_action_env=true", tone: "muted" },
       { text: "## Cost Optimization", tone: "brand" },
       { text: "   - Use --remote_download_minimal", tone: "muted" },
-      { text: "   - Enable --experimental_remote_cache_compression", tone: "muted" },
+      {
+        text: "   - Enable --experimental_remote_cache_compression",
+        tone: "muted",
+      },
       {
         text: "categories: setup · migration · optimization · troubleshooting · api",
         tone: "comment",
@@ -59,14 +65,20 @@ const tools: Tool[] = [
     name: "Analyze build performance",
     prompt: "use nativelink to analyze my build performance (balanced)",
     output: [
-      { text: "# Analyzing cacheHitRate, totalTime, remoteExecutionTime …", tone: "comment" },
+      {
+        text: "# Analyzing cacheHitRate, totalTime, remoteExecutionTime …",
+        tone: "comment",
+      },
       { text: "## Optimization Recommendations", tone: "brand" },
       { text: "### Balanced Optimizations", tone: "brand" },
       { text: "build --jobs=100" },
       { text: "build --remote_download_outputs=minimal" },
       { text: "build --experimental_remote_cache_compression" },
       { text: "build --remote_timeout=60" },
-      { text: "# Flags low cache-hit-rate and large network transfers", tone: "comment" },
+      {
+        text: "# Flags low cache-hit-rate and large network transfers",
+        tone: "comment",
+      },
       { text: "# Strategies: speed · cost · balanced", tone: "comment" },
     ],
   },
@@ -81,8 +93,14 @@ const tools: Tool[] = [
       { text: "npm install -g @bazel/ibazel" },
       { text: "## Usage", tone: "brand" },
       { text: "ibazel test //...", tone: "brand" },
-      { text: "# Modes: build · test · both — with debounce + ignore paths", tone: "comment" },
-      { text: "# Uses your .bazelrc for remote cache + execution", tone: "comment" },
+      {
+        text: "# Modes: build · test · both — with debounce + ignore paths",
+        tone: "comment",
+      },
+      {
+        text: "# Uses your .bazelrc for remote cache + execution",
+        tone: "comment",
+      },
     ],
   },
   {
@@ -91,7 +109,10 @@ const tools: Tool[] = [
     name: "Get information about recent builds",
     prompt: "use nativelink to show my recent builds",
     output: [
-      { text: "# Recent builds (last 10) for account: <redacted>", tone: "comment" },
+      {
+        text: "# Recent builds (last 10) for account: <redacted>",
+        tone: "comment",
+      },
       { text: "[" },
       {
         text: '  { "invocationId": "…", "command": "bazel test //…", "exitCode": … },',
@@ -152,7 +173,11 @@ export function McpDemo() {
   const inView = useInView(rootRef, { once: true, margin: "-80px" });
 
   const tool = tools[active] ?? (tools[0] as Tool);
-  const mode: TypingMode = seen.has(tool.id) ? "instant" : inView ? "type" : "wait";
+  const mode: TypingMode = seen.has(tool.id)
+    ? "instant"
+    : inView
+      ? "type"
+      : "wait";
   const typed = useTypewriter(tool.prompt, mode);
   const done = typed.length >= tool.prompt.length;
   const instant = mode === "instant";
@@ -189,7 +214,9 @@ export function McpDemo() {
         <span className="h-3 w-3 rounded-full bg-border-strong" />
         <span className="h-3 w-3 rounded-full bg-border-strong" />
         <span className="h-3 w-3 rounded-full bg-border-strong" />
-        <span className="ml-3 font-mono text-[11px] text-muted">nativelink-mcp · 5 tools</span>
+        <span className="ml-3 font-mono text-[11px] text-muted">
+          nativelink-mcp · 5 tools
+        </span>
         <span className="ml-auto hidden font-mono text-[11px] text-muted-foreground sm:inline">
           Pick a tool to see what it returns
         </span>
@@ -263,7 +290,11 @@ export function McpDemo() {
                   }}
                   initial="hidden"
                   animate="visible"
-                  transition={instant ? { duration: 0 } : { delay: i * 0.05, duration: 0.25 }}
+                  transition={
+                    instant
+                      ? { duration: 0 }
+                      : { delay: i * 0.05, duration: 0.25 }
+                  }
                   className={`whitespace-pre-wrap break-words ${toneClass[line.tone ?? "default"]}`}
                 >
                   {line.text}

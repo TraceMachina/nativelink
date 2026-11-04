@@ -19,15 +19,15 @@ on:
   push:
     branches: [main]
     paths:
-      - 'web/apps/web/lib/llms.ts'
-      - 'web/apps/web/lib/posts.ts'
-      - 'web/apps/web/scripts/gen-llms.ts'
-      - 'web/apps/web/content/posts/**'
-      - 'web/apps/docs/content/**'
-      - 'web/apps/docs/scripts/gen-llms.mjs'
-      - 'web/apps/docs/scripts/gen-changelog.mjs'
-      - 'CHANGELOG.md'
-      - '.github/workflows/llms.yaml'
+      - "web/apps/web/lib/llms.ts"
+      - "web/apps/web/lib/posts.ts"
+      - "web/apps/web/scripts/gen-llms.ts"
+      - "web/apps/web/content/posts/**"
+      - "web/apps/docs/content/**"
+      - "web/apps/docs/scripts/gen-llms.mjs"
+      - "web/apps/docs/scripts/gen-changelog.mjs"
+      - "CHANGELOG.md"
+      - ".github/workflows/llms.yaml"
   # Weekly, to catch a source this list does not name. Monday 04:41,
   # arbitrary, spread away from the other scheduled jobs.
   schedule:

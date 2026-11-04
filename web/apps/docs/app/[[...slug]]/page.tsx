@@ -1,7 +1,12 @@
 import { source } from "@/lib/source";
 import { getMDXComponents } from "@/mdx-components";
 import { AskAi } from "@nativelink/ui";
-import { DocsBody, DocsDescription, DocsPage, DocsTitle } from "fumadocs-ui/page";
+import {
+  DocsBody,
+  DocsDescription,
+  DocsPage,
+  DocsTitle,
+} from "fumadocs-ui/page";
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 

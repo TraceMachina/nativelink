@@ -5,18 +5,18 @@ on:
   pull_request:
     branches: [main]
     paths-ignore:
-      - 'web/**'
-      - '.github/styles/**'
+      - "web/**"
+      - ".github/styles/**"
   push:
-    branches: ['**']
+    branches: ["**"]
     paths-ignore:
-      - 'web/**'
-      - '.github/styles/**'
+      - "web/**"
+      - ".github/styles/**"
   workflow_dispatch:
     inputs:
       repetitions:
         description: Identical-source iterations (1–20)
-        default: '1'
+        default: "1"
         required: true
         type: string
 
@@ -54,7 +54,7 @@ jobs:
           ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
           # Use the public read-only cache on every PR, including forks.
           mode: read
-          exec: 'off'
+          exec: "off"
 
       - name: Setup Bazel
         uses: >- # v0.19.0

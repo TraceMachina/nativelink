@@ -20,7 +20,11 @@ import { spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildSections, renderFull, renderSmall } from "../../docs/scripts/gen-llms.mjs";
+import {
+  buildSections,
+  renderFull,
+  renderSmall,
+} from "../../docs/scripts/gen-llms.mjs";
 import type { DocsCorpus } from "../lib/llms.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,11 +41,17 @@ const site = await import("../lib/llms.ts");
 // generator fails loudly on a nav entry with no page behind it.
 const changelog = join(docsRoot, "content/docs/reference/changelog.md");
 if (!existsSync(changelog)) {
-  const result = spawnSync(process.execPath, [join(docsRoot, "scripts/gen-changelog.mjs")], {
-    stdio: "inherit",
-  });
+  const result = spawnSync(
+    process.execPath,
+    [join(docsRoot, "scripts/gen-changelog.mjs")],
+    {
+      stdio: "inherit",
+    },
+  );
   if (result.status !== 0) {
-    throw new Error("gen-llms: could not generate the docs changelog page first");
+    throw new Error(
+      "gen-llms: could not generate the docs changelog page first",
+    );
   }
 }
 
@@ -49,7 +59,11 @@ if (!existsSync(changelog)) {
 function findRepoRoot(from: string): string | null {
   let dir = from;
   for (let i = 0; i < 8; i += 1) {
-    if (existsSync(join(dir, "cliff.toml")) && existsSync(join(dir, "AGENTS.md"))) return dir;
+    if (
+      existsSync(join(dir, "cliff.toml")) &&
+      existsSync(join(dir, "AGENTS.md"))
+    )
+      return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;

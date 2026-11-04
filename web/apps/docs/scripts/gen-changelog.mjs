@@ -53,7 +53,10 @@ const targetFile = join(here, "../content/docs/reference/changelog.md");
  */
 function findLocalChangelog() {
   for (let dir = here; ; ) {
-    if (existsSync(join(dir, "cliff.toml")) && existsSync(join(dir, "CHANGELOG.md"))) {
+    if (
+      existsSync(join(dir, "cliff.toml")) &&
+      existsSync(join(dir, "CHANGELOG.md"))
+    ) {
       return join(dir, "CHANGELOG.md");
     }
     const parent = resolve(dir, "..");
@@ -75,7 +78,9 @@ async function fetchChangelogForDeployedCommit() {
   const url = `https://raw.githubusercontent.com/${owner}/${repo}/${sha}/CHANGELOG.md`;
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`gen-changelog: fetching ${url} failed: HTTP ${response.status}`);
+    throw new Error(
+      `gen-changelog: fetching ${url} failed: HTTP ${response.status}`,
+    );
   }
   console.log(`gen-changelog: read CHANGELOG.md from ${url}`);
   return response.text();
