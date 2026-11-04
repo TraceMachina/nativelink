@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # OpenTelemetry Collector
@@ -10,10 +10,10 @@ services:
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector/config.yaml:ro
     ports:
-      - "4317:4317"   # OTLP gRPC receiver
-      - "4318:4318"   # OTLP HTTP receiver
-      - "9090:9090"   # Prometheus metrics exporter
-      - "8888:8888"   # Collector metrics
+      - "4317:4317" # OTLP gRPC receiver
+      - "4318:4318" # OTLP HTTP receiver
+      - "9090:9090" # Prometheus metrics exporter
+      - "8888:8888" # Collector metrics
       - "13133:13133" # Health check
     environment:
       - OTLP_BACKEND_ENDPOINT=${OTLP_BACKEND_ENDPOINT:-otlp-backend:4317}
@@ -27,19 +27,19 @@ services:
     container_name: prometheus
     restart: unless-stopped
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/etc/prometheus/console_libraries'
-      - '--web.console.templates=/etc/prometheus/consoles'
-      - '--web.enable-lifecycle'
-      - '--web.enable-otlp-receiver'  # Enable OTLP receiver
-      - '--storage.tsdb.retention.time=30d'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--web.enable-otlp-receiver" # Enable OTLP receiver
+      - "--storage.tsdb.retention.time=30d"
     volumes:
       - ./prometheus-config.yaml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus-recording-rules.yml:/etc/prometheus/rules/nativelink.yml:ro
       - prometheus_data:/prometheus
     ports:
-      - "9091:9090"  # Prometheus web UI (different port to avoid conflict with collector)
+      - "9091:9090" # Prometheus web UI (different port to avoid conflict with collector)
     networks:
       - metrics
     depends_on:
@@ -77,8 +77,8 @@ services:
     ports:
       - "9093:9093"
     command:
-      - '--config.file=/etc/alertmanager/config.yml'
-      - '--storage.path=/alertmanager'
+      - "--config.file=/etc/alertmanager/config.yml"
+      - "--storage.path=/alertmanager"
     networks:
       - metrics
 
@@ -92,10 +92,10 @@ services:
       - /sys:/host/sys:ro
       - /:/rootfs:ro
     command:
-      - '--path.procfs=/host/proc'
-      - '--path.rootfs=/rootfs'
-      - '--path.sysfs=/host/sys'
-      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+      - "--path.procfs=/host/proc"
+      - "--path.rootfs=/rootfs"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     ports:
       - "9100:9100"
     networks:
@@ -109,8 +109,8 @@ services:
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     ports:
-      - "16686:16686"  # Jaeger UI
-      - "14268:14268"  # Jaeger collector HTTP
+      - "16686:16686" # Jaeger UI
+      - "14268:14268" # Jaeger collector HTTP
     networks:
       - metrics
 

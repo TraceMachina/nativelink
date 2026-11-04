@@ -73,11 +73,12 @@ mod tests {
     use nativelink_store::memory_store::MemoryStore;
     #[cfg(target_family = "unix")]
     use nativelink_util::action_messages::DirectoryInfo;
+    #[cfg(target_family = "unix")]
+    use nativelink_util::action_messages::STORE_UNREACHABLE_ERROR_TIP;
     #[cfg_attr(target_family = "windows", allow(unused_imports))]
     use nativelink_util::action_messages::SymlinkInfo;
     use nativelink_util::action_messages::{
         ActionResult, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
-        STORE_UNREACHABLE_ERROR_TIP,
     };
     #[cfg(target_family = "unix")]
     use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
@@ -91,7 +92,7 @@ mod tests {
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::download_to_directory_bounded;
@@ -6894,7 +6895,7 @@ exit 0
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn action_over_its_memory_reservation_is_killed_by_the_worker()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -9239,7 +9240,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
             action: &Action,
             action_digest: DigestInfo,
             operation_id: &str,
-        ) -> Result<String, Error> {
+        ) -> Result<(String, ActionResourceUsage), Error> {
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
                     WORKER_ID.to_string(),
@@ -9257,8 +9258,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                     },
                 )
                 .await?;
-            let action_result = run_action(running_action_impl).await?;
-            slow_store
+            let action_result = run_action(running_action_impl.clone()).await?;
+            let count = slow_store
                 .as_ref()
                 .get_part_unchunked(action_result.output_files[0].digest, 0, None)
                 .await
@@ -9267,7 +9268,11 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                         Error::from_std_err(Code::Internal, &err)
                             .append("Decoding persistent worker count.txt")
                     })
-                })
+                })?;
+            let usage = running_action_impl
+                .resource_usage()
+                .expect("usage is reported for every executed action");
+            Ok((count, usage))
         }
 
         let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
@@ -9312,6 +9317,8 @@ while IFS= read -r request; do
     continue
   fi
   count=$((count + 1))
+  i=0
+  while [ "$i" -lt 100000 ]; do i=$((i + 1)); done
   sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
   printf '%s' "$count" > "$sandbox_dir/count.txt"
   printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
@@ -9325,7 +9332,7 @@ done
             .await?;
         let (action, action_digest) = create_action(&cas_store, worker_script_digest).await?;
 
-        let first = run_persistent_action(
+        let (first, first_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -9333,7 +9340,7 @@ done
             "persistent_worker_first",
         )
         .await?;
-        let second = run_persistent_action(
+        let (second, second_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -9347,6 +9354,14 @@ done
             second, "2",
             "second action must reuse the already-running persistent worker"
         );
+        // Each request spins for well under one process-table snapshot's
+        // lifetime, so CPU read from the snapshot would measure nothing; and
+        // the pooled process is single-threaded, so a request charged more
+        // than its own wall time carries another request's work.
+        for usage in [&first_usage, &second_usage] {
+            assert!(usage.cpu_time_ms > 0, "{usage:?}");
+            assert!(usage.cpu_time_ms <= usage.wall_time_ms + 20, "{usage:?}");
+        }
         Ok(())
     }
 

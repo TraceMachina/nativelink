@@ -1,0 +1,15 @@
+{
+  "name": "pre-commit",
+  "author": "",
+  "description": "Things needed by pre-commit hooks",
+  "devDependencies": {
+    "prettier": "~3.8.4",
+    "prettier-plugin-tailwindcss": "^0.5.14",
+    "tailwindcss": "^3.4.3"
+  },
+  "license": "ISC",
+  "scripts": {
+    "prettier": "prettier --write"
+  },
+  "version": "1.0.0"
+}

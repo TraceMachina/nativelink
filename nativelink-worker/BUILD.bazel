@@ -20,6 +20,7 @@ rust_library(
         "src/persistent_worker/mod.rs",
         "src/persistent_worker/pool.rs",
         "src/persistent_worker/protocol.rs",
+        "src/process_table.rs",
         "src/qos.rs",
         "src/reaper.rs",
         "src/running_actions_manager.rs",
@@ -62,6 +63,7 @@ rust_library(
     ] + select({
         "@platforms//os:linux": ["@crates//:libc"],
         "@platforms//os:macos": ["@crates//:libc"],
+        "@platforms//os:windows": ["@crates//:windows-sys"],
         "//conditions:default": [],
     }),
 )
@@ -75,6 +77,7 @@ rust_test_suite(
         "tests/directory_cache_test.rs",
         "tests/local_worker_test.rs",
         "tests/namespace_utils_test.rs",
+        "tests/process_table_test.rs",
         "tests/reaper_test.rs",
         "tests/running_actions_manager_test.rs",
         "tests/worker_utils_test.rs",

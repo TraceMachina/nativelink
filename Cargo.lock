@@ -3001,6 +3001,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures",
+ "h2",
  "hex",
  "hyper",
  "hyper-util",
@@ -3388,6 +3389,7 @@ dependencies = [
  "tracing-test",
  "uuid",
  "which",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
