@@ -24,7 +24,7 @@
 //      NativeLink's properties and only widely documented facts about the
 //      others. Favourable, never false.
 
-import { type Post, getAllPosts } from "./posts";
+import { type Post, getAllPosts } from "./posts.ts";
 
 export const SITE = "https://nativelink.com";
 export const DOCS = "https://docs.nativelink.com";

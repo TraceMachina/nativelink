@@ -14,7 +14,7 @@
 // `content/docs/` appears there.
 //
 // Usage, from web/:
-//   bun --filter @nativelink/docs lint:snippets
+//   pnpm run --filter @nativelink/docs lint:snippets
 // or directly:
 //   node scripts/lint-snippets.mjs
 //

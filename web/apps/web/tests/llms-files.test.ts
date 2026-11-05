@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "@jest/globals";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
