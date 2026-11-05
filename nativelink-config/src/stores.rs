@@ -1039,9 +1039,11 @@ pub struct FastSlowSpec {
     /// wait. The clock measures inactivity and resets on every chunk — a
     /// whole-transfer deadline would be wrong here, because a
     /// multi-gigabyte blob legitimately streams for minutes. The same
-    /// timeout bounds the sizing `has()` the fill issues first, and once
-    /// the transfer has fully moved, the remaining local commit is not
-    /// timed, so a completed fill is never discarded over a slow sync.
+    /// timeout bounds the sizing `has()` the fill issues first, and a
+    /// transfer that has fully moved gets one further window for the fast
+    /// tier's commit — grace enough that a completed fill is not discarded
+    /// over a slow local sync, still a bound when the fast tier is a
+    /// remote store whose commit can wedge.
     /// `0` (the default) keeps today's behavior: no inactivity bound.
     #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
     pub leader_inactivity_timeout_s: usize,

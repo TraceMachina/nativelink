@@ -3047,64 +3047,102 @@ impl StoreDriver for GatedCommitFastStore {
 
 default_health_status_indicator!(GatedCommitFastStore);
 
+fn make_fast_slow_with_gated_commit(
+    digest: DigestInfo,
+    data: Vec<u8>,
+    commit_gate: tokio::sync::oneshot::Receiver<()>,
+) -> Store {
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data,
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(None),
+        has_gate: Mutex::new(None),
+    });
+    let fast = Arc::new(GatedCommitFastStore {
+        commit_gate: Mutex::new(Some(commit_gate)),
+    });
+    Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 1,
+        },
+        Store::new(fast),
+        Store::new(slow),
+    ))
+}
+
 /// Once the transfer has fully moved (the slow stream delivered EOF and the
-/// reader took every in-range byte), the watchdog must stand down: a slow
-/// local commit in the fast tier is not a wedged transfer, and killing the
-/// fill there would discard completed work. The zero-length case also pins
-/// that a blob which never ticks the activity clock is not killed.
+/// reader took every in-range byte), the fast tier's commit gets a grace
+/// window instead of tripping the watchdog at the first expiry: a slow
+/// local sync is not a wedged transfer, and killing the fill there would
+/// discard completed work. The zero-length case also pins that a blob
+/// which never ticks the activity clock gets the same grace.
 #[nativelink_test(start_paused = true)]
-async fn a_completed_transfer_is_not_killed_during_a_slow_commit() -> Result<(), Error> {
+async fn a_slow_commit_within_the_grace_window_survives() -> Result<(), Error> {
     for data_len in [0usize, 2048] {
         let data = make_random_data(data_len);
         let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
-
-        let slow = Arc::new(InstrumentedSlowStore {
-            digest,
-            data: data.clone(),
-            get_part_count: AtomicU64::new(0),
-            gate: Mutex::new(None),
-            has_gate: Mutex::new(None),
-        });
         let (commit_gate_tx, commit_gate_rx) = tokio::sync::oneshot::channel::<()>();
-        let fast = Arc::new(GatedCommitFastStore {
-            commit_gate: Mutex::new(Some(commit_gate_rx)),
-        });
-        let fast_slow = Store::new(FastSlowStore::new(
-            &FastSlowSpec {
-                fast: StoreSpec::Memory(MemorySpec::default()),
-                slow: StoreSpec::Memory(MemorySpec::default()),
-                fast_direction: StoreDirection::default(),
-                slow_direction: StoreDirection::default(),
-                bypass_dedup_threshold_bytes: 0,
-                has_slow_write_wait_timeout_s: 0,
-                leader_inactivity_timeout_s: 1,
-            },
-            Store::new(fast),
-            Store::new(slow),
-        ));
+        let fast_slow = make_fast_slow_with_gated_commit(digest, data.clone(), commit_gate_rx);
 
         let fill_store = fast_slow.clone();
-        let mut fill =
+        let fill =
             tokio::spawn(async move { fill_store.get_part_unchunked(digest, 0, None).await });
 
-        // Paused time: the watchdog's one-second windows all fire inside
-        // this wait. If the stand-down were broken, the fill would fail
-        // with DEADLINE_EXCEEDED long before 10 virtual minutes pass.
-        assert!(
-            tokio::time::timeout(Duration::from_mins(10), &mut fill)
-                .await
-                .is_err(),
-            "the fill must still be waiting on the fast tier's commit (len {data_len}), not killed by the watchdog",
-        );
-
+        // Paused time: the transfer completes instantly, the watchdog's
+        // first window expires at 1s (entering the commit grace, deadline
+        // 2s), and this sleep releases the commit at 1.5s — inside the
+        // grace. Pre-grace code killed the fill at the first expiry.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
         commit_gate_tx
             .send(())
             .expect("the fill must still be holding its commit gate");
         let read_back = fill
             .await
             .expect("fill task must not panic")
-            .err_tip(|| "fill must succeed once the commit completes")?;
+            .err_tip(|| "fill must succeed once the commit completes within the grace")?;
         assert_eq!(read_back, data, "fill of len {data_len} must round-trip");
     }
+    Ok(())
+}
+
+/// A commit that never finishes must not hold the fill (and its dedup
+/// entry) forever just because the transfer completed first: the fast tier
+/// can be a remote store, and a wedged remote commit is the same pinned-key
+/// failure the watchdog exists to bound. Past the grace window the fill
+/// fails, naming the commit phase.
+#[nativelink_test(start_paused = true)]
+async fn a_wedged_commit_fails_at_the_grace_deadline() -> Result<(), Error> {
+    let data = make_random_data(2048);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+    // Held open for the whole test: the commit wedges forever.
+    let (_commit_gate_tx, commit_gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let fast_slow = make_fast_slow_with_gated_commit(digest, data, commit_gate_rx);
+
+    let fill_store = fast_slow.clone();
+    let fill = tokio::spawn(async move { fill_store.get_part_unchunked(digest, 0, None).await });
+
+    // Bounded: the fill must fail on its own at the grace deadline (~2
+    // virtual seconds), well inside this wait, rather than hang forever.
+    let err = tokio::time::timeout(Duration::from_mins(10), fill)
+        .await
+        .expect("a wedged commit must fail at the grace deadline, not pin the fill")
+        .expect("fill task must not panic")
+        .expect_err("the fill must fail once the commit exceeds its grace window");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the grace deadline, got: {err:?}",
+    );
+    assert!(
+        err.to_string().contains("the fast tier's commit"),
+        "the error must name the commit phase, got: {err:?}",
+    );
     Ok(())
 }
