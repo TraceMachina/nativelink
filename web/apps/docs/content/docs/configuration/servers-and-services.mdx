@@ -149,7 +149,8 @@ controls the configured proxy's exceptions; an empty list bypasses no hosts.
 Proxy settings come only from configuration: `HTTP_PROXY`, `HTTPS_PROXY`,
 `ALL_PROXY` and `NO_PROXY` environment variables (including lowercase variants)
 are ignored. Clients, limits and timeouts belong to each Fetch instance.
-HTTPS origins use the forward proxy's CONNECT support.
+HTTPS origins use the forward proxy's CONNECT support. Both clients disable automatic
+`Referer` headers so redirects do not disclose credentials in the source URL.
 
 The downloader tries candidate URIs in order. `checksum.sri` is verified using
 its declared algorithm. The existing digest implementations support `sha256-`

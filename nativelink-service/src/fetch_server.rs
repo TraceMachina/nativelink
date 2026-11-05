@@ -91,6 +91,8 @@ impl Downloader {
         // Match the server's TLS provider, including memory-only store configurations.
         drop(rustls::crypto::ring::default_provider().install_default());
         let builder = Client::builder()
+            // Redirect destinations must not receive credentials from the source URL.
+            .referer(false)
             .no_proxy()
             .redirect(reqwest::redirect::Policy::limited(10));
         let proxy_client = if let Some(url) = proxy_url {
@@ -106,6 +108,7 @@ impl Downloader {
                 .no_proxy(bypass);
             Some(
                 Client::builder()
+                    .referer(false)
                     .redirect(reqwest::redirect::Policy::limited(10))
                     .no_proxy()
                     .proxy(proxy)

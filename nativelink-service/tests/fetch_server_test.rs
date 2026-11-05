@@ -295,6 +295,91 @@ async fn explicit_proxy_fetches_an_unresolvable_origin() {
     assert_eq!(proxy.hits.load(Ordering::SeqCst), 1);
 }
 
+// This also acts as an HTTP proxy: absolute-form requests use the same routes.
+async fn redirect_fixture(
+    redirect_to: Option<String>,
+) -> (
+    HttpFixture,
+    Arc<std::sync::Mutex<Vec<axum::http::HeaderMap>>>,
+) {
+    let headers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed_headers = headers.clone();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed_hits = hits.clone();
+    let app = axum::Router::new().fallback(
+        move |uri: axum::http::Uri, headers: axum::http::HeaderMap| {
+            let redirect_to = redirect_to.clone();
+            observed_headers.lock().unwrap().push(headers);
+            observed_hits.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if uri.path() == "/start" {
+                    (StatusCode::FOUND, [("location", redirect_to.unwrap())], "")
+                } else {
+                    (
+                        StatusCode::OK,
+                        [("content-type", "application/octet-stream".to_string())],
+                        "redirected dependency",
+                    )
+                }
+            }
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = nativelink_util::spawn!("fetch_redirect_fixture", async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (
+        HttpFixture {
+            url,
+            hits,
+            _task: task,
+        },
+        headers,
+    )
+}
+
+#[nativelink_test]
+async fn direct_redirect_does_not_send_referer() {
+    let (destination, headers) = redirect_fixture(None).await;
+    let (origin, _) = redirect_fixture(Some(format!("{}/finish", destination.url))).await;
+    let (server, _stores, cas) = downloader_server(downloader_config()).await;
+    let response = fetch(
+        &server,
+        fetch_request(&format!("{}/start?token=dummy-direct-secret", origin.url)),
+    )
+    .await;
+    assert_cas(&cas, &response, b"redirected dependency").await;
+    assert_eq!(origin.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(destination.hits.load(Ordering::SeqCst), 1);
+    let headers = headers.lock().unwrap();
+    assert_eq!(headers.len(), 1);
+    assert!(!headers[0].contains_key("referer"));
+}
+
+#[nativelink_test]
+async fn proxy_redirect_does_not_send_referer() {
+    // Neither hostname resolves, so both requests must pass through the proxy.
+    let (proxy, headers) = redirect_fixture(Some("http://redirected.invalid/finish".into())).await;
+    let mut config = downloader_config();
+    config.http_proxy = Some(proxy.url.clone());
+    let (server, _stores, cas) = downloader_server(config).await;
+    let response = fetch(
+        &server,
+        fetch_request("http://origin.invalid/start?token=dummy-proxy-secret"),
+    )
+    .await;
+    assert_cas(&cas, &response, b"redirected dependency").await;
+    assert_eq!(proxy.hits.load(Ordering::SeqCst), 2);
+    let headers = headers.lock().unwrap();
+    assert_eq!(headers.len(), 2);
+    assert!(
+        headers
+            .iter()
+            .all(|headers| !headers.contains_key("referer"))
+    );
+}
+
 #[nativelink_test]
 async fn proxy_secret_file_trims_newlines_and_no_proxy_bypasses_it() {
     let body = Bytes::from_static(b"from proxy file");
