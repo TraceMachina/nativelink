@@ -220,7 +220,12 @@ impl Drop for InFlightSlowWriteGuard {
         // the entry is confirmed ours, since waiters hold their own clones
         // (which is also why the count-blind predicate ignores the extra
         // clone this guard still holds in its field).
-        remove_map_entry_if_own(&store.in_flight_slow_writes, key, self.entry.clone(), |_| true);
+        remove_map_entry_if_own(
+            &store.in_flight_slow_writes,
+            key,
+            self.entry.clone(),
+            |_| true,
+        );
     }
 }
 
@@ -561,45 +566,43 @@ impl FastSlowStore {
         // cost a completed transfer, still a bound when the fast tier is a
         // remote store whose commit can wedge.
         let joined_fut = async { join!(data_stream_fut, slow_store_fut, fast_store_fut) };
-        let (data_stream_res, slow_res, fast_res) = match self
-            .leader_inactivity_timeout
-            .zip(fill_activity)
-        {
-            None => joined_fut.await,
-            Some((inactivity, activity)) => {
-                tokio::pin!(joined_fut);
-                loop {
-                    let seen = activity.ticks.load(Ordering::Acquire);
-                    match tokio::time::timeout(inactivity, &mut joined_fut).await {
-                        Ok(results) => break results,
-                        Err(_elapsed) => {
-                            if activity.transfer_complete.load(Ordering::Acquire) {
-                                break match tokio::time::timeout(inactivity, &mut joined_fut)
-                                    .await
-                                {
-                                    Ok(results) => results,
-                                    Err(_elapsed) => {
-                                        return Err(self.fill_inactivity_error(
-                                            &key,
-                                            inactivity,
-                                            "the fast tier's commit",
-                                        ));
-                                    }
-                                };
+        let (data_stream_res, slow_res, fast_res) =
+            match self.leader_inactivity_timeout.zip(fill_activity) {
+                None => joined_fut.await,
+                Some((inactivity, activity)) => {
+                    tokio::pin!(joined_fut);
+                    loop {
+                        let seen = activity.ticks.load(Ordering::Acquire);
+                        match tokio::time::timeout(inactivity, &mut joined_fut).await {
+                            Ok(results) => break results,
+                            Err(_elapsed) => {
+                                if activity.transfer_complete.load(Ordering::Acquire) {
+                                    break match tokio::time::timeout(inactivity, &mut joined_fut)
+                                        .await
+                                    {
+                                        Ok(results) => results,
+                                        Err(_elapsed) => {
+                                            return Err(self.fill_inactivity_error(
+                                                &key,
+                                                inactivity,
+                                                "the fast tier's commit",
+                                            ));
+                                        }
+                                    };
+                                }
+                                if activity.ticks.load(Ordering::Acquire) != seen {
+                                    continue;
+                                }
+                                return Err(self.fill_inactivity_error(
+                                    &key,
+                                    inactivity,
+                                    "the transfer",
+                                ));
                             }
-                            if activity.ticks.load(Ordering::Acquire) != seen {
-                                continue;
-                            }
-                            return Err(self.fill_inactivity_error(
-                                &key,
-                                inactivity,
-                                "the transfer",
-                            ));
                         }
                     }
                 }
-            }
-        };
+            };
         match data_stream_res {
             Ok((fast_eof_res, maybe_writer_pin)) =>
             // Sending the EOF will drop us almost immediately in bytestream_server
