@@ -3,20 +3,24 @@
     {
       "components": "nativelink-image-for-x64 nativelink-image-for-aarch64",
       "image": "nativelink",
-      "multi-arch": true
+      "multi-arch": true,
+      "sarif-category": ".github/workflows/image.yaml:publish-image/components:nativelink-image-for-x64 nativelink-image-for-aarch64/image:nativelink/multi-arch:"
     },
     {
       "components": "nativelink-init-for-x64 nativelink-init-for-aarch64",
       "image": "nativelink-worker-init",
-      "multi-arch": true
+      "multi-arch": true,
+      "sarif-category": ".github/workflows/image.yaml:publish-image/components:nativelink-init-for-x64 nativelink-init-for-aarch64/image:nativelink-worker-init/multi-arch:"
     },
     {
       "image": "nativelink-worker-lre-cc",
-      "multi-arch": false
+      "multi-arch": false,
+      "sarif-category": ".github/workflows/image.yaml:publish-image/image:nativelink-worker-lre-cc/multi-arch:"
     },
     {
       "image": "nativelink-worker-lre-rs",
-      "multi-arch": false
+      "multi-arch": false,
+      "sarif-category": ".github/workflows/image.yaml:publish-image/image:nativelink-worker-lre-rs/multi-arch:"
     }
   ]
 }
