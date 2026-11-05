@@ -532,41 +532,43 @@ impl FastSlowStore {
         // itself completes, the watchdog stands down: killing the fill during
         // a slow local commit would discard work that already fully moved.
         let joined_fut = async { join!(data_stream_fut, slow_store_fut, fast_store_fut) };
-        let (data_stream_res, slow_res, fast_res) =
-            match self.leader_inactivity_timeout.zip(fill_activity) {
-                None => joined_fut.await,
-                Some((inactivity, activity)) => {
-                    tokio::pin!(joined_fut);
-                    loop {
-                        let seen = activity.ticks.load(Ordering::Acquire);
-                        match tokio::time::timeout(inactivity, &mut joined_fut).await {
-                            Ok(results) => break results,
-                            Err(_elapsed) => {
-                                if activity.transfer_complete.load(Ordering::Acquire) {
-                                    break joined_fut.await;
-                                }
-                                if activity.ticks.load(Ordering::Acquire) != seen {
-                                    continue;
-                                }
-                                self.metrics
-                                    .leader_inactivity_timeouts
-                                    .fetch_add(1, Ordering::Relaxed);
-                                warn!(
-                                    %key,
-                                    timeout_secs = inactivity.as_secs(),
-                                    "Cache fill moved no bytes within the inactivity timeout; failing it so a new leader can take over"
-                                );
-                                return Err(make_err!(
-                                    Code::DeadlineExceeded,
-                                    "The cache fill for {} moved no bytes for {}s",
-                                    key.as_str(),
-                                    inactivity.as_secs()
-                                ));
+        let (data_stream_res, slow_res, fast_res) = match self
+            .leader_inactivity_timeout
+            .zip(fill_activity)
+        {
+            None => joined_fut.await,
+            Some((inactivity, activity)) => {
+                tokio::pin!(joined_fut);
+                loop {
+                    let seen = activity.ticks.load(Ordering::Acquire);
+                    match tokio::time::timeout(inactivity, &mut joined_fut).await {
+                        Ok(results) => break results,
+                        Err(_elapsed) => {
+                            if activity.transfer_complete.load(Ordering::Acquire) {
+                                break joined_fut.await;
                             }
+                            if activity.ticks.load(Ordering::Acquire) != seen {
+                                continue;
+                            }
+                            self.metrics
+                                .leader_inactivity_timeouts
+                                .fetch_add(1, Ordering::Relaxed);
+                            warn!(
+                                %key,
+                                timeout_secs = inactivity.as_secs(),
+                                "Cache fill moved no bytes within the inactivity timeout; failing it so a new leader can take over"
+                            );
+                            return Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "The cache fill for {} moved no bytes for {}s",
+                                key.as_str(),
+                                inactivity.as_secs()
+                            ));
                         }
                     }
                 }
-            };
+            }
+        };
         match data_stream_res {
             Ok((fast_eof_res, maybe_writer_pin)) =>
             // Sending the EOF will drop us almost immediately in bytestream_server
