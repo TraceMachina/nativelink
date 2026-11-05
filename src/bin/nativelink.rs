@@ -803,8 +803,9 @@ async fn inner_main(
                                             // a load-shaped limit (any age, during load)
                                             // from a lifetime cap (old connections), which
                                             // the GOAWAY's debug data alone cannot.
+                                            let local_err: &(dyn core::error::Error + 'static) = err.as_ref();
                                             let enhance_your_calm = core::iter::successors(
-                                                Some(err.as_ref() as &(dyn core::error::Error + 'static)),
+                                                Some(local_err),
                                                 |err| err.source(),
                                             )
                                             .filter_map(|err| err.downcast_ref::<h2::Error>())

@@ -672,6 +672,19 @@ mod fast_slow_spec_tests {
         .expect("a duration string must deserialize like every other *_timeout_s field");
         assert_eq!(spec.has_slow_write_wait_timeout_s, 30);
     }
+
+    #[test]
+    fn leader_inactivity_timeout_accepts_duration_strings() {
+        let spec: FastSlowSpec = serde_json5::from_str(
+            r#"{
+                fast: { memory: {} },
+                slow: { memory: {} },
+                leader_inactivity_timeout_s: "1m",
+            }"#,
+        )
+        .expect("a duration string must deserialize like every other *_timeout_s field");
+        assert_eq!(spec.leader_inactivity_timeout_s, 60);
+    }
 }
 
 #[cfg(test)]
