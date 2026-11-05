@@ -741,7 +741,7 @@ pub enum ListenerConfig {
     Http(HttpListener),
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct HttpListener {
@@ -758,11 +758,12 @@ pub struct HttpListener {
 
     /// Disable batching of small TCP writes on accepted connections, including
     /// HTTP/2 control frames.
-    /// Applies to both plaintext and TLS connections. Set to false to restore
-    /// default TCP buffering behavior.
+    /// Applies to both plaintext and TLS connections. Set to true to opt into
+    /// sending small writes promptly. When false or omitted, preserves default
+    /// TCP buffering behavior.
     ///
-    /// Default: true
-    #[serde(default = "default_true")]
+    /// Default: false
+    #[serde(default)]
     pub tcp_nodelay: bool,
 
     /// Data transport compression configuration to use for this service.
@@ -784,20 +785,6 @@ pub struct HttpListener {
     /// Default: None
     #[serde(default)]
     pub tls: Option<TlsConfig>,
-}
-
-impl Default for HttpListener {
-    fn default() -> Self {
-        Self {
-            socket_address: String::new(),
-            freebind: false,
-            tcp_nodelay: true,
-            compression: HttpCompressionConfig::default(),
-            advanced_http: HttpServerConfig::default(),
-            max_decoding_message_size: 0,
-            tls: None,
-        }
-    }
 }
 
 #[derive(Deserialize, Serialize, Debug)]

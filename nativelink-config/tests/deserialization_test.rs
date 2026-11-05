@@ -778,9 +778,9 @@ mod convert_optional_numeric_with_shellexpand_tests {
 fn http_listener_tcp_nodelay_defaults_and_overrides() {
     use nativelink_config::cas_server::HttpListener;
 
-    assert!(HttpListener::default().tcp_nodelay);
+    assert!(!HttpListener::default().tcp_nodelay);
     for (input, expected) in [
-        ("{socket_address: '127.0.0.1:0'}", true),
+        ("{socket_address: '127.0.0.1:0'}", false),
         ("{socket_address: '127.0.0.1:0', tcp_nodelay: true}", true),
         ("{socket_address: '127.0.0.1:0', tcp_nodelay: false}", false),
     ] {

@@ -1073,7 +1073,7 @@ mod tests {
     async fn accepted_connections_honor_tcp_nodelay() -> Result<(), std::io::Error> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         for (config, expected) in [
-            (HttpListener::default(), true),
+            (HttpListener::default(), false),
             (
                 HttpListener {
                     tcp_nodelay: false,
