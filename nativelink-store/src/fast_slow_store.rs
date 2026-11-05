@@ -168,18 +168,25 @@ impl LoaderGuard<'_> {
 /// guards share it so that no drop ever removes a successor's live entry: a
 /// later writer or loader of the same key replaces the map slot, and the
 /// earlier guard's drop must leave that replacement alone.
+///
+/// `own` is consumed and dropped INSIDE the locked section, before
+/// `should_remove` runs, so a predicate reading `Arc::strong_count` sees a
+/// count serialized with every other guard's drop: two guards dropping
+/// concurrently cannot both observe each other's still-undropped clone and
+/// both leave the entry behind.
 fn remove_map_entry_if_own<K: Eq + core::hash::Hash, V>(
     map: &Mutex<HashMap<K, Arc<V>>>,
     key: K,
-    own: &Arc<V>,
+    own: Arc<V>,
     should_remove: impl FnOnce(&Arc<V>) -> bool,
 ) {
     let mut guard = map.lock();
-    if let std::collections::hash_map::Entry::Occupied(occupied_entry) = guard.entry(key)
-        && Arc::ptr_eq(occupied_entry.get(), own)
-        && should_remove(occupied_entry.get())
-    {
-        occupied_entry.remove();
+    if let std::collections::hash_map::Entry::Occupied(occupied_entry) = guard.entry(key) {
+        let is_own = Arc::ptr_eq(occupied_entry.get(), &own);
+        drop(own);
+        if is_own && should_remove(occupied_entry.get()) {
+            occupied_entry.remove();
+        }
     }
 }
 
@@ -210,8 +217,10 @@ impl Drop for InFlightSlowWriteGuard {
         };
         // A re-upload after `has` reported the key missing at the wait
         // timeout replaces this writer's entry; unconditional removal once
-        // the entry is confirmed ours, since waiters hold their own clones.
-        remove_map_entry_if_own(&store.in_flight_slow_writes, key, &self.entry, |_| true);
+        // the entry is confirmed ours, since waiters hold their own clones
+        // (which is also why the count-blind predicate ignores the extra
+        // clone this guard still holds in its field).
+        remove_map_entry_if_own(&store.in_flight_slow_writes, key, self.entry.clone(), |_| true);
     }
 }
 
@@ -229,11 +238,11 @@ impl Drop for LoaderGuard<'_> {
         remove_map_entry_if_own(
             &store.populating_digests,
             self.key.borrow().into_owned(),
-            &loader,
-            // Our own clone of `loader` is still alive here, so a strong
-            // count of 2 means the map and this guard are the only holders:
+            loader,
+            // Our own clone was dropped under the map lock just before this
+            // runs, so a count of 1 means the map is the only holder left:
             // no follower still waits on the loader, and it can go.
-            |entry| Arc::strong_count(entry) == 2,
+            |entry| Arc::strong_count(entry) == 1,
         );
     }
 }
