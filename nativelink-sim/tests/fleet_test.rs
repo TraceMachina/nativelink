@@ -50,7 +50,10 @@ fn distribution_stays_in_range_and_fails_about_as_asked() {
             failures += 1;
         }
     }
-    assert!((1_500..2_500).contains(&failures), "{failures} of 10,000 failed");
+    assert!(
+        (1_500..2_500).contains(&failures),
+        "{failures} of 10,000 failed"
+    );
 }
 
 #[test]
@@ -61,4 +64,19 @@ fn seeds_differ() {
         .filter(|i| a.draw(&format!("op-{i}")) == b.draw(&format!("op-{i}")))
         .count();
     assert!(same < 10, "{same} of 100 draws matched across seeds");
+}
+
+/// The generator streams a blob block by block; its digest must be the
+/// digest of the whole, across a block boundary and a short last block.
+#[test]
+fn generated_blob_digest_matches_its_bytes() {
+    use nativelink_sim::cas_load::{generated_bytes, generated_digest_of};
+    let size = 2 * 1024 * 1024 + 12_345;
+    let bytes = generated_bytes(9, 3, size);
+    assert_eq!(bytes.len(), size);
+    let mut hasher = nativelink_util::digest_hasher::DigestHasherFunc::Sha256.hasher();
+    nativelink_util::digest_hasher::DigestHasher::update(&mut hasher, &bytes);
+    let whole = nativelink_util::digest_hasher::DigestHasher::finalize_digest(&mut hasher);
+    assert_eq!(generated_digest_of(9, 3, size), whole);
+    assert_ne!(generated_bytes(9, 4, 64), generated_bytes(9, 3, 64));
 }

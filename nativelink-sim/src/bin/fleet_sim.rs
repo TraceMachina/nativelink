@@ -32,6 +32,7 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     WaitExecutionRequest, digest_function,
 };
 use nativelink_proto::google::longrunning::operation;
+use nativelink_sim::cas_load::{self, CasLoad};
 use nativelink_sim::fleet::{Counters, Distribution, FleetWorker, spawn_worker};
 use nativelink_sim::property::Rng;
 use nativelink_util::background_spawn;
@@ -55,6 +56,36 @@ enum Command_ {
     /// Uploads distinct actions and executes them, reading every stream to
     /// the end.
     Queue(QueueArgs),
+    /// Drives the CAS budgets of the L point against one CAS endpoint and
+    /// checks every answer.
+    Cas(CasArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct CasArgs {
+    /// The CAS endpoint, e.g. `grpc://127.0.0.1:50051`.
+    #[arg(long)]
+    cas: String,
+    #[arg(long, default_value = "main")]
+    instance: String,
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Digests in one `FindMissingBlobs` call.
+    #[arg(long, default_value_t = 50_000)]
+    find_missing_digests: usize,
+    /// Blobs written at once through `ByteStream`, then read back.
+    #[arg(long, default_value_t = 4)]
+    large_uploads: usize,
+    #[arg(long, default_value_t = 256)]
+    large_mib: usize,
+    /// Blobs read at once.
+    #[arg(long, default_value_t = 2_000)]
+    reads: usize,
+    #[arg(long, default_value_t = 64)]
+    read_kib: usize,
+    /// HTTP/2 connections the streams spread over.
+    #[arg(long, default_value_t = 16)]
+    connections: usize,
 }
 
 #[derive(clap::Args, Debug)]
@@ -226,6 +257,36 @@ fn spawn_lag_probe() -> Arc<AtomicU64> {
         }
     }));
     max_lag_ms
+}
+
+async fn run_cas(args: CasArgs) -> Result<(), Error> {
+    let mut channels = Vec::with_capacity(args.connections.max(1));
+    for _ in 0..args.connections.max(1) {
+        channels.push(connect(&args.cas).await?);
+    }
+    let load = CasLoad {
+        instance: args.instance,
+        seed: args.seed,
+        find_missing_digests: args.find_missing_digests,
+        large_uploads: args.large_uploads,
+        large_mib: args.large_mib,
+        reads: args.reads,
+        read_kib: args.read_kib,
+    };
+    let (phases, failures) = cas_load::run(&load, &channels).await?;
+    for phase in &phases {
+        eprintln!("fleet-sim: {phase}");
+    }
+    for failure in failures.iter().take(5) {
+        eprintln!("fleet-sim: error: {failure}");
+    }
+    if phases.iter().any(|p| p.errors > 0) {
+        return Err(make_err!(
+            Code::Internal,
+            "the CAS gave wrong or failed answers"
+        ));
+    }
+    Ok(())
 }
 
 fn digest_of(bytes: &[u8]) -> Digest {
@@ -466,6 +527,7 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         match args.command {
             Command_::Workers(args) => run_workers(args).await,
             Command_::Queue(args) => run_queue(args).await,
+            Command_::Cas(args) => run_cas(args).await,
         }
     })?;
     Ok(())

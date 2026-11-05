@@ -12,6 +12,7 @@ rust_library(
     name = "nativelink-sim",
     srcs = [
         "src/actions.rs",
+        "src/cas_load.rs",
         "src/checker.rs",
         "src/clock.rs",
         "src/fleet.rs",
