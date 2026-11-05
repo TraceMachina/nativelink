@@ -815,7 +815,7 @@ fn fast_slow(fast: StoreSpec, slow: StoreSpec) -> StoreSpec {
         fast_direction: nativelink_config::stores::StoreDirection::Both,
         slow_direction: nativelink_config::stores::StoreDirection::Both,
         bypass_dedup_threshold_bytes: 0,
-        has_slow_write_wait_timeout_s: None,
+        has_slow_write_wait_timeout_s: 0,
         leader_inactivity_timeout_s: 0,
     }))
 }

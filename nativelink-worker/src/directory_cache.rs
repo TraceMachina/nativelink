@@ -1589,7 +1589,7 @@ mod tests {
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
-                has_slow_write_wait_timeout_s: None,
+                has_slow_write_wait_timeout_s: 0,
                 leader_inactivity_timeout_s: 0,
             },
             Store::new(fast_store),

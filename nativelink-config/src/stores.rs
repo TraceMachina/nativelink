@@ -1024,11 +1024,11 @@ pub struct FastSlowSpec {
     /// every existence check a wedged writer's fate. Size it under your
     /// clients' own deadlines (Bazel's default `--remote_timeout` is 60)
     /// and above your slow store's usual worst-case write; 30 is a sound
-    /// starting point. Unset or `0` waits indefinitely — the behavior
+    /// starting point. `0` (the default) waits indefinitely — the behavior
     /// before this field existed — so nothing changes until it is set.
     /// Default: 0 (wait indefinitely)
-    #[serde(default)]
-    pub has_slow_write_wait_timeout_s: Option<usize>,
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub has_slow_write_wait_timeout_s: usize,
 
     /// Maximum seconds a cache fill (the read that populates the fast tier
     /// from the slow tier while streaming to its reader) may go without
