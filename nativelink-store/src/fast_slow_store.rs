@@ -81,8 +81,8 @@ pub struct FastSlowStore {
     // still running, is no longer visible here — at worst a duplicate
     // upload, never a wrong answer.
     in_flight_slow_writes: Mutex<HashMap<StoreKey<'static>, Arc<InFlightSlowWrite>>>,
-    /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` (unset
-    /// or configured 0) waits indefinitely: the deadline is opt-in.
+    /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` (the `0`
+    /// default) waits indefinitely: the deadline is opt-in.
     has_slow_write_wait_timeout: Option<Duration>,
 }
 
@@ -144,6 +144,26 @@ impl LoaderGuard<'_> {
     }
 }
 
+/// Removes `key`'s entry from `map` only when it still holds `own` (by Arc
+/// identity) and `should_remove` agrees, all under one lock. The dedup
+/// guards share it so that no drop ever removes a successor's live entry: a
+/// later writer or loader of the same key replaces the map slot, and the
+/// earlier guard's drop must leave that replacement alone.
+fn remove_map_entry_if_own<K: Eq + core::hash::Hash, V>(
+    map: &Mutex<HashMap<K, Arc<V>>>,
+    key: K,
+    own: &Arc<V>,
+    should_remove: impl FnOnce(&Arc<V>) -> bool,
+) {
+    let mut guard = map.lock();
+    if let std::collections::hash_map::Entry::Occupied(occupied_entry) = guard.entry(key)
+        && Arc::ptr_eq(occupied_entry.get(), own)
+        && should_remove(occupied_entry.get())
+    {
+        occupied_entry.remove();
+    }
+}
+
 /// Cancel-safe RAII guard that removes an entry from
 /// `FastSlowStore::in_flight_slow_writes` when dropped. This ensures the
 /// map does not leak entries if the surrounding `update()` future is
@@ -169,16 +189,10 @@ impl Drop for InFlightSlowWriteGuard {
         let Some(key) = self.key.take() else {
             return;
         };
-        // Remove only this writer's own entry. A later writer of the same
-        // key (a re-upload after `has` reported it missing at the wait
-        // timeout) replaces the entry in the map, and the first writer's
-        // drop must not take the live writer's entry with it.
-        let mut in_flight = store.in_flight_slow_writes.lock();
-        if let std::collections::hash_map::Entry::Occupied(occupied_entry) = in_flight.entry(key)
-            && Arc::ptr_eq(occupied_entry.get(), &self.entry)
-        {
-            occupied_entry.remove();
-        }
+        // A re-upload after `has` reported the key missing at the wait
+        // timeout replaces this writer's entry; unconditional removal once
+        // the entry is confirmed ours, since waiters hold their own clones.
+        remove_map_entry_if_own(&store.in_flight_slow_writes, key, &self.entry, |_| true);
     }
 }
 
@@ -193,17 +207,15 @@ impl Drop for LoaderGuard<'_> {
             return;
         };
 
-        let mut guard = store.populating_digests.lock();
-        if let std::collections::hash_map::Entry::Occupied(occupied_entry) =
-            guard.entry(self.key.borrow().into_owned())
-            && Arc::ptr_eq(occupied_entry.get(), &loader)
-        {
-            drop(loader);
-            if Arc::strong_count(occupied_entry.get()) == 1 {
-                // This is the last loader, so remove it.
-                occupied_entry.remove();
-            }
-        }
+        remove_map_entry_if_own(
+            &store.populating_digests,
+            self.key.borrow().into_owned(),
+            &loader,
+            // Our own clone of `loader` is still alive here, so a strong
+            // count of 2 means the map and this guard are the only holders:
+            // no follower still waits on the loader, and it can go.
+            |entry| Arc::strong_count(entry) == 2,
+        );
     }
 }
 
@@ -220,10 +232,8 @@ impl FastSlowStore {
             metrics: FastSlowStoreMetrics::default(),
             populating_digests: Mutex::new(HashMap::new()),
             in_flight_slow_writes: Mutex::new(HashMap::new()),
-            has_slow_write_wait_timeout: match spec.has_slow_write_wait_timeout_s {
-                None | Some(0) => None,
-                Some(secs) => Some(Duration::from_secs(secs as u64)),
-            },
+            has_slow_write_wait_timeout: (spec.has_slow_write_wait_timeout_s > 0)
+                .then(|| Duration::from_secs(spec.has_slow_write_wait_timeout_s as u64)),
         })
     }
 
