@@ -201,7 +201,12 @@ impl Drop for InFlightSlowWriteGuard {
         // the entry is confirmed ours, since waiters hold their own clones
         // (which is also why the count-blind predicate ignores the extra
         // clone this guard still holds in its field).
-        remove_map_entry_if_own(&store.in_flight_slow_writes, key, self.entry.clone(), |_| true);
+        remove_map_entry_if_own(
+            &store.in_flight_slow_writes,
+            key,
+            self.entry.clone(),
+            |_| true,
+        );
     }
 }
 
