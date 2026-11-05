@@ -3001,6 +3001,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures",
+ "h2",
  "hex",
  "hyper",
  "hyper-util",
