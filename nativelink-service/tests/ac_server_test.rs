@@ -75,12 +75,20 @@ async fn make_store_manager() -> Result<Arc<StoreManager>, Error> {
 }
 
 fn make_ac_server(store_manager: &StoreManager) -> Result<AcServer, Error> {
+    make_ac_server_with_discard(store_manager, false)
+}
+
+fn make_ac_server_with_discard(
+    store_manager: &StoreManager,
+    discard_failed_results: bool,
+) -> Result<AcServer, Error> {
     AcServer::new(
         &[WithInstanceName {
             instance_name: "foo_instance_name".to_string(),
             config: nativelink_config::cas_server::AcStoreConfig {
                 ac_store: "main_ac".to_string(),
                 read_only: false,
+                discard_failed_results,
             },
         }],
         store_manager,
@@ -223,5 +231,68 @@ async fn one_item_update_test() -> Result<(), Box<dyn core::error::Error>> {
 
     let decoded_action_result = ActionResult::decode(raw_data)?;
     assert_eq!(decoded_action_result, action_result);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn discard_failed_results_skips_failed_action() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server_with_discard(&store_manager, true)?;
+
+    let action_result = ActionResult {
+        exit_code: 45,
+        ..Default::default()
+    };
+    let size_bytes = get_encoded_proto_size(&action_result)?
+        .try_into()
+        .unwrap_or(i64::MAX);
+
+    let raw_response = update_action_result(
+        &ac_server,
+        Digest {
+            hash: HASH1.to_string(),
+            size_bytes,
+        },
+        action_result.clone(),
+    )
+    .await;
+    assert!(
+        raw_response.is_ok(),
+        "Expected success, got error {raw_response:?}"
+    );
+
+    let err = get_action_result(&ac_server, HASH1, size_bytes)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotFound);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn discard_failed_results_keeps_successful_action() -> Result<(), Box<dyn core::error::Error>>
+{
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server_with_discard(&store_manager, true)?;
+
+    let action_result = ActionResult {
+        exit_code: 0,
+        ..Default::default()
+    };
+    let size_bytes = get_encoded_proto_size(&action_result)?
+        .try_into()
+        .unwrap_or(i64::MAX);
+
+    update_action_result(
+        &ac_server,
+        Digest {
+            hash: HASH1.to_string(),
+            size_bytes,
+        },
+        action_result.clone(),
+    )
+    .await?;
+
+    let response = get_action_result(&ac_server, HASH1, size_bytes).await?;
+    assert_eq!(response.into_inner(), action_result);
     Ok(())
 }
