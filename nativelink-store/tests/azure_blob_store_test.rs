@@ -1817,6 +1817,49 @@ async fn max_concurrent_requests_bounds_uploads() -> Result<(), Error> {
     Ok(())
 }
 
+/// Per-blob concurrency must be bounded even without a store-wide request cap.
+#[nativelink_test(start_paused = true)]
+async fn multipart_uploads_honor_the_configured_concurrency_limit() -> Result<(), Error> {
+    const BLOCK: usize = 5 * 1024 * 1024;
+    const BLOCKS: usize = 12;
+    let content = Bytes::from(vec![7u8; BLOCKS * BLOCK]);
+    for (configured, expected) in [(Some(1), 1), (Some(3), 3), (None, 10)] {
+        let mock = MockTransport::new();
+        mock.hold_each_request(Duration::from_secs(1));
+        let store = create_test_store_with_common(
+            Arc::clone(&mock),
+            CommonObjectSpec {
+                multipart_max_concurrent_uploads: configured,
+                ..Default::default()
+            },
+        )?;
+        store
+            .update_oneshot(numbered_digest(0, content.len())?, content.clone())
+            .await?;
+        assert_eq!(mock.request_count(), BLOCKS + 1, "all blocks and commit");
+        assert_eq!(
+            mock.max_in_flight(),
+            expected,
+            "multipart limit {configured:?} must bound active Azure requests"
+        );
+    }
+    Ok(())
+}
+
+#[nativelink_test]
+async fn rejects_zero_multipart_concurrency() {
+    let err = create_test_store_with_common(
+        MockTransport::new(),
+        CommonObjectSpec {
+            multipart_max_concurrent_uploads: Some(0),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert_eq!(err.code, Code::InvalidArgument);
+    assert!(err.to_string().contains("multipart_max_concurrent_uploads"));
+}
+
 /// A request that fails because the host ran out of local ports names the
 /// setting that bounds them, once a minute per store rather than once per
 /// failed request: under exhaustion nearly every request fails alike.

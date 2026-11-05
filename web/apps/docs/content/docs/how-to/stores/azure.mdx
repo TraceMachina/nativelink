@@ -136,6 +136,24 @@ described in [the shared options section](/how-to/stores/s3-and-compatible);
 `insecure_allow_http` and `disable_http2` are accepted but not read by the
 Azure store.
 
+In development builds, `multipart_max_concurrent_uploads` bounds active block
+uploads per blob, including blocks waiting to retry. The default is 10. The
+producer pauses when the active uploads and its bounded queue are full, so one
+large blob cannot start every block request at once. This is a per-blob limit;
+use `max_concurrent_requests` to bound requests across concurrent blobs in the
+same store. Each store in a shard has its own limit.
+
+Azure HTTP requests no longer borrow filesystem permits in development builds.
+A filesystem fast tier can hold those permits until Azure consumes its upload
+stream, so sharing the pool can leave both tiers waiting on each other. Use the
+existing `max_concurrent_requests` setting to bound Azure requests; its default
+of `0` leaves the store-wide pool unbounded. When enabling it, set
+`max_concurrent_reads` above zero and below `max_concurrent_requests` so downloads
+leave capacity for uploads and existence checks. These bounds limit active
+requests, not idle connections or sockets in `TIME_WAIT`.
+
+<SourceLink file="nativelink-config/src/stores.rs" symbol="CommonObjectSpec" />
+
 ## Steps [#steps]
 
 <Steps>
