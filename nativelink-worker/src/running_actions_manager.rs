@@ -1147,7 +1147,7 @@ tokio::task_local! {
     /// The counters of the fetch attempt running on this task, if any. A
     /// task local rather than a parameter: the download functions are
     /// public and recursive, and the counts are a report, not an input.
-    static INPUT_FETCH_STATS: Arc<InputFetchStats>;
+    pub static INPUT_FETCH_STATS: Arc<InputFetchStats>;
 }
 
 /// Runs `fut`, one input fetch attempt, with fresh counters in scope and

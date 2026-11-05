@@ -53,6 +53,7 @@ async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(
         async fn post_init(self: Arc<Self>) -> Result<(), Error> {
             Ok(())
         }
+        #[allow(clippy::unimplemented)]
         async fn has_with_results(
             self: Pin<&Self>,
             _keys: &[StoreKey<'_>],
@@ -70,6 +71,7 @@ async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(
             reader.recv().await?;
             Err(make_err!(self.code, "inner upload failed"))
         }
+        #[allow(clippy::unimplemented)]
         async fn get_part(
             self: Pin<&Self>,
             _key: StoreKey<'_>,
