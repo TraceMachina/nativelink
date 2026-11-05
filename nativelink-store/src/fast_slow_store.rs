@@ -84,6 +84,9 @@ pub struct FastSlowStore {
     /// See [`FastSlowSpec::has_slow_write_wait_timeout_s`]. `None` (the `0`
     /// default) waits indefinitely: the deadline is opt-in.
     has_slow_write_wait_timeout: Option<Duration>,
+    /// See [`FastSlowSpec::leader_inactivity_timeout_s`]. `None` never
+    /// times a fill out.
+    leader_inactivity_timeout: Option<Duration>,
 }
 
 /// One slow-store write in flight. `has()` waiters wait on `size` for as
@@ -118,6 +121,22 @@ impl InFlightSlowWrite {
             );
         }
     }
+}
+
+/// Activity signal shared between a fill's transfer loop and the inactivity
+/// watchdog in `populate_and_maybe_stream`. Allocated only when
+/// `leader_inactivity_timeout` is set, so the default path pays nothing.
+#[derive(Debug, Default)]
+struct FillActivity {
+    /// Bumped whenever the fill observably moves: a chunk pulled off the
+    /// slow stream, or a chunk delivered to the fast tier and the reader.
+    ticks: AtomicU64,
+    /// Set once the slow stream has delivered EOF and every in-range byte
+    /// has been handed on. What remains after that (the fast tier's commit,
+    /// the reader's EOF) is local work, so the watchdog stands down instead
+    /// of killing a completed transfer during a slow commit. It also covers
+    /// a zero-byte blob, whose fill never ticks at all.
+    transfer_complete: AtomicBool,
 }
 
 // This guard ensures that the populating_digests is cleared even if the future
@@ -248,6 +267,8 @@ impl FastSlowStore {
             in_flight_slow_writes: Mutex::new(HashMap::new()),
             has_slow_write_wait_timeout: (spec.has_slow_write_wait_timeout_s > 0)
                 .then(|| Duration::from_secs(spec.has_slow_write_wait_timeout_s as u64)),
+            leader_inactivity_timeout: (spec.leader_inactivity_timeout_s > 0)
+                .then(|| Duration::from_secs(spec.leader_inactivity_timeout_s as u64)),
         })
     }
 
@@ -353,6 +374,33 @@ impl FastSlowStore {
         }
     }
 
+    /// Records one inactivity-watchdog trip (metric plus WARN) and builds
+    /// the error the fill fails with. `phase` names which fill phase made
+    /// no progress, so the log tells a wedged existence check from a
+    /// wedged transfer or commit.
+    fn fill_inactivity_error(
+        &self,
+        key: &StoreKey<'_>,
+        inactivity: Duration,
+        phase: &str,
+    ) -> Error {
+        self.metrics
+            .leader_inactivity_timeouts
+            .fetch_add(1, Ordering::Relaxed);
+        warn!(
+            %key,
+            timeout_secs = inactivity.as_secs(),
+            phase,
+            "Cache fill made no progress within the inactivity timeout; failing it so a new leader can take over"
+        );
+        make_err!(
+            Code::DeadlineExceeded,
+            "The cache fill for {} made no progress for {}s during {phase}",
+            key.as_str(),
+            inactivity.as_secs()
+        )
+    }
+
     async fn populate_and_maybe_stream(
         self: Pin<&Self>,
         key: StoreKey<'_>,
@@ -388,10 +436,27 @@ impl FastSlowStore {
             // from its key's.
             UploadSizeInfo::MaxSize(slow_inner_store.max_upload_size())
         } else {
-            UploadSizeInfo::ExactSize(self
-                    .slow_store
-                    .has(key.borrow())
-                    .await
+            // The sizing `has()` is the fill's first remote call, issued
+            // before the transfer (and its watchdog) exists, so a backend
+            // that wedges the existence check instead of the read would
+            // otherwise pin the fill forever. There is no progress to
+            // measure on a point query: one full inactivity window is the
+            // bound.
+            let has_fut = self.slow_store.has(key.borrow());
+            let maybe_len = match self.leader_inactivity_timeout {
+                None => has_fut.await,
+                Some(inactivity) => match tokio::time::timeout(inactivity, has_fut).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => {
+                        return Err(self.fill_inactivity_error(
+                            &key,
+                            inactivity,
+                            "the slow store's sizing has()",
+                        ));
+                    }
+                },
+            };
+            UploadSizeInfo::ExactSize(maybe_len
                     .err_tip(|| "Failed to run has() on slow store")?
                     .ok_or_else(|| {
                         name_missing_digest(
@@ -411,6 +476,12 @@ impl FastSlowStore {
         let mut bytes_received: u64 = 0;
         let mut counted_hit = false;
 
+        // Read by the inactivity watchdog below to tell a slow transfer from
+        // a wedged one. Allocated only when the watchdog is armed.
+        let fill_activity = self
+            .leader_inactivity_timeout
+            .map(|_| Arc::new(FillActivity::default()));
+        let data_stream_activity = fill_activity.clone();
         let (mut fast_tx, fast_rx) = make_buf_channel_pair();
         let (slow_tx, mut slow_rx) = make_buf_channel_pair();
         let data_stream_fut = async move {
@@ -427,6 +498,9 @@ impl FastSlowStore {
                             err.code = Code::DataLoss;
                             err.append("Slow store ended before the cache fill was complete")
                         })?;
+                    if let Some(activity) = &data_stream_activity {
+                        activity.transfer_complete.store(true, Ordering::Release);
+                    }
                     // Write out our EOF.
                     // We are dropped as soon as we send_eof to writer_pin, so
                     // we wait until we've finished all of our joins to do that.
@@ -460,10 +534,19 @@ impl FastSlowStore {
                 );
 
                 bytes_received += output_buf_len;
+                if let Some(activity) = &data_stream_activity {
+                    activity.ticks.fetch_add(1, Ordering::Release);
+                }
 
                 let (fast_tx_res, writer_res) = join!(fast_tx.send(output_buf), writer_fut);
                 fast_tx_res.err_tip(|| "Failed to write to fast store in fast_slow store")?;
                 writer_res.err_tip(|| "Failed to write result to writer in fast_slow store")?;
+                if let Some(activity) = &data_stream_activity {
+                    // Delivery completing is progress too: without this tick
+                    // the final chunk's consumption by the fast tier and the
+                    // reader would run on a dead clock.
+                    activity.ticks.fetch_add(1, Ordering::Release);
+                }
             }
         };
 
@@ -472,8 +555,54 @@ impl FastSlowStore {
             .fast_store
             .update(key.borrow(), fast_rx, reader_stream_size);
 
+        // The fill fails once no byte has moved for the inactivity timeout:
+        // dropping the joined future tears down all three sides at once, so
+        // a wedged slow read cannot pin the fill (and every follower waiting
+        // on it) forever. Progress resets the clock, so a slow but moving
+        // multi-gigabyte transfer is never cut; a whole-transfer deadline
+        // would be wrong here for exactly that reason. Once the transfer
+        // itself completes, only the fast tier's commit remains: it gets one
+        // further full window — grace for a slow local sync that must not
+        // cost a completed transfer, still a bound when the fast tier is a
+        // remote store whose commit can wedge.
+        let joined_fut = async { join!(data_stream_fut, slow_store_fut, fast_store_fut) };
         let (data_stream_res, slow_res, fast_res) =
-            join!(data_stream_fut, slow_store_fut, fast_store_fut);
+            match self.leader_inactivity_timeout.zip(fill_activity) {
+                None => joined_fut.await,
+                Some((inactivity, activity)) => {
+                    tokio::pin!(joined_fut);
+                    loop {
+                        let seen = activity.ticks.load(Ordering::Acquire);
+                        match tokio::time::timeout(inactivity, &mut joined_fut).await {
+                            Ok(results) => break results,
+                            Err(_elapsed) => {
+                                if activity.transfer_complete.load(Ordering::Acquire) {
+                                    break match tokio::time::timeout(inactivity, &mut joined_fut)
+                                        .await
+                                    {
+                                        Ok(results) => results,
+                                        Err(_elapsed) => {
+                                            return Err(self.fill_inactivity_error(
+                                                &key,
+                                                inactivity,
+                                                "the fast tier's commit",
+                                            ));
+                                        }
+                                    };
+                                }
+                                if activity.ticks.load(Ordering::Acquire) != seen {
+                                    continue;
+                                }
+                                return Err(self.fill_inactivity_error(
+                                    &key,
+                                    inactivity,
+                                    "the transfer",
+                                ));
+                            }
+                        }
+                    }
+                }
+            };
         match data_stream_res {
             Ok((fast_eof_res, maybe_writer_pin)) =>
             // Sending the EOF will drop us almost immediately in bytestream_server
@@ -1119,10 +1248,14 @@ impl StoreDriver for FastSlowStore {
         //
         //   * Leader (created the OnceCell entry): runs `populate` with
         //     OUR `writer`, streaming directly to the caller while
-        //     filling the fast cache. No timeout: a multi-GB blob
-        //     legitimately takes minutes to stream, and cancelling our
-        //     own populate would propagate the failure to every other
-        //     reader of this digest.
+        //     filling the fast cache. No whole-transfer deadline: a
+        //     multi-GB blob legitimately takes minutes to stream, and
+        //     cancelling our own populate propagates the failure to every
+        //     other reader of this digest. When
+        //     `leader_inactivity_timeout_s` is set, the populate IS
+        //     cancelled (with `DEADLINE_EXCEEDED`) once it makes no
+        //     progress for a full window — see the watchdog in
+        //     `populate_and_maybe_stream`.
         //
         //   * Follower: bound the wait so a wedged leader does not pin
         //     us until the upstream `gRPC` deadline fires. The follower
@@ -1230,6 +1363,10 @@ struct FastSlowStoreMetrics {
         help = "In-flight slow writes that has() gave up waiting on at the configured deadline, counted once per write; their keys are reported missing until the write resolves"
     )]
     has_in_flight_wait_timeouts: AtomicU64,
+    #[metric(
+        help = "Cache fills failed because they made no progress for leader_inactivity_timeout_s (the sizing has(), the transfer, and the post-transfer commit alike; the WARN names the phase); the next reader of the key leads a fresh fill"
+    )]
+    leader_inactivity_timeouts: AtomicU64,
     #[metric(help = "Stale fast-store map entries that fell through to the slow store")]
     fast_store_stale_map_falls_through: AtomicU64,
     #[metric(
