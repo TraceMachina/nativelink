@@ -1011,6 +1011,9 @@ struct InstrumentedSlowStore {
     get_part_count: AtomicU64,
     /// If set, awaited at the start of `get_part` before any data flows.
     gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// If set, awaited at the start of `has_with_results`: a backend that
+    /// wedges the existence check rather than the read.
+    has_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 
 #[async_trait]
@@ -1024,6 +1027,10 @@ impl StoreDriver for InstrumentedSlowStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let has_gate = self.has_gate.lock().unwrap().take();
+        if let Some(rx) = has_gate {
+            let _ = rx.await;
+        }
         for (key, result) in keys.iter().zip(results.iter_mut()) {
             if *key == self.digest.into() {
                 *result = Some(self.digest.size_bytes());
@@ -1094,6 +1101,7 @@ fn make_fast_slow_with_instrumented_slow(
         data,
         get_part_count: AtomicU64::new(0),
         gate: Mutex::new(gate),
+        has_gate: Mutex::new(None),
     });
     let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow = Store::new(FastSlowStore::new(
@@ -2867,6 +2875,7 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
                 data: data.clone(),
                 get_part_count: AtomicU64::new(0),
                 gate: Mutex::new(None),
+                has_gate: Mutex::new(None),
             }));
             let store = FastSlowStore::new(
                 &FastSlowSpec {
@@ -2920,5 +2929,182 @@ async fn stalled_fill_fails_at_the_inactivity_timeout() -> Result<(), Error> {
         "expected the inactivity deadline, got: {err:?}",
     );
 
+    Ok(())
+}
+
+/// A slow store that wedges the sizing `has()` (issued before the transfer
+/// and its watchdog exist) must fail the fill at the inactivity timeout:
+/// without its own bound, a backend that hangs the existence check instead
+/// of the read would pin the fill and its dedup entry until restart.
+#[nativelink_test(start_paused = true)]
+async fn a_wedged_sizing_has_fails_at_the_inactivity_timeout() -> Result<(), Error> {
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Never released: the existence check hangs forever.
+    let (_has_gate_tx, has_gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data,
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(None),
+        has_gate: Mutex::new(Some(has_gate_rx)),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: None,
+            leader_inactivity_timeout_s: 1,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let err = fast_slow
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("a fill whose sizing has() hangs must fail at the inactivity timeout");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the inactivity deadline, got: {err:?}",
+    );
+    Ok(())
+}
+
+/// A fast store that accepts the whole fill and then holds its commit open
+/// until the test releases it, modeling a slow local finalize (fsync under
+/// I/O pressure).
+#[derive(MetricsComponent)]
+struct GatedCommitFastStore {
+    commit_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+#[async_trait]
+impl StoreDriver for GatedCommitFastStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for result in results.iter_mut() {
+            *result = None;
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Receive the entire transfer (data and EOF) first, then stall the
+        // commit until the test releases it.
+        let size = reader.drain().await?;
+        let commit_gate = self.commit_gate.lock().unwrap().take();
+        if let Some(rx) = commit_gate {
+            let _ = rx.await;
+        }
+        Ok(size)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        writer.send_eof()
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(GatedCommitFastStore);
+
+/// Once the transfer has fully moved (the slow stream delivered EOF and the
+/// reader took every in-range byte), the watchdog must stand down: a slow
+/// local commit in the fast tier is not a wedged transfer, and killing the
+/// fill there would discard completed work. The zero-length case also pins
+/// that a blob which never ticks the activity clock is not killed.
+#[nativelink_test(start_paused = true)]
+async fn a_completed_transfer_is_not_killed_during_a_slow_commit() -> Result<(), Error> {
+    for data_len in [0usize, 2048] {
+        let data = make_random_data(data_len);
+        let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+        let slow = Arc::new(InstrumentedSlowStore {
+            digest,
+            data: data.clone(),
+            get_part_count: AtomicU64::new(0),
+            gate: Mutex::new(None),
+            has_gate: Mutex::new(None),
+        });
+        let (commit_gate_tx, commit_gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let fast = Arc::new(GatedCommitFastStore {
+            commit_gate: Mutex::new(Some(commit_gate_rx)),
+        });
+        let fast_slow = Store::new(FastSlowStore::new(
+            &FastSlowSpec {
+                fast: StoreSpec::Memory(MemorySpec::default()),
+                slow: StoreSpec::Memory(MemorySpec::default()),
+                fast_direction: StoreDirection::default(),
+                slow_direction: StoreDirection::default(),
+                bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: None,
+                leader_inactivity_timeout_s: 1,
+            },
+            Store::new(fast),
+            Store::new(slow),
+        ));
+
+        let fill_store = fast_slow.clone();
+        let mut fill =
+            tokio::spawn(async move { fill_store.get_part_unchunked(digest, 0, None).await });
+
+        // Paused time: the watchdog's one-second windows all fire inside
+        // this wait. If the stand-down were broken, the fill would fail
+        // with DEADLINE_EXCEEDED long before 600 virtual seconds pass.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(600), &mut fill)
+                .await
+                .is_err(),
+            "the fill must still be waiting on the fast tier's commit (len {data_len}), not killed by the watchdog",
+        );
+
+        commit_gate_tx
+            .send(())
+            .expect("the fill must still be holding its commit gate");
+        let read_back = fill
+            .await
+            .expect("fill task must not panic")
+            .err_tip(|| "fill must succeed once the commit completes")?;
+        assert_eq!(read_back, data, "fill of len {data_len} must round-trip");
+    }
     Ok(())
 }
