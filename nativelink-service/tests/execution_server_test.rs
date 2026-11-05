@@ -903,11 +903,9 @@ async fn missing_input_drops_the_blob_from_the_existence_cache()
         result
     }));
     let (response, _) = tokio::join!(
-        execution_server.wait_execution(Request::new(
-            nativelink_proto::build::bazel::remote::execution::v2::WaitExecutionRequest {
-                name: format!("{INSTANCE_NAME}/some_operation_id"),
-            }
-        )),
+        execution_server.wait_execution(Request::new(WaitExecutionRequest {
+            name: format!("{INSTANCE_NAME}/some_operation_id"),
+        })),
         mock_scheduler.expect_filter_operations(Ok(stream)),
     );
     let mut updates = response?.into_inner();

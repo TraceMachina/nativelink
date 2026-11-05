@@ -1701,7 +1701,7 @@ async fn dropped_writer_does_not_remove_successors_in_flight_entry() -> Result<(
 
     // The wedged writer dies. Its guard must leave B's entry alone.
     writer_a.abort();
-    let _ = writer_a.await;
+    drop(writer_a.await);
 
     // An observer must still see B's in-flight write...
     let observer_store = fast_slow.clone();
