@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -655,6 +655,25 @@ mod shellexpand_string_tests {
         );
     }
 }
+#[cfg(test)]
+mod fast_slow_spec_tests {
+    use nativelink_config::stores::FastSlowSpec;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn has_slow_write_wait_timeout_accepts_duration_strings() {
+        let spec: FastSlowSpec = serde_json5::from_str(
+            r#"{
+                fast: { memory: {} },
+                slow: { memory: {} },
+                has_slow_write_wait_timeout_s: "30s",
+            }"#,
+        )
+        .expect("a duration string must deserialize like every other *_timeout_s field");
+        assert_eq!(spec.has_slow_write_wait_timeout_s, 30);
+    }
+}
+
 #[cfg(test)]
 mod convert_optional_numeric_with_shellexpand_tests {
     use serde_assert::de::Error as DeError;

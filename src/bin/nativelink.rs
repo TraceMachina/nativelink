@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -765,6 +765,7 @@ async fn inner_main(
                                         remote_addr = %remote_addr,
                                         socket_addr = %socket_addr,
                                     ).in_scope(|| async move {
+                                        let connected_at = std::time::Instant::now();
                                         let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
                                             match tls_acceptor.accept(tcp_stream).await {
                                                 Ok(tls_stream) => Either::Left(http.serve_connection(
@@ -784,6 +785,31 @@ async fn inner_main(
                                         };
 
                                         if let Err(err) = serve_connection.await {
+                                            // The HTTP/2 layer closes a connection with
+                                            // ENHANCE_YOUR_CALM when one of its internal
+                                            // limits trips, taking every multiplexed
+                                            // stream with it. The connection's age tells
+                                            // a load-shaped limit (any age, during load)
+                                            // from a lifetime cap (old connections), which
+                                            // the GOAWAY's debug data alone cannot.
+                                            let enhance_your_calm = core::iter::successors(
+                                                Some(err.as_ref() as &(dyn core::error::Error + 'static)),
+                                                |err| err.source(),
+                                            )
+                                            .filter_map(|err| err.downcast_ref::<h2::Error>())
+                                            .any(|err| {
+                                                err.is_go_away()
+                                                    && err.reason() == Some(h2::Reason::ENHANCE_YOUR_CALM)
+                                            });
+                                            if enhance_your_calm {
+                                                warn!(
+                                                    target: "nativelink::services",
+                                                    ?err,
+                                                    %remote_addr,
+                                                    connection_age_s = connected_at.elapsed().as_secs(),
+                                                    "Connection closed with an ENHANCE_YOUR_CALM GOAWAY"
+                                                );
+                                            }
                                             error!(
                                                 target: "nativelink::services",
                                                 ?err,

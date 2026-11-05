@@ -5,19 +5,17 @@ documentation will breakdown the anatomy of this configuration file with step-by
 
 Configuration JSON objects should begin with the `stores` key, followed by `workers`, `schedulers`, `servers`, and `global`.
 
-
 ```json5
 {
-  "stores": [],
-  "workers": [],
-  "schedulers": [],
-  "servers": [],
-  "global": {}
+  stores: [],
+  workers: [],
+  schedulers: [],
+  servers: [],
+  global: {},
 }
 ```
 
 This is the scaffolding for a NativeLink deployment configuration.
-
 
 <details>
   <summary>Configuring Store</summary>
@@ -28,15 +26,15 @@ The value of `stores` is an array where each element defines a store. Each shoul
 
 ```json5
 {
-  "stores": [
+  stores: [
     {
-      "name": "AC_MAIN_STORE",
-    }
+      name: "AC_MAIN_STORE",
+    },
   ],
-  "workers": [],
-  "schedulers": [],
-  "servers": [],
-  "global": {},
+  workers: [],
+  schedulers: [],
+  servers: [],
+  global: {},
 }
 ```
 
@@ -47,16 +45,16 @@ the next key to add is the type of store. The options are `filesystem`, `memory`
 
 ```json5
 {
-  "stores": [
+  stores: [
     {
-      "name": "AC_MAIN_STORE",
-      "filesystem": {}
-    }
+      name: "AC_MAIN_STORE",
+      filesystem: {},
+    },
   ],
-  "workers": [],
-  "schedulers": [],
-  "servers": [],
-  "global": {},
+  workers: [],
+  schedulers: [],
+  servers: [],
+  global: {},
 }
 ```
 
@@ -66,27 +64,27 @@ The contents of the object here must include `content_path`, `temp_path`, and an
 
 ```json5
 {
-  "stores": [
+  stores: [
     {
-      "name": "AC_MAIN_STORE",
-      "filesystem": {
-        "content_path": "/tmp/nativelink/data/content_path-index",
-        "temp_path": "/tmp/nativelink/data/tmp_path-index",
-        "eviction_policy": {
+      name: "AC_MAIN_STORE",
+      filesystem: {
+        content_path: "/tmp/nativelink/data/content_path-index",
+        temp_path: "/tmp/nativelink/data/tmp_path-index",
+        eviction_policy: {
           // 500mb.
-          "max_bytes": 500000000,
-        }
-      }
-    }
+          max_bytes: 500000000,
+        },
+      },
+    },
   ],
-  "workers": [],
-  "schedulers": [],
-  "servers": [],
-  "global": {},
+  workers: [],
+  schedulers: [],
+  servers: [],
+  global: {},
 }
 ```
-</details>
 
+</details>
 
 <details>
   <summary>Configuring Workers </summary>
@@ -97,13 +95,15 @@ The value of `workers` includes a top level array that embeds the worker metadat
 
 ```json5
 {
-  "stores": [],
-  "workers": [{
-    "local": {}
-  }],
-  "schedulers": [],
-  "servers": [],
-  "global": {},
+  stores: [],
+  workers: [
+    {
+      local: {},
+    },
+  ],
+  schedulers: [],
+  servers: [],
+  global: {},
 }
 ```
 
@@ -113,66 +113,69 @@ The Local object has five components, `worker_api_endpoint`, `cas_fast_slow_stor
 
 ```json5
 {
-  "stores": [],
-  "workers": [{
-    "local": {
-      "worker_api_endpoint": {
-        "uri": "grpc://127.0.0.1:50061",
+  stores: [],
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: {
+          cpu_count: {
+            values: ["16"],
+          },
+          memory_kb: {
+            values: ["500000"],
+          },
+          network_kbps: {
+            values: ["100000"],
+          },
+          cpu_arch: {
+            values: ["x86_64"],
+          },
+          OSFamily: {
+            values: [""],
+          },
+          "container-image": {
+            values: [""],
+          },
+        },
       },
-      "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
-      "upload_action_result": {
-        "ac_store": "AC_MAIN_STORE",
-      },
-      "work_directory": "/tmp/nativelink/work",
-      "platform_properties": {
-        "cpu_count": {
-          "values": ["16"],
-        },
-        "memory_kb": {
-          "values": ["500000"],
-        },
-        "network_kbps": {
-          "values": ["100000"],
-        },
-        "cpu_arch": {
-          "values": ["x86_64"],
-        },
-        "OSFamily": {
-          "values": [""]
-        },
-        "container-image": {
-          "values": [""]
-        },
-      }
-    }
-  }],
-  "schedulers": [],
-  "servers": [],
-  "global": {},
+    },
+  ],
+  schedulers: [],
+  servers: [],
+  global: {},
 }
 ```
-</details>
 
+</details>
 
 <details>
   <summary>Configuring Schedulers </summary>
 
 ### Scheduler Name
+
 The value of `stores` is an array where each element defines a store. Each should have a user supplied name. The following example, defines the `AC_MAIN_STORE`.
 
 The value of `schedulers` is an array where each element defines a scheduler. Each scheduler must have a user-supplied name. The following example, defines the `MAIN_SCHEDULER`.
 
 ```json5
 {
-  "stores": [],
-  "workers": [],
-  "schedulers": [
+  stores: [],
+  workers: [],
+  schedulers: [
     {
-      name: "MAIN_SCHEDULER"
-    }
+      name: "MAIN_SCHEDULER",
+    },
   ],
-  "servers": [],
-  "global": {},
+  servers: [],
+  global: {},
 }
 ```
 
@@ -183,13 +186,13 @@ the next key is the type of scheduler. The options are `simple`, `action_schedul
 
 ```json5
 {
-  "stores": [],
-  "workers": [],
-  "schedulers": [
+  stores: [],
+  workers: [],
+  schedulers: [
     {
       name: "MAIN_SCHEDULER",
-      simple: {}
-    }
+      simple: {},
+    },
   ],
 }
 ```
@@ -200,35 +203,35 @@ The contents of the scheduler type object defines the options. For a list of opt
 
 ```json5
 {
-  "stores": [],
-  "workers": [],
-  "schedulers": [
+  stores: [],
+  workers: [],
+  schedulers: [
     {
       name: "MAIN_SCHEDULER",
       simple: {
-        "supported_platform_properties": {
-          "cpu_count": "minimum",
-          "memory_kb": "minimum",
-          "network_kbps": "minimum",
-          "disk_read_iops": "minimum",
-          "disk_read_bps": "minimum",
-          "disk_write_iops": "minimum",
-          "disk_write_bps": "minimum",
-          "shm_size": "minimum",
-          "gpu_count": "minimum",
-          "gpu_model": "exact",
-          "cpu_vendor": "exact",
-          "cpu_arch": "exact",
-          "cpu_model": "exact",
-          "kernel_version": "exact",
-          "OSFamily": "priority",
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          network_kbps: "minimum",
+          disk_read_iops: "minimum",
+          disk_read_bps: "minimum",
+          disk_write_iops: "minimum",
+          disk_write_bps: "minimum",
+          shm_size: "minimum",
+          gpu_count: "minimum",
+          gpu_model: "exact",
+          cpu_vendor: "exact",
+          cpu_arch: "exact",
+          cpu_model: "exact",
+          kernel_version: "exact",
+          OSFamily: "priority",
           "container-image": "priority",
-        }
-      }
-    }
+        },
+      },
+    },
   ],
-  "servers": [],
-  "global": {},
+  servers: [],
+  global: {},
 }
 ```
 
@@ -243,15 +246,18 @@ The `servers` configuration object is an array, with two objects, `public`, and 
 
 ```json5
 {
-  "stores": [],
-  "workers": [],
-  "schedulers": [],
-  "servers": [{
-    "name": "public"
-  },{
-    "name": "private_workers_servers"
-  }],
-  "global": {},
+  stores: [],
+  workers: [],
+  schedulers: [],
+  servers: [
+    {
+      name: "public",
+    },
+    {
+      name: "private_workers_servers",
+    },
+  ],
+  global: {},
 }
 ```
 
@@ -261,45 +267,58 @@ The `public` server consists of a `listener` object and a `services` object. The
 
 ```json5
 {
-  "stores": [],
-  "workers": [],
-  "schedulers": [],
-  "servers": [{
-    "name": "public",
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50051"
-      }
+  stores: [],
+  workers: [],
+  schedulers: [],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
+      },
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+      },
     },
-    "services": {
-      "cas": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE"
-      }],
-      "ac": [{
-        "instance_name": "main",
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "execution": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE",
-        "scheduler": "MAIN_SCHEDULER",
-      }],
-      "capabilities": [{
-        "instance_name": "main",
-        "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER",
-        }
-      }],
-      "bytestream": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE",
-      }]
+    {
+      name: "private_workers_servers",
     },
-  },{
-    "name": "private_workers_servers"
-  }],
-  "global": {},
+  ],
+  global: {},
 }
 ```
 
@@ -310,68 +329,81 @@ The `public` server consists of a `listener` object and a `services` object. The
 The `private` server consists of a `listener` object and a `services` object. The `listener` object is one level and includes an `http` with a `socket address`. The `services` server consists of a `worker_api` object with `scheduler_field` and an `admin` object.
 
 ```json5
- {
-  "stores": [],
-  "workers": [],
-  "schedulers": [],
-  "servers": [{
-    "name": "public",
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50051"
-      }
-    },
-    "services": {
-      "cas": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE"
-      }],
-      "ac": [{
-        "instance_name": "main",
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "execution": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE",
-        "scheduler": "MAIN_SCHEDULER",
-      }],
-      "capabilities": [{
-        "instance_name": "main",
-        "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER",
-        }
-      }],
-      "bytestream": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE",
-      }]
-    },
-  },{
-    "name": "private_workers_servers",
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50061"
-      }
-    },
-    "services": {
-      // Note: This should be served on a different port, because it has
-      // a different permission set than the other services.
-      // In other words, this service is a backend api. The ones above
-      // are a frontend api.
-      "worker_api": {
-        "scheduler": "MAIN_SCHEDULER",
+{
+  stores: [],
+  workers: [],
+  schedulers: [],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
       },
-      "admin": {},
-      "health": {
-        "timeout_seconds": 2
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
       },
-    }
-  }],
-  "global": {},
+    },
+    {
+      name: "private_workers_servers",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        // Note: This should be served on a different port, because it has
+        // a different permission set than the other services.
+        // In other words, this service is a backend api. The ones above
+        // are a frontend api.
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        admin: {},
+        health: {
+          timeout_seconds: 2,
+        },
+      },
+    },
+  ],
+  global: {},
 }
 ```
 
-*`global`* is a single-level object and can be added at the end as the configuration object for file descriptors.
+_`global`_ is a single-level object and can be added at the end as the configuration object for file descriptors.
 
 ```json5
  "global": {
@@ -384,167 +416,181 @@ The `private` server consists of a `listener` object and a `services` object. Th
 <details>
   <summary>Complete Example </summary>
 
-Below, you will find a fully tested example that you can also find in [basic_cas.json](basic_cas.json)
+Below, you will find a fully tested example that you can also find in [basic_cas.json5](basic_cas.json5)
 
 ```json5
-
 {
-  "stores": [
+  stores: [
     {
       name: "AC_MAIN_STORE",
-      "filesystem": {
-        "content_path": "/tmp/nativelink/data-worker-test/content_path-ac",
-        "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-ac",
-        "eviction_policy": {
+      filesystem: {
+        content_path: "/tmp/nativelink/data-worker-test/content_path-ac",
+        temp_path: "/tmp/nativelink/data-worker-test/tmp_path-ac",
+        eviction_policy: {
           // 1gb.
-          "max_bytes": 1000000000,
-        }
-      }
+          max_bytes: 1000000000,
+        },
+      },
     },
     {
       name: "WORKER_FAST_SLOW_STORE",
-      "fast_slow": {
+      fast_slow: {
         // "fast" must be a "filesystem" store because the worker uses it to make
         // hardlinks on disk to a directory where the jobs are running.
-        "fast": {
-          "filesystem": {
-            "content_path": "/tmp/nativelink/data-worker-test/content_path-cas",
-            "temp_path": "/tmp/nativelink/data-worker-test/tmp_path-cas",
-            "eviction_policy": {
+        fast: {
+          filesystem: {
+            content_path: "/tmp/nativelink/data-worker-test/content_path-cas",
+            temp_path: "/tmp/nativelink/data-worker-test/tmp_path-cas",
+            eviction_policy: {
               // 10gb.
-              "max_bytes": 10000000000,
-            }
-          }
+              max_bytes: 10000000000,
+            },
+          },
         },
-        "slow": {
+        slow: {
           /// Discard data.
           /// This example usage has the CAS and the Worker live in the same place,
           /// so they share the same underlying CAS. Since workers require a fast_slow
           /// store, we use the fast store as our primary data store, and the slow store
           /// is just a noop, since there's no shared storage in this config.
-          "noop": {}
-        }
-      }
-    }
+          noop: {},
+        },
+      },
+    },
   ],
-  "schedulers": [
+  schedulers: [
     {
       name: "MAIN_SCHEDULER",
-      "simple": {
-        "supported_platform_properties": {
-          "cpu_count": "minimum",
-          "memory_kb": "minimum",
-          "network_kbps": "minimum",
-          "disk_read_iops": "minimum",
-          "disk_read_bps": "minimum",
-          "disk_write_iops": "minimum",
-          "disk_write_bps": "minimum",
-          "shm_size": "minimum",
-          "gpu_count": "minimum",
-          "gpu_model": "exact",
-          "cpu_vendor": "exact",
-          "cpu_arch": "exact",
-          "cpu_model": "exact",
-          "kernel_version": "exact",
-          "OSFamily": "priority",
+      simple: {
+        supported_platform_properties: {
+          cpu_count: "minimum",
+          memory_kb: "minimum",
+          network_kbps: "minimum",
+          disk_read_iops: "minimum",
+          disk_read_bps: "minimum",
+          disk_write_iops: "minimum",
+          disk_write_bps: "minimum",
+          shm_size: "minimum",
+          gpu_count: "minimum",
+          gpu_model: "exact",
+          cpu_vendor: "exact",
+          cpu_arch: "exact",
+          cpu_model: "exact",
+          kernel_version: "exact",
+          OSFamily: "priority",
           "container-image": "priority",
           // Example of how to set which docker images are available and set
           // them in the platform properties.
           // "docker_image": "priority",
-        }
-      }
-    }
+        },
+      },
+    },
   ],
-  "workers": [{
-    "local": {
-      "worker_api_endpoint": {
-        "uri": "grpc://127.0.0.1:50061",
+  workers: [
+    {
+      local: {
+        worker_api_endpoint: {
+          uri: "grpc://127.0.0.1:50061",
+        },
+        cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+        upload_action_result: {
+          ac_store: "AC_MAIN_STORE",
+        },
+        work_directory: "/tmp/nativelink/work",
+        platform_properties: {
+          cpu_count: {
+            values: ["16"],
+          },
+          memory_kb: {
+            values: ["500000"],
+          },
+          network_kbps: {
+            values: ["100000"],
+          },
+          cpu_arch: {
+            values: ["x86_64"],
+          },
+          OSFamily: {
+            values: [""],
+          },
+          "container-image": {
+            values: [""],
+          },
+          // Example of how to set which docker images are available and set
+          // them in the platform properties.
+          // "docker_image": {
+          //   "query_cmd": "docker images --format {{.Repository}}:{{.Tag}}",
+          // }
+        },
       },
-      "cas_fast_slow_store": "WORKER_FAST_SLOW_STORE",
-      "upload_action_result": {
-        "ac_store": "AC_MAIN_STORE",
-      },
-      "work_directory": "/tmp/nativelink/work",
-      "platform_properties": {
-        "cpu_count": {
-          "values": ["16"],
-        },
-        "memory_kb": {
-          "values": ["500000"],
-        },
-        "network_kbps": {
-          "values": ["100000"],
-        },
-        "cpu_arch": {
-          "values": ["x86_64"],
-        },
-        "OSFamily": {
-          "values": [""]
-        },
-        "container-image": {
-          "values": [""]
-        },
-        // Example of how to set which docker images are available and set
-        // them in the platform properties.
-        // "docker_image": {
-        //   "query_cmd": "docker images --format {{.Repository}}:{{.Tag}}",
-        // }
-      }
-    }
-  }],
-  "servers": [{
-    "name": "public",
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50051"
-      }
     },
-    "services": {
-      "cas": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE"
-      }],
-      "ac": [{
-        "instance_name": "main",
-        "ac_store": "AC_MAIN_STORE"
-      }],
-      "execution": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE",
-        "scheduler": "MAIN_SCHEDULER",
-      }],
-      "capabilities": [{
-        "instance_name": "main",
-        "remote_execution": {
-          "scheduler": "MAIN_SCHEDULER",
-        }
-      }],
-      "bytestream": [{
-        "instance_name": "main",
-        "cas_store": "WORKER_FAST_SLOW_STORE",
-      }]
-    }
-  }, {
-    "name": "private_workers_servers",
-    "listener": {
-      "http": {
-        "socket_address": "0.0.0.0:50061"
-      }
-    },
-    "services": {
-      // Note: This should be served on a different port, because it has
-      // a different permission set than the other services.
-      // In other words, this service is a backend api. The ones above
-      // are a frontend api.
-      "worker_api": {
-        "scheduler": "MAIN_SCHEDULER",
+  ],
+  servers: [
+    {
+      name: "public",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50051",
+        },
       },
-      "admin": {}
-    }
-  }],
-  "global": {
-    "max_open_files": 24576
-  }
+      services: {
+        cas: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+        ac: [
+          {
+            instance_name: "main",
+            ac_store: "AC_MAIN_STORE",
+          },
+        ],
+        execution: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+            scheduler: "MAIN_SCHEDULER",
+          },
+        ],
+        capabilities: [
+          {
+            instance_name: "main",
+            remote_execution: {
+              scheduler: "MAIN_SCHEDULER",
+            },
+          },
+        ],
+        bytestream: [
+          {
+            instance_name: "main",
+            cas_store: "WORKER_FAST_SLOW_STORE",
+          },
+        ],
+      },
+    },
+    {
+      name: "private_workers_servers",
+      listener: {
+        http: {
+          socket_address: "0.0.0.0:50061",
+        },
+      },
+      services: {
+        // Note: This should be served on a different port, because it has
+        // a different permission set than the other services.
+        // In other words, this service is a backend api. The ones above
+        // are a frontend api.
+        worker_api: {
+          scheduler: "MAIN_SCHEDULER",
+        },
+        admin: {},
+      },
+    },
+  ],
+  global: {
+    max_open_files: 24576,
+  },
 }
 ```
 
@@ -564,12 +610,14 @@ Users have reported **3-4x build time improvements** when using tmpfs.
 #### Setup Instructions
 
 1. Create a tmpfs mount point:
+
 ```bash
 sudo mkdir -p /mnt/tmpfs/nativelink
 sudo mount -t tmpfs -o size=50G tmpfs /mnt/tmpfs/nativelink
 ```
 
 2. To make it persistent across reboots, add to `/etc/fstab`:
+
 ```
 tmpfs /mnt/tmpfs/nativelink tmpfs size=50G,mode=1777 0 0
 ```
@@ -579,16 +627,17 @@ tmpfs /mnt/tmpfs/nativelink tmpfs size=50G,mode=1777 0 0
 #### Key Configuration Points
 
 Both paths must be on the same tmpfs mount:
+
 - CAS `content_path`: `/mnt/tmpfs/nativelink/cas`
 - Worker `work_directory`: `/mnt/tmpfs/nativelink/work`
 
 #### Trade-offs
 
-| Pros | Cons |
-|------|------|
-| Maximum I/O performance (RAM speed) | Cache is lost on restart/reboot |
-| Hardlinks work correctly (same filesystem) | Limited by available RAM |
-| Eliminates disk I/O bottleneck | Not suitable for very large CAS |
+| Pros                                       | Cons                            |
+| ------------------------------------------ | ------------------------------- |
+| Maximum I/O performance (RAM speed)        | Cache is lost on restart/reboot |
+| Hardlinks work correctly (same filesystem) | Limited by available RAM        |
+| Eliminates disk I/O bottleneck             | Not suitable for very large CAS |
 
 #### Sizing Guidance
 

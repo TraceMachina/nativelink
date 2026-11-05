@@ -551,6 +551,22 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
     let meter = global::meter_with_scope(InstrumentationScope::builder("nativelink").build());
 
     ExecutionMetrics {
+        execute_stream_heartbeats: meter
+            .u64_counter("execution.stream.heartbeats")
+            .with_description(
+                "Operation states re-sent on idle Execute/WaitExecution streams by the stream heartbeat",
+            )
+            .with_unit("{message}")
+            .build(),
+
+        execute_stream_drops: meter
+            .u64_counter("execution.stream.drops")
+            .with_description(
+                "Execute/WaitExecution response streams dropped before the operation finished: client disconnects, plus streams torn down by a server shutdown or an intermediary",
+            )
+            .with_unit("{stream}")
+            .build(),
+
         execution_stage_duration: meter
             .f64_histogram("execution.stage.duration")
             .with_description("Duration of each execution stage in seconds")
@@ -691,6 +707,12 @@ pub static EXECUTION_METRICS: LazyLock<ExecutionMetrics> = LazyLock::new(|| {
 /// OpenTelemetry metrics instruments for remote execution monitoring.
 #[derive(Debug)]
 pub struct ExecutionMetrics {
+    /// Operation states re-sent on idle `Execute`/`WaitExecution` streams
+    /// by the stream heartbeat.
+    pub execute_stream_heartbeats: metrics::Counter<u64>,
+    /// `Execute`/`WaitExecution` response streams dropped before the
+    /// operation finished, whichever side tore the stream down.
+    pub execute_stream_drops: metrics::Counter<u64>,
     /// Histogram of stage durations in seconds
     pub execution_stage_duration: metrics::Histogram<f64>,
     /// Histogram of total execution durations in seconds
@@ -1273,7 +1295,7 @@ pub static SCHEDULER_METRICS: LazyLock<SchedulerOtlpMetrics> = LazyLock::new(|| 
         hint_resolutions: meter
             .u64_counter("scheduler.hints.resolutions")
             .with_description(
-                "Actions the historical resource scheduler sized, by where the numbers came from: a hint keyed by target, action digest, command digest or mnemonic, the cold start, or nothing",
+                "Actions the historical resource scheduler sized, by where the numbers came from: a learned hint keyed by target, command digest or mnemonic, a seed, a file-backed hint, the cold start, or nothing",
             )
             .with_unit("{action}")
             .build(),
@@ -1558,6 +1580,18 @@ pub fn record_held_workers(count: usize) {
     SCHEDULER_METRICS
         .held_workers
         .record(u64::try_from(count).unwrap_or(u64::MAX), &[]);
+}
+
+/// Records an operation state re-sent on an idle `Execute`/`WaitExecution`
+/// stream by the stream heartbeat.
+pub fn record_execute_stream_heartbeat() {
+    EXECUTION_METRICS.execute_stream_heartbeats.add(1, &[]);
+}
+
+/// Records an `Execute`/`WaitExecution` response stream dropped before its
+/// operation finished, whichever side tore the stream down.
+pub fn record_execute_stream_drop() {
+    EXECUTION_METRICS.execute_stream_drops.add(1, &[]);
 }
 
 /// Records an operation the queue listed whose record was gone when read;

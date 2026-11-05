@@ -28,14 +28,19 @@ export function ConfigVersionSwitcher() {
 
   return (
     <div className="not-prose mb-6 flex items-center gap-2 text-sm">
-      <label htmlFor="config-version" className="font-medium text-fd-muted-foreground">
+      <label
+        htmlFor="config-version"
+        className="font-medium text-fd-muted-foreground"
+      >
         Version
       </label>
       <select
         id="config-version"
         value={current.version}
         onChange={(e) => {
-          const next = CONFIG_VERSIONS.find((v) => v.version === e.target.value);
+          const next = CONFIG_VERSIONS.find(
+            (v) => v.version === e.target.value,
+          );
           if (next && next.version !== current.version) router.push(next.href);
         }}
         className="rounded-md border border-fd-border bg-fd-card px-2 py-1 font-medium text-fd-foreground shadow-sm outline-none focus:ring-2 focus:ring-fd-ring"

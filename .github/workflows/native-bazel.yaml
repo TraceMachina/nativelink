@@ -2,13 +2,21 @@
 name: CI / Bazel
 
 on:
-  # Keep Bazel 8 compatibility and Redis topology checks as specialized
-  # cross-checks. The project-pinned Bazel suite runs on the warm cluster
-  # through CI / NativeLink, instead of a second hosted build.
+  # Check Bazel 8 compatibility and Redis topologies before merging.
+  # CI / NativeLink runs the project-pinned Bazel suite separately.
+  # Web-only changes are covered by CI / Web and skip the Bazel lanes.
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "web/**"
+      - ".github/styles/**"
   push:
     branches: [main]
+    paths-ignore:
+      - "web/**"
+      - ".github/styles/**"
   schedule:
-    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
 permissions: read-all

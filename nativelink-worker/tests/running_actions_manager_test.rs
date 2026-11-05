@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -73,6 +73,8 @@ mod tests {
     use nativelink_store::memory_store::MemoryStore;
     #[cfg(target_family = "unix")]
     use nativelink_util::action_messages::DirectoryInfo;
+    #[cfg(target_family = "unix")]
+    use nativelink_util::action_messages::STORE_UNREACHABLE_ERROR_TIP;
     #[cfg_attr(target_family = "windows", allow(unused_imports))]
     use nativelink_util::action_messages::SymlinkInfo;
     use nativelink_util::action_messages::{
@@ -90,7 +92,7 @@ mod tests {
     use nativelink_worker::directory_cache::{DirectoryCache, DirectoryCacheConfig};
     #[cfg(target_os = "linux")]
     use nativelink_worker::namespace_utils;
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::MemoryLimit;
     #[cfg(target_family = "unix")]
     use nativelink_worker::running_actions_manager::download_to_directory_bounded;
@@ -105,10 +107,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use prost::Message;
     #[cfg(target_family = "unix")]
-    use tokio::sync::Semaphore;
-    use tokio::sync::oneshot;
-    #[cfg(target_family = "unix")]
     use tokio::sync::watch;
+    use tokio::sync::{Semaphore, oneshot};
     use tracing::info;
 
     const DEFAULT_MAX_UPLOAD_TIMEOUT: u64 = 600;
@@ -188,6 +188,7 @@ mod tests {
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
@@ -4314,6 +4315,7 @@ exit 0
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
             },
             Store::new(fast_store.clone()),
             Store::new(slow_store.clone()),
@@ -4724,7 +4726,7 @@ exit 0
     #[derive(Debug)]
     struct FlakyStore {
         inner: Store,
-        fail_on: DigestInfo,
+        fail_on: Mutex<DigestInfo>,
         failures: u64,
         code: Code,
         reads: AtomicU64,
@@ -4740,7 +4742,7 @@ exit 0
         ) -> Arc<Self> {
             Arc::new(Self {
                 inner: Store::new(inner),
-                fail_on,
+                fail_on: Mutex::new(fail_on),
                 failures,
                 code,
                 reads: AtomicU64::new(0),
@@ -4750,6 +4752,12 @@ exit 0
         /// Reads of the flaky digest so far, refused or served.
         fn reads(&self) -> u64 {
             self.reads.load(Ordering::SeqCst)
+        }
+
+        /// Makes another digest the flaky one: the Action itself, whose
+        /// digest the setup only knows once it has uploaded it.
+        fn retarget(&self, digest: DigestInfo) {
+            *self.fail_on.lock().unwrap() = digest;
         }
     }
 
@@ -4798,7 +4806,7 @@ exit 0
             offset: u64,
             length: Option<u64>,
         ) -> Result<(), Error> {
-            if key == StoreKey::Digest(self.fail_on) {
+            if key == StoreKey::Digest(*self.fail_on.lock().unwrap()) {
                 let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
                 if read <= self.failures {
                     return Err(make_err!(self.code, "flaky store refused read {read}"));
@@ -4911,6 +4919,7 @@ exit 0
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
             },
             Store::new(fast_store),
             Store::new(slow_store.clone()),
@@ -5143,6 +5152,101 @@ exit 0
         tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
             .await
             .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// The Action is read with the same retries as the inputs: a store that
+    /// refuses it twice with `Unavailable` (a CAS pod being replaced) delays
+    /// the start by 1 s then 2 s, and the action is created rather than
+    /// failed on the spot.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_retries_a_transient_action_read()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_mins(10), |inner, digest| {
+                FlakyStore::new(inner, digest, 2, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let action = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await?;
+        let elapsed = started.elapsed();
+        assert_eq!(
+            store.reads(),
+            3,
+            "two refused reads of the Action, then the one served"
+        );
+        assert!(elapsed > Duration::from_secs(2), "{elapsed:?}");
+        assert!(
+            elapsed <= Duration::from_secs(3) + Duration::from_millis(10),
+            "{elapsed:?}"
+        );
+        let action = action.prepare_action().await?;
+        action.cleanup().await?;
+        tokio::time::timeout(Duration::from_secs(5), running_actions_manager.kill_all())
+            .await
+            .expect("an entry was left behind");
+        Ok(())
+    }
+
+    /// An Action read that never recovers stops at `max_download_timeout`
+    /// and fails with the store's code, so a dead store still ends the action
+    /// and the scheduler sees why.
+    #[cfg(target_family = "unix")]
+    #[nativelink_test(start_paused = true)]
+    async fn create_and_add_action_stops_retrying_the_action_read_at_the_deadline()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (running_actions_manager, action_digest, store) =
+            fetch_setup(Duration::from_secs(5), |inner, digest| {
+                FlakyStore::new(inner, digest, u64::MAX, Code::Unavailable)
+            })
+            .await?;
+        store.retarget(action_digest);
+        let operation_id = OperationId::default();
+        let started = tokio::time::Instant::now();
+        let err = running_actions_manager
+            .create_and_add_action(
+                "test-worker".to_string(),
+                start_execute_for(action_digest, &operation_id.to_string()),
+            )
+            .await
+            .expect_err("a store that never answers must fail the action");
+        // The fast-slow store reports a slow tier that dropped mid-read as
+        // `Internal`; the refusal itself is in the chain.
+        assert!(
+            matches!(err.code, Code::Internal | Code::Unavailable),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("flaky store refused read"),
+            "{err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("the next retry would start after max_download_timeout"),
+            "{err}"
+        );
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "the scheduler is told the store was down: {err}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            store.reads() >= 2,
+            "retried at least once: {}",
+            store.reads()
+        );
         Ok(())
     }
 
@@ -5417,6 +5521,10 @@ exit 0
         assert_eq!(store.reads(), 3, "{err:?}");
         assert_ne!(err.code, Code::DeadlineExceeded, "{err:?}");
         assert!(err.to_string().contains("failed 3 time(s)"), "{err:?}");
+        assert!(
+            err.to_string().contains(STORE_UNREACHABLE_ERROR_TIP),
+            "{err:?}"
+        );
         assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
         action.cleanup().await?;
         assert!(
@@ -5567,6 +5675,7 @@ exit 0
                 fast_direction: StoreDirection::default(),
                 slow_direction: StoreDirection::default(),
                 bypass_dedup_threshold_bytes: 0,
+                has_slow_write_wait_timeout_s: 0,
             },
             Store::new(fast_store),
             Store::new(gated.clone()),
@@ -6782,7 +6891,7 @@ exit 0
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(target_family = "unix")]
     #[nativelink_test]
     async fn action_over_its_memory_reservation_is_killed_by_the_worker()
     -> Result<(), Box<dyn core::error::Error>> {
@@ -9127,7 +9236,7 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
             action: &Action,
             action_digest: DigestInfo,
             operation_id: &str,
-        ) -> Result<String, Error> {
+        ) -> Result<(String, ActionResourceUsage), Error> {
             let running_action_impl = running_actions_manager
                 .create_and_add_action(
                     WORKER_ID.to_string(),
@@ -9145,8 +9254,8 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                     },
                 )
                 .await?;
-            let action_result = run_action(running_action_impl).await?;
-            slow_store
+            let action_result = run_action(running_action_impl.clone()).await?;
+            let count = slow_store
                 .as_ref()
                 .get_part_unchunked(action_result.output_files[0].digest, 0, None)
                 .await
@@ -9155,7 +9264,11 @@ while [ ! -f "$0.d/release" ]; do "{sleep}" 0.01; done
                         Error::from_std_err(Code::Internal, &err)
                             .append("Decoding persistent worker count.txt")
                     })
-                })
+                })?;
+            let usage = running_action_impl
+                .resource_usage()
+                .expect("usage is reported for every executed action");
+            Ok((count, usage))
         }
 
         let (_, slow_store, cas_store, ac_store) = setup_stores().await?;
@@ -9200,6 +9313,8 @@ while IFS= read -r request; do
     continue
   fi
   count=$((count + 1))
+  i=0
+  while [ "$i" -lt 100000 ]; do i=$((i + 1)); done
   sandbox_dir=$(printf '%s' "$request" | sed -n 's/.*"sandboxDir":"\([^"]*\)".*/\1/p')
   printf '%s' "$count" > "$sandbox_dir/count.txt"
   printf '{"exitCode":0,"output":"count=%s"}\n' "$count"
@@ -9213,7 +9328,7 @@ done
             .await?;
         let (action, action_digest) = create_action(&cas_store, worker_script_digest).await?;
 
-        let first = run_persistent_action(
+        let (first, first_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -9221,7 +9336,7 @@ done
             "persistent_worker_first",
         )
         .await?;
-        let second = run_persistent_action(
+        let (second, second_usage) = run_persistent_action(
             &running_actions_manager,
             &slow_store,
             &action,
@@ -9235,6 +9350,14 @@ done
             second, "2",
             "second action must reuse the already-running persistent worker"
         );
+        // Each request spins for well under one process-table snapshot's
+        // lifetime, so CPU read from the snapshot would measure nothing; and
+        // the pooled process is single-threaded, so a request charged more
+        // than its own wall time carries another request's work.
+        for usage in [&first_usage, &second_usage] {
+            assert!(usage.cpu_time_ms > 0, "{usage:?}");
+            assert!(usage.cpu_time_ms <= usage.wall_time_ms + 20, "{usage:?}");
+        }
         Ok(())
     }
 

@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -1012,6 +1012,23 @@ pub struct FastSlowSpec {
     /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
+
+    /// Maximum seconds an existence check (`has`, which serves
+    /// `FindMissingBlobs` and upload checks) waits on a key whose
+    /// slow-store write is still in flight before reporting the key
+    /// missing. The clock runs from when the write registered, not per
+    /// call, so a wedged write delays existence checks at most once. A
+    /// missing report costs at worst a duplicate upload of a blob that was
+    /// landing anyway — or, through a completeness check over an action
+    /// result, a rebuild of that action — while an unbounded wait hands
+    /// every existence check a wedged writer's fate. Size it under your
+    /// clients' own deadlines (Bazel's default `--remote_timeout` is 60)
+    /// and above your slow store's usual worst-case write; 30 is a sound
+    /// starting point. `0` (the default) waits indefinitely — the behavior
+    /// before this field existed — so nothing changes until it is set.
+    /// Default: 0 (wait indefinitely)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub has_slow_write_wait_timeout_s: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
@@ -2008,6 +2025,35 @@ pub struct RedisSpec {
     /// Default: 1500
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_count_per_cursor: u64,
+
+    /// Replace scheduler indexes an older release created `TEMPORARY` with
+    /// persistent ones, keeping every hash.
+    ///
+    /// A temporary index is never garbage collected on `RediSearch` 2.10, so
+    /// every query walks every dead entry it has collected, and dropping one
+    /// the ordinary way deletes the hashes it covers (so does its idle
+    /// expiry). With this set, a persistent index is built beside each
+    /// temporary one, reads move to it once it holds every key (the scan
+    /// finished, nothing failed to index, and it counts as many keys as the
+    /// old one), and the old one is removed with the keys left in place.
+    ///
+    /// Set it only once no process older than v1.8.1 writes this store: those
+    /// create the index temporary again. Turn it on for every process that
+    /// reads the store together where possible: during a rolling restart,
+    /// the processes without it recreate the old index each time it is
+    /// retired and the ones with it retire it again. No key is lost, but each
+    /// round costs a backfill.
+    ///
+    /// Building the replacement needs free memory below `maxmemory`, about
+    /// what a clean index of the live keys takes. A Redis already full of
+    /// dead entries refuses it; the migration then waits, logs an error and
+    /// leaves everything in place. Restarting Redis frees that memory: it
+    /// rebuilds every index from the keys, without the dead entries, though
+    /// a temporary index stays temporary and fills up again.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub migrate_temporary_indexes: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

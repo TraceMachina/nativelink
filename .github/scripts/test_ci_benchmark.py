@@ -28,8 +28,9 @@ class BenchmarkTest(unittest.TestCase):
 
     def test_primary_ci_dispatches_builds_without_a_hosted_baseline(self):
         workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        cluster_job = workflow.split('  cluster:', 1)[1]
         for hosted_build in ('matrix:', 'baseline', 'prepare-nix', 'setup-bazel', 'bazel test'):
-            self.assertNotIn(hosted_build, workflow)
+            self.assertNotIn(hosted_build, cluster_job)
         self.assertEqual(workflow.count('python3 .github/scripts/cluster_ci.py'), 1)
         self.assertIn("inputs.repetitions || '1'", workflow)
         self.assertIn('group: cluster-ci-${{ github.ref }}', workflow)
@@ -39,6 +40,32 @@ class BenchmarkTest(unittest.TestCase):
         pinned_version = Path('.bazelversion').read_text().strip()
         self.assertNotIn(f'bazel_version: {pinned_version}',
                          Path('.github/workflows/native-bazel.yaml').read_text())
+
+    def test_pull_requests_build_without_cluster_credentials(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        pr_job = workflow.split('  pull-request:', 1)[1].split('  cluster:', 1)[0]
+        self.assertIn("if: github.event_name == 'pull_request'", pr_job)
+        for privileged_setting in ('environment:', 'secrets.', 'id-token:', 'cluster_ci.py'):
+            self.assertNotIn(privileged_setting, pr_job)
+        self.assertIn('./tools/bazel-retry.sh test //...', pr_job)
+        self.assertIn('--lockfile_mode=error', pr_job)
+        self.assertNotIn('USE_BAZEL_VERSION', pr_job)
+
+    def test_web_only_changes_skip_bazel_lanes(self):
+        # A pull request that only touches web/ is covered by CI / Web. The
+        # Bazel lanes must filter it out at the trigger, not in a job `if`,
+        # so no Bazel run is spawned at all.
+        for workflow in ('parallel-cluster-ci.yaml', 'native-bazel.yaml',
+                         'sanitizers.yaml', 'clusterfuzzlite.yaml'):
+            text = Path('.github/workflows', workflow).read_text()
+            triggers = text.split('\non:\n', 1)[1].split('\njobs:\n', 1)[0].splitlines()
+            start = triggers.index('  pull_request:') + 1
+            end = next((i for i, line in enumerate(triggers[start:], start)
+                        if line.strip() and not line.startswith('    ')), len(triggers))
+            pull_request = '\n'.join(triggers[start:end])
+            self.assertIn("    paths-ignore:\n      - \"web/**\"", pull_request, workflow)
+        web = Path('.github/workflows/web.yaml').read_text()
+        self.assertIn("  pull_request:\n    branches: [main]\n    paths:\n      - \"web/**\"", web)
 
     def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
         with tempfile.TemporaryDirectory() as directory:

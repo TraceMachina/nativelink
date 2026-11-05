@@ -167,26 +167,52 @@ point the person at that address rather than guess.
 
 # https://nativelink.com/agents
 
-**For agents and intelligent collaborators**: Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
+**For agents**: What NativeLink is and how to read about it as a machine: the fetch order for the three llms files, the MCP server's five tools, skills for Claude Code, Codex and Cursor, and the rules for contributing with an agent.
 
-NativeLink is built to be read by agents as well as people. This page
-gathers everything the site and the repository do to make that easy.
+NativeLink is a remote build cache and remote execution server for the
+Remote Execution API, written in Rust and source available. This page is
+written for the agent reading it as much as for a person.
 
-**Three files, one fetch.** Every page of nativelink.com serves an "Ask AI"
-block with the same three files: /llms.txt (the link index), /llms-small.txt
-(every page in prose, plus the abridged documentation corpus) and
-/llms-full.txt (the whole site, every blog post, and the full documentation
-corpus). The documentation site serves its own three at https://docs.nativelink.com/llms.txt,
-https://docs.nativelink.com/llms-small.txt and https://docs.nativelink.com/llms-full.txt, generated from the sidebar
-so they cannot drift from it. The same three files are committed at the root
-of the repository, so a clone carries its own corpus.
+**If you are the agent reading this.** Fetch https://nativelink.com/llms.txt first: it is the
+index, every page with a one-line description, in reading order. For most
+questions fetch https://nativelink.com/llms-small.txt: every page of the site in prose, plus
+the documentation's headings and the sentence that opens each section. Fetch
+https://nativelink.com/llms-full.txt only when the small file lacks the answer; it is the whole
+corpus with documentation bodies inlined, and it is large. Cite documentation
+by URL: every section of the full file is delimited by its canonical URL.
+Never quote a price; this site prints none. Send people to contact@tracemachina.com,
+where a person replies within a day.
 
-**One-click hand-off.** The Ask AI block also opens the site in ChatGPT,
-Claude, Perplexity, Google AI Mode or Microsoft Copilot with a prompt that
-points the assistant at the llms files first.
+**Three files, one fetch.** The three files are generated from one source in
+the repository, so they cannot disagree with each other. The page prints each
+file's size and an approximate token count (four bytes per token), measured
+from the generated files when the site is built. The documentation site serves
+its own three at https://docs.nativelink.com/llms.txt, https://docs.nativelink.com/llms-small.txt and
+https://docs.nativelink.com/llms-full.txt, generated from its sidebar, and the same three files are
+committed at the root of the repository, so a clone carries its own corpus.
+Also for an agent: AGENTS.md at the repository root, the map of the code for
+an agent changing it, and https://docs.nativelink.com/agents, how to read the documentation end to
+end, cite it, and verify a claim against the source.
+
+**If you are the person.** Every page serves an "Ask AI" block that opens the
+site in ChatGPT, Claude, Perplexity, Google AI Mode or Microsoft Copilot with a
+prompt that follows the protocol above: read the llms files first, then ask
+about your build and your team and work towards a configuration.
+
+**The MCP server.** The NativeLink MCP server gives Claude Code, Cursor and
+Codex five tools for configuring and tuning builds without leaving the editor:
+generate a Bazel configuration (a .bazelrc with remote cache and execution
+settings for the project at hand); fetch documentation and best practices (the
+matching pages from https://docs.nativelink.com, so the answer cites the source); analyse build
+performance (where the time goes, the cache hit rate, what to change); watch
+files, build and test on change; and list recent builds from the Build Event
+Protocol. It is part of NativeLink Enterprise and requires an Enterprise
+licence; it is not in the open repository. Everything else on this page is
+free. To talk about it: https://nativelink.com/contact.
 
 **Skills for coding agents.** The repository's .claude/skills directory
-carries skills any agent that reads SKILL.md files can install:
+carries skills in the SKILL.md format Claude Code, Codex and Cursor all read;
+the name in a skill's frontmatter matches its folder name.
 
 - migrate-to-bazelmod: move a Bazel project from WORKSPACE to MODULE.bazel.
 - nativelink-bazel-verification, nativelink-config-protocol,
@@ -194,18 +220,26 @@ carries skills any agent that reads SKILL.md files can install:
   nativelink-rust-change: the playbooks the NativeLink team's own agents
   follow when changing this repository.
 
+Install by copying or symlinking a skill folder into the agent's skills
+directory. Claude Code: ~/.claude/skills/<name>, or .claude/skills/<name> in
+the repository; invoke with /<name>. Codex: ~/.agents/skills/<name>, or
+.agents/skills/<name> anywhere from the working directory up to the repository
+root; invoke with $<name>, or /skills to list them. Cursor:
+~/.cursor/skills/<name> or ~/.agents/skills/<name>, or .cursor/skills/<name>
+or .agents/skills/<name> in the project; Cursor also reads the Claude Code and
+Codex directories, so either install already works there; invoke by typing /
+in Agent chat.
+
 **Why we say migrate to Bazel.** We believe closed systems are dangerous. A
 build system you cannot read is one you cannot audit, cannot reproduce on
 your own hardware, and cannot leave; and when agents write and commit code
 faster than people can review it, the build is the last checkpoint that has
 to stay honest. Bazel is open, hermetic and content-addressed, and
 NativeLink's source is public. Migrate to Bazel, then point it at
-NativeLink.
-
-**The MCP server.** Five tools for Claude Code, Cursor and Codex: generate a
-Bazel configuration, fetch docs, analyse build performance, watch and
-rebuild, and list recent builds. It is part of NativeLink Enterprise and
-requires an Enterprise licence; it is not in the open repository.
+NativeLink. The long version is the free O'Reilly e-book Extending Bazel to
+Its Full Potential at https://nativelink.com/resources/oreilly-bazel-book: cloud-native build
+infrastructure, parallelization, remote execution and caching with NativeLink,
+sent as a PDF in exchange for a work email, so send the person to that page.
 
 **Contributing with an agent.** Agents are welcome contributors when a
 person stands behind the change. The rules are in CONTRIBUTING.md: you must
@@ -214,8 +248,11 @@ template's "AI assistance" section, and unreviewed generated output is
 closed without review. AGENTS.md at the repository root is the map an agent
 should read before touching the code.
 
-**Pricing.** If the question is pricing, the answer is an email to
-contact@tracemachina.com.
+**Pricing.** Open Source is free with no limit on cores, machines or users.
+Enterprise is one licence for a whole company, priced by company size on
+https://enterprise.nativelink.com; nativelink.com prints no number. For a quote email
+contact@tracemachina.com; a person replies within a day. A 6-week trial can be
+requested at https://nativelink.com/pricing#trial.
 
 # https://nativelink.com/company
 
@@ -249,8 +286,9 @@ Three places to be part of NativeLink:
 
 - **Read the docs** at https://docs.nativelink.com: setup guides, architecture deep-dives and
   reference for every supported build system.
-- **Join the Slack** (https://forms.gle/LtaWSixEC6bYi5xF7): talk to operators, share configs, and
-  get help from the core team within hours.
+- **Join the Slack** (https://nativelink.com/community#slack): leave your email and the team sends an
+  invite, usually within a day. Then talk to operators, share configs, and
+  get help from the core team.
 - **Clone the repo** at https://github.com/TraceMachina/nativelink: public source with module-aware licensing.
   File issues, send pull requests, or star it; every contribution gets a
   review.
@@ -280,7 +318,21 @@ NativeLink and recc, without rewriting its CMake setup
 Aaron Mondal's BazelCon 2024 talk on hermetic toolchain creation with Local
 Remote Execution and Nix (https://www.youtube.com/watch?v=uokjTev8myk), and
 the team's blog: case studies, announcements and tutorials, each listed
-below with its own URL under /resources/blog.
+below with its own URL under /resources/blog. The free O'Reilly e-book
+Extending Bazel to Its Full Potential has its own page at
+https://nativelink.com/resources/oreilly-bazel-book.
+
+# https://nativelink.com/resources/oreilly-bazel-book
+
+**Extending Bazel to Its Full Potential (free O'Reilly e-book)**: A free O'Reilly e-book on cloud-native build infrastructure, parallelization, remote execution and caching with Bazel and NativeLink, sent as a PDF in exchange for a work email.
+
+Extending Bazel to Its Full Potential is an O'Reilly e-book from the
+team building NativeLink, free to download. It covers cloud-native build
+infrastructure design, advanced parallelization strategies, remote execution
+and caching best practices, and new Bazel use cases, with code samples and
+configurations. The download is a PDF, sent after a short form that asks for
+a work email; there is no direct link to pass on, so send a person to this
+page.
 
 # https://nativelink.com/contact
 
@@ -295,7 +347,7 @@ Pick a channel:
 - **Legal:** legal@tracemachina.com for contracts, licensing and legal
   enquiries.
 - **GitHub:** https://github.com/TraceMachina/nativelink.
-- **Slack:** https://forms.gle/LtaWSixEC6bYi5xF7.
+- **Slack:** https://nativelink.com/community#slack.
 - **Post:** PO Box 60676, 265 Cambridge Ave, Palo Alto, CA 94306.
 
 Office hours are Monday to Friday, 9 am to 6 pm Pacific. Outside them email
@@ -353,6 +405,7 @@ history. Privacy requests go to privacy@tracemachina.com.
 
 **Blog**: every post, newest first. The full text of each is in /llms-full.txt.
 
+- [The Bomb in Your Bill of Materials](https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials) (2026-11-03): Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes.
 - [The Inaugural RE API Fellow](https://nativelink.com/resources/blog/re-api-fellow) (2026-09-08): When people first see the open source NativeLink repository on GitHub, they think about CI: continuous integration, the practice of building and testing software every time someone pushes a change.…
 - [How Menlo Security Cut Chromium Build Times from 4.5 Hours to 25 Minutes with NativeLink](https://nativelink.com/resources/blog/case-study-menlo-security) (2026-08-28): "NativeLink is the simplest way to get fast builds with Chromium." Christopher Staite, Principal Engineer, Menlo Security
 - [From One Robot to 1,000 with rules_omniverse](https://nativelink.com/resources/blog/rules-omniverse-0-3-0) (2026-08-27): Today we are releasing our first official Bazel ruleset for physical AI. It is built to carry robotics work from research to production.
@@ -498,8 +551,77 @@ look finished and are not.
   not a number on the website, and an assistant asked about it should send
   the person there rather than estimate.
 - Security reports: security@tracemachina.com. Legal: legal@tracemachina.com.
-- Community: the NativeLink Slack, https://forms.gle/LtaWSixEC6bYi5xF7.
+- Community: the NativeLink Slack, https://nativelink.com/community#slack.
 
+
+# https://nativelink.com/resources/blog/the-bomb-in-your-bill-of-materials
+
+**The Bomb in Your Bill of Materials** (2026-11-03): Most software bombs don't go off the day they're dropped. A living SBOM and fast, reproducible verification help teams find vulnerabilities and ship fixes.
+
+**Marcus Eagan**
+
+<figure>
+  <img src="/assets/sbom-hidden-risk.svg" alt="An amber dependency with a glowing fuse is revealed inside a stack of connected software components and highlighted in a bill of materials." width="1536" height="1024" fetchpriority="high" />
+  <figcaption>A bill of materials makes hidden dependencies visible. Each flagged component still needs an answer.</figcaption>
+</figure>
+
+> "You dropped a bomb on me, baby<br />
+> You dropped a bomb on me (I won't forgive what you done)<br />
+> You dropped a bomb on me, baby<br />
+> You dropped a bomb on me<br />
+> I, I-I, I-I-I won't forget it<br />
+> I, I-I, I-I-I won't forget it"
+>
+> — [The Gap Band, "You Dropped a Bomb on Me"](https://www.youtube.com/watch?v=17lkdqoLt44)
+
+Most software bombs don't go off the day they're dropped. They sit in a dependency tree, flagged and filed as low priority, until someone with patience and a motive comes looking. With coding agents, that someone shows up faster, and there are more of them.
+
+## An SBOM is a living record
+
+In NativeLink, the software bill of materials comes out of how we build the project. Our environments are managed with Nix, with declared and pinned dependencies that make builds reproducible. When a scanner flags a component, we treat the flag as a question we owe an answer to, not noise to suppress.
+
+The industry needs to adopt open standards like SPDX, CycloneDX and OpenVEX faster, alongside tools like [OpenSSF Scorecard](https://scorecard.dev/). A bill of materials only helps if the people downstream can read it, merge it and act on it with the same tools.
+
+<figure>
+  <img src="/assets/sbom-dependency-tree.svg" alt="A magnifying glass reveals an amber component several levels down a branching software dependency tree." width="1536" height="1024" loading="lazy" decoding="async" />
+  <figcaption>A vulnerable component can sit several layers below the application that depends on it.</figcaption>
+</figure>
+
+## The fuse is long
+
+The zstd ecosystem shows why. In August, zstd-jni disclosed [out-of-bounds read](https://github.com/luben/zstd-jni/security/advisories/GHSA-ff36-7w3w-g8rm) and [use-after-free](https://github.com/luben/zstd-jni/security/advisories/GHSA-947w-pxjj-c7m9) bugs that can crash the JVM or corrupt data. On October 12, an advisory for the Go zstd decoder in klauspost/compress [described a panic on crafted two-block frames](https://github.com/klauspost/compress/security/advisories/GHSA-fpmh-frq8-7rj8).
+
+On a quick read, these are crash bugs in someone else's language binding. Not our problem. But compression sits on the hot path of many cache and remote execution systems. A panic is a denial of service today. A memory-safety bug left unpatched for two years can become a building block once someone, human or agent, decides to chain it. A flag that looks harmless still needs a deadline.
+
+For our own zstd dependency fixes in [NativeLink v1.8.3](https://github.com/TraceMachina/nativelink/releases/tag/v1.8.3), it took us thirty minutes total to patch the issues and validate against our NativeLink-powered verification harness, not including nightly harnesses we employ for more extensive soak tests and esoteric fault injections.
+
+## Fast fixes, informed by the build
+
+NativeLink lets us patch quickly because we can check a fix for regressions. When we bump a compression library, remote execution reruns the tests and benchmarks across platforms in minutes, so the security fix and the performance check ship together. Once patching is cheap, teams stop bargaining with their vulnerability backlog.
+
+<figure>
+  <img src="/assets/sbom-patch-verification.svg" alt="An amber component is replaced with a violet patch, then checked across four parallel verification stations before the paths converge into a release package." width="1536" height="1024" loading="lazy" decoding="async" />
+  <figcaption>Patch the dependency, verify the change across workers, and carry the results into the release.</figcaption>
+</figure>
+
+It also shapes how we think about security. When every action declares its inputs, an unexpected input stands out. We work to keep our OpenSSF Scorecard as high as we can.
+
+## Nobody is bulletproof
+
+None of this makes us bulletproof. Everyone is vulnerable to attack, us included. We are all just doing our best. Openness and OpenSSF are not a panacea either.
+
+We see a growing risk from two directions: coding agents running on abliterated models with their safety training stripped out, and teams that hand all of their security thinking to an agent. Threat models still need to include humans and nation states, patient adversaries who read the same CVE feeds we do.
+
+We are grateful to the frontier labs, including Anthropic, OpenAI and Google DeepMind, whose models help maintainers like us find and fix bugs faster. Keep humans in the loop, and treat every quiet flag as a lit fuse.
+
+“You dropped a [S]BOMb on Me, agent, you dropped a bomb on me”
+
+## Sources
+
+- [GHSA-ff36-7w3w-g8rm: zstd-jni ZstdDictCompress out-of-bounds read](https://github.com/luben/zstd-jni/security/advisories/GHSA-ff36-7w3w-g8rm)
+- [CVE-2026-87825: zstd-jni use-after-free (SentinelOne)](https://www.sentinelone.com/vulnerability-database/cve-2026-87825/) and the [upstream advisory](https://github.com/luben/zstd-jni/security/advisories/GHSA-947w-pxjj-c7m9)
+- [CVE-2026-116591: klauspost/compress zstd panic on two-block frames](https://github.com/klauspost/compress/security/advisories/GHSA-fpmh-frq8-7rj8)
+- [NativeLink v1.8.3 release notes](https://github.com/TraceMachina/nativelink/releases/tag/v1.8.3)
 
 # https://nativelink.com/resources/blog/re-api-fellow
 
@@ -1596,7 +1718,7 @@ To learn more about NativeLink, read our documentation, check out our GitHub Rep
 
 ### **Transforming Semiconductor Design with NativeLink**
 
-NativeLink has become a critical architectural component for companies developing custom silicon. From the outset, our mission was to build an open-source simulation platform designed to scale with cutting-edge client technologies and cater to the needs of pioneering industries like autonomous robotics. These innovators have increasingly sought alternatives to proprietary solutions for design simulation, leveraging NativeLink for direct hardware access, no garbage collection, considerable infrastructure cost reduction, and high-fidelity test environments. And now, with the proliferation of large language models (LLMs) and Nvidia’s monopolistic dominance in advanced computing,  NativeLink has garnered significant interest from an unexpected sector: semiconductors.
+NativeLink has become a critical architectural component for companies developing custom silicon. From the outset, our mission was to build an open-source simulation platform designed to scale with cutting-edge client technologies and cater to the needs of pioneering industries like autonomous robotics. These innovators have increasingly sought alternatives to proprietary solutions for design simulation, leveraging NativeLink for direct hardware access, no garbage collection, considerable infrastructure cost reduction, and high-fidelity test environments. And now, with the proliferation of large language models (LLMs) and Nvidia’s monopolistic dominance in advanced computing, NativeLink has garnered significant interest from an unexpected sector: semiconductors.
 
 This shift is fueled by the proliferation of large language models (LLMs) and Nvidia's dominance in advanced computing, which have driven the development of new semiconductor technologies aimed at addressing supply-side challenges. Among the most promising advancements driving the development of new semiconductor technologies are:
 
@@ -8497,7 +8619,7 @@ SIGKILL from the kernel with the last memory sample within 10% of the limit),
 `KILLED_TIMEOUT` or `KILLED_EXTERNAL`, plus wall time and the reservation the
 action ran under. The scheduler logs every kill outcome with its mnemonic.
 
-**`resource_enforcement`** (off by default, Linux only) makes the worker hold an
+**`resource_enforcement`** (off by default) makes the worker hold an
 action to the memory reservation the scheduler placed it by. With
 `memory: soft` the worker kills the action's process group once two
 consecutive samples exceed `memory_kb` plus `memory_headroom_percent`
@@ -8508,7 +8630,8 @@ limit in half a second can still reach the cgroup limit first; the
 reservations admitted onto a worker must also sum to less than its limit
 with the headroom included. Without it the kill comes from the pod's cgroup limit,
 and on cgroup v2 that kill takes the worker and every action on it, not just
-the one that grew. The sample is the group's proportional set size, so a
+the one that grew. The sample is the group's proportional set size (on
+macOS the physical footprint, on Windows the private commit charge), so a
 parent's pages shared with its forked children count once. Actions run
 through a persistent worker are not covered: that process outlives the action
 and serves others, so only the pod's limit bounds it. With enforcement on, the
@@ -15316,7 +15439,7 @@ each one decides where you have to point the collector:
 | Execution | `nativelink_execution_*` | The scheduler | Queue time, stage durations, active and completed counts, retries, and per-action CPU time and peak memory as reported by the worker that ran it |
 | Worker fleet | `nativelink_worker_*` | The scheduler | Workers connected, joins and departures by reason, keepalives, and how many are paused or draining |
 | Scheduler | `nativelink_scheduler_matching_*` | The scheduler | How long each matching pass takes, whether it succeeded, and how many waiting actions took room that opened mid-pass ahead of newer ones |
-| Sizing | `nativelink_scheduler_hints_*` | The scheduler, with `historical_resource` configured | Actions sized, by source (`target`, `command_digest`, `mnemonic`, `seed`, `cold_start`, `none`; the `cold_start` share falls as the sketch learns), the sketch's keys and capacity by family, its evictions and samples, and the snapshot's size, age and failed writes |
+| Sizing | `nativelink_scheduler_hints_*` | The scheduler, with `historical_resource` configured | Actions sized, by source (`target`, `command_digest`, `mnemonic`, `seed`, `file`, `cold_start`, `none`; the `cold_start` share falls as the sketch learns), the sketch's keys and capacity by family, its evictions and samples, and the snapshot's size, age and failed writes |
 | gRPC server | `nativelink_rpc_server_duration_*` | Every process, for every gRPC service it serves | Request latency by service, method and status code |
 | Store tier | `nativelink_store_tier_*` | Any process with a `fast_slow` store | Fast and slow tier hits, misses and stale reads, and bytes read from each tier |
 | Health | `nativelink_health_checks_*` | Every process, on each run of the health endpoint | Health check outcomes per component: `ok`, `initializing`, `warning`, `failed` or `timeout` |
@@ -19490,7 +19613,10 @@ A client waiting to observe `CacheCheck` will wait forever.
 The matching engine walks the queue in sort order, and for each action looks
 for the first worker that satisfies the action's platform properties. The
 source still carries an `O(n*m)` TODO in
-<SourceLink file="nativelink-scheduler/src/simple_scheduler.rs" symbol="SimpleScheduler" />,
+<SourceLink
+  file="nativelink-scheduler/src/simple_scheduler.rs"
+  symbol="SimpleScheduler"
+/>,
 but the walk is narrowed first: a `WorkerCapabilityIndex` (an inverted index
 over `Exact` and `Priority` properties) produces the candidate set, and only
 that set is scanned in LRU order, checking availability and `Minimum`
@@ -19589,8 +19715,14 @@ and do not spend `max_job_retries`. The execution histograms carry an
 `execution.outcome` attribute so the killed samples can be told from the
 completed ones.
 
-The `historical_resource` scheduler that fills reservations sizes an action
-from what the scheduler itself measured. Every sampled usage report a worker
+The `historical_resource` scheduler uses `hints_file` by default. It loads the
+file at startup and refreshes it in the background at `refresh_interval_s`
+(zero means once), preserving the last usable generation after a failed read.
+An existing configuration does not switch to learning automatically.
+
+Set `learn_from_workers: true` to size actions from worker measurements.
+In this mode the file is only a seed for an empty sketch, and its first real
+sample replaces each seeded entry. Every sampled usage report a worker
 sends lands in a bounded sketch: one entry per key with 25-bucket log2
 histograms of peak memory, CPU and disk, the exact maxima, the reservation
 the action was last killed at, and when it was last seen. The key is the
@@ -19603,9 +19735,10 @@ that names both is recorded under its mnemonic as well, so a target the
 sketch has never seen is sized from its kind of action rather than the cold
 start. A lookup walks that ladder most specific first and reserves the 95th
 percentile bucket's upper bound, capped by the exact maximum, plus
-`headroom_percent`, never at or below the kill. Within the window a sample
-weighs half as much each day, so what a key used last week stops shaping
-it, and a kill floor expires with the window. **`classes`** on the same scheduler defines the
+`headroom_percent`, never at or below the kill. Two half-window histograms
+retain samples for between half and one full `window_days` window, and a
+kill floor expires with the window. Wide histogram counters preserve the
+relative weights of common and rare observations. **`classes`** on the same scheduler defines the
 fleet's size ladder: named points with `cpu_count`, `memory_kb` and
 `disk_kb`, listed ascending, and a hint takes the smallest class that holds
 its numbers on every dimension the class names. An action the sketch has
@@ -19616,18 +19749,91 @@ nothing for takes the class picked by `class_by_mnemonic`, then
 kill steps the reservation to the next class instead of scaling it, and a
 kill at the top class fails the action.
 
-The sketch lives within `memory_budget_bytes` (keys the fleet has not run
-for `window_days` are forgotten, and a full family evicts its least
-recently seen key), split over shards by key hash so a snapshot never holds
-up the Execute path. Each scheduler replica sees only the workers connected
-to it, so each writes its own snapshot to `snapshot_store` every
-`snapshot_interval_s` under `historical_resource_sketch/<hostname>`, and a
-start reads every replica's snapshot and merges them; the store must take a
-string key, which the start probes. The admin API's
-`/scheduler/{instance}/hints` lists what it reserves for every key in the
-`hints_file` shape, which is how a new fleet is seeded from an old one: the
-file is read once into an empty sketch and a seeded hint stands until the
-first real sample of its key replaces it.
+The `memory_budget_bytes` accounting includes entry storage, variable-length
+keys, map bookkeeping, probation and reserved snapshot working memory. The
+**512 MiB default** holds roughly 55,000 target keys plus mnemonic and command
+families with short keys; long labels reduce that capacity. Explicitly configured
+budgets keep their value. One quarter funds resident data and the remainder
+reserves space for snapshot encoding and loading. Size the process memory limit
+above the budget plus the scheduler's other allocations: this is not a total
+process RSS limit. File-backed mode does not allocate the learned cache in advance.
+Old keys expire after `window_days`, and full families evict their least recently
+used entries. Monitor capacity and evictions as the number of distinct keys grows.
+The writer encodes one shard at a time without cloning the entire sketch;
+lock contention and snapshot latency still need workload measurements.
+
+Each replica writes `historical_resource_sketch/<replica_id>` in `snapshot_store`
+every `snapshot_interval_s`. Set `replica_id` to a stable identity unique among
+concurrent writers, or leave it empty to use the pod's hostname. On startup the
+scheduler prefers its own snapshot. A replacement pod whose key is missing
+restores the newest compatible snapshot under the same prefix, **without merging
+histories**. Discovery reads small headers and retains at most 128 candidate keys;
+if that limit is exceeded, it warns and uses the hints file. Keep retired keys
+under a TTL, and use a separate store prefix for each logical scheduler. Stores
+without listing support need a stable replica ID to restore after a roll.
+
+Snapshot version 3 uses wide counters; older snapshots are skipped with a warning.
+Reads and decoded entry counts are bounded. Zero disables periodic writes;
+shutdown does not flush them. In learning mode the admin API's
+`/scheduler/{instance}/hints` exports shaped reservations as a hints file.
+Switching back to file-backed mode restores the configured file and refresh
+interval, not the learned state. Preserve the last known-good file for rollback.
+
+#### Choosing a snapshot store [#choosing-a-snapshot-store]
+
+`snapshot_store` names an entry in **this scheduler process's top-level `stores`**.
+It does not create a store or reference another CAS process's configuration. A
+missing name or failed startup write/read probe warns and leaves learning in
+memory for that process's lifetime. Fix the configuration or backend and restart
+to enable persistence; unsaved measurements are lost on restart.
+
+Names are user-defined in NativeLink. For the enterprise chart's standard names,
+check the rendered scheduler config:
+
+| Scheduler backend | Available standard snapshot-store names |
+| --- | --- |
+| Redis | `SCHEDULER_STORE`; also `ORIGIN_EVENT_STORE` when `cas.originEvents.enabled=true` |
+| Memory | `ORIGIN_EVENT_STORE` only when `cas.originEvents.enabled=true`; `SCHEDULER_STORE` is absent |
+
+If neither store is rendered, leave `snapshot_store` unset or define a dedicated
+store in the scheduler's own config. The chart may reject an invalid store name
+earlier during rendering; the server's fallback does not override chart checks.
+
+#### Waiting for an autoscaled size class [#waiting-for-an-autoscaled-size-class]
+
+Learned sizing selects from the configured class ladder, including a class whose
+pool currently has no connected workers. The retry escalator separately caps its
+memory ceiling at the largest connected worker advertisement; a size class is not
+an inventory of pools that can be provisioned. Capping learned hints to currently connected
+workers would prevent scale-from-zero and could repeat memory kills on a small
+worker.
+
+The memory scheduler sees only its own connected workers. Redis peer exchange
+adds other schedulers' **connected** workers, not pool templates awaiting startup. A pod
+created by the provisioner does not satisfy an action until the worker registers.
+A 60-second `unsatisfiable_action_timeout_s` can therefore fail a valid large-class
+action while its node or image is still starting.
+
+For autoscaling, initially leave that timeout at `0`, or set it above the measured
+worst-case time through worker registration, including node and image startup.
+For example, if that bound is below ten minutes, the nested `simple` scheduler can
+use:
+
+```json5
+{
+  simple: {
+    unsatisfiable_action_timeout_s: 600,
+    no_worker_action_timeout_s: 600,
+  },
+}
+```
+
+The second timeout covers a completely empty connected fleet; it does not replace
+the first when small workers are still connected. Zero disables the respective
+failure deadline, so monitor queued demand and provisioning failures. These
+settings preserve the requested reservation while the larger pool starts; they
+do not create workers themselves. With the memory backend, provisioner demand
+must come from the scheduler admin API rather than nonexistent Redis queue records.
 
 ### Platform properties are typed, and `Minimum` is a resource pool [#platform-properties-are-typed-and-minimum-is-a-resource-pool]
 

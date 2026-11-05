@@ -1,5 +1,5 @@
 import { BookDownloadForm } from "@/components/book-download-form";
-import { Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { Breadcrumbs, Eyebrow, Reveal, Section } from "@nativelink/ui";
 import type { Metadata } from "next";
 import Image from "next/image";
 
@@ -42,7 +42,13 @@ const features = [
   {
     title: "Performance tips",
     body: "Optimize your builds for maximum efficiency.",
-    icon: <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />,
+    icon: (
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M13 10V3L4 14h7v7l9-11h-7z"
+      />
+    ),
   },
 ];
 
@@ -54,12 +60,20 @@ export default function OreillyBazelBookPage() {
         <Section width="default" className="pt-24 pb-16 md:pt-32">
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
+              <Breadcrumbs
+                className="mb-6 justify-center"
+                items={[
+                  { label: "Resources", href: "/resources" },
+                  { label: "O'Reilly e-book" },
+                ]}
+              />
               <Eyebrow className="mb-5">Free O'Reilly e-book</Eyebrow>
               <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-[64px]">
                 Extending Bazel to Its Full Potential
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Leveraging cloud and parallelization to ship reliable code faster.
+                Leveraging cloud and parallelization to ship reliable code
+                faster.
               </p>
             </div>
           </Reveal>
@@ -75,14 +89,18 @@ export default function OreillyBazelBookPage() {
                   Master distributed builds at scale
                 </h2>
                 <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-                  Discover how to extend Bazel beyond its traditional boundaries. This comprehensive
-                  guide from O'Reilly Media explores advanced techniques for leveraging cloud
-                  infrastructure and parallelization to dramatically improve your build performance
-                  and reliability.
+                  Discover how to extend Bazel beyond its traditional
+                  boundaries. This comprehensive guide from O'Reilly Media
+                  explores advanced techniques for leveraging cloud
+                  infrastructure and parallelization to dramatically improve
+                  your build performance and reliability.
                 </p>
                 <ul className="mt-8 space-y-3">
                   {highlights.map((item) => (
-                    <li key={item} className="flex items-start gap-3 text-[15px] text-foreground">
+                    <li
+                      key={item}
+                      className="flex items-start gap-3 text-[15px] text-foreground"
+                    >
                       <span
                         aria-hidden="true"
                         className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-soft font-mono text-xs text-brand"
@@ -105,14 +123,19 @@ export default function OreillyBazelBookPage() {
                     priority
                   />
                 </div>
-                <p className="mt-4 font-mono text-xs text-muted">Published by O'Reilly Media</p>
+                <p className="mt-4 font-mono text-xs text-muted">
+                  Published by O'Reilly Media
+                </p>
               </div>
             </div>
           </div>
         </Reveal>
       </Section>
 
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-20">
+      <Section
+        width="default"
+        className="border-t border-border/60 bg-surface-elevated/40 py-20"
+      >
         <Reveal>
           <BookDownloadForm />
         </Reveal>

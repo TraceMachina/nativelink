@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -448,6 +448,7 @@ async fn rejects_incomplete_azure_cache_fill() -> Result<(), Error> {
             fast_direction: nativelink_config::stores::StoreDirection::default(),
             slow_direction: nativelink_config::stores::StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
         },
         fast.clone(),
         Store::new(nativelink_store::verify_store::VerifyStore::new(

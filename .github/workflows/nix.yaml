@@ -3,17 +3,17 @@ name: CI / Nix
 
 on:
   push:
-    branches: ['**']
+    branches: ["**"]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - ".github/styles/**"
+      - "web/**"
   # Two jobs here run only on the nightly schedule and on demand: Cargo Dev
   # (nix-cargo) and the end-to-end integration tests (buildstream, buck2,
   # mongo). See their per-job `if`. The installation and
   # RBE toolchain matrix stay on the branch CI path and skip the nightly run via
   # `if: != 'schedule'`. The primary Bazel lane is CI / NativeLink.
   schedule:
-    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
 permissions:
@@ -147,9 +147,9 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
         with:
-          nativelink_attic_token: ''
-          read_only: 'true'
-          skip_free_disk: 'true'
+          nativelink_attic_token: ""
+          read_only: "true"
+          skip_free_disk: "true"
 
       - name: Download the shared Nix store closure
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -215,9 +215,9 @@ jobs:
       - name: Prepare Worker
         uses: ./.github/actions/prepare-nix
         with:
-          nativelink_attic_token: ''
-          read_only: 'true'
-          skip_free_disk: 'true'
+          nativelink_attic_token: ""
+          read_only: "true"
+          skip_free_disk: "true"
 
       - name: Download the shared Nix store closure
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

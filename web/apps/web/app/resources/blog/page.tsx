@@ -1,4 +1,4 @@
-import { Eyebrow, Reveal, Section } from "@nativelink/ui";
+import { Breadcrumbs, Eyebrow, Reveal, Section } from "@nativelink/ui";
 import { getAllPosts } from "../../../lib/posts";
 import { PostSection, postToCard } from "../post-sections";
 
@@ -11,7 +11,8 @@ export default function BlogIndexPage() {
     (p) => p.tags.includes("announcements") && !p.tags.includes("case-studies"),
   );
   const others = posts.filter(
-    (p) => !p.tags.includes("case-studies") && !p.tags.includes("announcements"),
+    (p) =>
+      !p.tags.includes("case-studies") && !p.tags.includes("announcements"),
   );
 
   return (
@@ -21,19 +22,31 @@ export default function BlogIndexPage() {
         <Section width="default" className="pt-24 pb-14 md:pt-32">
           <Reveal>
             <div className="mx-auto max-w-[820px] text-center">
+              <Breadcrumbs
+                className="mb-6 justify-center"
+                items={[
+                  { label: "Resources", href: "/resources" },
+                  { label: "Blog" },
+                ]}
+              />
               <Eyebrow className="mb-5">Blog</Eyebrow>
               <h1 className="text-balance text-[40px] font-semibold leading-[1.05] tracking-[-0.04em] md:text-[56px]">
                 Writing from the team
               </h1>
               <p className="mx-auto mt-5 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground">
-                Tutorials, case studies, and announcements from the people building NativeLink.
+                Tutorials, case studies, and announcements from the people
+                building NativeLink.
               </p>
             </div>
           </Reveal>
         </Section>
       </section>
 
-      <PostSection title="Case studies" cards={caseStudies.map(postToCard)} className="pb-16" />
+      <PostSection
+        title="Case studies"
+        cards={caseStudies.map(postToCard)}
+        className="pb-16"
+      />
       <PostSection
         title="Announcements"
         cards={announcements.map(postToCard)}

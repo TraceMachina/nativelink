@@ -1,18 +1,23 @@
 # NativeLink cluster CI
 
-**CI / NativeLink** runs `bazel test //...` on the retained cluster client.
-GitHub's hosted job checks out the dispatch helpers, obtains short-lived
+**CI / NativeLink** runs `bazel test //...` on the retained cluster client for
+branch pushes and manual runs. Pull requests run the same suite with the
+project-pinned Bazel version on a hosted Linux runner, using the public read-only
+cache without cluster credentials. Both paths include Clippy and rustfmt.
+For branch builds, GitHub's hosted job checks out the dispatch helpers, obtains short-lived
 credentials, dispatches the workload and publishes aggregate results. Nix shell
 preparation, repository downloads, the action disk cache, expanded repositories,
 Bazel outputs and the running JVM stay on the cluster.
 
 Each repository branch push runs once by default. Manual runs accept 1–20
 iterations for cache and timing checks. A failure stops subsequent iterations
-and preserves its exit code. This workflow runs one cluster job without a hosted comparison or matrix. The earlier comparison reader remains available for historical
-aggregate reports; CI execution accepts only the cluster lane.
+and preserves its exit code. Branch builds run one cluster job without a hosted
+comparison or matrix. The earlier comparison reader remains available for
+historical aggregate reports; the dispatch helpers accept only the cluster lane.
 
 The hosted Nix Bazel Dev job and the duplicate project-pinned native Bazel job
-are replaced by this lane. Bazel 8 compatibility, Redis topology, sanitizer,
+are replaced by this lane for branch builds. Bazel 8 compatibility and Redis
+topology checks also run on every pull request to `main`. Sanitizer,
 Cargo/Windows, Nix toolchain/installation, integration and release checks retain
 their separate coverage. Their workloads are not equivalent to `test //...`.
 
@@ -39,7 +44,8 @@ this cluster lane. External fork PRs do not receive its environment secrets or
 retained client. After reviewing an external contribution, a maintainer can
 promote its exact commit to a repository branch such as `ci-approved/pr-123`;
 that push runs the same cluster CI against the reviewed commit. Do not promote
-unreviewed changes. The build workflow uses push/manual events.
+unreviewed changes. The cluster job only accepts push/manual events; pull request
+events select the separate hosted job.
 
 The repository's Actions approval policy is `all_external_contributors`.
 Ordinary fork PR workflows from all outside contributors require approval from
@@ -62,12 +68,12 @@ context and must never check out or execute fork code.
 Set `NATIVELINK_CLUSTER_API_KEY` in the environment, using a dedicated build key
 with cache read/write and BEP publishing, without worker registration. Configure:
 
-| Variable | Meaning |
-| --- | --- |
-| `NATIVELINK_CLUSTER_ENDPOINT` | TLS REAPI endpoint, `grpcs://host:443` |
-| `NATIVELINK_CLUSTER_BEP_ENDPOINT` | TLS BEP endpoint |
-| `NATIVELINK_CLUSTER_INSTANCE` | Remote instance name |
-| `NATIVELINK_CLUSTER_RESULTS_URL` | HTTPS build results URL prefix |
+| Variable                          | Meaning                                            |
+| --------------------------------- | -------------------------------------------------- |
+| `NATIVELINK_CLUSTER_ENDPOINT`     | TLS REAPI endpoint, `grpcs://host:443`             |
+| `NATIVELINK_CLUSTER_BEP_ENDPOINT` | TLS BEP endpoint                                   |
+| `NATIVELINK_CLUSTER_INSTANCE`     | Remote instance name                               |
+| `NATIVELINK_CLUSTER_RESULTS_URL`  | HTTPS build results URL prefix                     |
 | `NATIVELINK_CLUSTER_WORKER_IMAGE` | Exact image property advertised by the worker pool |
 
 The cluster lane reserves 1,000 CPU units, 2,000,000 KB memory and 1,000,000 KB

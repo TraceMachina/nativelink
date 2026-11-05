@@ -1,3 +1,4 @@
+import { type Cta, GET_STARTED, TALK_TO_US } from "@/lib/cta";
 import { Button, Eyebrow, Reveal, Section, cn } from "@nativelink/ui";
 import { Fragment } from "react";
 
@@ -16,8 +17,8 @@ interface Tier {
   cadence: string;
   tagline: string;
   features: string[];
-  cta: { label: string; href: string; external?: boolean };
-  secondary?: { label: string; href: string };
+  cta: Cta;
+  secondary?: Cta;
 }
 
 const tiers: Tier[] = [
@@ -33,7 +34,7 @@ const tiers: Tier[] = [
       "All build systems (Bazel, Buck2, Siso, Pants)",
       "All major cloud providers",
     ],
-    cta: { label: "Get started", href: "/docs", external: true },
+    cta: GET_STARTED,
   },
   {
     name: "Enterprise",
@@ -48,10 +49,11 @@ const tiers: Tier[] = [
       "Procurement support",
       "Priority feature requests",
     ],
-    cta: { label: "Email us about pricing", href: PRICING_MAILTO },
+    cta: TALK_TO_US,
     secondary: {
-      label: "Already decided? Subscribe now",
+      label: "Already have a quote? Buy a licence on the Enterprise portal",
       href: "https://enterprise.nativelink.com",
+      external: true,
     },
   },
 ];
@@ -114,7 +116,9 @@ function Cell({ value }: { value: string | boolean }) {
         aria-label={value ? "Included" : "Not included"}
         className={cn(
           "inline-flex h-5 w-5 items-center justify-center rounded-full font-mono text-[11px]",
-          value ? "bg-brand-soft text-brand" : "bg-foreground/[0.04] text-muted",
+          value
+            ? "bg-brand-soft text-brand"
+            : "bg-foreground/[0.04] text-muted",
         )}
       >
         {value ? "✓" : "—"}
@@ -142,11 +146,12 @@ export default function PricingPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[640px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Self-host for free, or let us run your build farm. Two tiers that grow with your
-                team — no hidden fees, no per-user pricing.
+                Self-host for free, or let us run your build farm. Two tiers
+                that grow with your team — no hidden fees, no per-user pricing.
               </p>
               <p className="mx-auto mt-4 max-w-[640px] text-[15px] leading-relaxed text-muted-foreground">
-                Enterprise pricing is a conversation, not a number on a page. Email{" "}
+                Enterprise pricing is a conversation, not a number on a page.
+                Email{" "}
                 <a
                   href={PRICING_MAILTO}
                   className="font-mono text-brand underline-offset-4 hover:underline"
@@ -173,7 +178,9 @@ export default function PricingPage() {
                   <span className="text-[44px] font-semibold leading-none tracking-tight text-foreground">
                     {tier.price}
                   </span>
-                  <span className="font-mono text-sm text-muted">{tier.cadence}</span>
+                  <span className="font-mono text-sm text-muted">
+                    {tier.cadence}
+                  </span>
                 </div>
                 <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
                   {tier.tagline}
@@ -192,7 +199,12 @@ export default function PricingPage() {
                   ))}
                 </ul>
                 <div className="mt-auto pt-10">
-                  <Button asChild size="lg" variant="outline" className="w-full">
+                  <Button
+                    asChild
+                    size="lg"
+                    variant="outline"
+                    className="w-full"
+                  >
                     <a
                       href={tier.cta.href}
                       target={tier.cta.external ? "_blank" : undefined}
@@ -205,8 +217,8 @@ export default function PricingPage() {
                     <p className="mt-3 text-center text-sm text-muted-foreground">
                       <a
                         href={tier.secondary.href}
-                        target="_blank"
-                        rel="noreferrer"
+                        target={tier.secondary.external ? "_blank" : undefined}
+                        rel={tier.secondary.external ? "noreferrer" : undefined}
                         className="text-brand underline-offset-4 hover:underline"
                       >
                         {tier.secondary.label}
@@ -260,7 +272,9 @@ export default function PricingPage() {
                     </tr>
                     {group.rows.map((row) => (
                       <tr key={row.label} className="border-t border-border">
-                        <td className="px-6 py-4 text-[15px] text-foreground">{row.label}</td>
+                        <td className="px-6 py-4 text-[15px] text-foreground">
+                          {row.label}
+                        </td>
                         <td className="px-6 py-4">
                           <Cell value={row.oss} />
                         </td>
@@ -289,15 +303,19 @@ export default function PricingPage() {
       </Section>
 
       {/* BOTTOM CONTACT */}
-      <Section width="narrow" className="border-t border-border/60 py-24 text-center">
+      <Section
+        width="narrow"
+        className="border-t border-border/60 py-24 text-center"
+      >
         <Reveal>
           <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
             Want to talk numbers?
           </h2>
           <p className="mx-auto mt-5 max-w-[560px] text-base leading-relaxed text-muted-foreground md:text-lg">
             Don't price your build farm off a website. Email{" "}
-            <span className="font-mono text-foreground">{PRICING_EMAIL}</span> and the engineers who
-            build NativeLink will walk through pricing for your team and workload.
+            <span className="font-mono text-foreground">{PRICING_EMAIL}</span>{" "}
+            and the engineers who build NativeLink will walk through pricing for
+            your team and workload.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <Button size="lg" asChild>

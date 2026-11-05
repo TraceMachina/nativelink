@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,8 @@ mod ft_create;
 mod ft_cursor_read;
 mod ft_info;
 mod ft_search_count;
+pub(crate) mod index_migration;
 pub(crate) use ft_aggregate::{FtAggregateCursor, FtAggregateOptions, ft_aggregate};
 pub(crate) use ft_create::{FtCreateOptions, SearchSchema, ft_create};
-pub(crate) use ft_info::ft_info_indexing;
+pub(crate) use ft_info::{FtInfo, ft_info, ft_info_indexing, ft_info_pair};
 pub(crate) use ft_search_count::ft_search_count;

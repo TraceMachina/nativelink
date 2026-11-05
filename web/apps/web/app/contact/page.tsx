@@ -11,21 +11,39 @@ const channels = [
     title: "contact@tracemachina.com",
     body: "Questions, comments, or talk to us about your team's build farm.",
     href: "mailto:contact@tracemachina.com",
-    icon: <path d="M4 6 h16 a2 2 0 0 1 2 2 v8 a2 2 0 0 1 -2 2 H4 a2 2 0 0 1 -2 -2 V8 a2 2 0 0 1 2 -2 Z M4 8 l8 6 l8 -6" strokeLinejoin="round" />,
+    icon: (
+      <path
+        d="M4 6 h16 a2 2 0 0 1 2 2 v8 a2 2 0 0 1 -2 2 H4 a2 2 0 0 1 -2 -2 V8 a2 2 0 0 1 2 -2 Z M4 8 l8 6 l8 -6"
+        strokeLinejoin="round"
+      />
+    ),
   },
   {
     label: "Security",
     title: "security@tracemachina.com",
     body: "Responsible-disclosure reports. We triage within 24 h.",
     href: "mailto:security@tracemachina.com",
-    icon: <path d="M12 2 L4 6 V13 C4 17 8 20 12 22 C16 20 20 17 20 13 V6 L12 2 Z" strokeLinejoin="round" />,
+    icon: (
+      <path
+        d="M12 2 L4 6 V13 C4 17 8 20 12 22 C16 20 20 17 20 13 V6 L12 2 Z"
+        strokeLinejoin="round"
+      />
+    ),
   },
   {
     label: "Legal",
     title: "legal@tracemachina.com",
     body: "Contracts, licensing, and legal enquiries.",
     href: "mailto:legal@tracemachina.com",
-    icon: <><path d="M12 3 v18 M5 7 h14 M7 7 l-3 7 a3 3 0 0 0 6 0 Z M17 7 l3 7 a3 3 0 0 0 -6 0 Z" strokeLinejoin="round" strokeLinecap="round" /></>,
+    icon: (
+      <>
+        <path
+          d="M12 3 v18 M5 7 h14 M7 7 l-3 7 a3 3 0 0 0 6 0 Z M17 7 l3 7 a3 3 0 0 0 -6 0 Z"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+      </>
+    ),
   },
 ];
 
@@ -41,8 +59,8 @@ const socialLinks = [
   },
   {
     label: "Slack",
-    handle: "Join the workspace",
-    href: "https://forms.gle/LtaWSixEC6bYi5xF7",
+    handle: "Request an invite",
+    href: "/community#slack",
     icon: (
       <>
         <rect x="3" y="11" width="6" height="2" rx="1" />
@@ -86,8 +104,9 @@ export default function ContactPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[600px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                Real engineers reply, not a sales-bot tree. Pick a channel, drop us
-                a note, or fill out the form — we usually answer within a few hours.
+                Real engineers reply, not a sales-bot tree. Pick a channel, drop
+                us a note, or fill out the form — we usually answer within a few
+                hours.
               </p>
             </div>
           </Reveal>
@@ -105,7 +124,15 @@ export default function ContactPage() {
                 className="group flex h-full flex-col rounded-2xl border border-border bg-surface p-6 transition-all hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-[0_20px_50px_-30px_rgb(var(--nl-color-brand)/0.4)]"
               >
                 <span className="mb-5 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-brand-soft text-brand transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    aria-hidden="true"
+                  >
                     {c.icon}
                   </svg>
                 </span>
@@ -139,8 +166,8 @@ export default function ContactPage() {
                   <li key={s.label}>
                     <a
                       href={s.href}
-                      target="_blank"
-                      rel="noreferrer"
+                      target={s.href.startsWith("http") ? "_blank" : undefined}
+                      rel={s.href.startsWith("http") ? "noreferrer" : undefined}
                       className="group flex items-start gap-4 rounded-2xl border border-border bg-surface p-5 transition-colors hover:border-brand/40"
                     >
                       <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-soft text-brand transition-colors group-hover:bg-brand group-hover:text-brand-foreground">
@@ -160,7 +187,9 @@ export default function ContactPage() {
                         <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">
                           {s.label}
                         </p>
-                        <p className="mt-1 text-sm text-foreground">{s.handle}</p>
+                        <p className="mt-1 text-sm text-foreground">
+                          {s.handle}
+                        </p>
                       </div>
                       <span
                         aria-hidden="true"
@@ -181,8 +210,8 @@ export default function ContactPage() {
                   Mon — Fri · 9 am – 6 pm Pacific
                 </p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Outside hours? Email still works; we'll reply first thing the next
-                  business day.
+                  Outside hours? Email still works; we'll reply first thing the
+                  next business day.
                 </p>
               </div>
             </div>

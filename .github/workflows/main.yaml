@@ -11,12 +11,12 @@ name: CI / Integration
 # build/test signal is carried by the warm-cluster CI / NativeLink lane.
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     paths-ignore:
-      - '.github/styles/**'
-      - 'web/**'
+      - ".github/styles/**"
+      - "web/**"
   schedule:
-    - cron: '0 7 * * *' # 07:00 UTC daily (off-peak)
+    - cron: "0 7 * * *" # 07:00 UTC daily (off-peak)
   workflow_dispatch:
 
 permissions: read-all
@@ -97,50 +97,50 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-    - name: Checkout
-      uses: >- # v6.0.2
-        actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
-    - name: Write Bazel CI metadata
-      uses: ./.github/actions/ci-metadata
+      - name: Write Bazel CI metadata
+        uses: ./.github/actions/ci-metadata
 
-    - name: Setup NativeLink Cloud
-      uses: ./.github/actions/setup-nativelink-cloud
-      with:
-        ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
-        claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
-        bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
-        api-key: >-
-          ${{ github.event_name == 'push'
-              && secrets.NATIVELINK_STAGING_API_KEY_RW
-              || secrets.NATIVELINK_STAGING_API_KEY_RO }}
-        mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
-        exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
+      - name: Setup NativeLink Cloud
+        uses: ./.github/actions/setup-nativelink-cloud
+        with:
+          ci-mode: ${{ vars.NATIVELINK_CI_MODE }}
+          claim-base: ${{ secrets.NATIVELINK_STAGING_CLAIM_BASE }}
+          bes-results-url: ${{ secrets.NATIVELINK_STAGING_BES_RESULTS_URL }}
+          api-key: >-
+            ${{ github.event_name == 'push'
+                && secrets.NATIVELINK_STAGING_API_KEY_RW
+                || secrets.NATIVELINK_STAGING_API_KEY_RO }}
+          mode: ${{ github.event_name == 'push' && 'write' || 'read' }}
+          exec: ${{ runner.os == 'Linux' && 'on' || 'off' }}
 
-    - name: Set up Docker Buildx
-      uses: >- # v3.9.0
-        docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
+      - name: Set up Docker Buildx
+        uses: >- # v3.9.0
+          docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca
 
-    - name: Build image
-      uses: >- # v6.13.0
-        docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
-      with:
-        context: .
-        file: ./deployment-examples/docker-compose/Dockerfile
-        build-args: |
-          OPT_LEVEL=fastbuild
-          ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
-        secret-files: |
-          nativelink-bazelrc=user.bazelrc
-          ci-metadata=ci-metadata.bazelrc
-        load: true # This brings the build into `docker images` from buildx.
-        tags: trace_machina/nativelink:latest
+      - name: Build image
+        uses: >- # v6.13.0
+          docker/build-push-action@ca877d9245402d1537745e0e356eab47c3520991
+        with:
+          context: .
+          file: ./deployment-examples/docker-compose/Dockerfile
+          build-args: |
+            OPT_LEVEL=fastbuild
+            ADDITIONAL_BAZEL_FLAGS=--extra_toolchains=@rust_toolchains//:all
+          secret-files: |
+            nativelink-bazelrc=user.bazelrc
+            ci-metadata=ci-metadata.bazelrc
+          load: true # This brings the build into `docker images` from buildx.
+          tags: trace_machina/nativelink:latest
 
-    - name: Run tests
-      env:
-        # Merges to main are a trusted upload lane; PRs are not (keeps the
-        # repo-wide --remote_upload_local_results=false anti-poisoning default
-        # in force for PRs). Upload-dependent integration tests
-        # (chunking_cache_test, simple_cache_test) self-skip unless this is 1.
-        NL_LOCAL_UPLOADS: ${{ github.event_name == 'push' && '1' || '0' }}
-      run: ./run_integration_tests.sh
+      - name: Run tests
+        env:
+          # Merges to main are a trusted upload lane; PRs are not (keeps the
+          # repo-wide --remote_upload_local_results=false anti-poisoning default
+          # in force for PRs). Upload-dependent integration tests
+          # (chunking_cache_test, simple_cache_test) self-skip unless this is 1.
+          NL_LOCAL_UPLOADS: ${{ github.event_name == 'push' && '1' || '0' }}
+        run: ./run_integration_tests.sh
