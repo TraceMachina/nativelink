@@ -71,7 +71,7 @@ use nativelink_util::{background_spawn, fs, spawn};
 use nativelink_worker::local_worker::{WorkerRegistration, new_local_worker};
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
-use tokio::net::{TcpListener, TcpSocket};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::select;
 #[cfg(target_family = "unix")]
 use tokio::signal::unix::{SignalKind, signal};
@@ -114,6 +114,16 @@ fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error>
     fs::set_freebind(&socket)?;
     socket.bind(socket_addr)?;
     socket.listen(1024)
+}
+
+/// Configure accepted sockets before either the TLS handshake or HTTP serving.
+async fn accept_tcp_connection(
+    listener: &TcpListener,
+    tcp_nodelay: bool,
+) -> Result<(TcpStream, SocketAddr), std::io::Error> {
+    let (stream, remote_addr) = listener.accept().await?;
+    stream.set_nodelay(tcp_nodelay)?;
+    Ok((stream, remote_addr))
 }
 
 /// Backend for bazel remote execution / cache API.
@@ -699,6 +709,7 @@ async fn inner_main(
         let mut http = auto::Builder::new(TaskExecutor::default());
         http.http2().timer(TokioTimer::new());
 
+        let tcp_nodelay = http_config.tcp_nodelay;
         let http_config = &http_config.advanced_http;
         if let Some(value) = http_config.http2_keep_alive_interval {
             http.http2()
@@ -745,7 +756,7 @@ async fn inner_main(
         root_futures.push(Box::pin(async move {
             loop {
                 select! {
-                    accept_result = tcp_listener.accept() => {
+                    accept_result = accept_tcp_connection(&tcp_listener, tcp_nodelay) => {
                         match accept_result {
                             Ok((tcp_stream, remote_addr)) => {
                                 info!(
@@ -1048,4 +1059,44 @@ fn main() -> Result<(), Box<dyn core::error::Error>> {
         })
         .err_tip(|| "main() function failed")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use nativelink_config::cas_server::HttpListener;
+    use nativelink_macro::nativelink_test;
+
+    use super::*;
+
+    #[nativelink_test]
+    async fn accepted_connections_honor_tcp_nodelay() -> Result<(), std::io::Error> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        for (config, expected) in [
+            (HttpListener::default(), true),
+            (
+                HttpListener {
+                    tcp_nodelay: false,
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                HttpListener {
+                    tcp_nodelay: true,
+                    ..Default::default()
+                },
+                true,
+            ),
+        ] {
+            // Every accepted connection must receive the configured socket option.
+            for _ in 0..2 {
+                let (_client, (server, _)) = tokio::try_join!(
+                    TcpStream::connect(listener.local_addr()?),
+                    accept_tcp_connection(&listener, config.tcp_nodelay),
+                )?;
+                assert_eq!(server.nodelay()?, expected);
+            }
+        }
+        Ok(())
+    }
 }
