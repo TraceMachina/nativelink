@@ -3089,9 +3089,9 @@ async fn a_completed_transfer_is_not_killed_during_a_slow_commit() -> Result<(),
 
         // Paused time: the watchdog's one-second windows all fire inside
         // this wait. If the stand-down were broken, the fill would fail
-        // with DEADLINE_EXCEEDED long before 600 virtual seconds pass.
+        // with DEADLINE_EXCEEDED long before 10 virtual minutes pass.
         assert!(
-            tokio::time::timeout(Duration::from_secs(600), &mut fill)
+            tokio::time::timeout(Duration::from_mins(10), &mut fill)
                 .await
                 .is_err(),
             "the fill must still be waiting on the fast tier's commit (len {data_len}), not killed by the watchdog",
