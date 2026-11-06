@@ -136,6 +136,12 @@ contain slashes, so left-to-right parsing cannot find the boundary, while
 right-to-left can, because the trailing components are fixed. See
 <SourceLink file="nativelink-util/src/resource_info.rs" symbol="ResourceInfo" />.
 
+**A ByteStream read outside the blob is `OUT_OF_RANGE`.** A `read_offset` that
+is negative or larger than the blob's size (taken from the resource name)
+returns `OUT_OF_RANGE`, as `bytestream.proto` specifies. An offset equal to
+the size reads nothing. For `compressed-blobs` reads the offset counts
+uncompressed bytes.
+
 **`GetTree` returns each distinct directory once.** A `Directory` that occurs
 more than once in a tree (two empty subdirectories, say) appears once in the
 response, so a client paging through such a tree reaches the end.
