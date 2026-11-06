@@ -255,6 +255,16 @@ pub struct Command {
     /// `INVALID_ARGUMENT`.
     #[prost(string, repeated, tag = "8")]
     pub output_node_properties: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The format that the worker should use to store the contents of
+    /// output directories.
+    ///
+    /// In case this field is set to a value that is not supported by the
+    /// worker, the worker SHOULD interpret this field as TREE_ONLY. The
+    /// worker MAY store output directories in formats that are a superset
+    /// of what was requested (e.g., interpreting DIRECTORY_ONLY as
+    /// TREE_AND_DIRECTORY).
+    #[prost(enumeration = "command::OutputDirectoryFormat", tag = "9")]
+    pub output_directory_format: i32,
 }
 /// Nested message and enum types in `Command`.
 pub mod command {
@@ -268,6 +278,54 @@ pub mod command {
         /// The variable value.
         #[prost(string, tag = "2")]
         pub value: ::prost::alloc::string::String,
+    }
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
+    #[repr(i32)]
+    pub enum OutputDirectoryFormat {
+        /// The client is only interested in receiving output directories in
+        /// the form of a single Tree object, using the `tree_digest` field.
+        TreeOnly = 0,
+        /// The client is only interested in receiving output directories in
+        /// the form of a hierarchy of separately stored Directory objects,
+        /// using the `root_directory_digest` field.
+        DirectoryOnly = 1,
+        /// The client is interested in receiving output directories both in
+        /// the form of a single Tree object and a hierarchy of separately
+        /// stored Directory objects, using both the `tree_digest` and
+        /// `root_directory_digest` fields.
+        TreeAndDirectory = 2,
+    }
+    impl OutputDirectoryFormat {
+        /// String value of the enum field names used in the ProtoBuf definition.
+        ///
+        /// The values are not transformed in any way and thus are considered stable
+        /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+        pub fn as_str_name(&self) -> &'static str {
+            match self {
+                Self::TreeOnly => "TREE_ONLY",
+                Self::DirectoryOnly => "DIRECTORY_ONLY",
+                Self::TreeAndDirectory => "TREE_AND_DIRECTORY",
+            }
+        }
+        /// Creates an enum from field names used in the ProtoBuf definition.
+        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+            match value {
+                "TREE_ONLY" => Some(Self::TreeOnly),
+                "DIRECTORY_ONLY" => Some(Self::DirectoryOnly),
+                "TREE_AND_DIRECTORY" => Some(Self::TreeAndDirectory),
+                _ => None,
+            }
+        }
     }
 }
 /// A `Platform` is a set of requirements, such as hardware, operating system, or
@@ -873,6 +931,15 @@ pub struct OutputDirectory {
     /// redundant marshaling.
     #[prost(bool, tag = "4")]
     pub is_topologically_sorted: bool,
+    /// The digest of the encoded
+    /// [Directory][build.bazel.remote.execution.v2.Directory] proto
+    /// containing the contents of the directory's root.
+    ///
+    /// If both `tree_digest` and `root_directory_digest` are set, this
+    /// field MUST match the digest of the root directory contained in the
+    /// Tree message.
+    #[prost(message, optional, tag = "5")]
+    pub root_directory_digest: ::core::option::Option<Digest>,
 }
 /// An `OutputSymlink` is similar to a
 /// [Symlink][build.bazel.remote.execution.v2.SymlinkNode], but it is used as an
@@ -974,6 +1041,20 @@ pub struct ExecuteRequest {
     /// in the server's capabilities.
     #[prost(enumeration = "digest_function::Value", tag = "9")]
     pub digest_function: i32,
+    /// A hint to the server to request inlining stdout in the
+    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] message.
+    #[prost(bool, tag = "10")]
+    pub inline_stdout: bool,
+    /// A hint to the server to request inlining stderr in the
+    /// [ActionResult][build.bazel.remote.execution.v2.ActionResult] message.
+    #[prost(bool, tag = "11")]
+    pub inline_stderr: bool,
+    /// A hint to the server to inline the contents of the listed output files.
+    /// Each path needs to exactly match one file path in either `output_paths` or
+    /// `output_files` (DEPRECATED since v2.1) in the
+    /// [Command][build.bazel.remote.execution.v2.Command] message.
+    #[prost(string, repeated, tag = "12")]
+    pub inline_output_files: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A `LogFile` is a log stored in the CAS.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1128,6 +1209,15 @@ pub struct ExecuteOperationMetadata {
     /// execution.
     #[prost(message, optional, tag = "5")]
     pub partial_execution_metadata: ::core::option::Option<ExecutedActionMetadata>,
+    /// The digest function that was used to compute the action digest.
+    ///
+    /// If the digest function used is one of BLAKE3, MD5, MURMUR3, SHA1,
+    /// SHA256, SHA256TREE, SHA384, SHA512, or VSO, the server MAY leave
+    /// this field unset. In that case the client SHOULD infer the digest
+    /// function using the length of the action digest hash and the digest
+    /// functions announced in the server's capabilities.
+    #[prost(enumeration = "digest_function::Value", tag = "6")]
+    pub digest_function: i32,
 }
 /// A request message for
 /// [WaitExecution][build.bazel.remote.execution.v2.Execution.WaitExecution].
@@ -1669,6 +1759,12 @@ pub mod digest_function {
         /// The BLAKE3 hash function.
         /// See <https://github.com/BLAKE3-team/BLAKE3.>
         Blake3 = 9,
+        /// Identical to SHA1, except that "blob ${sizeBytes}\0" is prepended to
+        /// the blob's contents before hashing, where ${sizeBytes} corresponds to
+        /// the decimal size of the original blob. This allows hashes of files to
+        /// be converted from and to the ones used by the Git version control
+        /// system.
+        Gitsha1 = 10,
     }
     impl Value {
         /// String value of the enum field names used in the ProtoBuf definition.
@@ -1687,6 +1783,7 @@ pub mod digest_function {
                 Self::Murmur3 => "MURMUR3",
                 Self::Sha256tree => "SHA256TREE",
                 Self::Blake3 => "BLAKE3",
+                Self::Gitsha1 => "GITSHA1",
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1702,6 +1799,7 @@ pub mod digest_function {
                 "MURMUR3" => Some(Self::Murmur3),
                 "SHA256TREE" => Some(Self::Sha256tree),
                 "BLAKE3" => Some(Self::Blake3),
+                "GITSHA1" => Some(Self::Gitsha1),
                 _ => None,
             }
         }
