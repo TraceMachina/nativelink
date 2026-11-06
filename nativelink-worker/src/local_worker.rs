@@ -1726,6 +1726,7 @@ fn persistent_worker_settings(
                 defaults.acquire_timeout.as_secs(),
             )),
             namespaced,
+            isolate_by_instance_name: c.isolate_by_instance_name,
         }
     });
     crate::running_actions_manager::PersistentWorkersSettings {
