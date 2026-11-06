@@ -131,6 +131,10 @@ splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
 
+**`GetTree` returns what it finds.** If a subdirectory is missing from the
+CAS, the response leaves it out and carries the rest of the tree. Only a
+missing root fails the call, with `NOT_FOUND`.
+
 **The `Execute` pre-flight input check is shallow and racy by design.** It
 does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
