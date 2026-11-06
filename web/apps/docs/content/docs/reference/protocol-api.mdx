@@ -159,6 +159,10 @@ writes its result to the Action Cache; that part is tracked in
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
 
+**Output `Tree`s are deterministic.** `Tree.children` lists the directories
+below the root, ordered by name at each level, so equal output directories
+produce equal `tree_digest` values. The root appears only in `Tree.root`.
+
 **Bad arguments return `INVALID_ARGUMENT`.** An unknown `instance_name`, or a
 request missing a digest it requires, is a client error, so every service
 answers `INVALID_ARGUMENT` rather than `INTERNAL`. Clients such as Bazel retry

@@ -2560,10 +2560,15 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
         // The stream bound keeps the fan-out in check at each level; the
         // files open at once are bounded by `uploads`, which every level
         // shares, since per-level bounds would multiply.
-        let dir_entries = futures::stream::iter(dir_futures)
+        let mut dir_entries = futures::stream::iter(dir_futures)
             .buffer_unordered(UPLOAD_CONCURRENCY)
             .try_collect::<Vec<(DirectoryNode, VecDeque<Directory>)>>()
             .await?;
+        // `buffer_unordered` yields in completion order. Sort by name (unique
+        // within a directory) before flattening, so the child list, and with
+        // it the Tree digest, is the same on every run. REv2 `Tree.children`:
+        // "Servers SHOULD ensure that these are ordered consistently".
+        dir_entries.sort_unstable_by(|(a, _), (b, _)| a.name.cmp(&b.name));
         let (mut file_nodes, mut symlinks) = try_join(
             futures::stream::iter(file_futures)
                 .buffer_unordered(UPLOAD_CONCURRENCY)
@@ -2600,6 +2605,19 @@ fn upload_directory<'a, P: AsRef<Path> + Debug + Send + Sync + Clone + 'a>(
 
         Ok((directory, all_child_directories))
     })
+}
+
+/// Builds the `Tree` for an output directory from `upload_directory`'s
+/// result. That result lists every directory below the root and then the
+/// root itself, last; the root belongs in `Tree.root` only. REv2
+/// `Tree.children`: "the directories referred to by the root and,
+/// recursively, all its children".
+fn output_tree(root: Directory, mut children: VecDeque<Directory>) -> ProtoTree {
+    children.pop_back();
+    ProtoTree {
+        root: Some(root),
+        children: children.into(),
+    }
 }
 
 async fn process_side_channel_file(
@@ -4496,10 +4514,7 @@ impl RunningActionImpl {
                                 uploads,
                             )
                             .and_then(|(root_dir, children)| async move {
-                                let tree = ProtoTree {
-                                    root: Some(root_dir),
-                                    children: children.into(),
-                                };
+                                let tree = output_tree(root_dir, children);
                                 let tree_digest = serialize_and_upload_message(
                                     &tree,
                                     cas_store.as_pin(),
@@ -4543,10 +4558,7 @@ impl RunningActionImpl {
                                                 uploads,
                                             )
                                             .and_then(|(root_dir, children)| async move {
-                                                let tree = ProtoTree {
-                                                    root: Some(root_dir),
-                                                    children: children.into(),
-                                                };
+                                                let tree = output_tree(root_dir, children);
                                                 let tree_digest = serialize_and_upload_message(
                                                     &tree,
                                                     cas_store.as_pin(),

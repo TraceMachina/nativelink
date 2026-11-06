@@ -2515,18 +2515,17 @@ mod tests {
         assert_eq!(
             tree,
             Tree {
-                root: Some(root_directory.clone()),
-                children: vec![
-                    Directory {
-                        symlinks: vec![SymlinkNode {
-                            name: "sym".to_string(),
-                            target: "../file".to_string(),
-                            ..Default::default()
-                        }],
+                root: Some(root_directory),
+                // REv2 `Tree.children` holds the directories below the root,
+                // not the root again.
+                children: vec![Directory {
+                    symlinks: vec![SymlinkNode {
+                        name: "sym".to_string(),
+                        target: "../file".to_string(),
                         ..Default::default()
-                    },
-                    root_directory
-                ],
+                    }],
+                    ..Default::default()
+                }],
             }
         );
         let mut clock_time = make_system_time(0);
@@ -2556,8 +2555,8 @@ mod tests {
                 output_folders: vec![DirectoryInfo {
                     path: "dir1".to_string(),
                     tree_digest: DigestInfo::try_new(
-                        "adbb04fa6e166e663c1310bbf8ba494e468b1b6c33e1e5346e2216b6904c9917",
-                        490
+                        "3edeaef5deb22b072c788adbbb15cef97d5b640a0133da260d3e0b1c0afd5ca6",
+                        254
                     )?,
                 }],
                 output_file_symlinks: vec![SymlinkInfo {
@@ -9645,8 +9644,8 @@ done
                 output_folders: vec![DirectoryInfo {
                     path: "tst".to_string(),
                     tree_digest: DigestInfo::try_new(
-                        "95711c1905d4898a70209dd6e98241dcafb479c00241a1ea4ed8415710d706f3",
-                        166,
+                        "c80ff014a65938993c8a40d2c9743b65c012c42677d6e50147d2608eb053193f",
+                        83,
                     )?,
                 },],
                 output_file_symlinks: vec![],
