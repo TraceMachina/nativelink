@@ -58,6 +58,14 @@ const NATIVELINK_SERVICE_NAME: &str = "nativelink";
 //
 // See: https://github.com/open-telemetry/opentelemetry-rust/issues/2877
 //
+// Without `tokio_unstable`, tokio compiles out the instrumentation that
+// tokio-console reads, and the feature would build a server that attaches
+// cleanly and shows nothing. Refuse the combination outright.
+#[cfg(all(feature = "tokio_console", not(tokio_unstable)))]
+compile_error!(
+    "the tokio_console feature needs RUSTFLAGS=\"--cfg tokio_unstable\", or tokio emits no task instrumentation"
+);
+
 // Note that `EnvFilter` doesn't implement `clone`, so create a new one for
 // each telemetry kind.
 fn otlp_filter() -> EnvFilter {
@@ -194,12 +202,26 @@ pub async fn init_tracing() -> Result<(), Error> {
 
     let otlp_metrics_layer = MetricsLayer::new(meter_provider).with_filter(otlp_filter());
 
-    registry()
+    // tokio-console's instrumentation layer, for live async task dumps on a
+    // running server: the `tokio-console` CLI attaches over gRPC
+    // (127.0.0.1:6669 by default; TOKIO_CONSOLE_* variables configure it).
+    // Debug-build only — tokio emits task instrumentation only when compiled
+    // with `RUSTFLAGS="--cfg tokio_unstable"`, which the feature enforces at
+    // compile time — and the layer costs enough that it must never be in a
+    // default build.
+    #[cfg(feature = "tokio_console")]
+    let console_layer = console_subscriber::ConsoleLayer::builder()
+        .with_default_env()
+        .spawn();
+
+    let registry = registry()
         .with(tracing_stdout_layer())
         .with(otlp_log_layer)
         .with(otlp_trace_layer)
-        .with(otlp_metrics_layer)
-        .init();
+        .with(otlp_metrics_layer);
+    #[cfg(feature = "tokio_console")]
+    let registry = registry.with(console_layer);
+    registry.init();
 
     INITIALIZED.set(()).unwrap_or(());
 

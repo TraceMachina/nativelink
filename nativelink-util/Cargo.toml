@@ -6,6 +6,13 @@ edition = "2024"
 name = "nativelink-util"
 version = "1.8.3"
 
+[features]
+# Wires tokio-console's instrumentation layer into telemetry, for live async
+# task dumps on a running server (debug builds only). Build with
+# RUSTFLAGS="--cfg tokio_unstable" or tokio emits nothing; the feature
+# enforces that at compile time.
+tokio_console = ["dep:console-subscriber"]
+
 [dependencies]
 nativelink-config = { path = "../nativelink-config" }
 nativelink-error = { path = "../nativelink-error" }
@@ -17,6 +24,9 @@ base64 = { version = "0.22.1", default-features = false, features = ["std"] }
 bitflags = { version = "2.9.0", default-features = false }
 blake3 = { version = "1.8.0", features = ["mmap"], default-features = false }
 bytes = { version = "1.10.1", default-features = false }
+console-subscriber = { version = "0.5.0", optional = true, default-features = false, features = [
+  "env-filter",
+] }
 futures = { version = "0.3.31", features = [
   "async-await",
 ], default-features = false }
