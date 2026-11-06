@@ -431,16 +431,27 @@ struct Ceilings {
 /// times a second.
 const DISK_SAMPLE_EVERY: u32 = 40;
 
+/// `oom_limit_kb` is what a SIGKILL nobody here sent is judged against (see
+/// [`classify_outcome`]): the enforced ceiling, or the pod's limit without
+/// one. It is not enforced; the sampler keeps its figure exact near it.
 fn start_action_resource_usage_sampler(
     pgid: u32,
     ceilings: Ceilings,
+    oom_limit_kb: Option<u64>,
     disk_directory: Option<(PathBuf, SystemTime)>,
     process_table: Arc<ProcessTableCache>,
 ) -> ActionResourceUsageSampler {
     let (stop_tx, stop_rx) = watch::channel(false);
     let handle = background_spawn!(
         "action_resource_usage_sampler",
-        sample_action_resource_usage(pgid, stop_rx, ceilings, disk_directory, process_table)
+        sample_action_resource_usage(
+            pgid,
+            stop_rx,
+            ceilings,
+            oom_limit_kb,
+            disk_directory,
+            process_table
+        )
     );
     ActionResourceUsageSampler { stop_tx, handle }
 }
@@ -573,6 +584,7 @@ async fn sample_action_resource_usage(
     pgid: u32,
     mut stop_rx: watch::Receiver<bool>,
     mut ceilings: Ceilings,
+    oom_limit_kb: Option<u64>,
     disk_directory: Option<(PathBuf, SystemTime)>,
     process_table: Arc<ProcessTableCache>,
 ) -> SampledResourceUsage {
@@ -593,7 +605,7 @@ async fn sample_action_resource_usage(
     // served before, which is not this action's.
     let mut baseline_ticks: Option<u64> = None;
 
-    let mut memory_gate = ExactMemoryGate::new(ceilings.memory_limit_kb);
+    let mut memory_gate = ExactMemoryGate::new(oom_limit_kb);
 
     let watch = ceilings.watch.clone();
     let sample = async |peak_memory_kb: &mut u64,
@@ -708,23 +720,24 @@ async fn sample_action_resource_usage(
         tokio::select! {
             changed = stop_rx.changed() => {
                 if changed.is_ok() && *stop_rx.borrow() {
-                    // The final figure settles the peak and how the action
-                    // ended, so it is always the exact one.
-                    if let Some(memory_kb) = sample(
-                        &mut peak_memory_kb,
-                        &mut cpu_ticks_by_pid,
-                        &mut memory_gate,
-                        true,
-                    )
-                    .await
-                    {
-                        last_memory_kb = memory_kb;
-                    }
                     break;
                 }
             }
             () = tokio::time::sleep(RESOURCE_USAGE_SAMPLE_INTERVAL) => {}
         }
+    }
+    // The final figure settles the peak and how the action ended, so every
+    // way out takes it exact. A pooled process is still there to read; a
+    // finished group has nothing left and changes nothing.
+    if let Some(memory_kb) = sample(
+        &mut peak_memory_kb,
+        &mut cpu_ticks_by_pid,
+        &mut memory_gate,
+        true,
+    )
+    .await
+    {
+        last_memory_kb = memory_kb;
     }
     // What the action left on disk at the end is the figure that matters
     // for sizing; this walk, one stat per entry under the action directory,
@@ -888,19 +901,23 @@ const EXACT_MEMORY_MAX_AGE: Duration = Duration::from_secs(2);
 const EXACT_MEMORY_MAX_DRIFT_PERCENT: u64 = 10;
 
 /// Decides which samples read the exact memory figure. On Linux that is
-/// `Pss` from `smaps_rollup`, a walk of the page tables that costs about
-/// 3 ms per resident GiB, four times a second for every running action.
-/// The members' RSS is a counter read and `Pss` never exceeds it, so a
-/// sample reuses the last exact figure, capped at the RSS, while the RSS
-/// shows that reading again could not change what acts on it:
-/// - RSS under 90% of the memory ceiling: no ceiling kill and no
-///   near-limit OOM classification (see [`classify_outcome`]) can follow.
-/// - RSS within [`EXACT_MEMORY_MAX_DRIFT_PERCENT`] of what it was at the
-///   last exact read, under [`EXACT_MEMORY_MAX_AGE`] ago: the peak and the
-///   figure the pressure monitor compares trail by no more than that.
+/// `Pss` from `smaps_rollup`, a walk of the page tables that costs several
+/// milliseconds per resident GiB, four times a second for every running
+/// action. The members' RSS is a counter read that `Pss` never exceeds, so
+/// a sample reuses the last exact figure, capped at the RSS, only while:
+/// - the RSS is under 90% of the limit a kill is judged against, so no
+///   ceiling kill and no near-limit OOM classification (see
+///   [`classify_outcome`]) can follow from the figure;
+/// - the RSS is within [`EXACT_MEMORY_MAX_DRIFT_PERCENT`] of where it was
+///   at the last exact read, so an action is read again as it grows, and
+///   one that ends before the next refresh still reports its peak;
+/// - that read is under [`EXACT_MEMORY_MAX_AGE`] old. `Pss` can rise while
+///   the RSS stays flat, when another process sharing the pages exits, so
+///   this age alone bounds how far the peak and the figure the pressure
+///   monitor compares can trail.
 #[derive(Debug, Clone, Copy)]
 pub struct ExactMemoryGate {
-    memory_limit_kb: Option<u64>,
+    oom_limit_kb: Option<u64>,
     last: Option<ExactMemoryReading>,
 }
 
@@ -912,9 +929,10 @@ struct ExactMemoryReading {
 }
 
 impl ExactMemoryGate {
-    pub const fn new(memory_limit_kb: Option<u64>) -> Self {
+    /// `oom_limit_kb` is what a SIGKILL nobody here sent is judged against.
+    pub const fn new(oom_limit_kb: Option<u64>) -> Self {
         Self {
-            memory_limit_kb,
+            oom_limit_kb,
             last: None,
         }
     }
@@ -924,7 +942,7 @@ impl ExactMemoryGate {
     pub fn reuse(&self, bound_kb: u64, now: Instant) -> Option<u64> {
         let last = self.last?;
         let under_ceiling = self
-            .memory_limit_kb
+            .oom_limit_kb
             .is_none_or(|limit_kb| bound_kb.saturating_mul(10) < limit_kb.saturating_mul(9));
         let fresh = now.saturating_duration_since(last.read_at) < EXACT_MEMORY_MAX_AGE;
         let steady = bound_kb.abs_diff(last.bound_kb).saturating_mul(100)
@@ -3643,6 +3661,8 @@ impl RunningActionImpl {
                                         // kill's victim.
                                         watch: Arc::new(ActionMemoryWatch::default()),
                                     },
+                                    // Its outcome is classified against no limit.
+                                    None,
                                     None,
                                     self.running_actions_manager.process_table.clone(),
                                 )
@@ -3934,6 +3954,11 @@ impl RunningActionImpl {
         // Holds the sender when no ceiling is enforced, so the receiver
         // below stays pending instead of resolving closed.
         let mut over_limit_keepalive = Some(over_limit_tx);
+        // What a SIGKILL nobody here sent is judged against; the sampler
+        // keeps its figure exact near it.
+        let oom_limit_kb = memory_reservation
+            .map(|(_, limit_kb)| limit_kb)
+            .or(self.running_actions_manager.pod_memory_limit_kb);
         let mut maybe_resource_usage_sampler = child_process.id().map(|pgid| {
             let memory_limit_kb = memory_reservation.map(|(_, limit_kb)| limit_kb);
             let disk_limit_kb = disk_enforcement.and_then(|(_, limit_kb)| limit_kb);
@@ -3963,6 +3988,7 @@ impl RunningActionImpl {
                     over_limit_tx,
                     watch: self.memory_watch.clone(),
                 },
+                oom_limit_kb,
                 disk_directory,
                 self.running_actions_manager.process_table.clone(),
             )
@@ -4237,9 +4263,7 @@ impl RunningActionImpl {
                         None => SampledResourceUsage::default(),
                     };
 
-                    let memory_limit_kb = memory_reservation
-                        .map(|(_, limit_kb)| limit_kb)
-                        .or(self.running_actions_manager.pod_memory_limit_kb);
+                    let memory_limit_kb = oom_limit_kb;
                     // The signal that ended the process, where the platform reports one.
                     #[cfg(target_family = "unix")]
                     let signal = exit_status.signal();
