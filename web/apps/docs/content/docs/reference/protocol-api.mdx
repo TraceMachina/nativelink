@@ -146,6 +146,12 @@ retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
 Clients that only inspect the gRPC status will misread it.
 
+**`Action.do_not_cache` skips the cache lookup and in-flight merging.** Such
+an action is never answered from the Action Cache and never shares an
+execution with an identical action that is already running. The worker still
+writes its result to the Action Cache; that part is tracked in
+[#3110](https://github.com/TraceMachina/nativelink/issues/3110).
+
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
 

@@ -301,7 +301,10 @@ impl InstanceInfo {
             digest_function,
             digest: action_digest,
         };
-        let unique_qualifier = if skip_cache_lookup {
+        // REv2 `Action.do_not_cache`: "the Action's result cannot be cached,
+        // and in-flight requests for the same Action may not be merged".
+        // `Uncacheable` skips the cache lookup and the in-flight merge.
+        let unique_qualifier = if skip_cache_lookup || action.do_not_cache {
             ActionUniqueQualifier::Uncacheable(action_key)
         } else {
             ActionUniqueQualifier::Cacheable(action_key)
