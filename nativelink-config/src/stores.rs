@@ -1012,6 +1012,41 @@ pub struct FastSlowSpec {
     /// Default: disabled (0)
     #[serde(default, deserialize_with = "convert_data_size_with_shellexpand")]
     pub bypass_dedup_threshold_bytes: u64,
+
+    /// Maximum seconds an existence check (`has`, which serves
+    /// `FindMissingBlobs` and upload checks) waits on a key whose
+    /// slow-store write is still in flight before reporting the key
+    /// missing. The clock runs from when the write registered, not per
+    /// call, so a wedged write delays existence checks at most once. A
+    /// missing report costs at worst a duplicate upload of a blob that was
+    /// landing anyway — or, through a completeness check over an action
+    /// result, a rebuild of that action — while an unbounded wait hands
+    /// every existence check a wedged writer's fate. Size it under your
+    /// clients' own deadlines (Bazel's default `--remote_timeout` is 60)
+    /// and above your slow store's usual worst-case write; 30 is a sound
+    /// starting point. `0` (the default) waits indefinitely — the behavior
+    /// before this field existed — so nothing changes until it is set.
+    /// Default: 0 (wait indefinitely)
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub has_slow_write_wait_timeout_s: usize,
+
+    /// Maximum seconds a cache fill (the read that populates the fast tier
+    /// from the slow tier while streaming to its reader) may go without
+    /// moving a single byte before it fails with `DEADLINE_EXCEEDED`. Only
+    /// the stalled fill fails: its dedup entry is removed so the next
+    /// reader of the key leads a fresh fill, and followers already fall
+    /// back to reading the slow store directly after their own bounded
+    /// wait. The clock measures inactivity and resets on every chunk — a
+    /// whole-transfer deadline would be wrong here, because a
+    /// multi-gigabyte blob legitimately streams for minutes. The same
+    /// timeout bounds the sizing `has()` the fill issues first, and a
+    /// transfer that has fully moved gets one further window for the fast
+    /// tier's commit — grace enough that a completed fill is not discarded
+    /// over a slow local sync, still a bound when the fast tier is a
+    /// remote store whose commit can wedge.
+    /// `0` (the default) keeps today's behavior: no inactivity bound.
+    #[serde(default, deserialize_with = "convert_duration_with_shellexpand")]
+    pub leader_inactivity_timeout_s: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
