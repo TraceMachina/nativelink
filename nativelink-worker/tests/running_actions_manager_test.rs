@@ -10740,6 +10740,42 @@ done
         assert!(window.observe(55.0, at(92)));
     }
 
+    /// A sample reuses the last exact memory figure, never above its RSS,
+    /// only while the RSS stays under 90% of the ceiling, within 10% of
+    /// where it was, and for under two seconds; a sample before any exact
+    /// figure must read one.
+    #[test]
+    fn exact_memory_is_reread_near_the_ceiling_on_drift_and_with_age() {
+        use nativelink_worker::running_actions_manager::ExactMemoryGate;
+        use tokio::time::Instant;
+        let t0 = Instant::now();
+        let at = |millis| t0 + Duration::from_millis(millis);
+
+        let mut gate = ExactMemoryGate::new(Some(10_000));
+        assert_eq!(gate.reuse(1_000, at(0)), None, "nothing read yet");
+        gate.record(5_000, 2_000, at(0));
+        assert_eq!(gate.reuse(5_000, at(250)), Some(2_000));
+        assert_eq!(gate.reuse(5_500, at(250)), Some(2_000), "10% up");
+        assert_eq!(gate.reuse(4_500, at(250)), Some(2_000), "10% down");
+        assert_eq!(gate.reuse(5_501, at(250)), None, "over 10% up");
+        assert_eq!(gate.reuse(4_499, at(250)), None, "over 10% down");
+        assert_eq!(gate.reuse(5_000, at(1_999)), Some(2_000));
+        assert_eq!(gate.reuse(5_000, at(2_000)), None, "two seconds old");
+
+        gate.record(8_900, 8_900, at(0));
+        assert_eq!(gate.reuse(8_999, at(250)), Some(8_900), "under 90%");
+        assert_eq!(gate.reuse(9_000, at(250)), None, "at 90% of the ceiling");
+        assert_eq!(
+            gate.reuse(8_100, at(250)),
+            Some(8_100),
+            "never above the RSS"
+        );
+
+        let mut unlimited = ExactMemoryGate::new(None);
+        unlimited.record(50_000, 40_000, at(0));
+        assert_eq!(unlimited.reuse(50_000, at(250)), Some(40_000));
+    }
+
     /// The kill lands on the action furthest over its reservation, or the
     /// largest when none is over, never on one without a sample, one
     /// already asked to die, or one that reserves the whole worker;
