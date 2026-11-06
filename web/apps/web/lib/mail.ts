@@ -123,7 +123,11 @@ export interface TrialRequest {
  * invite, the email to the team is the whole action, so a failed send fails.
  * Requires `RESEND_API_KEY`.
  */
-export async function sendTrialRequest({ email, company, time }: TrialRequest): Promise<void> {
+export async function sendTrialRequest({
+  email,
+  company,
+  time,
+}: TrialRequest): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     throw new Error("RESEND_API_KEY is not configured");
@@ -136,6 +140,8 @@ export async function sendTrialRequest({ email, company, time }: TrialRequest): 
     text: `${company} asked for a 6-week NativeLink Enterprise trial.\nContact: ${email}\nTime: ${time}\n`,
   });
   if (!res.ok) {
-    throw new Error(`Failed to send trial request: ${res.status} ${res.statusText}`);
+    throw new Error(
+      `Failed to send trial request: ${res.status} ${res.statusText}`,
+    );
   }
 }

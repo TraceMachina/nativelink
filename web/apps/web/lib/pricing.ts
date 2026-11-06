@@ -25,7 +25,10 @@ export interface ComparisonGroup {
   rows: ComparisonRow[];
 }
 
-const inYourInfrastructure: ComparisonLink = { text: "Your infrastructure", href: ENTERPRISE_URL };
+const inYourInfrastructure: ComparisonLink = {
+  text: "Your infrastructure",
+  href: ENTERPRISE_URL,
+};
 
 /**
  * The feature-for-feature comparison on /pricing: Open Source and the two
@@ -36,14 +39,34 @@ export const comparison: ComparisonGroup[] = [
   {
     section: "Platform",
     rows: [
-      { label: "Hosting", oss: "Self-hosted", t1: inYourInfrastructure, t2: inYourInfrastructure },
-      { label: "Unlimited cores, machines and users", oss: true, t1: true, t2: true },
+      {
+        label: "Hosting",
+        oss: "Self-hosted",
+        t1: inYourInfrastructure,
+        t2: inYourInfrastructure,
+      },
+      {
+        label: "Unlimited cores, machines and users",
+        oss: true,
+        t1: true,
+        t2: true,
+      },
       { label: "Distributed scheduler", oss: true, t1: true, t2: true },
       { label: "Remote caching", oss: true, t1: true, t2: true },
       { label: "Remote execution", oss: true, t1: true, t2: true },
       { label: "Cross-compilation", oss: true, t1: true, t2: true },
-      { label: "Deterministic, verifiable builds", oss: true, t1: true, t2: true },
-      { label: "External storage (S3, GCS, Redis)", oss: true, t1: true, t2: true },
+      {
+        label: "Deterministic, verifiable builds",
+        oss: true,
+        t1: true,
+        t2: true,
+      },
+      {
+        label: "External storage (S3, GCS, Redis)",
+        oss: true,
+        t1: true,
+        t2: true,
+      },
       {
         label: "Autoscaling",
         oss: false,
@@ -68,7 +91,12 @@ export const comparison: ComparisonGroup[] = [
   {
     section: "Operations",
     rows: [
-      { label: "Admin UI and build dashboards", oss: false, t1: true, t2: true },
+      {
+        label: "Admin UI and build dashboards",
+        oss: false,
+        t1: true,
+        t2: true,
+      },
       { label: "MCP server for coding agents", oss: false, t1: true, t2: true },
       { label: "Signed, gated Helm charts", oss: false, t1: true, t2: true },
       { label: "Compliance-grade audit logs", oss: false, t1: true, t2: true },
@@ -81,7 +109,12 @@ export const comparison: ComparisonGroup[] = [
         t1: false,
         t2: true,
       },
-      { label: "Subsidiaries and entities covered", oss: false, t1: false, t2: true },
+      {
+        label: "Subsidiaries and entities covered",
+        oss: false,
+        t1: false,
+        t2: true,
+      },
     ],
   },
   {
