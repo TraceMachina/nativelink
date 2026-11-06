@@ -39,7 +39,9 @@ export function TrialRequestForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: address, company: name }),
       });
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
       if (!response.ok) {
         throw new Error(data.error || "Failed to send your request");
       }
