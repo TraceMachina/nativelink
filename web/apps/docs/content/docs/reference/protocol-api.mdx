@@ -141,6 +141,10 @@ uploaded" mistake into a fast error, not to provide a guarantee. See
 decorator in front of the scheduler, so the state is skipped entirely. A
 client waiting to observe it will wait forever.
 
+**Binary request headers may be padded.** The
+`build.bazel.remote.execution.v2.requestmetadata-bin` header is read whether
+its base64 carries `=` padding or not, as the gRPC wire format requires.
+
 **Final action failure arrives as success.** An action that exhausts its
 retries returns `ActionStage::Completed` with `ActionResult.error` set: a
 successful RPC describing a failed action. This is what the REAPI specifies.
