@@ -362,6 +362,73 @@ pub async fn hard_link_many(
     .await
 }
 
+/// Makes `dst` a new file with the contents and mode of `src` but an inode of
+/// its own: an APFS clone, which shares `src`'s data blocks until either file
+/// is written, or a copy on a volume that cannot clone. An existing `dst` is an
+/// error, as it is for [`hard_link`], so this never writes through a file that
+/// might itself be a hardlink to a CAS blob.
+pub async fn clone_file(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> Result<(), Error> {
+    let src = src.as_ref().to_owned();
+    let dst = dst.as_ref().to_owned();
+    call_with_permit(move |_| clone_file_blocking(&src, &dst).map_err(Into::<Error>::into)).await
+}
+
+/// [`clone_file`] for many files under a single permit and a single
+/// `spawn_blocking` dispatch, for the reasons [`hard_link_many`] gives,
+/// returning one result per input in the same order.
+pub async fn clone_file_many(
+    files: Vec<(PathBuf, PathBuf)>,
+) -> Result<Vec<Result<(), Error>>, Error> {
+    call_with_permit(move |_| {
+        Ok(files
+            .into_iter()
+            .map(|(src, dst)| clone_file_blocking(&src, &dst).map_err(Into::<Error>::into))
+            .collect())
+    })
+    .await
+}
+
+#[cfg(target_os = "macos")]
+fn clone_file_blocking(src: &Path, dst: &Path) -> io::Result<()> {
+    match clonefile(src, dst, 0) {
+        Err(err) if err.raw_os_error() == Some(libc::ENOTSUP) => copy_to_new_file(src, dst),
+        result => result,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clone_file_blocking(src: &Path, dst: &Path) -> io::Result<()> {
+    copy_to_new_file(src, dst)
+}
+
+/// Copies `src` into `dst`, which must not exist yet, and gives it `src`'s mode.
+fn copy_to_new_file(src: &Path, dst: &Path) -> io::Result<()> {
+    let mut reader = std::fs::File::open(src)?;
+    let permissions = reader.metadata()?.permissions();
+    let mut writer = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
+    io::copy(&mut reader, &mut writer)?;
+    writer.set_permissions(permissions)
+}
+
+/// `clonefile(2)`, with `flags` from `<sys/clonefile.h>`.
+#[cfg(target_os = "macos")]
+pub(crate) fn clonefile(src: &Path, dst: &Path, flags: u32) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let src = CString::new(src.as_os_str().as_bytes())?;
+    let dst = CString::new(dst.as_os_str().as_bytes())?;
+    // SAFETY: both are NUL-terminated strings that outlive the call.
+    if unsafe { libc::clonefile(src.as_ptr(), dst.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 pub async fn set_permissions(src: impl AsRef<Path>, perm: Permissions) -> Result<(), Error> {
     let src = src.as_ref().to_owned();
     call_with_permit(move |_| std::fs::set_permissions(src, perm).map_err(Into::<Error>::into))

@@ -19,9 +19,11 @@ use std::env;
 use std::fs::{self, Permissions};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use nativelink_error::ResultExt;
+use nativelink_error::{Code, ResultExt};
 use nativelink_macro::nativelink_test;
-use nativelink_util::fs::{create_dir_many, exists_many, hard_link_many, remove_dir_all};
+use nativelink_util::fs::{
+    clone_file, clone_file_many, create_dir_many, exists_many, hard_link_many, remove_dir_all,
+};
 
 /// `hard_link_many` trades one `spawn_blocking` dispatch per link for one per
 /// batch, so its whole contract is that the batch still behaves like N
@@ -69,6 +71,82 @@ async fn hard_link_many_links_in_order_and_isolates_failures()
         hard_link_many(Vec::new()).await?.is_empty(),
         "empty batch is a no-op"
     );
+
+    remove_dir_all(&dir).await?;
+    Ok(())
+}
+
+/// `clone_file_many` is the batch for files that must not share an inode: each
+/// destination is a file of its own with its source's contents and mode, one
+/// result per input, positionally aligned. A missing source is `NotFound`,
+/// which is what tells a caller its source was evicted.
+#[nativelink_test]
+async fn clone_file_many_gives_each_file_its_own_inode() -> Result<(), Box<dyn core::error::Error>>
+{
+    let dir = env::temp_dir().join("clone_file_many_test");
+    drop(remove_dir_all(&dir).await);
+    fs::create_dir_all(&dir)?;
+
+    let (src_a, src_b) = (dir.join("a.src"), dir.join("b.src"));
+    fs::write(&src_a, "a")?;
+    fs::write(&src_b, "b")?;
+    fs::set_permissions(&src_a, Permissions::from_mode(0o555))?;
+
+    let files = vec![
+        (src_a.clone(), dir.join("a.dst")),
+        (dir.join("missing.src"), dir.join("missing.dst")),
+        (src_b.clone(), dir.join("b.dst")),
+    ];
+    let results = clone_file_many(files).await?;
+
+    assert_eq!(results.len(), 3, "one result per input");
+    assert!(results[0].is_ok(), "first clone should succeed");
+    assert_eq!(
+        results[1].as_ref().map_err(|err| err.code),
+        Err(Code::NotFound),
+        "a missing source is NotFound"
+    );
+    assert!(
+        results[2].is_ok(),
+        "a failed clone must not abort the rest of the batch"
+    );
+
+    for (src, dst, content) in [(&src_a, "a.dst", "a"), (&src_b, "b.dst", "b")] {
+        let (src_meta, dst_meta) = (fs::metadata(src)?, fs::metadata(dir.join(dst))?);
+        assert_ne!(
+            src_meta.ino(),
+            dst_meta.ino(),
+            "{dst} must be its own inode"
+        );
+        assert_eq!(dst_meta.nlink(), 1, "{dst} must not be a hardlink");
+        assert_eq!(src_meta.nlink(), 1, "cloning must not link the source");
+        assert_eq!(dst_meta.mode() & 0o777, src_meta.mode() & 0o777);
+        assert_eq!(fs::read_to_string(dir.join(dst))?, content);
+    }
+    assert!(!fs::exists(dir.join("missing.dst"))?);
+
+    remove_dir_all(&dir).await?;
+    Ok(())
+}
+
+/// A destination that already exists is refused, never written through: it
+/// could be a hardlink to a read-only CAS blob that other actions share.
+#[nativelink_test]
+async fn clone_file_refuses_an_existing_destination() -> Result<(), Box<dyn core::error::Error>> {
+    let dir = env::temp_dir().join("clone_file_existing_test");
+    drop(remove_dir_all(&dir).await);
+    fs::create_dir_all(&dir)?;
+
+    let (src, blob, dst) = (dir.join("src"), dir.join("blob"), dir.join("dst"));
+    fs::write(&src, "new")?;
+    fs::write(&blob, "shared")?;
+    fs::hard_link(&blob, &dst)?;
+
+    let err = clone_file(&src, &dst)
+        .await
+        .expect_err("an existing destination must be an error");
+    assert_eq!(err.code, Code::AlreadyExists, "{err:?}");
+    assert_eq!(fs::read_to_string(&blob)?, "shared");
 
     remove_dir_all(&dir).await?;
     Ok(())

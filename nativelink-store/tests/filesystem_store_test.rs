@@ -30,6 +30,8 @@ use futures::{Future, FutureExt, poll};
 use nativelink_config::stores::{EvictionPolicy, FilesystemSpec};
 use nativelink_error::{Code, Error, ErrorContext, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
+#[cfg(target_family = "unix")]
+use nativelink_store::filesystem_store::ExecutableSource;
 use nativelink_store::filesystem_store::{
     DIGEST_FOLDER_V1, DIGEST_FOLDER_V2, EncodedFilePath, FileEntry, FileEntryImpl, FileType,
     FilesystemStore, Generation, STR_FOLDER_V1, STR_FOLDER_V2, check_duplicate_files,
@@ -1771,7 +1773,7 @@ async fn check_health_failed_when_content_path_is_missing() -> Result<(), Error>
     }
 }
 
-/// `get_executable_hardlink_source` must return a private **0o555** inode that
+/// `get_executable_source` must return a private **0o555** inode that
 /// is created exactly once: distinct from the read-only **0o444** CAS blob,
 /// stable across calls (so callers hardlink-many), and leaving the CAS blob's
 /// mode/inode untouched. This is what lets the worker materialize executable
@@ -1807,8 +1809,10 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
     let blob_ino = blob_meta.ino();
 
     // First call materializes the executable variant: a separate 0o555 inode
-    // with identical content.
-    let exec1 = store.get_executable_hardlink_source(&digest).await?;
+    // with identical content, which callers share.
+    let ExecutableSource::Shared(exec1) = store.get_executable_source(&digest).await? else {
+        panic!("a file that is not a main executable must be shared");
+    };
     let exec_meta1 = fs::metadata(&exec1).await?;
     assert_eq!(
         exec_meta1.mode() & 0o777,
@@ -1828,10 +1832,14 @@ async fn executable_hardlink_source_created_once_and_readonly() -> Result<(), Er
 
     // Second call is created-once: same path and same inode (callers hardlink
     // this one inode many times rather than re-copying per action).
-    let exec2 = store.get_executable_hardlink_source(&digest).await?;
-    assert_eq!(exec1, exec2, "executable variant path must be stable");
+    let exec2 = store.get_executable_source(&digest).await?;
     assert_eq!(
-        fs::metadata(&exec2).await?.ino(),
+        ExecutableSource::Shared(exec1.clone()),
+        exec2,
+        "executable variant path must be stable"
+    );
+    assert_eq!(
+        fs::metadata(exec2.path()).await?.ino(),
         exec_meta1.ino(),
         "second call must reuse the same variant inode (created once)"
     );
@@ -1902,7 +1910,7 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
     {
         let store = FilesystemStore::<FileEntryImpl>::new(&spec).await?;
         store.update_oneshot(digest, VALUE1.into()).await?;
-        store.get_executable_hardlink_source(&digest).await?;
+        store.get_executable_source(&digest).await?;
     }
 
     let executable_digest_dir = format!("{content_path}.exec/{DIGEST_FOLDER_V2}");
@@ -1920,7 +1928,7 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
         "read-only executable cleanup must not prevent ordinary CAS reads"
     );
     let err = store
-        .get_executable_hardlink_source(&digest)
+        .get_executable_source(&digest)
         .await
         .expect_err("a surviving executable variant must not be trusted");
     assert_eq!(err.code, Code::FailedPrecondition);
@@ -1957,7 +1965,7 @@ async fn evicting_digest_deletes_its_executable_variant() -> Result<(), Error> {
     store.update_oneshot(digest1, VALUE1.into()).await?;
 
     let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest1}"));
-    store.get_executable_hardlink_source(&digest1).await?;
+    store.get_executable_source(&digest1).await?;
     fs::metadata(&variant_path)
         .await
         .err_tip(|| "Executable variant should exist right after creation")?;
@@ -2005,16 +2013,16 @@ async fn executable_variant_hit_refreshes_blob_recency() -> Result<(), Error> {
         .await?,
     );
     store.update_oneshot(digest1, VALUE1.into()).await?;
-    store.get_executable_hardlink_source(&digest1).await?;
+    store.get_executable_source(&digest1).await?;
     store.update_oneshot(digest2, VALUE2.into()).await?;
 
     // digest1 is the older entry, but its variant is used again here.
-    let sources = store.get_executable_hardlink_sources(&[digest1]).await;
+    let sources = store.get_executable_sources(&[digest1]).await;
     assert_eq!(sources.len(), 1);
-    let variant_path = sources.into_iter().next().unwrap()?;
+    let variant_path = OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest1}"));
     assert_eq!(
-        variant_path,
-        OsString::from(format!("{content_path}.exec/{DIGEST_FOLDER_V2}/{digest1}"))
+        sources.into_iter().next().unwrap()?,
+        ExecutableSource::Shared(variant_path.clone())
     );
 
     // The third insert evicts one entry; it must be the one not used since.
@@ -2054,7 +2062,7 @@ async fn orphaned_executable_variant_is_a_miss() -> Result<(), Error> {
     fs::create_dir_all(format!("{content_path}.exec/{DIGEST_FOLDER_V2}")).await?;
     std::fs::write(&variant_path, VALUE1)?;
 
-    let sources = store.get_executable_hardlink_sources(&[digest]).await;
+    let sources = store.get_executable_sources(&[digest]).await;
     assert_eq!(sources.len(), 1);
     let err = sources
         .into_iter()
@@ -2062,6 +2070,146 @@ async fn orphaned_executable_variant_is_a_miss() -> Result<(), Error> {
         .unwrap()
         .expect_err("an orphaned variant must not be handed out");
     assert_eq!(err.code, Code::NotFound, "{err:?}");
+    Ok(())
+}
+
+/// The start of a thin 64-bit Mach-O file of `filetype`.
+#[cfg(target_family = "unix")]
+fn mach_o(filetype: u32) -> Bytes {
+    let mut file: Vec<u8> = [0xfeed_facf_u32, 0x0100_000c, 0, filetype]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect();
+    file.resize(64, 0);
+    file.into()
+}
+
+#[cfg(target_family = "unix")]
+const MH_EXECUTE: u32 = 0x2;
+#[cfg(target_os = "macos")]
+const MH_DYLIB: u32 = 0x6;
+
+/// On macOS a main executable's variant is kept apart from the shared ones and
+/// handed out to be cloned, whether it is created, found by one digest or
+/// found in a batch, while a library beside it stays shared.
+#[cfg(target_os = "macos")]
+#[nativelink_test]
+async fn main_executable_variant_is_kept_apart_to_be_cloned() -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let content_path = make_temp_path("content_path");
+    let main_digest = DigestInfo::try_new(HASH1, 64)?;
+    let dylib_digest = DigestInfo::try_new(HASH2, 64)?;
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store
+        .update_oneshot(main_digest, mach_o(MH_EXECUTE))
+        .await?;
+    store.update_oneshot(dylib_digest, mach_o(MH_DYLIB)).await?;
+
+    let main = ExecutableSource::Private(OsString::from(format!(
+        "{content_path}.exec/main/{main_digest}"
+    )));
+    let dylib = ExecutableSource::Shared(OsString::from(format!(
+        "{content_path}.exec/{DIGEST_FOLDER_V2}/{dylib_digest}"
+    )));
+    assert_eq!(store.get_executable_source(&main_digest).await?, main);
+    let meta = fs::metadata(main.path()).await?;
+    assert_eq!(meta.mode() & 0o777, 0o555);
+    assert_eq!(read_file_contents(main.path()).await?, mach_o(MH_EXECUTE));
+
+    assert_eq!(store.get_executable_source(&main_digest).await?, main);
+    let sources: Vec<ExecutableSource> = store
+        .get_executable_sources(&[main_digest, dylib_digest])
+        .await
+        .into_iter()
+        .collect::<Result<_, _>>()?;
+    assert_eq!(sources, [main.clone(), dylib]);
+    assert_eq!(
+        fs::metadata(main.path()).await?.ino(),
+        meta.ino(),
+        "a main-executable variant must be found again, not created again"
+    );
+    Ok(())
+}
+
+/// Where a variant is decides how it is materialized, so a main executable's
+/// variant goes with its blob exactly as a shared one does: evicting the blob
+/// deletes it, and one left without its blob is a miss.
+#[cfg(target_os = "macos")]
+#[nativelink_test]
+async fn main_executable_variant_is_evicted_with_its_blob() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let main_digest = DigestInfo::try_new(HASH1, 64)?;
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            eviction_policy: Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store
+        .update_oneshot(main_digest, mach_o(MH_EXECUTE))
+        .await?;
+    let variant_path = store
+        .get_executable_source(&main_digest)
+        .await?
+        .path()
+        .to_owned();
+
+    store
+        .update_oneshot(DigestInfo::try_new(HASH2, VALUE2.len())?, VALUE2.into())
+        .await?;
+    let err = fs::metadata(&variant_path)
+        .await
+        .expect_err("evicting the blob must delete its main-executable variant");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+
+    std::fs::write(&variant_path, mach_o(MH_EXECUTE))?;
+    let sources = store.get_executable_sources(&[main_digest]).await;
+    let err = sources
+        .into_iter()
+        .next()
+        .unwrap()
+        .expect_err("an orphaned main-executable variant must not be handed out");
+    assert_eq!(err.code, Code::NotFound, "{err:?}");
+    Ok(())
+}
+
+/// Only dyld resolves `@executable_path` through the inode's name, so other
+/// systems keep sharing every variant.
+#[cfg(all(target_family = "unix", not(target_os = "macos")))]
+#[nativelink_test]
+async fn main_executable_variant_is_shared_off_macos() -> Result<(), Error> {
+    let content_path = make_temp_path("content_path");
+    let digest = DigestInfo::try_new(HASH1, 64)?;
+    let store = Box::pin(
+        FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
+            content_path: content_path.clone(),
+            temp_path: make_temp_path("temp_path"),
+            ..Default::default()
+        })
+        .await?,
+    );
+    store.update_oneshot(digest, mach_o(MH_EXECUTE)).await?;
+
+    assert_eq!(
+        store.get_executable_source(&digest).await?,
+        ExecutableSource::Shared(OsString::from(format!(
+            "{content_path}.exec/{DIGEST_FOLDER_V2}/{digest}"
+        )))
+    );
     Ok(())
 }
 
