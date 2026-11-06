@@ -212,6 +212,18 @@ build:asan --@rules_rust//:extra_rustc_flags=-Zsanitizer=address
 # is needed to load the rust toolchains in Bazel
 build:asan --extra_toolchains=@rust_toolchains//:all
 
+# MemorySanitizer for x86_64-unknown-linux-gnu.
+# Prerequisite: register a nightly Rust toolchain with a memory-instrumented
+# std/sysroot. @rust_toolchains supplies prebuilt std and cannot run this mode.
+# CI uses Cargo -Zbuild-std instead; this config does not rebuild std.
+# Native build scripts and assembly need a separate instrumentation audit.
+build:msan --config=nightly
+build:msan --@rules_rust//:extra_rustc_flags=-Zsanitizer=memory
+build:msan --@rules_rust//:extra_rustc_flag=-Zsanitizer-memory-track-origins=2
+build:msan --copt=-fsanitize=memory
+build:msan --copt=-fsanitize-memory-track-origins=2
+build:msan --copt=-fno-omit-frame-pointer
+
 # ThreadSanitizer to detect data races. Tests under tsan shouldn't be cached
 # since they tend to produce irreproducible false negatives.
 build:tsan --config=nightly --config=debug
