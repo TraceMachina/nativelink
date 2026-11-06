@@ -52,8 +52,12 @@ test("a section left with no differentiators is dropped", () => {
 });
 
 test("text and link values are never collapsed, even when they match", () => {
-  expect(isUniversal({ label: "Build systems", oss: "All", ent: "All" })).toBe(false);
-  expect(isUniversal({ label: "Autoscaling", oss: false, ent: true })).toBe(false);
+  expect(isUniversal({ label: "Build systems", oss: "All", ent: "All" })).toBe(
+    false,
+  );
+  expect(isUniversal({ label: "Autoscaling", oss: false, ent: true })).toBe(
+    false,
+  );
   const link = { text: "Portal", href: "https://example.com" };
   expect(isUniversal({ label: "Hosting", oss: link, ent: link })).toBe(false);
 });
