@@ -330,6 +330,31 @@ pub struct AwaitedActionDbImpl<I: InstantWrapper, NowFn: Fn() -> I> {
 
     /// The function to get the current time.
     now_fn: NowFn,
+
+    /// Mints the id of each new operation.
+    operation_id_fn: OperationIdFn,
+}
+
+/// Mints operation ids; a random UUID unless a test needs them repeatable.
+#[derive(Clone)]
+pub struct OperationIdFn(Arc<dyn Fn() -> OperationId + Send + Sync>);
+
+impl OperationIdFn {
+    pub fn new(f: impl Fn() -> OperationId + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl Default for OperationIdFn {
+    fn default() -> Self {
+        Self::new(OperationId::default)
+    }
+}
+
+impl core::fmt::Debug for OperationIdFn {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OperationIdFn").finish_non_exhaustive()
+    }
 }
 
 impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbImpl<I, NowFn> {
@@ -773,7 +798,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync> AwaitedActionDbI
             ActionUniqueQualifier::Cacheable(unique_key) => Some(unique_key.clone()),
             ActionUniqueQualifier::Uncacheable(_unique_key) => None,
         };
-        let operation_id = OperationId::default();
+        let operation_id = (self.operation_id_fn.0)();
         let awaited_action = AwaitedAction::new(
             operation_id.clone(),
             action_info.clone(),
@@ -928,6 +953,21 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
         tasks_change_notify: Arc<Notify>,
         now_fn: NowFn,
     ) -> Self {
+        Self::new_with_operation_id_fn(
+            eviction_config,
+            tasks_change_notify,
+            now_fn,
+            OperationIdFn::default(),
+        )
+    }
+
+    /// Same as `new()`, with the source of new operation ids.
+    pub fn new_with_operation_id_fn(
+        eviction_config: &EvictionPolicy,
+        tasks_change_notify: Arc<Notify>,
+        now_fn: NowFn,
+        operation_id_fn: OperationIdFn,
+    ) -> Self {
         let (action_event_tx, mut action_event_rx) = mpsc::unbounded_channel();
         let inner = Arc::new(Mutex::new(AwaitedActionDbImpl {
             client_operation_to_awaited_action: EvictingMap::new(eviction_config, (now_fn)()),
@@ -937,6 +977,7 @@ impl<I: InstantWrapper, NowFn: Fn() -> I + Clone + Send + Sync + 'static>
             connected_clients_for_operation_id: HashMap::new(),
             action_event_tx,
             now_fn,
+            operation_id_fn,
         }));
         let weak_inner = Arc::downgrade(&inner);
         Self {

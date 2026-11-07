@@ -21207,7 +21207,7 @@ which kills an action nobody is listening to.
 | `update_enabled` (action cache) | `true` |
 | `supported_compressors` | `ZSTD` when the instance's `capabilities` entry sets `remote_cache_compression: true`; empty otherwise |
 | `split_blob_support`, `splice_blob_support`, `fast_cdc_2020_params` | set when the instance's `cas` entry configures `experimental_chunking`; otherwise `false`/unset |
-| `execution_capabilities` | present only when the instance's `capabilities` entry has `remote_execution`; then `exec_enabled` is `true` and the priority range is 0 to `i32::MAX` |
+| `execution_capabilities` | present only when the instance's `capabilities` entry has `remote_execution`; then `exec_enabled` is `true` and the priority range is 0 to `i32::MAX`, with higher values running sooner (see [intentional deviations](#intentional-deviations)) |
 
 <SourceLink file="nativelink-service/src/capabilities_server.rs" symbol="get_capabilities" />
 
@@ -21256,6 +21256,28 @@ Clients that only inspect the gRPC status will misread it.
 
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
+
+## Intentional deviations from the specification [#intentional-deviations]
+
+Two behaviors differ from what the REAPI or ByteStream text suggests. Both are
+deliberate, and changing either would break existing clients.
+
+**Higher priority values run sooner.** `ExecutionPolicy.priority` is
+server-defined, though the REAPI suggests that lower values run sooner.
+NativeLink orders its queue the other way: a queued action with a higher
+priority is dispatched first, and actions of equal priority go oldest first.
+The advertised range is 0 to `i32::MAX`, and Bazel rejects a
+`--remote_execution_priority` outside it. Reversing the order would invert
+every existing priority and reorder the scheduler's persisted queue index
+during a rolling upgrade.
+
+**`QueryWriteStatus` never answers `NOT_FOUND`.** `bytestream.proto` says an
+unknown resource returns `NOT_FOUND`. NativeLink instead answers
+`committed_size: 0, complete: false` for an upload it does not know, for
+example one whose first message never arrived, or one that reached a
+different instance behind a load balancer. Bazel's `ByteStreamUploader` fails
+the upload on `NOT_FOUND` but restarts it from offset 0 when told 0, so this
+answer lets the upload recover.
 
 ## Related [#related]
 
