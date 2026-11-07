@@ -430,9 +430,49 @@ impl Scenario {
             self.check_agreement(&reports, &mut problems);
         }
         if problems.is_empty() {
+            self.record_known_failures(&reports);
             Ok(reports)
         } else {
             Err(make_err!(Code::Internal, "{problems}"))
+        }
+    }
+
+    /// Appends each known failure this run confirmed, with the item that
+    /// closes it, to the file `SIM_KNOWN_FAILURES` names. The nightly prints
+    /// that file as the SIM column of STATUS.md.
+    fn record_known_failures(&self, reports: &[Report]) {
+        let Some(path) = std::env::var_os("SIM_KNOWN_FAILURES") else {
+            return;
+        };
+        let mut lines = String::new();
+        for report in reports {
+            if let Expect::KnownFailure {
+                invariants,
+                closed_by,
+            } = self.expectation(report.backend)
+            {
+                writeln!(
+                    lines,
+                    "{}\t{:?}\t{}\t{closed_by}",
+                    self.name,
+                    report.backend,
+                    names(&invariants)
+                )
+                .unwrap();
+            }
+        }
+        if let Some(closed_by) = self.disagree {
+            writeln!(lines, "{}\tbackends disagree\t\t{closed_by}", self.name).unwrap();
+        }
+        if lines.is_empty() {
+            return;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path);
+        if let Ok(mut file) = file {
+            drop(std::io::Write::write_all(&mut file, lines.as_bytes()));
         }
     }
 

@@ -135,25 +135,27 @@ impl SimClock {
     }
 }
 
-/// `InstantWrapper` over the virtual clock, for the scheduler and its db.
+/// `InstantWrapper` over the virtual clock, for the scheduler and its db:
+/// production's `SystemTime` wrapper with `SimClock::now` in place of the
+/// wall clock, method for method. `from_secs(0)` is the epoch, so a fresh
+/// subscriber's keepalive is long overdue, as in production, and `elapsed`
+/// sees a jump, as `SystemTime` sees an NTP step.
 #[derive(Debug, Clone, Copy)]
-pub struct SimInstant(Instant);
+pub struct SimInstant(SystemTime);
 
 impl SimInstant {
     pub fn now() -> Self {
-        Self(Instant::now())
+        Self(SimClock::now())
     }
 }
 
 impl InstantWrapper for SimInstant {
-    fn from_secs(_secs: u64) -> Self {
-        Self::now()
+    fn from_secs(secs: u64) -> Self {
+        Self(UNIX_EPOCH + Duration::from_secs(secs))
     }
 
     fn unix_timestamp(&self) -> u64 {
-        SimClock::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs())
+        self.0.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
     }
 
     fn now(&self) -> SystemTime {
@@ -161,10 +163,10 @@ impl InstantWrapper for SimInstant {
     }
 
     fn elapsed(&self) -> Duration {
-        self.0.elapsed()
+        SimClock::now().duration_since(self.0).unwrap_or_default()
     }
 
     fn sleep(self, duration: Duration) -> impl Future<Output = ()> + Send + Sync + 'static {
-        tokio::time::sleep_until(self.0 + duration)
+        tokio::time::sleep(duration)
     }
 }

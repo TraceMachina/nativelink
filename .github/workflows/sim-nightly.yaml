@@ -1,0 +1,96 @@
+---
+name: CI / Simulation nightly
+
+on:
+  # The simulation harness (RFC-0060) runs a tenth of its scale and 80
+  # property cases per push. This runs the rest: many property cases from a
+  # fresh seed, the full-size scale rows, and the list of known failures
+  # with their closing items.
+  schedule:
+    - cron: "30 7 * * *" # 07:30 UTC daily, after CI / Cargo
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Property cases per backend and fault mix
+        default: "512"
+      seed:
+        description: First property seed (empty for one from the date)
+        default: ""
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Release speed for the scale rows without the LTO build time.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  TEST: cargo test --release -p nativelink-sim
+
+jobs:
+  sim-nightly:
+    name: Simulation nightly
+    runs-on: ubuntu-24.04
+    # On an M-series Mac: about 22 min to build, 15 for the property cases,
+    # 4 for the burst row, 20 for fleet_800; a standard runner is slower.
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: >- # v6.0.2
+          actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up Rust toolchain
+        run: rustup update && rustup default stable
+
+      - name: Rust cache
+        uses: >- # v2.9.1
+          Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+
+      - name: Build the tests
+        run: $TEST --no-run
+
+      - name: Property cases
+        env:
+          CASES: ${{ inputs.cases || '512' }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          seed="${SEED:-$(( $(date -u +%Y%m%d) * 100000 ))}"
+          echo "Property seeds from $seed, $CASES cases each" | tee -a "$GITHUB_STEP_SUMMARY"
+          SIM_PROPERTY_SEED="$seed" SIM_PROPERTY_CASES="$CASES" \
+            $TEST --test sim_property_test
+
+      - name: Catalogue and scale at full size
+        if: ${{ !cancelled() }}
+        env:
+          SIM_KNOWN_FAILURES: ${{ runner.temp }}/known-failures.tsv
+        run: |
+          $TEST --test sim_catalogue_test --test sim_scale_test -- --include-ignored \
+            --skip fleet_800
+
+      # L4 in RFC-0060 §11: at 800 workers and 50,000 actions the Redis run
+      # does not settle. Reported, not failed, until it is triaged.
+      - name: Fleet at 800 workers (L4)
+        if: ${{ !cancelled() }}
+        run: |
+          if $TEST --test sim_scale_test -- --ignored --exact fleet_800 \
+              > "$RUNNER_TEMP/fleet-800.txt" 2>&1; then
+            echo "fleet_800: passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "fleet_800: failed (L4)" >> "$GITHUB_STEP_SUMMARY"
+            grep -m1 -A1 "panicked" "$RUNNER_TEMP/fleet-800.txt" | cut -c1-600 \
+              >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      - name: Known failures
+        if: ${{ !cancelled() }}
+        env:
+          KNOWN: ${{ runner.temp }}/known-failures.tsv
+        run: |
+          {
+            echo "| Scenario | Backend | Invariants | Closed by |"
+            echo "|---|---|---|---|"
+            if [ -f "$KNOWN" ]; then
+              sort -u "$KNOWN" | awk -F'\t' '{ printf "| %s | %s | %s | %s |\n", $1, $2, $3, $4 }'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
