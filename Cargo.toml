@@ -5,6 +5,7 @@ exclude = [
   "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
+members = ["nativelink-sim"]
 resolver = "2"
 
 [package]
