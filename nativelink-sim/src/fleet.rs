@@ -52,7 +52,7 @@ pub struct Counters {
     /// Kill requests from the scheduler.
     pub kill_requests: AtomicU64,
     /// `kill_all`, after a worker lost its connection.
-    pub kill_alls: AtomicU64,
+    pub kill_all_calls: AtomicU64,
 }
 
 impl fmt::Display for Counters {
@@ -60,14 +60,14 @@ impl fmt::Display for Counters {
         let get = |c: &AtomicU64| c.load(Ordering::Relaxed);
         write!(
             f,
-            "connects={} started={} finished={} failed={} killed={} kill_requests={} kill_alls={}",
+            "connects={} started={} finished={} failed={} killed={} kill_requests={} kill_all_calls={}",
             get(&self.connects),
             get(&self.started),
             get(&self.finished),
             get(&self.failed),
             get(&self.killed),
             get(&self.kill_requests),
-            get(&self.kill_alls),
+            get(&self.kill_all_calls),
         )
     }
 }
@@ -130,7 +130,7 @@ impl ActionSource for Distribution {
         let counter = match event {
             Event::ExecEnd { killed: true, .. } => &self.counters.killed,
             Event::ExecEnd { .. } => &self.counters.finished,
-            Event::KillAll { .. } => &self.counters.kill_alls,
+            Event::KillAll { .. } => &self.counters.kill_all_calls,
             _ => return,
         };
         counter.fetch_add(1, Ordering::Relaxed);
