@@ -919,3 +919,44 @@ async fn missing_input_drops_the_blob_from_the_existence_cache()
     assert_eq!(Store::new(cache).has(digest).await?, None);
     Ok(())
 }
+
+/// A queued action is stamped from the clock `with_now_fn` gives, so it
+/// shares the scheduler's clock in a test that injects one.
+#[nativelink_test]
+async fn queued_actions_are_stamped_from_the_injected_clock() -> Result<(), Error> {
+    let store_manager = make_store_manager().await?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let command_digest = serialize_and_upload_message(
+        &Command::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+    let action_digest = upload_action(
+        &cas_store,
+        &Action {
+            command_digest: Some(command_digest.into()),
+            input_root_digest: Some(command_digest.into()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let (server, scheduler) = make_execution_server(&store_manager)?;
+    let stamp = SystemTime::UNIX_EPOCH + core::time::Duration::from_secs(1_234);
+    let server = server.with_now_fn(move || stamp);
+    let state = MockActionStateResult {
+        states: vec![Arc::new(ActionState {
+            client_operation_id: OperationId::default(),
+            stage: ActionStage::Queued,
+            action_digest,
+            last_transition_timestamp: SystemTime::now(),
+        })],
+    };
+    let (response, (_, info)) = tokio::join!(
+        server.execute(Request::new(make_execute_request(action_digest))),
+        scheduler.expect_add_action(Ok(Box::new(state))),
+    );
+    assert!(response.is_ok());
+    assert_eq!(info.insert_timestamp, stamp);
+    Ok(())
+}
