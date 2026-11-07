@@ -111,3 +111,37 @@ export async function sendSlackInviteRequest({
     );
   }
 }
+
+export interface TrialRequest {
+  email: string;
+  company: string;
+  time: string;
+}
+
+/**
+ * Ask the team to issue a 6-week Enterprise trial licence. As with the Slack
+ * invite, the email to the team is the whole action, so a failed send fails.
+ * Requires `RESEND_API_KEY`.
+ */
+export async function sendTrialRequest({
+  email,
+  company,
+  time,
+}: TrialRequest): Promise<void> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is not configured");
+  }
+  // Plain text: both strings are caller-controlled and must never be rendered as markup.
+  const res = await resend("/emails", apiKey, {
+    from: "NativeLink System <system@nativelink.io>",
+    to: [COMMUNITY_ADDRESS],
+    subject: `${company} requesting NativeLink Trial`,
+    text: `${company} asked for a 6-week NativeLink Enterprise trial.\nContact: ${email}\nTime: ${time}\n`,
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to send trial request: ${res.status} ${res.statusText}`,
+    );
+  }
+}
