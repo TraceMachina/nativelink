@@ -59,6 +59,8 @@ fn make_stores_direction(
             fast_direction,
             slow_direction,
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -116,6 +118,8 @@ async fn filesystem_fast_tier_recovers_missing_files_on_upload_and_read() -> Res
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast.clone(),
         slow.clone(),
@@ -161,6 +165,8 @@ async fn filesystem_slow_tier_fills_fast_tier_with_content_length() -> Result<()
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -475,6 +481,8 @@ async fn drop_on_eof_completes_store_futures() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store,
         slow_store,
@@ -519,6 +527,8 @@ async fn ignore_value_in_fast_store() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -545,6 +555,8 @@ async fn has_checks_fast_store_when_noop() -> Result<(), Error> {
         fast_direction: StoreDirection::default(),
         slow_direction: StoreDirection::default(),
         bypass_dedup_threshold_bytes: 0,
+        has_slow_write_wait_timeout_s: 0,
+        leader_inactivity_timeout_s: 0,
     };
     let fast_slow_store = Arc::new(FastSlowStore::new(
         &fast_slow_store_config,
@@ -796,6 +808,8 @@ fn make_stores_with_lazy_slow_over(fast_store: Store) -> (Store, Store, Store) {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store.clone(),
@@ -997,6 +1011,9 @@ struct InstrumentedSlowStore {
     get_part_count: AtomicU64,
     /// If set, awaited at the start of `get_part` before any data flows.
     gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    /// If set, awaited at the start of `has_with_results`: a backend that
+    /// wedges the existence check rather than the read.
+    has_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 
 #[async_trait]
@@ -1010,6 +1027,10 @@ impl StoreDriver for InstrumentedSlowStore {
         keys: &[StoreKey<'_>],
         results: &mut [Option<u64>],
     ) -> Result<(), Error> {
+        let has_gate = self.has_gate.lock().unwrap().take();
+        if let Some(rx) = has_gate {
+            let _ = rx.await;
+        }
         for (key, result) in keys.iter().zip(results.iter_mut()) {
             if *key == self.digest.into() {
                 *result = Some(self.digest.size_bytes());
@@ -1073,12 +1094,14 @@ fn make_fast_slow_with_instrumented_slow(
     data: Vec<u8>,
     gate: Option<tokio::sync::oneshot::Receiver<()>>,
     bypass_dedup_threshold_bytes: u64,
+    leader_inactivity_timeout_s: usize,
 ) -> (Store, Arc<InstrumentedSlowStore>) {
     let slow = Arc::new(InstrumentedSlowStore {
         digest,
         data,
         get_part_count: AtomicU64::new(0),
         gate: Mutex::new(gate),
+        has_gate: Mutex::new(None),
     });
     let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
     let fast_slow = Store::new(FastSlowStore::new(
@@ -1088,6 +1111,8 @@ fn make_fast_slow_with_instrumented_slow(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s,
         },
         fast,
         Store::new(slow.clone()),
@@ -1105,7 +1130,7 @@ async fn concurrent_reads_dedup_to_a_single_slow_store_call() -> Result<(), Erro
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0, 0);
 
     let mut handles = Vec::with_capacity(N_CONCURRENT);
     for _ in 0..N_CONCURRENT {
@@ -1160,7 +1185,7 @@ async fn concurrent_reads_bypass_dedup_above_threshold() -> Result<(), Error> {
     // Threshold == blob size, so every read is at-or-above and bypasses
     // dedup. No gate: each reader hits the slow store directly.
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), None, blob_size);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), None, blob_size, 0);
 
     let mut handles = Vec::with_capacity(N_CONCURRENT);
     for _ in 0..N_CONCURRENT {
@@ -1200,7 +1225,7 @@ async fn dropping_a_follower_does_not_cancel_the_leader() -> Result<(), Error> {
 
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
     let (fast_slow_store, slow) =
-        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0);
+        make_fast_slow_with_instrumented_slow(digest, original_data.clone(), Some(gate_rx), 0, 0);
 
     let store_for_a = fast_slow_store.clone();
     let leader_handle =
@@ -1336,6 +1361,8 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -1403,6 +1430,298 @@ async fn has_sees_in_flight_slow_writes() -> Result<(), Error> {
         fast_slow.has(digest).await?,
         None,
         "Post-write has() should not see the blob via fast-store fallback",
+    );
+
+    Ok(())
+}
+
+/// A wedged slow write must not hang `has()` with it: past the in-flight
+/// wait timeout the key is reported missing, so `FindMissingBlobs` and
+/// reads of a just-uploaded blob degrade to a re-upload instead of
+/// blocking for as long as the stuck writer lives.
+#[nativelink_test(start_paused = true)]
+async fn has_stops_waiting_on_wedged_in_flight_write() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct WedgedSlowStore {
+        /// Held open for the whole test, so the slow write never finishes.
+        _gate_tx: tokio::sync::oneshot::Sender<()>,
+        gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        started_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl StoreDriver for WedgedSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let started_tx = self.started_tx.lock().unwrap().take();
+            if let Some(tx) = started_tx {
+                let _ = tx.send(());
+            }
+            // Wait on a sender the test never drops or fires: the write is
+            // wedged, holding its in-flight entry's lock.
+            let gate = self.gate.lock().unwrap().take();
+            if let Some(rx) = gate {
+                let _ = rx.await;
+            }
+            reader.drain().await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(WedgedSlowStore);
+
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(WedgedSlowStore {
+        _gate_tx: gate_tx,
+        gate: Mutex::new(Some(gate_rx)),
+        started_tx: Mutex::new(Some(started_tx)),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 30,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    let writer_store = fast_slow.clone();
+    let writer =
+        tokio::spawn(async move { writer_store.update_oneshot(digest, data.into()).await });
+    started_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "started signal lost: {e:?}"))?;
+
+    // The observer must come back on its own, reporting the key missing,
+    // once the in-flight wait timeout elapses (paused time auto-advances).
+    assert_eq!(
+        fast_slow.has(digest).await?,
+        None,
+        "has() must report a key missing once its wedged in-flight write exceeds the wait timeout",
+    );
+
+    // The write is now older than the deadline, so later checks must not
+    // pay the wait again: this resolves without the clock advancing.
+    let second = fast_slow.has(digest);
+    tokio::select! {
+        biased;
+        res = second => assert_eq!(
+            res?,
+            None,
+            "a stale in-flight entry must be reported missing",
+        ),
+        () = tokio::time::sleep(Duration::from_millis(1)) => {
+            panic!("has() on a stale in-flight entry waited on the clock again")
+        }
+    }
+
+    writer.abort();
+    Ok(())
+}
+
+/// The timeout above invites a re-upload while the wedged writer still
+/// exists, so two writers of one key overlap. The first writer's guard must
+/// not remove the second writer's in-flight entry when it is dropped: an
+/// observer that starts after the wedged writer dies must still see the
+/// live writer's result.
+#[nativelink_test(start_paused = true)]
+async fn dropped_writer_does_not_remove_successors_in_flight_entry() -> Result<(), Error> {
+    #[derive(MetricsComponent)]
+    struct QueuedGatesSlowStore {
+        /// One (started, gate) pair per expected `update` call, in order.
+        calls: Mutex<
+            Vec<(
+                tokio::sync::oneshot::Sender<()>,
+                tokio::sync::oneshot::Receiver<()>,
+            )>,
+        >,
+    }
+
+    #[async_trait]
+    impl StoreDriver for QueuedGatesSlowStore {
+        async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn has_with_results(
+            self: Pin<&Self>,
+            _keys: &[StoreKey<'_>],
+            _results: &mut [Option<u64>],
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        async fn update(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            mut reader: DropCloserReadHalf,
+            _size_info: UploadSizeInfo,
+        ) -> Result<u64, Error> {
+            let maybe_call = {
+                let mut calls = self.calls.lock().unwrap();
+                if calls.is_empty() {
+                    None
+                } else {
+                    Some(calls.remove(0))
+                }
+            };
+            if let Some((started_tx, gate_rx)) = maybe_call {
+                let _ = started_tx.send(());
+                let _ = gate_rx.await;
+            }
+            reader.drain().await
+        }
+
+        async fn get_part(
+            self: Pin<&Self>,
+            _key: StoreKey<'_>,
+            writer: &mut DropCloserWriteHalf,
+            _offset: u64,
+            _length: Option<u64>,
+        ) -> Result<(), Error> {
+            writer.send_eof()
+        }
+
+        fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+            self
+        }
+
+        fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+            self
+        }
+
+        fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+            self
+        }
+
+        fn register_remove_callback(
+            self: Arc<Self>,
+            _callback: RemoveCallback,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    default_health_status_indicator!(QueuedGatesSlowStore);
+
+    let (started_a_tx, started_a_rx) = tokio::sync::oneshot::channel::<()>();
+    let (_gate_a_tx, gate_a_rx) = tokio::sync::oneshot::channel::<()>();
+    let (started_b_tx, started_b_rx) = tokio::sync::oneshot::channel::<()>();
+    let (gate_b_tx, gate_b_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(QueuedGatesSlowStore {
+        calls: Mutex::new(vec![(started_a_tx, gate_a_rx), (started_b_tx, gate_b_rx)]),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Arc::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Writer A wedges (its gate sender is kept but never fired).
+    let store_a = fast_slow.clone();
+    let data_a = data.clone();
+    let writer_a = tokio::spawn(async move { store_a.update_oneshot(digest, data_a.into()).await });
+    started_a_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer A started signal lost: {e:?}"))?;
+
+    // Writer B re-uploads the same key, replacing A's in-flight entry.
+    let store_b = fast_slow.clone();
+    let data_b = data.clone();
+    let writer_b = tokio::spawn(async move { store_b.update_oneshot(digest, data_b.into()).await });
+    started_b_rx
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer B started signal lost: {e:?}"))?;
+
+    // The wedged writer dies. Its guard must leave B's entry alone.
+    writer_a.abort();
+    drop(writer_a.await);
+
+    // An observer must still see B's in-flight write...
+    let observer_store = fast_slow.clone();
+    let observer = tokio::spawn(async move { observer_store.has(digest).await });
+
+    // ...so once B completes, the observer reports the size instead of the
+    // immediate "missing" a removed entry would give.
+    gate_b_tx
+        .send(())
+        .map_err(|()| make_err!(Code::Internal, "Failed to release writer B's gate"))?;
+    writer_b
+        .await
+        .map_err(|e| make_err!(Code::Internal, "writer B join error: {e:?}"))??;
+    let has_result = observer
+        .await
+        .map_err(|e| make_err!(Code::Internal, "observer join error: {e:?}"))??;
+    assert_eq!(
+        has_result,
+        Some(data.len() as u64),
+        "Observer must see writer B's in-flight write after writer A's guard dropped",
     );
 
     Ok(())
@@ -1496,6 +1815,8 @@ async fn has_does_not_consult_fast_store_when_slow_store_hits() -> Result<(), Er
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         slow.clone(),
@@ -1615,6 +1936,8 @@ async fn dropping_update_future_cleans_up_in_flight_entry() -> Result<(), Error>
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast,
         Store::new(slow.clone()),
@@ -1782,6 +2105,8 @@ async fn has_with_results_handles_mixed_key_sources() -> Result<(), Error> {
             fast_direction: StoreDirection::ReadOnly,
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast.clone(),
         Store::new(slow.clone()),
@@ -1952,6 +2277,8 @@ async fn huge_blob_bypasses_dedup_and_skips_populate() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -2017,6 +2344,8 @@ async fn small_blob_still_dedups_and_populates() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: THRESHOLD,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -2080,6 +2409,8 @@ async fn bypass_threshold_is_inclusive_at_exact_size() -> Result<(), Error> {
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: SIZE as u64,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store.clone(),
         slow_store,
@@ -2203,6 +2534,8 @@ fn make_stores_with_stale_fast(
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         fast_store,
         slow_store.clone(),
@@ -2384,6 +2717,8 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
             fast_direction: StoreDirection::default(),
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(MemoryStore::new(&MemorySpec::default())),
         Store::new(Arc::new(PartialThenGoneStore {
@@ -2540,6 +2875,7 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
                 data: data.clone(),
                 get_part_count: AtomicU64::new(0),
                 gate: Mutex::new(None),
+                has_gate: Mutex::new(None),
             }));
             let store = FastSlowStore::new(
                 &FastSlowSpec {
@@ -2548,6 +2884,8 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
                     fast_direction: StoreDirection::default(),
                     slow_direction: StoreDirection::default(),
                     bypass_dedup_threshold_bytes: 0,
+                    has_slow_write_wait_timeout_s: 0,
+                    leader_inactivity_timeout_s: 0,
                 },
                 fast.clone(),
                 slow,
@@ -2563,5 +2901,248 @@ async fn incomplete_slow_read_never_populates_memory_or_filesystem() -> Result<(
             assert_eq!(fast.has(digest).await?, None);
         }
     }
+    Ok(())
+}
+
+/// A cache fill whose slow store stops producing bytes must fail at the
+/// inactivity timeout instead of pinning the fill (and every follower
+/// waiting on it) to the wedged read forever. Only the stalled fill fails;
+/// its loader entry is removed so the next reader leads a fresh fill.
+#[nativelink_test(start_paused = true)]
+async fn stalled_fill_fails_at_the_inactivity_timeout() -> Result<(), Error> {
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // The gate is never released: the slow store accepts the read and then
+    // produces nothing, forever.
+    let (_gate_tx, gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let (fast_slow, _slow) =
+        make_fast_slow_with_instrumented_slow(digest, data, Some(gate_rx), 0, 1);
+
+    let err = fast_slow
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("a fill that moves no bytes must fail at the inactivity timeout");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the inactivity deadline, got: {err:?}",
+    );
+
+    Ok(())
+}
+
+/// A slow store that wedges the sizing `has()` (issued before the transfer
+/// and its watchdog exist) must fail the fill at the inactivity timeout:
+/// without its own bound, a backend that hangs the existence check instead
+/// of the read would pin the fill and its dedup entry until restart.
+#[nativelink_test(start_paused = true)]
+async fn a_wedged_sizing_has_fails_at_the_inactivity_timeout() -> Result<(), Error> {
+    let data = make_random_data(256);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+
+    // Never released: the existence check hangs forever.
+    let (_has_gate_tx, has_gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data,
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(None),
+        has_gate: Mutex::new(Some(has_gate_rx)),
+    });
+    let fast = Store::new(MemoryStore::new(&MemorySpec::default()));
+    let fast_slow = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 1,
+        },
+        fast,
+        Store::new(slow),
+    ));
+
+    let err = fast_slow
+        .get_part_unchunked(digest, 0, None)
+        .await
+        .expect_err("a fill whose sizing has() hangs must fail at the inactivity timeout");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the inactivity deadline, got: {err:?}",
+    );
+    Ok(())
+}
+
+/// A fast store that accepts the whole fill and then holds its commit open
+/// until the test releases it, modeling a slow local finalize (fsync under
+/// I/O pressure).
+#[derive(MetricsComponent)]
+struct GatedCommitFastStore {
+    commit_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+#[async_trait]
+impl StoreDriver for GatedCommitFastStore {
+    async fn post_init(self: Arc<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn has_with_results(
+        self: Pin<&Self>,
+        _keys: &[StoreKey<'_>],
+        results: &mut [Option<u64>],
+    ) -> Result<(), Error> {
+        for result in results.iter_mut() {
+            *result = None;
+        }
+        Ok(())
+    }
+
+    async fn update(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        mut reader: DropCloserReadHalf,
+        _size_info: UploadSizeInfo,
+    ) -> Result<u64, Error> {
+        // Receive the entire transfer (data and EOF) first, then stall the
+        // commit until the test releases it.
+        let size = reader.drain().await?;
+        let commit_gate = self.commit_gate.lock().unwrap().take();
+        if let Some(rx) = commit_gate {
+            let _ = rx.await;
+        }
+        Ok(size)
+    }
+
+    async fn get_part(
+        self: Pin<&Self>,
+        _key: StoreKey<'_>,
+        writer: &mut DropCloserWriteHalf,
+        _offset: u64,
+        _length: Option<u64>,
+    ) -> Result<(), Error> {
+        writer.send_eof()
+    }
+
+    fn inner_store(&self, _key: Option<StoreKey>) -> &'_ dyn StoreDriver {
+        self
+    }
+
+    fn as_any(&self) -> &(dyn core::any::Any + Sync + Send + 'static) {
+        self
+    }
+
+    fn as_any_arc(self: Arc<Self>) -> Arc<dyn core::any::Any + Sync + Send + 'static> {
+        self
+    }
+
+    fn register_remove_callback(self: Arc<Self>, _callback: RemoveCallback) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+default_health_status_indicator!(GatedCommitFastStore);
+
+fn make_fast_slow_with_gated_commit(
+    digest: DigestInfo,
+    data: Vec<u8>,
+    commit_gate: tokio::sync::oneshot::Receiver<()>,
+) -> Store {
+    let slow = Arc::new(InstrumentedSlowStore {
+        digest,
+        data,
+        get_part_count: AtomicU64::new(0),
+        gate: Mutex::new(None),
+        has_gate: Mutex::new(None),
+    });
+    let fast = Arc::new(GatedCommitFastStore {
+        commit_gate: Mutex::new(Some(commit_gate)),
+    });
+    Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Memory(MemorySpec::default()),
+            slow: StoreSpec::Memory(MemorySpec::default()),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 1,
+        },
+        Store::new(fast),
+        Store::new(slow),
+    ))
+}
+
+/// Once the transfer has fully moved (the slow stream delivered EOF and the
+/// reader took every in-range byte), the fast tier's commit gets a grace
+/// window instead of tripping the watchdog at the first expiry: a slow
+/// local sync is not a wedged transfer, and killing the fill there would
+/// discard completed work. The zero-length case also pins that a blob
+/// which never ticks the activity clock gets the same grace.
+#[nativelink_test(start_paused = true)]
+async fn a_slow_commit_within_the_grace_window_survives() -> Result<(), Error> {
+    for data_len in [0usize, 2048] {
+        let data = make_random_data(data_len);
+        let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+        let (commit_gate_tx, commit_gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let fast_slow = make_fast_slow_with_gated_commit(digest, data.clone(), commit_gate_rx);
+
+        let fill_store = fast_slow.clone();
+        let fill =
+            tokio::spawn(async move { fill_store.get_part_unchunked(digest, 0, None).await });
+
+        // Paused time: the transfer completes instantly, the watchdog's
+        // first window expires at 1s (entering the commit grace, deadline
+        // 2s), and this sleep releases the commit at 1.5s — inside the
+        // grace. Pre-grace code killed the fill at the first expiry.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        commit_gate_tx
+            .send(())
+            .expect("the fill must still be holding its commit gate");
+        let read_back = fill
+            .await
+            .expect("fill task must not panic")
+            .err_tip(|| "fill must succeed once the commit completes within the grace")?;
+        assert_eq!(read_back, data, "fill of len {data_len} must round-trip");
+    }
+    Ok(())
+}
+
+/// A commit that never finishes must not hold the fill (and its dedup
+/// entry) forever just because the transfer completed first: the fast tier
+/// can be a remote store, and a wedged remote commit is the same pinned-key
+/// failure the watchdog exists to bound. Past the grace window the fill
+/// fails, naming the commit phase.
+#[nativelink_test(start_paused = true)]
+async fn a_wedged_commit_fails_at_the_grace_deadline() -> Result<(), Error> {
+    let data = make_random_data(2048);
+    let digest = DigestInfo::try_new(VALID_HASH, data.len()).unwrap();
+    // Held open for the whole test: the commit wedges forever.
+    let (_commit_gate_tx, commit_gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let fast_slow = make_fast_slow_with_gated_commit(digest, data, commit_gate_rx);
+
+    let fill_store = fast_slow.clone();
+    let fill = tokio::spawn(async move { fill_store.get_part_unchunked(digest, 0, None).await });
+
+    // Bounded: the fill must fail on its own at the grace deadline (~2
+    // virtual seconds), well inside this wait, rather than hang forever.
+    let err = tokio::time::timeout(Duration::from_mins(10), fill)
+        .await
+        .expect("a wedged commit must fail at the grace deadline, not pin the fill")
+        .expect("fill task must not panic")
+        .expect_err("the fill must fail once the commit exceeds its grace window");
+    assert_eq!(
+        err.code,
+        Code::DeadlineExceeded,
+        "expected the grace deadline, got: {err:?}",
+    );
+    assert!(
+        err.to_string().contains("the fast tier's commit"),
+        "the error must name the commit phase, got: {err:?}",
+    );
     Ok(())
 }

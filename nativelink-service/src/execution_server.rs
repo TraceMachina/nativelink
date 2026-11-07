@@ -516,7 +516,7 @@ impl ExecutionServer {
                         }
                     }
                     Err(err) => {
-                        let _ = tx.send(Err(err.into())).await;
+                        drop(tx.send(Err(err.into())).await);
                         return;
                     }
                 }
