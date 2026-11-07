@@ -1286,6 +1286,138 @@ mod tests {
         Ok(())
     }
 
+    /// The start of a thin 64-bit Mach-O file of `filetype`.
+    #[cfg(target_os = "macos")]
+    fn mach_o(filetype: u32) -> Bytes {
+        let mut file: Vec<u8> = [0xfeed_facf_u32, 0x0100_000c, 0, filetype]
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        file.resize(64, 0);
+        file.into()
+    }
+
+    #[cfg(target_os = "macos")]
+    const MH_EXECUTE: u32 = 0x2;
+    #[cfg(target_os = "macos")]
+    const MH_DYLIB: u32 = 0x6;
+
+    /// dyld resolves `@executable_path` through whichever name the kernel last
+    /// gave the main executable's inode, so two actions sharing that inode can
+    /// load each other's libraries, or none. Each action gets the main
+    /// executable as an inode of its own, while a library, and a header that
+    /// clang must see as one file through every path to it, stay shared; all
+    /// three arrive marked executable, as Bazel marks every input.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_gives_main_executables_a_private_inode()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const HEADER: &str = "#import <Foundation/Foundation.h>\n";
+
+        let (fast_store, slow_store, cas_store, _ac_store) = setup_stores().await?;
+        let mut files = Vec::new();
+        for (index, (name, content)) in [
+            ("tool", mach_o(MH_EXECUTE)),
+            ("libtool.dylib", mach_o(MH_DYLIB)),
+            ("tool.h", Bytes::from(HEADER)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let digest = DigestInfo::new([36 + u8::try_from(index)?; 32], content.len() as u64);
+            slow_store.as_ref().update_oneshot(digest, content).await?;
+            files.push(FileNode {
+                name: name.to_string(),
+                digest: Some(digest.into()),
+                is_executable: true,
+                ..Default::default()
+            });
+        }
+
+        let first = stage_tree(&slow_store, &cas_store, &fast_store, files.clone()).await?;
+        let second = stage_tree(&slow_store, &cas_store, &fast_store, files).await?;
+
+        let (tool1, tool2) = (
+            std::fs::metadata(format!("{first}/tool"))?,
+            std::fs::metadata(format!("{second}/tool"))?,
+        );
+        assert_ne!(tool1.ino(), tool2.ino(), "each action has its own tool");
+        assert_eq!(tool1.nlink(), 1, "the tool must be no other file's link");
+        assert_eq!(tool2.nlink(), 1, "the tool must be no other file's link");
+        assert_eq!(tool1.mode() & 0o777, 0o555);
+        assert_eq!(std::fs::read(format!("{second}/tool"))?, mach_o(MH_EXECUTE));
+        for name in ["libtool.dylib", "tool.h"] {
+            assert_eq!(
+                std::fs::metadata(format!("{first}/{name}"))?.ino(),
+                std::fs::metadata(format!("{second}/{name}"))?.ino(),
+                "{name} must stay shared"
+            );
+        }
+        Ok(())
+    }
+
+    /// A main executable whose variant is deleted before the batch reaches it
+    /// is cloned again from a fresh fetch, never hardlinked: the private copy
+    /// fetched after it evicts it from a store that holds one blob.
+    #[cfg(target_os = "macos")]
+    #[nativelink_test]
+    async fn download_to_directory_clones_a_relinked_main_executable()
+    -> Result<(), Box<dyn core::error::Error>> {
+        const STAMPED_CONTENT: &str = "stamped";
+
+        let (fast_store, slow_store, cas_store, _ac_store) =
+            setup_stores_with_eviction_policy(Some(EvictionPolicy {
+                max_count: 1,
+                ..Default::default()
+            }))
+            .await?;
+        let tool_digest = DigestInfo::new([39u8; 32], 64);
+        slow_store
+            .as_ref()
+            .update_oneshot(tool_digest, mach_o(MH_EXECUTE))
+            .await?;
+        let stamped_digest = DigestInfo::new([40u8; 32], STAMPED_CONTENT.len() as u64);
+        slow_store
+            .as_ref()
+            .update_oneshot(stamped_digest, STAMPED_CONTENT.into())
+            .await?;
+
+        let download_dir = stage_tree(
+            &slow_store,
+            &cas_store,
+            &fast_store,
+            vec![
+                FileNode {
+                    name: "tool".to_string(),
+                    digest: Some(tool_digest.into()),
+                    is_executable: true,
+                    ..Default::default()
+                },
+                FileNode {
+                    name: "stamped.txt".to_string(),
+                    digest: Some(stamped_digest.into()),
+                    node_properties: Some(NodeProperties {
+                        unix_mode: Some(0o640),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            ],
+        )
+        .await?;
+
+        let tool_path = format!("{download_dir}/tool");
+        assert_eq!(std::fs::read(&tool_path)?, mach_o(MH_EXECUTE));
+        let tool = std::fs::metadata(&tool_path)?;
+        assert_eq!(
+            tool.nlink(),
+            1,
+            "a relinked tool must still be its own inode"
+        );
+        assert_eq!(tool.mode() & 0o777, 0o555);
+        Ok(())
+    }
+
     #[nativelink_test]
     async fn download_to_directory_zero_digest_empty_file_test()
     -> Result<(), Box<dyn core::error::Error>> {

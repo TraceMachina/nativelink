@@ -60,7 +60,9 @@ use nativelink_store::ac_utils::{
 };
 use nativelink_store::cas_utils::is_zero_digest;
 use nativelink_store::fast_slow_store::FastSlowStore;
-use nativelink_store::filesystem_store::{FileEntry, FileEntryImpl, FilesystemStore};
+use nativelink_store::filesystem_store::{
+    ExecutableSource, FileEntry, FileEntryImpl, FilesystemStore,
+};
 use nativelink_store::grpc_store::GrpcStore;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, DirectoryInfo, ExecutionMetadata, FileInfo, NameOrPath, OperationId,
@@ -1292,9 +1294,10 @@ fn download_to_directory_with_mounts<'a>(
     .boxed()
 }
 
-/// A hardlink deferred to the end of the input-tree walk, so the whole tree is
-/// materialized by one batched [`fs::hard_link_many`] pass instead of one
-/// `spawn_blocking` dispatch per file.
+/// A link deferred to the end of the input-tree walk, so the whole tree is
+/// materialized by one batched [`fs::hard_link_many`] pass, plus one
+/// [`fs::clone_file_many`] pass for the few files that need a private inode,
+/// instead of one `spawn_blocking` dispatch per file.
 struct PendingLink {
     src: PathBuf,
     dst: PathBuf,
@@ -1302,6 +1305,9 @@ struct PendingLink {
     /// time the batch runs can be resolved and made again.
     digest: DigestInfo,
     executable: bool,
+    /// `dst` is made a clone of `src` rather than a hardlink, because `src` is
+    /// an [`ExecutableSource::Private`] variant.
+    private_inode: bool,
     /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
     /// inode cannot be dropped out from under the batch. `None` for an
     /// executable variant, which is a private file outside the entry map and so
@@ -1475,7 +1481,8 @@ where
     }
 }
 
-/// Executes every deferred hardlink of an input tree in one batched pass.
+/// Executes every deferred hardlink of an input tree in one batched pass, and
+/// every deferred clone in another.
 ///
 /// A link whose source has gone missing since it was resolved is made again
 /// from a fresh copy of the blob; any other failure fails the tree.
@@ -1485,12 +1492,26 @@ async fn materialize_links(
     links: Vec<PendingLink>,
     downloads: &Semaphore,
 ) -> Result<(), Error> {
-    let pairs = links
-        .iter()
-        .map(|link| (link.src.clone(), link.dst.clone()))
-        .collect();
+    fn paths(links: &[&PendingLink]) -> Vec<(PathBuf, PathBuf)> {
+        links
+            .iter()
+            .map(|link| (link.src.clone(), link.dst.clone()))
+            .collect()
+    }
+    let (clones, hardlinks): (Vec<_>, Vec<_>) = links.iter().partition(|link| link.private_inode);
+    let hardlink_results = fs::hard_link_many(paths(&hardlinks)).await?;
+    // Only main executables on macOS are cloned, so most trees have none.
+    let clone_results = if clones.is_empty() {
+        Vec::new()
+    } else {
+        fs::clone_file_many(paths(&clones)).await?
+    };
+    let made = hardlinks
+        .into_iter()
+        .zip(hardlink_results)
+        .chain(clones.into_iter().zip(clone_results));
     let mut evicted = Vec::new();
-    for (link, result) in links.iter().zip(fs::hard_link_many(pairs).await?) {
+    for (link, result) in made {
         let Err(err) = result else {
             continue;
         };
@@ -1544,11 +1565,16 @@ fn hardlink_error(filesystem_store: Pin<&FilesystemStore>, link: &PendingLink, e
     let dest_metadata = std::fs::metadata(dest);
     let dest_parent_metadata = dest.parent().map(Path::metadata);
     let snapshot = filesystem_store.get_eviction_snapshot();
-    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make hardlink");
+    let link_kind = if link.private_inode {
+        "clone"
+    } else {
+        "hardlink"
+    };
+    warn!(?e, fs_eviction_snapshot = %snapshot, ?src_path, ?src_metadata, ?dest, ?dest_metadata, ?dest_parent_metadata, "Could not make {link_kind}");
     if e.code == Code::NotFound {
         e.append(
             format!(
-            "Could not make hardlink from {} to {}, file was likely evicted from cache.\n\
+            "Could not make {link_kind} from {} to {}, file was likely evicted from cache.\n\
             This error often occurs when the filesystem store's max_bytes is too small for your workload.\n\
             To fix this issue:\n\
             1. Increase the 'max_bytes' value in your filesystem store configuration\n\
@@ -1563,7 +1589,7 @@ fn hardlink_error(filesystem_store: Pin<&FilesystemStore>, link: &PendingLink, e
         ))
     } else {
         e.append(format!(
-            "Could not make hardlink from {} to {}",
+            "Could not make {link_kind} from {} to {}",
             src_path.display(),
             dest.display()
         ))
@@ -1591,13 +1617,16 @@ async fn relink_evicted_input(
             link.digest,
             || cas_store.populate_fast_store(link.digest.into()),
             || async {
-                let src = filesystem_store
-                    .get_executable_hardlink_source(&link.digest)
+                let source = filesystem_store
+                    .get_executable_source(&link.digest)
                     .await
                     .err_tip(|| {
                         format!("Resolving the executable variant for {} again", link.digest)
                     })?;
-                fs::hard_link(src, &link.dst).await
+                match source {
+                    ExecutableSource::Shared(src) => fs::hard_link(src, &link.dst).await,
+                    ExecutableSource::Private(src) => fs::clone_file(src, &link.dst).await,
+                }
             },
         )
         .await?;
@@ -1666,6 +1695,7 @@ async fn resolve_plain_files(
                 dst: PathBuf::from(file.dst),
                 digest: file.digest,
                 executable: false,
+                private_inode: false,
                 _keepalive: Some(file_entry),
             })
         });
@@ -1686,8 +1716,9 @@ async fn collect_links(
 /// Resolves every executable file of an input tree to its 0o555 variant.
 ///
 /// The shared 0o444 CAS blob cannot carry the executable bit, so each of these
-/// digests hardlinks a private variant instead, and the batch checks the whole
-/// tree's variants for existence in one dispatch.
+/// digests hardlinks a private variant instead, or clones it when it is a
+/// main executable on macOS, and the batch checks the whole tree's variants for
+/// existence in one dispatch.
 ///
 /// A variant cannot be built from a blob that is not resident, and only this
 /// caller can fetch one, so those digests are fetched and resolved here, again
@@ -1699,33 +1730,36 @@ async fn resolve_exec_files(
     downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
-    let sources = filesystem_store
-        .get_executable_hardlink_sources(&digests)
-        .await;
+    let sources = filesystem_store.get_executable_sources(&digests).await;
 
     let mut tasks = Vec::with_capacity(files.len());
     for (file, source) in files.into_iter().zip(sources) {
         tasks.push(async move {
-            let src_path = if let Ok(src_path) = source {
+            let source = if let Ok(source) = source {
                 record_input_file(&file.digest, true);
-                src_path
+                source
             } else {
                 let _permit = acquire_download_permit(downloads).await?;
-                let src_path = fetch_and_resolve(
+                let source = fetch_and_resolve(
                     file.digest,
                     || cas_store.populate_fast_store(file.digest.into()),
-                    || filesystem_store.get_executable_hardlink_source(&file.digest),
+                    || filesystem_store.get_executable_source(&file.digest),
                 )
                 .await
                 .err_tip(|| format!("Resolving executable variant for {}", file.digest))?;
                 record_input_file(&file.digest, false);
-                src_path
+                source
+            };
+            let (src_path, private_inode) = match source {
+                ExecutableSource::Shared(path) => (path, false),
+                ExecutableSource::Private(path) => (path, true),
             };
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
                 dst: PathBuf::from(file.dst),
                 digest: file.digest,
                 executable: true,
+                private_inode,
                 _keepalive: None,
             })
         });
