@@ -756,6 +756,19 @@ pub struct HttpListener {
     #[serde(default)]
     pub freebind: bool,
 
+    /// Disable batching of small TCP writes on accepted connections, including
+    /// HTTP/2 control frames.
+    /// Applies to both plaintext and TLS connections. Set to true to opt into
+    /// sending small writes promptly. When false or omitted, preserves default
+    /// TCP buffering behavior.
+    /// Older binaries without this option reject the field even when set to
+    /// false. Config templates must omit it until all consuming binaries support
+    /// it. Remove the field entirely before rolling back to an older binary.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub tcp_nodelay: bool,
+
     /// Data transport compression configuration to use for this service.
     #[serde(default)]
     pub compression: HttpCompressionConfig,
