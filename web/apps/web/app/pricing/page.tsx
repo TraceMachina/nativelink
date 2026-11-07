@@ -1,4 +1,11 @@
 import { type Cta, GET_STARTED, TALK_TO_US } from "@/lib/cta";
+import {
+  type ComparisonValue,
+  ENTERPRISE_URL,
+  type TierKey,
+  collapseUniversalRows,
+  comparison,
+} from "@/lib/pricing";
 import { Button, Eyebrow, Reveal, Section, cn } from "@nativelink/ui";
 import { Fragment } from "react";
 
@@ -12,6 +19,8 @@ const PRICING_EMAIL = "contact@tracemachina.com";
 const PRICING_MAILTO = `mailto:${PRICING_EMAIL}?subject=${encodeURIComponent("NativeLink pricing")}`;
 
 interface Tier {
+  /** Which comparison column this tier owns. */
+  key: TierKey;
   name: string;
   price: string;
   cadence: string;
@@ -23,6 +32,7 @@ interface Tier {
 
 const tiers: Tier[] = [
   {
+    key: "oss",
     name: "Open Source",
     price: "Free",
     cadence: "forever",
@@ -37,6 +47,7 @@ const tiers: Tier[] = [
     cta: GET_STARTED,
   },
   {
+    key: "ent",
     name: "Enterprise",
     price: "Custom",
     cadence: "annually",
@@ -52,64 +63,27 @@ const tiers: Tier[] = [
     cta: TALK_TO_US,
     secondary: {
       label: "Already have a quote? Buy a licence on the Enterprise portal",
-      href: "https://enterprise.nativelink.com",
+      href: ENTERPRISE_URL,
       external: true,
     },
   },
 ];
 
-const comparison: {
-  section: string;
-  rows: { label: string; oss: string | boolean; ent: string | boolean }[];
-}[] = [
-  {
-    section: "Platform",
-    rows: [
-      { label: "Hosting", oss: "Self-hosted", ent: "On-prem or managed" },
-      { label: "Distributed scheduler", oss: true, ent: true },
-      { label: "Remote caching", oss: true, ent: true },
-      { label: "Remote execution", oss: true, ent: true },
-      { label: "Cross-compilation", oss: true, ent: true },
-      { label: "External storage (S3, Redis)", oss: true, ent: true },
-      { label: "Autoscaling", oss: false, ent: true },
-      { label: "Multi-region", oss: "DIY", ent: true },
-    ],
-  },
-  {
-    section: "Compatibility",
-    rows: [
-      { label: "Supported build systems", oss: "All", ent: "All + custom" },
-      {
-        label: "Operating systems",
-        oss: "Linux, macOS",
-        ent: "Linux, macOS, Windows",
-      },
-      { label: "Org-wide sharing", oss: true, ent: true },
-    ],
-  },
-  {
-    section: "Operations",
-    rows: [
-      { label: "GUI dashboard", oss: false, ent: true },
-      { label: "Build action breakdown", oss: false, ent: true },
-      { label: "Live build updates", oss: false, ent: true },
-      { label: "Audit logs / SSO", oss: false, ent: true },
-    ],
-  },
-  {
-    section: "Support",
-    rows: [
-      {
-        label: "Channel",
-        oss: "Community Slack",
-        ent: "Dedicated engineer",
-      },
-      { label: "Onboarding", oss: false, ent: "White-glove" },
-    ],
-  },
-];
+const { universal, differentiators } = collapseUniversalRows(comparison);
 
-function Cell({ value }: { value: string | boolean }) {
+function Cell({ value }: { value: ComparisonValue }) {
+  if (typeof value === "object") {
+    return (
+      <a
+        href={value.href}
+        target="_blank"
+        rel="noreferrer"
+        className="font-mono text-xs text-brand underline-offset-4 hover:underline sm:text-sm"
+      >
+        {value.text}
+      </a>
+    );
+  }
   if (typeof value === "boolean") {
     return (
       <span
@@ -125,7 +99,11 @@ function Cell({ value }: { value: string | boolean }) {
       </span>
     );
   }
-  return <span className="font-mono text-sm text-foreground">{value}</span>;
+  return (
+    <span className="font-mono text-xs text-foreground sm:text-sm">
+      {value}
+    </span>
+  );
 }
 
 export default function PricingPage() {
@@ -240,63 +218,123 @@ export default function PricingPage() {
             <h2 className="text-balance text-4xl font-semibold leading-[1.05] tracking-[-0.03em] md:text-5xl">
               Feature-for-feature comparison
             </h2>
+            <p className="mx-auto mt-5 max-w-[560px] text-[15px] leading-relaxed text-muted-foreground">
+              What every tier includes sits on one line at the top, so every row
+              below marks a difference between the tiers.
+            </p>
           </div>
         </Reveal>
 
         <Reveal>
-          <div className="mx-auto max-w-[980px] overflow-hidden rounded-2xl border border-border bg-surface">
-            <table className="w-full border-collapse text-left">
+          {/* overflow-clip rather than overflow-hidden: hidden would turn this box into the
+              sticky header's scroll container and pin it to the box instead of the viewport. */}
+          <div className="mx-auto max-w-[980px] overflow-clip rounded-2xl border border-border bg-surface">
+            <table className="w-full border-separate border-spacing-0 text-left">
               <thead>
                 <tr>
-                  <th className="w-[40%] bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
+                  <th
+                    scope="col"
+                    className="sticky top-16 z-10 w-[40%] border-b border-border bg-surface-elevated px-3 sm:px-6 py-4 text-left align-bottom font-mono text-[10px] uppercase tracking-widest text-muted"
+                  >
                     Feature
                   </th>
-                  <th className="bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
-                    Open Source
-                  </th>
-                  <th className="bg-surface-elevated px-6 py-4 font-mono text-[10px] uppercase tracking-widest text-muted">
-                    Enterprise
-                  </th>
+                  {tiers.map((tier) => (
+                    <th
+                      key={tier.key}
+                      scope="col"
+                      className="sticky top-16 z-10 border-b border-border bg-surface-elevated px-3 sm:px-6 py-4 text-left align-bottom"
+                    >
+                      <span className="block font-mono text-[10px] uppercase tracking-widest text-muted">
+                        {tier.name}
+                      </span>
+                      <span className="mt-1.5 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                        <span className="text-lg font-semibold leading-none tracking-tight text-foreground">
+                          {tier.price}
+                        </span>
+                        <span className="font-mono text-xs text-muted">
+                          {tier.cadence}
+                        </span>
+                      </span>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {comparison.map((group) => (
+                {universal.length > 0 ? (
+                  <tr className="bg-brand-soft/30">
+                    <td className="border-b border-border px-3 sm:px-6 py-4 align-top">
+                      <span className="block text-[15px] font-medium text-foreground">
+                        Core platform, included in every tier
+                      </span>
+                      <span className="mt-1 block text-sm leading-relaxed text-muted-foreground">
+                        {universal.join(" · ")}
+                      </span>
+                    </td>
+                    {tiers.map((tier) => (
+                      <td
+                        key={tier.key}
+                        className="border-b border-border px-3 sm:px-6 py-4 align-top"
+                      >
+                        <Cell value={true} />
+                      </td>
+                    ))}
+                  </tr>
+                ) : null}
+                {differentiators.map((group) => (
                   <Fragment key={group.section}>
                     <tr>
                       <td
-                        colSpan={3}
-                        className="border-t border-border bg-foreground/[0.015] px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+                        colSpan={tiers.length + 1}
+                        className="border-b border-border bg-foreground/[0.015] px-3 sm:px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
                       >
                         {group.section}
                       </td>
                     </tr>
                     {group.rows.map((row) => (
-                      <tr key={row.label} className="border-t border-border">
-                        <td className="px-6 py-4 text-[15px] text-foreground">
+                      <tr key={row.label}>
+                        <td className="border-b border-border px-3 sm:px-6 py-4 text-sm text-foreground sm:text-[15px]">
                           {row.label}
                         </td>
-                        <td className="px-6 py-4">
-                          <Cell value={row.oss} />
-                        </td>
-                        <td className="px-6 py-4">
-                          {row.label === "Hosting" ? (
-                            <a
-                              href="https://enterprise.nativelink.com"
-                              target="_blank"
-                              rel="noreferrer"
-                              className="font-mono text-sm text-brand underline-offset-4 hover:underline"
-                            >
-                              {row.ent}
-                            </a>
-                          ) : (
-                            <Cell value={row.ent} />
-                          )}
-                        </td>
+                        {tiers.map((tier) => (
+                          <td
+                            key={tier.key}
+                            className="border-b border-border px-3 sm:px-6 py-4"
+                          >
+                            <Cell value={row[tier.key]} />
+                          </td>
+                        ))}
                       </tr>
                     ))}
                   </Fragment>
                 ))}
               </tbody>
+              <tfoot>
+                <tr>
+                  <td className="px-3 sm:px-6 py-5 font-mono text-[10px] uppercase tracking-widest text-muted">
+                    Next step
+                  </td>
+                  {tiers.map((tier) => (
+                    <td key={tier.key} className="px-3 sm:px-6 py-5 align-top">
+                      {/* Wrapping label and full width: a no-wrap button is wider than a
+                          phone-width column and the clipped wrapper would cut it off. */}
+                      <Button
+                        asChild
+                        size="sm"
+                        variant="outline"
+                        className="h-auto w-full whitespace-normal py-2 text-center"
+                      >
+                        <a
+                          href={tier.cta.href}
+                          target={tier.cta.external ? "_blank" : undefined}
+                          rel={tier.cta.external ? "noreferrer" : undefined}
+                        >
+                          {tier.cta.label}
+                        </a>
+                      </Button>
+                    </td>
+                  ))}
+                </tr>
+              </tfoot>
             </table>
           </div>
         </Reveal>
