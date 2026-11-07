@@ -773,3 +773,23 @@ mod convert_optional_numeric_with_shellexpand_tests {
         assert_eq!(deserialized.value, None);
     }
 }
+
+mod persistent_worker_tests {
+    use nativelink_config::cas_server::PersistentWorkersConfig;
+
+    #[test]
+    fn isolate_by_instance_name_defaults_to_true() {
+        let config: PersistentWorkersConfig = serde_json5::from_str("{}").unwrap();
+        assert!(config.isolate_by_instance_name); // isolation by instance name should be the default behavior
+    }
+
+    #[test]
+    fn isolate_by_instance_name_deserializes_correctly_when_set() {
+        let on_config: PersistentWorkersConfig =
+            serde_json5::from_str(r#"{isolate_by_instance_name: true}"#).unwrap();
+        assert!(on_config.isolate_by_instance_name); // true when set true
+        let off_config: PersistentWorkersConfig =
+            serde_json5::from_str(r#"{isolate_by_instance_name: false}"#).unwrap();
+        assert!(!off_config.isolate_by_instance_name); // false when set false
+    }
+}
