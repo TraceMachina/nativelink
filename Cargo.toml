@@ -1,11 +1,11 @@
 #:schema tools/cargo-with-detailed-deps.json
 [workspace]
-members = ["nativelink-sim"]
 exclude = [
   "nativelink-config/generate-stores-config",
   "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
+members = ["nativelink-sim"]
 resolver = "2"
 
 [package]

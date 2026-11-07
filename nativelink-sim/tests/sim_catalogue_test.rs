@@ -111,11 +111,11 @@ fn no_action_timeout_and_the_worker_goes_silent() -> Result<(), Error> {
         .map(drop)
 }
 
-/// L3 in RFC-0060 §11: about one run in three on Redis, the completed write
-/// succeeds and the client never hears of it. The cause is not found; a
-/// dropped `changed()` is ruled out (`subscriber_cancel_test`).
+/// L3 in RFC-0060 §11 was about one run in three on Redis: the completed
+/// write succeeded and the client never heard of it. It was the harness
+/// clock (the keepalive was never refreshed); with `SimInstant` fixed it
+/// passes every run.
 #[test]
-#[ignore = "nightly: L3, an intermittent lost completion on Redis"]
 fn no_action_timeout_on_redis() -> Result<(), Error> {
     no_action_timeout()
         .backends(&[Backend::FakeRedis])
@@ -264,9 +264,10 @@ fn restart_with_200_executing() -> Result<(), Error> {
 }
 
 /// The write lands and its reply is lost, as the results of this run land.
-/// The review expected the version retry to recover. Found by the harness
-/// on 2026-11-04: the write lands, `update_operation` takes the lost reply
-/// as a non-retryable failure, and nothing tells the client.
+/// The review expected the version retry to recover, and it does. The
+/// failure recorded on 2026-11-04 was the harness: `SimInstant::from_secs`
+/// ignored its argument, the client keepalive was never refreshed, and the
+/// attached client was retired as abandoned.
 #[test]
 fn journal_write_times_out_after_applying() -> Result<(), Error> {
     Scenario::new("journal-write-timeout", 12)
@@ -275,13 +276,6 @@ fn journal_write_times_out_after_applying() -> Result<(), Error> {
         .at(
             2_990,
             Step::redis_fail("EVALSHA", Fault::AppliedThenError("timeout".into()), 1),
-        )
-        .expect(
-            Backend::FakeRedis,
-            Expect::known_failure(
-                &[I1, I8],
-                "unassigned: a refused result write is not retried",
-            ),
         )
         .run()
         .map(drop)
@@ -336,9 +330,8 @@ fn clock_jumps_an_hour() -> Result<(), Error> {
 }
 
 /// The Redis backend runs the requeued action again and completes it, so
-/// the backends disagree on c1; two runs in six it meets L3 instead.
+/// the backends disagree on c1.
 #[test]
-#[ignore = "nightly: L3, an intermittent lost completion on Redis"]
 fn clock_jumps_an_hour_on_redis() -> Result<(), Error> {
     let reports = clock_jump()
         .backends_disagree("unassigned: a clock step retires an attached client's requeued action")
@@ -409,16 +402,21 @@ fn redis_failover_as_results_land() -> Result<(), Error> {
         .map(drop)
 }
 
-/// The memory backend runs all 2,000. On Redis 1,111 end in
-/// `DEADLINE_EXCEEDED` with their clients attached. A lead, not a finding:
-/// the Redis runs step time by hand and may overstate its latency, so the
-/// bed confirms it before anyone fixes it.
+/// The memory backend runs all 2,000. On Redis, with every attached client
+/// refreshing its keepalive (a write and a publish each), the workers'
+/// keepalives fall behind, the scheduler removes them as timed out (97
+/// removals in one run), about 20 actions run and the rest wait out the
+/// settle budget. L5, a lead, not a finding: the Redis runs step time by
+/// hand and may overstate its latency, so the bed confirms it first.
 #[test]
 fn pubsub_storm() -> Result<(), Error> {
     let mut scenario = Scenario::new("pubsub-storm", 16)
         .workers(50, WorkerSpec::default())
         .settle(Duration::from_mins(5))
-        .backends_disagree("lead: confirm the Redis burst failures on the bed (T3)");
+        .expect(
+            Backend::FakeRedis,
+            Expect::known_failure(&[I1, I8], "lead L5: confirm on the bed (T3)"),
+        );
     for i in 0..2_000u32 {
         scenario = scenario.at(
             u64::from(i / 2),

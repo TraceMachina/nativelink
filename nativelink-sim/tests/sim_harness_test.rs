@@ -42,11 +42,11 @@ async fn jump_moves_now_but_not_timers() -> Result<(), Error> {
     clock.advance(Duration::from_millis(100)).await;
     let tokio_before = tokio::time::Instant::now();
     let before = SimClock::now();
-    SimClock::jump(Duration::from_mins(60));
+    SimClock::jump(Duration::from_hours(1));
     assert_eq!(SimClock::now_ms(), 3_600_100);
     assert_eq!(
         SimClock::now().duration_since(before).unwrap(),
-        Duration::from_mins(60)
+        Duration::from_hours(1)
     );
     assert_eq!(tokio::time::Instant::now(), tokio_before);
     Ok(())
