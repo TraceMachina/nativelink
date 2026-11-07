@@ -22,13 +22,18 @@ use nativelink_error::Error;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::action_cache_server::ActionCache;
 use nativelink_proto::build::bazel::remote::execution::v2::{
-    ActionResult, Digest, GetActionResultRequest, UpdateActionResultRequest, digest_function,
+    ActionResult, Digest, GetActionResultRequest, RequestMetadata, ToolDetails,
+    UpdateActionResultRequest, digest_function,
 };
 use nativelink_service::ac_server::AcServer;
 use nativelink_store::default_store_factory::store_factory;
 use nativelink_store::store_manager::StoreManager;
 use nativelink_util::common::DigestInfo;
+use nativelink_util::origin_event::{BAZEL_METADATA_KEY, request_metadata_to_baggage};
 use nativelink_util::store_trait::StoreLike;
+use opentelemetry::KeyValue;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::context::{Context, FutureExt};
 use pretty_assertions::assert_eq;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
@@ -118,6 +123,54 @@ async fn empty_store() -> Result<(), Box<dyn core::error::Error>> {
     assert_eq!(err.code(), Code::NotFound);
     assert_eq!(err.message(), "");
 
+    // The miss is recorded on its own target, with the lookup key, even when
+    // the client sent no request metadata.
+    assert!(logs_contain("Action cache miss"));
+    assert!(logs_contain("source=\"ac_server\""));
+    assert!(logs_contain(&format!("instance_name=\"{INSTANCE_NAME}\"")));
+    assert!(logs_contain(&format!("action_digest={HASH1}-0")));
+    assert!(logs_contain("tool_invocation_id= "));
+
+    Ok(())
+}
+
+/// A miss carries the Bazel `RequestMetadata` the client sent, read from the
+/// OpenTelemetry baggage the middleware populates, so the line can be joined
+/// back to the invocation, target and mnemonic that produced it.
+#[nativelink_test]
+async fn miss_logs_bazel_request_metadata() -> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let ac_server = make_ac_server(&store_manager)?;
+
+    let request_metadata = RequestMetadata {
+        tool_details: Some(ToolDetails {
+            tool_name: "bazel".to_string(),
+            ..Default::default()
+        }),
+        tool_invocation_id: "inv-1".to_string(),
+        correlated_invocations_id: "corr-1".to_string(),
+        target_id: "//pkg:t".to_string(),
+        action_mnemonic: "CppCompile".to_string(),
+        configuration_id: "cfg-1".to_string(),
+        ..Default::default()
+    };
+    let context = Context::current_with_baggage(vec![KeyValue::new(
+        BAZEL_METADATA_KEY,
+        request_metadata_to_baggage(&request_metadata),
+    )]);
+
+    let raw_response = get_action_result(&ac_server, HASH1, 0)
+        .with_context(context)
+        .await;
+    assert_eq!(raw_response.unwrap_err().code(), Code::NotFound);
+
+    assert!(logs_contain("Action cache miss"));
+    assert!(logs_contain("tool_name=\"bazel\""));
+    assert!(logs_contain("tool_invocation_id=inv-1"));
+    assert!(logs_contain("correlated_invocations_id=corr-1"));
+    assert!(logs_contain("target_id=//pkg:t"));
+    assert!(logs_contain("action_mnemonic=CppCompile"));
+    assert!(logs_contain("configuration_id=cfg-1"));
     Ok(())
 }
 
@@ -136,6 +189,8 @@ async fn has_single_item() -> Result<(), Box<dyn core::error::Error>> {
     let raw_response = get_action_result(&ac_server, HASH1, HASH1_SIZE).await;
 
     assert!(!logs_contain(" output_files: ["));
+    // A hit must never be reported as a miss.
+    assert!(!logs_contain("Action cache miss"));
 
     assert!(
         raw_response.is_ok(),

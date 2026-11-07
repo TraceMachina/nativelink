@@ -7275,6 +7275,82 @@ exit 1
         let proto_result: ProtoActionResult = action_result.try_into()?;
         assert_eq!(proto_result, retrieved_result);
 
+        // The write is recorded on the cache-miss target so "was it ever
+        // written?" can be answered next to "why did it miss?".
+        assert!(logs_contain("Action result written to the action cache"));
+        assert!(!logs_contain(
+            "Not writing action result to the action cache"
+        ));
+
+        Ok(())
+    }
+
+    /// Under the default `SuccessOnly` strategy a failed action is not written
+    /// to the action cache, and the worker says so on the cache-miss target,
+    /// naming the strategy and exit code that caused the skip.
+    #[nativelink_test]
+    async fn success_only_skips_action_cache_write_for_failed_action()
+    -> Result<(), Box<dyn core::error::Error>> {
+        let (_, _, cas_store, ac_store) = setup_stores().await?;
+
+        let running_actions_manager =
+            Arc::new(RunningActionsManagerImpl::new(RunningActionsManagerArgs {
+                root_action_directory: String::new(),
+                execution_configuration: ExecutionConfiguration::default(),
+                cas_store: cas_store.clone(),
+                ac_store: Some(Store::new(ac_store.clone())),
+                historical_store: Store::new(cas_store.clone()),
+                upload_action_result_config: &UploadActionResultConfig {
+                    upload_ac_results_strategy: UploadCacheResultsStrategy::SuccessOnly,
+                    ..Default::default()
+                },
+                max_action_timeout: Duration::MAX,
+                max_upload_timeout: Duration::from_secs(DEFAULT_MAX_UPLOAD_TIMEOUT),
+                max_download_timeout: Duration::from_secs(DEFAULT_MAX_DOWNLOAD_TIMEOUT),
+                max_cleanup_wait: Duration::from_secs(DEFAULT_MAX_CLEANUP_WAIT),
+                max_cleanup_backoff: Duration::from_millis(DEFAULT_MAX_CLEANUP_BACKOFF),
+                timeout_handled_externally: false,
+                active_input_leases: false,
+                #[cfg(target_os = "linux")]
+                readonly_input_mounts: Vec::new(),
+                directory_cache: None,
+                #[cfg(target_os = "linux")]
+                use_namespaces: use_namespaces(),
+            })?);
+
+        let action_digest = DigestInfo::new([2u8; 32], 32);
+        let mut action_result = ActionResult {
+            exit_code: 1,
+            execution_metadata: ExecutionMetadata {
+                worker: "WORKER_ID".to_string(),
+                queued_timestamp: SystemTime::UNIX_EPOCH,
+                worker_start_timestamp: make_system_time(0),
+                input_fetch_start_timestamp: make_system_time(1),
+                input_fetch_completed_timestamp: make_system_time(2),
+                execution_start_timestamp: make_system_time(3),
+                execution_completed_timestamp: make_system_time(4),
+                output_upload_start_timestamp: make_system_time(5),
+                output_upload_completed_timestamp: make_system_time(6),
+                worker_completed_timestamp: make_system_time(7),
+            },
+            ..Default::default()
+        };
+        running_actions_manager
+            .cache_action_result(action_digest, &mut action_result, DigestHasherFunc::Sha256)
+            .await?;
+
+        assert!(
+            ac_store.as_pin().has(action_digest.into()).await?.is_none(),
+            "A failed action must not be written under SuccessOnly"
+        );
+        assert!(logs_contain(
+            "Not writing action result to the action cache"
+        ));
+        assert!(logs_contain(&format!("action_digest={action_digest}")));
+        assert!(logs_contain("exit_code=1"));
+        assert!(logs_contain("strategy=SuccessOnly"));
+        assert!(!logs_contain("Action result written to the action cache"));
+
         Ok(())
     }
 
