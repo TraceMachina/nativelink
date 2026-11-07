@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import shlex
 import statistics
 import subprocess
 import tempfile
@@ -91,6 +92,17 @@ def configuration(lane, environ):
         flags += [f"--disk_cache={root}/cache/actions",
                   f"--repository_cache={root}/cache/repositories"]
     return flags, " ".join(endpoints)
+
+
+def configure_pr(output):
+    # Use the same CAS, instance and worker properties as the retained client.
+    # The credential helper reads the key from the build step's environment;
+    # neither this rc file nor command arguments contain the key.
+    flags, _ = configuration('cluster', os.environ)
+    flags = [flag for flag in flags if flag not in (
+        '--remote_upload_local_results=true', '--build_metadata=BENCHMARK_LANE=cluster')]
+    flags += ['--remote_upload_local_results=false', '--build_metadata=BENCHMARK_LANE=pr-rbe']
+    output.write_text(''.join('common ' + shlex.quote(flag) + '\n' for flag in flags))
 
 
 def execute(command, environ):
@@ -211,6 +223,8 @@ if __name__ == "__main__":
     runner.add_argument("--lane", choices=("cluster",), required=True)
     runner.add_argument("--repetitions", type=int, choices=range(1, 21), default=3)
     runner.add_argument("--output", type=Path, required=True)
+    pr = sub.add_parser('configure-pr')
+    pr.add_argument('--output', type=Path, required=True)
     reporter = sub.add_parser("compare")
     reporter.add_argument("directory", type=Path)
     summary = sub.add_parser("summarize")
@@ -218,7 +232,9 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
     if arguments.command == "run":
         raise SystemExit(run(arguments))
-    if arguments.command == "summarize":
+    if arguments.command == 'configure-pr':
+        configure_pr(arguments.output)
+    elif arguments.command == "summarize":
         summarize(arguments.path)
     else:
         compare(arguments.directory)

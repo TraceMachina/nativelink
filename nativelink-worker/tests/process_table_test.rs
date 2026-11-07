@@ -20,7 +20,7 @@ use std::sync::Arc;
 use nativelink_macro::nativelink_test;
 use nativelink_worker::process_table::{
     ProcessTableCache, live_process_table, process_exists, read_process_cpu_ticks,
-    read_process_memory_kb, ticks_to_millis, worker_pgid,
+    read_process_memory_bound_kb, read_process_memory_kb, ticks_to_millis, worker_pgid,
 };
 use nativelink_worker::running_actions_manager::{ProcEntry, action_membership_live};
 
@@ -167,4 +167,37 @@ async fn cpu_time_read_fresh_moves_past_a_held_snapshot() {
     assert_eq!(held, before);
     let spent_ms = ticks_to_millis(fresh) - ticks_to_millis(before);
     assert!(spent_ms >= 100, "{spent_ms} ms");
+}
+
+/// The cheap figure the sampler reads first is never below the exact one,
+/// for this process or for a child that shares no pages with it.
+#[test]
+fn the_memory_bound_covers_the_exact_figure() {
+    // Linux counts RSS per CPU and, before 6.16, reads it without the
+    // updates each CPU has pending, so it can trail `Pss` by that much.
+    const COUNTER_LAG_KB: u64 = 16 * 1024;
+    let mut child = spawn_idle_child();
+    let pids = [std::process::id(), child.id()];
+    let readings: Vec<_> = pids
+        .iter()
+        .map(|&pid| {
+            (
+                read_process_memory_bound_kb(pid),
+                read_process_memory_kb(pid),
+            )
+        })
+        .collect();
+    child.kill().expect("the child is killed");
+    child.wait().expect("the child is waited for");
+
+    for (bound_kb, exact_kb) in readings {
+        let (Some(bound_kb), Some(exact_kb)) = (bound_kb, exact_kb) else {
+            panic!("both figures are readable: {bound_kb:?} {exact_kb:?}");
+        };
+        assert!(exact_kb > 0);
+        assert!(
+            exact_kb <= bound_kb + COUNTER_LAG_KB,
+            "{exact_kb} > {bound_kb}"
+        );
+    }
 }
