@@ -761,6 +761,9 @@ pub struct HttpListener {
     /// Applies to both plaintext and TLS connections. Set to true to opt into
     /// sending small writes promptly. When false or omitted, preserves default
     /// TCP buffering behavior.
+    /// Older binaries without this option reject the field even when set to
+    /// false. Config templates must omit it until all consuming binaries support
+    /// it. Remove the field entirely before rolling back to an older binary.
     ///
     /// Default: false
     #[serde(default)]

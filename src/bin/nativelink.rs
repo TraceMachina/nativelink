@@ -120,9 +120,14 @@ fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error>
 async fn accept_tcp_connection(
     listener: &TcpListener,
     tcp_nodelay: bool,
-) -> Result<(TcpStream, SocketAddr), std::io::Error> {
-    let (stream, remote_addr) = listener.accept().await?;
-    stream.set_nodelay(tcp_nodelay)?;
+) -> Result<(TcpStream, SocketAddr), Error> {
+    let (stream, remote_addr) = listener
+        .accept()
+        .await
+        .err_tip(|| "Failed to accept TCP connection")?;
+    stream
+        .set_nodelay(tcp_nodelay)
+        .err_tip(|| format!("Failed to set TCP_NODELAY to {tcp_nodelay} for {remote_addr}"))?;
     Ok((stream, remote_addr))
 }
 
@@ -835,7 +840,7 @@ async fn inner_main(
                                 );
                             },
                             Err(err) => {
-                                error!(?err, "Failed to accept tcp connection");
+                                error!(?err, "Failed to initialize TCP connection");
                             }
                         }
                     },
@@ -1070,7 +1075,7 @@ mod tests {
     use super::*;
 
     #[nativelink_test]
-    async fn accepted_connections_honor_tcp_nodelay() -> Result<(), std::io::Error> {
+    async fn accepted_connections_honor_tcp_nodelay() -> Result<(), Error> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         for (config, expected) in [
             (HttpListener::default(), false),
@@ -1092,7 +1097,7 @@ mod tests {
             // Every accepted connection must receive the configured socket option.
             for _ in 0..2 {
                 let (_client, (server, _)) = tokio::try_join!(
-                    TcpStream::connect(listener.local_addr()?),
+                    TcpStream::connect(listener.local_addr()?).map_err(Error::from),
                     accept_tcp_connection(&listener, config.tcp_nodelay),
                 )?;
                 assert_eq!(server.nodelay()?, expected);
