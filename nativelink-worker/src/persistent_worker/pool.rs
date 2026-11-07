@@ -114,7 +114,7 @@ impl WorkerKey {
             startup_args,
             wire_format,
             env: Vec::new(),
-            instance_name: "".to_string(),
+            instance_name: String::new(),
         })
     }
 
