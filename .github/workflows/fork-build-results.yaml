@@ -1,0 +1,67 @@
+name: CI / Fork build results
+
+# Fork PRs get no secrets, so their Bazel lanes cannot stream build events.
+# They upload them as bep-* artifacts instead (ci_bep_artifact.py). This
+# publishes those to the build-results UI and links each build from the PR.
+#
+# workflow_run always runs this file as it is on the default branch, never
+# the PR's copy. The artifacts come from untrusted code: they are parsed as
+# data by ci_bep_replay.py and nothing in them is executed.
+on:
+  workflow_run:
+    workflows: ["CI / Bazel", "CI / NativeLink"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  publish:
+    # Repository PRs hold the cluster key and stream build events themselves.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
+    name: Publish fork build results
+    # Holds NATIVELINK_FORK_BEP_API_KEY, which may publish build events and
+    # nothing else (no action cache or CAS writes). Restrict the environment
+    # to the default branch.
+    environment: fork-build-results
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read # download the triggering run's artifacts
+      checks: write # link each build from the PR
+      pull-requests: read # find the PR, which workflow_run omits for forks
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download build events
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: bep-*
+          path: ${{ runner.temp }}/bep
+
+      - name: Install replay dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/replay-venv"
+          "$RUNNER_TEMP/replay-venv/bin/pip" install --quiet --require-hashes \
+            --only-binary=:all: -r .github/scripts/requirements-bep-replay.txt
+
+      # Without the key this reports what it would publish and posts nothing.
+      - name: Publish build events and link them from the PR
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          NL_FORK_BEP_API_KEY: ${{ secrets.NATIVELINK_FORK_BEP_API_KEY }}
+          NL_BEP_ENDPOINT: ${{ vars.NATIVELINK_CLUSTER_BEP_ENDPOINT }}
+          NL_RESULTS_URL: ${{ vars.NATIVELINK_CLUSTER_RESULTS_URL }}
+        run: |
+          publish=()
+          if [ -n "$NL_FORK_BEP_API_KEY" ]; then
+            publish=(--publish --endpoint "$NL_BEP_ENDPOINT" --results-url "$NL_RESULTS_URL")
+          fi
+          "$RUNNER_TEMP/replay-venv/bin/python" .github/scripts/ci_bep_replay.py \
+            --artifacts "$RUNNER_TEMP/bep" --summary "$RUNNER_TEMP/replay-summary.json" \
+            "${publish[@]}"
