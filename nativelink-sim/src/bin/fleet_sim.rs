@@ -430,7 +430,7 @@ async fn run_queue(args: QueueArgs) -> Result<(), Error> {
         digests.push(action_digest);
     }
     for chunk in blobs.chunks(500) {
-        cas_client
+        let response = cas_client
             .batch_update_blobs(BatchUpdateBlobsRequest {
                 instance_name: instance.clone(),
                 requests: chunk
@@ -444,7 +444,18 @@ async fn run_queue(args: QueueArgs) -> Result<(), Error> {
                 digest_function: digest_function::Value::Sha256.into(),
             })
             .await
-            .map_err(|e| make_err!(Code::Internal, "Upload failed: {e}"))?;
+            .map_err(|e| make_err!(Code::Internal, "Upload failed: {e}"))?
+            .into_inner();
+        // The RPC can succeed while a blob is refused in its own status;
+        // an action whose blob was refused fails at execute with a missing
+        // blob that looks like the scheduler's.
+        if let Some(bad) = response
+            .responses
+            .iter()
+            .find(|r| r.status.as_ref().is_some_and(|s| s.code != 0))
+        {
+            return Err(make_err!(Code::Internal, "Upload refused a blob: {bad:?}"));
+        }
     }
     eprintln!("fleet-sim: uploaded {actions} actions to {cas}");
 
