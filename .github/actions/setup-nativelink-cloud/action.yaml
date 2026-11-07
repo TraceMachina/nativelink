@@ -79,6 +79,13 @@ outputs:
   enabled:
     description: "'true' when remote cache or execution is enabled, else 'false'."
     value: ${{ steps.configure.outputs.enabled }}
+  credential:
+    description: >-
+      'private' (secret-fed key; the build streams BES), 'public' (committed
+      read-only key; no BES) or 'none'. Build event files from a 'private'
+      run carry that key in their recorded options and must never be
+      published as artifacts.
+    value: ${{ steps.configure.outputs.credential }}
 
 runs:
   using: composite
@@ -141,6 +148,7 @@ runs:
         if [[ -z "$cred_kind" ]]; then
           write_ci_metadata
           echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "credential=none" >> "$GITHUB_OUTPUT"
           echo "NativeLink Cloud disabled (no credentials or ci-mode off); building locally."
           exit 0
         fi
@@ -171,6 +179,7 @@ runs:
           } >> user.bazelrc
           write_ci_metadata
           echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "credential=${cred_kind}" >> "$GITHUB_OUTPUT"
           echo "NativeLink Cloud enabled: public read-only cache (no uploads, no BES)"
           exit 0
         fi
@@ -203,5 +212,6 @@ runs:
         write_ci_metadata
 
         echo "enabled=true" >> "$GITHUB_OUTPUT"
+        echo "credential=${cred_kind}" >> "$GITHUB_OUTPUT"
         # Deliberately do not echo the endpoints: the claim base is a secret.
         echo "NativeLink Cloud enabled: mode=${NL_MODE} exec=${exec_enabled}"
