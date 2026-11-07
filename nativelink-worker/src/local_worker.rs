@@ -96,16 +96,23 @@ const CONNECTION_RETRY_DELAY_S: f32 = 0.5;
 const CONNECTION_RETRY_MAX_DELAY_S: f32 = 30.0;
 
 /// Delay before the `attempt`th consecutive reconnect (0 = first retry),
-/// between half and one and a half times the exponential figure.
-fn reconnect_delay(attempt: u32) -> Duration {
+/// between half and one and a half times the exponential figure. `jitter`
+/// is taken modulo 1000.
+fn reconnect_delay(attempt: u32, jitter: u32) -> Duration {
     let exponent = i32::try_from(attempt.min(16)).unwrap_or(16);
     let base = (CONNECTION_RETRY_DELAY_S * 2f32.powi(exponent)).min(CONNECTION_RETRY_MAX_DELAY_S);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let jitter = 0.5 + (nanos % 1_000) as f32 / 1_000.0;
+    let jitter = 0.5 + (jitter % 1_000) as f32 / 1_000.0;
     Duration::from_secs_f32(base * jitter)
 }
+
+/// The reconnect jitter's default source: the wall clock's nanoseconds.
+fn wall_clock_jitter() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos())
+}
+
+type JitterFn = Box<dyn Fn() -> u32 + Send + Sync>;
 
 /// Default endpoint timeout. If this value gets modified the documentation in
 /// `cas_server.rs` must also be updated.
@@ -950,6 +957,7 @@ pub struct LocalWorker<T: WorkerApiClientTrait + 'static, U: RunningActionsManag
     running_actions_manager: Arc<U>,
     connection_factory: ConnectionFactory<T>,
     sleep_fn: Option<Box<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>>,
+    jitter_fn: JitterFn,
     metrics: Arc<Metrics>,
     registration: Arc<WorkerRegistration>,
 }
@@ -1415,9 +1423,18 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
             running_actions_manager,
             connection_factory,
             sleep_fn: Some(sleep_fn),
+            jitter_fn: Box::new(wall_clock_jitter),
             metrics,
             registration,
         }
+    }
+
+    /// Takes the reconnect jitter from `jitter_fn` instead of the wall
+    /// clock, for tests that need the same backoff every run.
+    #[must_use]
+    pub fn with_jitter_fn(mut self, jitter_fn: JitterFn) -> Self {
+        self.jitter_fn = jitter_fn;
+        self
     }
 
     /// The registration flag this worker flips, for a health registry.
@@ -1546,9 +1563,10 @@ impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T,
         let sleep_fn_pin = Pin::new(&sleep_fn);
         let attempts = AtomicU32::new(0);
         let attempts_ref = &attempts;
+        let jitter_fn = &self.jitter_fn;
         let error_handler = Box::pin(move |err| async move {
             let attempt = attempts_ref.fetch_add(1, Ordering::AcqRel);
-            let delay = reconnect_delay(attempt);
+            let delay = reconnect_delay(attempt, jitter_fn());
             error!(?err, attempt, delay_ms = delay.as_millis(), "Error");
             (sleep_fn_pin)(delay).await;
         });
