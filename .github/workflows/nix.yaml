@@ -228,6 +228,22 @@ jobs:
       - name: Import the exact package for this source
         run: python3 .github/scripts/nix_ci.py import --directory "$RUNNER_TEMP/nix-ci"
 
+      # External repository archives come from third-party CDNs that
+      # intermittently fail from hosted runners, and every run otherwise
+      # starts cold. The repository cache is content-addressed, so reuse
+      # across revisions and forks is safe.
+      - name: Restore the Bazel repository cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/bazel-repository-cache
+          key: rbe-toolchain-repositories-${{ matrix.command }}-${{ hashFiles('toolchain-examples/MODULE.bazel.lock', 'toolchain-examples/.bazelversion') }}
+          restore-keys: |
+            rbe-toolchain-repositories-${{ matrix.command }}-
+            rbe-toolchain-repositories-
+
+      - name: Route external downloads through the repository cache
+        run: echo "common --repository_cache=$HOME/.cache/bazel-repository-cache" >> ~/.bazelrc
+
       - name: Test ${{ matrix.command }} with rbe
         run: |
           nix run -L .#rbe-toolchain-with-nativelink-test ${{ matrix.command }}
