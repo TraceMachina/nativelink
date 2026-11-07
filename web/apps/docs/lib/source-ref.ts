@@ -17,6 +17,9 @@ export const REPO_URL = "https://github.com/TraceMachina/nativelink";
  * redirect between the two, but a link that only works because of a redirect
  * is one platform change away from a 404, so callers say which they mean.
  */
-export function sourceUrl(file: string, kind: "blob" | "tree" = "blob"): string {
+export function sourceUrl(
+  file: string,
+  kind: "blob" | "tree" = "blob",
+): string {
   return `${REPO_URL}/${kind}/${SOURCE_REF}/${file.replace(/^\/+/, "")}`;
 }

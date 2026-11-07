@@ -28,7 +28,9 @@ export function BookDownloadForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      const data = (await response.json().catch(() => ({}))) as { error?: string };
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
 
       if (!response.ok) {
         throw new Error(data.error || "Failed to process request");
@@ -101,8 +103,8 @@ export function BookDownloadForm() {
         </Button>
 
         <p className="text-center text-xs leading-relaxed text-muted">
-          By downloading, you agree to receive occasional updates from NativeLink. You can
-          unsubscribe at any time.
+          By downloading, you agree to receive occasional updates from
+          NativeLink. You can unsubscribe at any time.
         </p>
       </form>
     </div>

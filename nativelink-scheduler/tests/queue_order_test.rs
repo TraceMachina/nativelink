@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -160,5 +160,36 @@ async fn redis_backend_serves_highest_priority_then_oldest() -> Result<(), Error
     )
     .await?;
     assert_eq!(queued_order(&db).await?, EXPECTED);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn memory_backend_mints_operation_ids_from_the_given_fn() -> Result<(), Error> {
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    use nativelink_scheduler::memory_awaited_action_db::OperationIdFn;
+
+    let next = Arc::new(AtomicU64::new(1));
+    let db = MemoryAwaitedActionDb::new_with_operation_id_fn(
+        &EvictionPolicy::default(),
+        Arc::new(Notify::new()),
+        MockInstantWrapped::default,
+        OperationIdFn::new(move || {
+            OperationId::from(format!("op-{}", next.fetch_add(1, Ordering::AcqRel)))
+        }),
+    );
+    for (seed, expected) in [(1, "op-1"), (2, "op-2")] {
+        let subscriber = db
+            .add_action(
+                OperationId::from(format!("client-{seed}")),
+                action(seed, 0, 1_000),
+                Duration::from_mins(1),
+            )
+            .await?;
+        assert_eq!(
+            subscriber.borrow().await?.operation_id(),
+            &OperationId::from(expected)
+        );
+    }
     Ok(())
 }

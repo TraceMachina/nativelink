@@ -1,4 +1,4 @@
-// Copyright 2026 The NativeLink Authors. All rights reserved.
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -61,6 +61,10 @@ pub struct RemoteAssetArtifact {
         tag = "5"
     )]
     pub digest_function: i32,
+
+    /// When retrieval from origin started. Older records have no timestamp.
+    #[prost(message, optional, tag = "6")]
+    pub fetched_at: Option<Timestamp>,
 }
 
 impl RemoteAssetArtifact {
@@ -77,6 +81,7 @@ impl RemoteAssetArtifact {
             blob_digest: Some(blob_digest),
             expire_at,
             digest_function,
+            fetched_at: None,
         }
     }
 

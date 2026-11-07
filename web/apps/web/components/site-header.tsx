@@ -8,6 +8,10 @@ import { usePathname } from "next/navigation";
 export function AppSiteHeader() {
   const pathname = usePathname();
   return (
-    <SiteHeader currentPath={pathname} ctaLabel={GET_STARTED.label} ctaHref={GET_STARTED.href} />
+    <SiteHeader
+      currentPath={pathname}
+      ctaLabel={GET_STARTED.label}
+      ctaHref={GET_STARTED.href}
+    />
   );
 }

@@ -8,7 +8,7 @@ spec:
   eventSeverity: info
   eventSources:
     - kind: GitRepository
-      name: '*'
+      name: "*"
       namespace: default
   providerRef:
     name: nativelink-webhook

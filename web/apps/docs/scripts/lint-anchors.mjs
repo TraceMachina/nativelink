@@ -108,7 +108,11 @@ function inspect(source) {
     // `remarkHeading` strips `[#id]` off the trailing text node when it finds
     // one, so an explicit anchor is exactly the case where the raw line ends
     // in `[#…]`, so read the source line rather than the mutated node.
-    headings.push({ line: node.position.start.line, endLine: node.position.end.line, id });
+    headings.push({
+      line: node.position.start.line,
+      endLine: node.position.end.line,
+      id,
+    });
   });
 
   visit(tree, "mdxJsxFlowElement", (node) => {
@@ -166,7 +170,11 @@ function main() {
     try {
       report = inspect(source);
     } catch (error) {
-      problems.push({ file: rel, line: 1, message: `could not parse: ${error.message}` });
+      problems.push({
+        file: rel,
+        line: 1,
+        message: `could not parse: ${error.message}`,
+      });
       continue;
     }
 
@@ -188,10 +196,17 @@ function main() {
         continue;
       }
       if (!heading.id) {
-        problems.push({ file: rel, line: heading.line, message: "heading has no derivable id" });
+        problems.push({
+          file: rel,
+          line: heading.line,
+          message: "heading has no derivable id",
+        });
         continue;
       }
-      edits.push({ index: heading.line - 1, next: `${raw.replace(/\s+$/, "")} [#${heading.id}]` });
+      edits.push({
+        index: heading.line - 1,
+        next: `${raw.replace(/\s+$/, "")} [#${heading.id}]`,
+      });
       problems.push({
         file: rel,
         line: heading.line,
@@ -206,7 +221,8 @@ function main() {
         problems.push({
           file: rel,
           line: accordion.line,
-          message: "accordion has no id and no single-line title to derive one from",
+          message:
+            "accordion has no id and no single-line title to derive one from",
         });
         continue;
       }
@@ -235,7 +251,9 @@ function main() {
   );
 
   if (FIX) {
-    console.log(`Pinned ${fixedAnchors} anchor(s) across ${fixedFiles} page(s).`);
+    console.log(
+      `Pinned ${fixedAnchors} anchor(s) across ${fixedFiles} page(s).`,
+    );
     return;
   }
 
@@ -245,8 +263,11 @@ function main() {
   }
 
   console.error(`\n${problems.length} missing anchor(s):`);
-  for (const p of problems) console.error(`  ${p.file}:${p.line}  ${p.message}`);
-  console.error("\nRun `bun --filter @nativelink/docs lint:anchors --fix` to pin them.");
+  for (const p of problems)
+    console.error(`  ${p.file}:${p.line}  ${p.message}`);
+  console.error(
+    "\nRun `bun --filter @nativelink/docs lint:anchors --fix` to pin them.",
+  );
   process.exitCode = 1;
 }
 

@@ -4,14 +4,16 @@ The `nativelink-store` module is a crucial component of the NativeLink system, p
 
 ## Overview
 
- The store module provides the core storage infrastructure that enables NativeLink to efficiently store, retrieve, and manage build, test, and simulation artifacts.
+The store module provides the core storage infrastructure that enables NativeLink to efficiently store, retrieve, and manage build, test, and simulation artifacts.
 
 The main idea behind NativeLink stores is the ability to chain them together, building complex behavior from basic constructs. At the end of the chain, there's typically a final store that persists bytes on some durable storage medium like filesystem, S3, or Redis.
 
-
 ## Usage Patterns
+
 <!-- vale Vale.Spelling = NO -->
+
 The store module is designed with a composable pattern in mind. Store implementations can be wrapped by decorator stores to add functionality. For example:
+
 <!-- vale Vale.Spelling = YES -->
 
 1. **Basic In-Memory Store**: For development or testing, using just the `memory_store.rs`.
@@ -28,7 +30,6 @@ The store module is designed with a composable pattern in mind. Store implementa
    - `verify_store.rs` wrapping
    - `existence_cache_store.rs` wrapping
    - `filesystem_store.rs`
-
 
 ## Configuration
 

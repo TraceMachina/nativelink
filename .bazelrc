@@ -1,4 +1,4 @@
-# Copyright 2022 The NativeLink Authors. All rights reserved.
+# Copyright 2022 Trace Machina, Inc. All rights reserved.
 #
 # Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 # you may not use this file except in compliance with the License.
@@ -98,7 +98,7 @@ build --@rules_rust//:extra_rustc_flag=-Dinvalid_nan_comparisons
 build --@rules_rust//:extra_rustc_flag=-Dinvalid_reference_casting
 build --@rules_rust//:extra_rustc_flag=-Dinvalid_value
 build --@rules_rust//:extra_rustc_flag=-Wkeyword_idents
-build --@rules_rust//:extra_rustc_flag=-Wlet_underscore
+build --@rules_rust//:extra_rustc_flag=-Dlet_underscore
 build --@rules_rust//:extra_rustc_flag=-Wmacro_use_extern_crate
 build --@rules_rust//:extra_rustc_flag=-Wmeta_variable_misuse
 build --@rules_rust//:extra_rustc_flag=-Wmissing_abi
@@ -108,7 +108,7 @@ build --@rules_rust//:extra_rustc_flag=-Wnoop_method_call
 build --@rules_rust//:extra_rustc_flag=-Dopaque_hidden_inferred_bound
 build --@rules_rust//:extra_rustc_flag=-Doverlapping_range_endpoints
 build --@rules_rust//:extra_rustc_flag=-Dsuspicious_double_ref_op
-build --@rules_rust//:extra_rustc_flag=-Wtrivial_casts
+build --@rules_rust//:extra_rustc_flag=-Dtrivial_casts
 build --@rules_rust//:extra_rustc_flag=-Wtrivial_numeric_casts
 build --@rules_rust//:extra_rustc_flag=-Dunconditional_recursion
 build --@rules_rust//:extra_rustc_flag=-Dunexpected_cfgs
@@ -120,7 +120,7 @@ build --@rules_rust//:extra_rustc_flag=-Dunstable_syntax_pre_expansion
 build --@rules_rust//:extra_rustc_flag=-Wunused_import_braces
 build --@rules_rust//:extra_rustc_flag=-Dunused_imports
 build --@rules_rust//:extra_rustc_flag=-Wunused_lifetimes
-build --@rules_rust//:extra_rustc_flag=-Wunused_qualifications
+build --@rules_rust//:extra_rustc_flag=-Dunused_qualifications
 build --@rules_rust//:extra_rustc_flag=-Wvariant_size_differences
 
 build --@rules_rust//:clippy_flag=-Dclippy::all

@@ -1,4 +1,4 @@
-// Copyright 2025 The NativeLink Authors. All rights reserved.
+// Copyright 2025 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -217,6 +217,7 @@ fn make_execution_server(
             instance_name: INSTANCE_NAME.to_string(),
             config: ExecutionConfig {
                 experimental_buck2_invocation_isolation: false,
+                execute_stream_heartbeat_s: 0,
                 cas_store: "main_cas".to_string(),
                 scheduler: "scheduler".to_string(),
             },

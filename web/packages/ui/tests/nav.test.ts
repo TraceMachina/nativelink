@@ -23,7 +23,9 @@ test("section links match themselves and nested routes", () => {
 });
 
 test("external and missing paths never match", () => {
-  expect(isCurrentNavHref("https://enterprise.nativelink.com", "/")).toBe(false);
+  expect(isCurrentNavHref("https://enterprise.nativelink.com", "/")).toBe(
+    false,
+  );
   expect(isCurrentNavHref("/docs", undefined)).toBe(false);
   expect(isCurrentNavHref("mailto:hello@nativelink.com", "/")).toBe(false);
 });

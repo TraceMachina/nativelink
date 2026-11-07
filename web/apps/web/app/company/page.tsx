@@ -73,9 +73,10 @@ export default function CompanyPage() {
                 .
               </h1>
               <p className="mx-auto mt-6 max-w-[680px] text-[17px] leading-relaxed text-muted-foreground md:text-lg">
-                NativeLink is built by Trace Machina. Our mission is to accelerate the
-                reindustrialization of the world by making advanced build and simulation processes
-                that move at machine speed.
+                NativeLink is built by Trace Machina. Our mission is to
+                accelerate the reindustrialization of the world by making
+                advanced build and simulation processes that move at machine
+                speed.
               </p>
             </div>
           </Reveal>
@@ -90,21 +91,25 @@ export default function CompanyPage() {
               Mission: Accelerate the progress of humanity in the machine age.
             </p>
             <p>
-              Our products amplify the rate at which companies can innovate across mission-critical
-              industries — from semiconductors and advanced robotics to autonomous vehicles, AI
-              research, life sciences, and financial services.
+              Our products amplify the rate at which companies can innovate
+              across mission-critical industries — from semiconductors and
+              advanced robotics to autonomous vehicles, AI research, life
+              sciences, and financial services.
             </p>
             <p>
-              Our commitment is to amplify execution across any environment, ensuring that
-              developers can focus on creating transformative technologies that drive forward
-              progress on behalf of humanity.
+              Our commitment is to amplify execution across any environment,
+              ensuring that developers can focus on creating transformative
+              technologies that drive forward progress on behalf of humanity.
             </p>
           </div>
         </Reveal>
       </Section>
 
       {/* VALUES */}
-      <Section width="default" className="border-y border-border/60 bg-surface-elevated/40 py-24">
+      <Section
+        width="default"
+        className="border-y border-border/60 bg-surface-elevated/40 py-24"
+      >
         <Reveal>
           <div className="mb-14 max-w-[600px]">
             <Eyebrow className="mb-4">Values</Eyebrow>
@@ -123,7 +128,9 @@ export default function CompanyPage() {
                 <h3 className="text-2xl font-semibold leading-tight tracking-tight text-foreground">
                   {v.title}
                 </h3>
-                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">{v.body}</p>
+                <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">
+                  {v.body}
+                </p>
               </div>
             </Reveal>
           ))}
@@ -131,7 +138,10 @@ export default function CompanyPage() {
       </Section>
 
       {/* CONTACT */}
-      <Section width="default" className="border-t border-border/60 bg-surface-elevated/40 py-24">
+      <Section
+        width="default"
+        className="border-t border-border/60 bg-surface-elevated/40 py-24"
+      >
         <Reveal>
           <div className="mx-auto mb-12 max-w-[680px] text-center">
             <Eyebrow className="mb-4">Get in touch</Eyebrow>
@@ -139,8 +149,8 @@ export default function CompanyPage() {
               Have questions or need assistance?
             </h2>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground md:text-lg">
-              Reach out for general inquiries, sales conversations, or anything else — we usually
-              reply within a day.
+              Reach out for general inquiries, sales conversations, or anything
+              else — we usually reply within a day.
             </p>
           </div>
         </Reveal>
@@ -156,11 +166,20 @@ export default function CompanyPage() {
                 </CardHeader>
                 <CardBody>{c.body}</CardBody>
                 <CardFooter className="mt-auto pt-8">
-                  <Button asChild variant={c.variant} size="md" className="w-full">
+                  <Button
+                    asChild
+                    variant={c.variant}
+                    size="md"
+                    className="w-full"
+                  >
                     <a
                       href={c.cta.href}
-                      target={c.cta.href.startsWith("http") ? "_blank" : undefined}
-                      rel={c.cta.href.startsWith("http") ? "noreferrer" : undefined}
+                      target={
+                        c.cta.href.startsWith("http") ? "_blank" : undefined
+                      }
+                      rel={
+                        c.cta.href.startsWith("http") ? "noreferrer" : undefined
+                      }
                     >
                       {c.cta.label}
                     </a>

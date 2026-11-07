@@ -1,4 +1,4 @@
-// Copyright 2024 The NativeLink Authors. All rights reserved.
+// Copyright 2024 Trace Machina, Inc. All rights reserved.
 //
 // Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
 // you may not use this file except in compliance with the License.
@@ -53,6 +53,7 @@ async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(
         async fn post_init(self: Arc<Self>) -> Result<(), Error> {
             Ok(())
         }
+        #[allow(clippy::unimplemented)]
         async fn has_with_results(
             self: Pin<&Self>,
             _keys: &[StoreKey<'_>],
@@ -70,6 +71,7 @@ async fn verify_preserves_inner_update_error_when_forwarding_fails() -> Result<(
             reader.recv().await?;
             Err(make_err!(self.code, "inner upload failed"))
         }
+        #[allow(clippy::unimplemented)]
         async fn get_part(
             self: Pin<&Self>,
             _key: StoreKey<'_>,
@@ -815,6 +817,8 @@ fn fast_slow(fast: StoreSpec, slow: StoreSpec) -> StoreSpec {
         fast_direction: nativelink_config::stores::StoreDirection::Both,
         slow_direction: nativelink_config::stores::StoreDirection::Both,
         bypass_dedup_threshold_bytes: 0,
+        has_slow_write_wait_timeout_s: 0,
+        leader_inactivity_timeout_s: 0,
     }))
 }
 
