@@ -29,6 +29,9 @@ name = "nativelink"
 
 [features]
 nix = ["nativelink-worker/nix"]
+# Debug builds only: tokio-console task instrumentation; see
+# nativelink-util's feature of the same name for the build requirements.
+tokio_console = ["nativelink-util/tokio_console"]
 
 [dependencies]
 nativelink-config = { path = "nativelink-config" }
@@ -119,8 +122,12 @@ overlapping-range-endpoints = "deny"
 suspicious-double-ref-op = "deny"
 trivial-casts = "deny"
 unconditional-recursion = "deny"
-unexpected-cfgs = "deny"
-unknown-lints = "allow"                     # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
+# The canonical underscore name, unlike the rest of this table: the
+# hyphenated alias ignores lint config keys. tokio_unstable is the cfg
+# tokio gates its task instrumentation behind; the tokio_console feature
+# checks it, so declare it as expected.
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(tokio_unstable)"] }
+unknown-lints = "allow"                                                   # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
 unnameable-test-items = "deny"
 unsafe-op-in-unsafe-fn = "deny"
 unstable-syntax-pre-expansion = "deny"
