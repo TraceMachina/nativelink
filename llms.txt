@@ -23,11 +23,12 @@ at https://docs.nativelink.com/llms.txt, https://docs.nativelink.com/llms-small.
 - [NativeLink: build infrastructure for the agentic era](https://nativelink.com/): When agents write your code, your build system is the bottleneck. NativeLink is the high-performance remote build cache and remote execution platform for Bazel and beyond.
 - [Product](https://nativelink.com/product): One platform: remote caching, remote execution and observability in a single Rust-native binary, for codebases that grow faster than they can be provisioned.
 - [Pricing](https://nativelink.com/pricing): Two tiers: self-host the source-available release for free, or NativeLink Enterprise with dedicated engineering. Pricing is discussed by email, not read off a page.
-- [For agents](https://nativelink.com/agents): Everything nativelink.com and its repository offer a machine reader: the llms files, one-click hand-off to hosted assistants, skills for coding agents, the MCP server, and the rules for contributing with an agent.
+- [For agents](https://nativelink.com/agents): What NativeLink is and how to read about it as a machine: the fetch order for the three llms files, the MCP server's five tools, skills for Claude Code, Codex and Cursor, and the rules for contributing with an agent.
 - [Company](https://nativelink.com/company): NativeLink is built by Trace Machina, whose mission is to accelerate the progress of humanity in the machine age.
 - [Community](https://nativelink.com/community): Where to read, ask and contribute: the docs, the NativeLink Slack, and the GitHub repository with its contributors.
 - [Careers](https://nativelink.com/careers): A small team building the source-available remote build cache and execution platform, and growing.
 - [Resources](https://nativelink.com/resources): Case studies, conference talks and write-ups from the team building NativeLink, plus highlights from the community.
+- [Extending Bazel to Its Full Potential (free O'Reilly e-book)](https://nativelink.com/resources/oreilly-bazel-book): A free O'Reilly e-book on cloud-native build infrastructure, parallelization, remote execution and caching with Bazel and NativeLink, sent as a PDF in exchange for a work email.
 - [Contact](https://nativelink.com/contact): Real engineers reply. Email or Slack; replies usually within a few hours.
 - [Security](https://nativelink.com/security): NativeLink's security program: organisational, cloud, access and vendor controls, aligned to SOC 2.
 - [License](https://nativelink.com/license): How NativeLink's source-available FSL-Apache licence and its Business Source License modules fit together.
