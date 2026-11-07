@@ -3213,6 +3213,8 @@ dependencies = [
 name = "nativelink-sim"
 version = "1.8.3"
 dependencies = [
+ "bytes",
+ "clap",
  "futures",
  "hyper",
  "nativelink-config",
