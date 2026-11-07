@@ -62,6 +62,12 @@ what happens to the cache you already have.
 NativeLink in front of your old one as a read-only diode, so you never copy the
 data and never lose the hit rate.
 
+**I need to know why an action missed.**
+[Debug a cache miss](/how-to/debug-a-cache-miss) pins the miss to one of three
+places: the client never asked, the action's digest changed between runs, or
+the server never had the entry. Most end at the second, and the page says how
+to tell.
+
 <NextStep href="/configuration" kind="aside" title="Configuration">
   If none of these is your task and you're here to learn the config file
   itself, Configuration is the page you want.
