@@ -1,5 +1,6 @@
 load(
     "@rules_rust//rust:defs.bzl",
+    "rust_binary",
     "rust_doc",
     "rust_doc_test",
     "rust_library",
@@ -11,8 +12,10 @@ rust_library(
     name = "nativelink-sim",
     srcs = [
         "src/actions.rs",
+        "src/cas_load.rs",
         "src/checker.rs",
         "src/clock.rs",
+        "src/fleet.rs",
         "src/lib.rs",
         "src/net.rs",
         "src/property.rs",
@@ -31,6 +34,7 @@ rust_library(
         "//nativelink-store",
         "//nativelink-util",
         "//nativelink-worker",
+        "@crates//:bytes",
         "@crates//:futures",
         "@crates//:hyper",
         "@crates//:parking_lot",
@@ -43,11 +47,29 @@ rust_library(
     ],
 )
 
+rust_binary(
+    name = "fleet-sim",
+    srcs = ["src/bin/fleet_sim.rs"],
+    deps = [
+        ":nativelink-sim",
+        "//nativelink-error",
+        "//nativelink-proto",
+        "//nativelink-util",
+        "@crates//:bytes",
+        "@crates//:clap",
+        "@crates//:futures",
+        "@crates//:prost",
+        "@crates//:tokio",
+        "@crates//:tonic",
+    ],
+)
+
 rust_test_suite(
     name = "integration",
     timeout = "long",
     srcs = [
         "tests/fault_policy_test.rs",
+        "tests/fleet_test.rs",
         "tests/sim_catalogue_test.rs",
         "tests/sim_harness_test.rs",
         "tests/sim_property_test.rs",

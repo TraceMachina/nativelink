@@ -1359,52 +1359,55 @@ pub async fn new_local_worker(
         running_actions_manager,
         Box::new(move || {
             let config = config.clone();
-            Box::pin(async move {
-                let timeout = config
-                    .worker_api_endpoint
-                    .timeout
-                    .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
-                let timeout_duration = Duration::from_secs_f32(timeout);
-                let tls_config =
-                    tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
-                        .err_tip(|| "Parsing local worker TLS configuration")?;
-                let endpoint =
-                    tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
-                        .map_err(|e| {
-                            Error::from_std_err(Code::InvalidArgument, &e)
-                                .append("Invalid URI for worker endpoint")
-                        })?
-                        .connect_timeout(timeout_duration)
-                        .timeout(timeout_duration)
-                        // Probes under and between the messages, so a
-                        // connection that has gone dead underneath fails
-                        // here instead of hanging every message on it.
-                        .tcp_keepalive(Some(seconds_or(
-                            config.worker_api_endpoint.tcp_keepalive_s,
-                            DEFAULT_TCP_KEEPALIVE,
-                        )))
-                        .http2_keep_alive_interval(seconds_or(
-                            config.worker_api_endpoint.http2_keepalive_interval_s,
-                            DEFAULT_HTTP2_KEEPALIVE_INTERVAL,
-                        ))
-                        .keep_alive_timeout(seconds_or(
-                            config.worker_api_endpoint.http2_keepalive_timeout_s,
-                            DEFAULT_HTTP2_KEEPALIVE_TIMEOUT,
-                        ))
-                        .keep_alive_while_idle(true);
-
-                let transport = endpoint.connect().await.map_err(|e| {
-                    Error::from_std_err(Code::Internal, &e).append(format!(
-                        "Could not connect to endpoint {}",
-                        config.worker_api_endpoint.uri
-                    ))
-                })?;
-                Ok(WorkerApiClient::new(transport).into())
-            })
+            Box::pin(async move { connect_to_scheduler(&config).await })
         }),
         Box::new(move |d| Box::pin(time::sleep(d))),
     );
     Ok(local_worker)
+}
+
+/// Connects to the scheduler's worker API the way every worker does: the
+/// endpoint, TLS and keepalives from `worker_api_endpoint`.
+pub async fn connect_to_scheduler(
+    config: &LocalWorkerConfig,
+) -> Result<WorkerApiClientWrapper, Error> {
+    let timeout = config
+        .worker_api_endpoint
+        .timeout
+        .unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_S);
+    let timeout_duration = Duration::from_secs_f32(timeout);
+    let tls_config = tls_utils::load_client_config(&config.worker_api_endpoint.tls_config)
+        .err_tip(|| "Parsing local worker TLS configuration")?;
+    let endpoint = tls_utils::endpoint_from(&config.worker_api_endpoint.uri, tls_config)
+        .map_err(|e| {
+            Error::from_std_err(Code::InvalidArgument, &e).append("Invalid URI for worker endpoint")
+        })?
+        .connect_timeout(timeout_duration)
+        .timeout(timeout_duration)
+        // Probes under and between the messages, so a
+        // connection that has gone dead underneath fails
+        // here instead of hanging every message on it.
+        .tcp_keepalive(Some(seconds_or(
+            config.worker_api_endpoint.tcp_keepalive_s,
+            DEFAULT_TCP_KEEPALIVE,
+        )))
+        .http2_keep_alive_interval(seconds_or(
+            config.worker_api_endpoint.http2_keepalive_interval_s,
+            DEFAULT_HTTP2_KEEPALIVE_INTERVAL,
+        ))
+        .keep_alive_timeout(seconds_or(
+            config.worker_api_endpoint.http2_keepalive_timeout_s,
+            DEFAULT_HTTP2_KEEPALIVE_TIMEOUT,
+        ))
+        .keep_alive_while_idle(true);
+
+    let transport = endpoint.connect().await.map_err(|e| {
+        Error::from_std_err(Code::Internal, &e).append(format!(
+            "Could not connect to endpoint {}",
+            config.worker_api_endpoint.uri
+        ))
+    })?;
+    Ok(WorkerApiClient::new(transport).into())
 }
 
 impl<T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorker<T, U> {

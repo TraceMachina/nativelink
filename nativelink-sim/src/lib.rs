@@ -24,8 +24,10 @@
 #![allow(clippy::use_debug, reason = "the harness's output is test diagnostics")]
 
 pub mod actions;
+pub mod cas_load;
 pub mod checker;
 pub mod clock;
+pub mod fleet;
 pub mod net;
 pub mod property;
 pub mod scenario;
