@@ -1423,7 +1423,10 @@ pub struct CommonObjectSpec {
     )]
     pub max_retry_buffer_per_request: Option<usize>,
 
-    /// Maximum number of concurrent `UploadPart` requests per `MultipartUpload`.
+    /// Maximum number of concurrent part uploads within one multipart upload.
+    /// Azure applies this to active staged-block uploads, including retry waits;
+    /// it must be greater than zero. This is a per-blob limit, not a limit across
+    /// concurrent blobs. Use `max_concurrent_requests` for an Azure store-wide cap.
     ///
     /// Default: 10.
     ///
@@ -1528,6 +1531,9 @@ pub struct CommonObjectSpec {
     /// Every store in a `shard` has a limit of its own, so N shards hold up
     /// to N times this. 0 (the default) leaves requests unbounded, as
     /// before.
+    /// Azure HTTP requests do not take filesystem permits from
+    /// `global.max_open_files`: a filesystem fast tier may hold those while
+    /// waiting for an Azure upload. Use this setting to bound Azure requests.
     ///
     /// Default: 0
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
