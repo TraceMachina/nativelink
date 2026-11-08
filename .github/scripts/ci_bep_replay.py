@@ -434,7 +434,9 @@ def results_link(base, invocation_id):
 def public_cache_host():
     """The read-only cache host fork PR lanes use, from setup-nativelink-cloud."""
     action = (PROTO_ROOT.parent / '.github/actions/setup-nativelink-cloud/action.yaml').read_text()
-    match = re.search(r'\n  public-claim-base:\n(?:    .*\n|      .*\n)*?    default: "([a-z0-9.-]+)"',
+    # Indented lines under the input, up to its default. One alternative
+    # only: overlapping ones backtrack exponentially.
+    match = re.search(r'\n  public-claim-base:\n(?:    [^\n]*\n)*?    default: "([a-z0-9.-]+)"',
                       action)
     if not match:
         raise ValueError('setup-nativelink-cloud has no public-claim-base default')
