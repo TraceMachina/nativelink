@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-"""Publish a fork PR's staged build events to the build-results UI.
+"""Replay fork PR build events (from ci_bep_artifact.py) to the build-results UI.
 
-Fork PRs get no secrets, so their Bazel lanes cannot stream BES. They stage
-the binary BEP file as a bep-* artifact instead (ci_bep_artifact.py). A
-trusted workflow_run job, running this file from the default branch, replays
-that file as an ordered BES stream with a key that can publish build events
-and nothing else.
-
-Everything in the artifact is untrusted, so before it is sent:
-- Identity comes only from the workflow_run event. The fork's build metadata
-  is replaced, and workspace status entries that become tags or a reported
-  user are dropped, so a fork build cannot pass as a trusted one.
-- File links survive only as file:// or as bytestream:// on an allowlisted
-  host, so the UI never links to a host the fork chose.
-- The start and finish times are clamped to the triggering run.
-- The invocation id is derived from the run and artifact, so a re-run of the
-  replay overwrites the same build instead of adding a second one.
-
-After publishing, each job's build gets a check run on the PR head that links
-it and quotes the failing tests' log tails, which people without access to
-the UI can still read. Without --publish this only reports what it would send.
+The artifact is untrusted: identity comes from the workflow_run event, and
+metadata, tags, links and times are rewritten before publishing. Without
+--publish this only reports what it would send.
 """
 
 import argparse
@@ -60,11 +44,9 @@ PROTO_FILES = (
 )
 PUBLISH_METHOD = '/google.devtools.build.v1.PublishBuildEvent/PublishBuildToolEventStream'
 
-# Same cap as the producer; anything larger was never staged.
 MAX_EVENTS_BYTES = 64 << 20
 MAX_EVENT_BYTES = 16 << 20
 MAX_EVENTS = 1_000_000
-# Names the replay ids so they cannot collide with ids Bazel generates.
 ID_NAMESPACE = uuid.UUID('5a0c1f4e-8f0e-4d55-9a3b-6f1a3c2b7d10')
 ARTIFACT_NAME = re.compile(r'bep-([A-Za-z0-9_-]{1,64})-([0-9]{1,3})')
 SHA = re.compile(r'[0-9a-f]{40}')
@@ -72,21 +54,18 @@ COMMAND = re.compile(r'[a-z_-]{1,32}')
 # Workspace status keys the ETL turns into tags or a reported user.
 TAG_STATUS = re.compile(r'(STABLE_|GITHUB_|BUILDKITE_)')
 REPORTED_STATUS = frozenset({'BUILD_USER'})
-# Started may precede the run's recorded start by clock skew only.
 CLOCK_SKEW = datetime.timedelta(minutes=5)
 FINISHED_OK = frozenset({'PASSED', 'FLAKY'})
-# Check run output; GitHub caps summary and text at 65535 characters each.
+# GitHub caps check run text at 65535 characters.
 MAX_CHECK_TESTS = 10
 MAX_TAIL_BYTES = 4096
 MAX_CHECK_TEXT = 60000
 CHECK_PREFIX = 'Build results / '
 CHECK_JOB = re.compile(r'[A-Za-z0-9_ -]{1,80}')
 CHECK_TITLE = re.compile(r'[A-Za-z0-9_ ]{1,80}')
-# One comment per PR, found by this marker and rebuilt from the check runs.
 COMMENT_MARKER = '<!-- fork-build-results -->'
 COMMENT_AUTHOR = 'github-actions[bot]'
-# Each lane's run rebuilds the comment, waits this long and rebuilds it
-# again, so two lanes finishing together still end with both rows.
+# Rebuild the comment again after this, in case another lane finished.
 COMMENT_SETTLE_SECONDS = 15
 
 
@@ -179,7 +158,6 @@ def origin_from_event(event, artifact_name, pull_request=None):
     repository = event['repository']['full_name']
     head_repository = (run.get('head_repository') or {}).get('full_name') or ''
     if not head_repository or head_repository == repository:
-        # Repository PRs hold the cluster key and stream BES themselves.
         raise ValueError('only fork PRs are replayed')
     if not SHA.fullmatch(run.get('head_sha', '')):
         raise ValueError('workflow_run has no head commit')
@@ -277,9 +255,7 @@ def clear_untrusted_uris(message, hosts):
     return cleared
 
 
-# On a cold repository cache Bazel downloads modules before the build starts
-# and reports that as progress and fetch events ahead of `started`. Nothing
-# else may come first.
+# Bazel emits these before `started` while fetching on a cold cache.
 BEFORE_STARTED = frozenset({'progress', 'fetch'})
 
 
@@ -364,7 +340,6 @@ def requests(protos, events, build_id, invocation_id, now):
         ordered.event.event_time.FromDatetime(now)
         ordered.event.bazel_event.Pack(event)
         if sequence == 1:
-            # What Bazel sends on its first event.
             name = command if COMMAND.fullmatch(command) else 'unknown'
             request.notification_keywords.extend([f'command_name={name}', 'protocol_name=BEP'])
         out.append(request)
@@ -417,7 +392,7 @@ def publish(protos, stream, endpoint, api_key, project, timeout=300, attempts=3)
                     return acked
                 error = f'{acked} of {len(stream)} events acknowledged'
             except grpc.RpcError as rpc_error:
-                # The server's details, never the request metadata.
+                # Never the request metadata, which holds the key.
                 error = f'{rpc_error.code().name}: {rpc_error.details()}'
             # The ids and sequence numbers are fixed, so a retry overwrites.
             print(f'::warning::Build event stream attempt {attempt} failed: {error}')
@@ -434,8 +409,7 @@ def results_link(base, invocation_id):
 def public_cache_host():
     """The read-only cache host fork PR lanes use, from setup-nativelink-cloud."""
     action = (PROTO_ROOT.parent / '.github/actions/setup-nativelink-cloud/action.yaml').read_text()
-    # Indented lines under the input, up to its default. One alternative
-    # only: overlapping ones backtrack exponentially.
+    # One alternative only: overlapping ones backtrack exponentially.
     match = re.search(r'\n  public-claim-base:\n(?:    [^\n]*\n)*?    default: "([a-z0-9.-]+)"',
                       action)
     if not match:
@@ -721,7 +695,6 @@ def main(argv=None):
         try:
             comment_on_pull_request(origin, token, args.results_url)
         except (urllib.error.URLError, KeyError, TypeError) as error:
-            # The builds are published and linked from their check runs.
             print(f'::warning::Could not update the PR comment: {error}')
     return 0
 

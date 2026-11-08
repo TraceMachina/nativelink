@@ -26,8 +26,6 @@ jobs:
       - name: Test CI metadata and dispatch
         run: python3 -m unittest discover -s .github/scripts -p 'test_ci*.py' -v
 
-      # The replay tests need protobuf and gRPC, which the runner's Python
-      # lacks; the step above skips them.
       - name: Test the fork build-results replay
         env:
           BEP_REPLAY_TESTS_REQUIRED: "1"
