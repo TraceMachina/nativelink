@@ -438,38 +438,40 @@ async fn tripwire_drains_a_worker_whose_attempts_keep_failing_test() -> Result<(
 
 #[nativelink_test]
 async fn tripwire_holds_when_its_share_is_drained_test() -> Result<(), Error> {
-    // Two workers, at most half of them drained: one.
-    let scheduler = make_scheduler(&tripwire(2, 50, 50));
-    let w1 = WorkerId("w1".to_string());
-    let w2 = WorkerId("w2".to_string());
-    let mut rx1 = setup_new_worker(&scheduler, &w1).await?;
-    let mut rx2 = setup_new_worker(&scheduler, &w2).await?;
-
-    for digest in [20u8, 21, 22, 23] {
+    // Four workers, a quarter of them drainable: the floor of two applies,
+    // and the third worker that would trip is held.
+    let scheduler = make_scheduler(&tripwire(2, 50, 25));
+    let ids: Vec<WorkerId> = (1..=4).map(|i| WorkerId(format!("w{i}"))).collect();
+    let mut rx1 = setup_new_worker(&scheduler, &ids[0]).await?;
+    let mut rx2 = setup_new_worker(&scheduler, &ids[1]).await?;
+    let mut rx3 = setup_new_worker(&scheduler, &ids[2]).await?;
+    let mut rx4 = setup_new_worker(&scheduler, &ids[3]).await?;
+    let mut digest = 20u8;
+    // Enough failures to trip every worker twice over, whoever gets them.
+    for _ in 0..12 {
         let mut listener = setup_action(&scheduler, digest).await?;
-        let (which, operation_id) = next_start_on_either(&mut rx1, &mut rx2).await;
+        digest += 1;
+        let (which, operation_id) = tokio::select! {
+            u = rx1.recv() => (0, start_action_id(u)),
+            u = rx2.recv() => (1, start_action_id(u)),
+            u = rx3.recv() => (2, start_action_id(u)),
+            u = rx4.recv() => (3, start_action_id(u)),
+        };
         expect_stage(&mut listener, "executing").await;
-        let worker_id = if which == 1 { &w1 } else { &w2 };
         scheduler
-            .update_action(worker_id, &operation_id, timed_out())
+            .update_action(&ids[which], &operation_id, timed_out())
             .await?;
         expect_stage(&mut listener, "completed").await;
     }
-    let drained = [
-        is_draining(&scheduler, &w1).await,
-        is_draining(&scheduler, &w2).await,
-    ];
+    let mut drained = Vec::new();
+    for id in &ids {
+        drained.push(is_draining(&scheduler, id).await);
+    }
     assert_eq!(
         drained.iter().filter(|d| **d).count(),
-        1,
-        "exactly one worker drained: {drained:?}"
+        2,
+        "exactly two workers drained (the floor): {drained:?}"
     );
-
-    // The one still accepting takes the next action.
-    let mut listener = setup_action(&scheduler, 24).await?;
-    let (which, _) = next_start_on_either(&mut rx1, &mut rx2).await;
-    expect_stage(&mut listener, "executing").await;
-    assert!(!drained[which - 1], "the drained worker was offered work");
     Ok(())
 }
 

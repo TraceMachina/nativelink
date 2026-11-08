@@ -418,6 +418,13 @@ impl Avoidance<'_> {
     }
 }
 
+/// The fewest workers the outcome tripwire may have drained at once on one
+/// scheduler replica, whatever `max_drained_percent` of the replica's
+/// workers comes to. Each replica brakes on the workers connected to it
+/// (the census carries worker shapes, not counts), and a replica with a
+/// handful of workers would otherwise round a node's pair down to one.
+pub const TRIPWIRE_DRAIN_FLOOR: usize = 2;
+
 /// How long a requeued action waits for a worker it did not fail on before
 /// the ones it did fail on may take it. Each scheduler replica matches its
 /// own workers only: a replica whose free workers are all avoided leaves
@@ -915,9 +922,9 @@ impl ApiWorkerSchedulerImpl {
     /// and drains the worker when its recent attempts say so (the outcome
     /// tripwire): at least `min_failures` failures among the last `window`
     /// attempts that are at least `failure_percent` of them. At most
-    /// `max_drained_percent` of the connected workers, and at least one,
-    /// are drained this way at once; past that the worker is left alone
-    /// and the hold is logged once.
+    /// `max_drained_percent` of the connected workers, and at least
+    /// `TRIPWIRE_DRAIN_FLOOR`, are drained this way at once; past that the
+    /// worker is left alone and the hold is logged once.
     fn note_worker_outcome(&mut self, worker_id: &WorkerId, failed: bool) {
         let Some(spec) = self.outcome_tripwire else {
             return;
@@ -943,7 +950,7 @@ impl ApiWorkerSchedulerImpl {
         if failures < spec.min_failures || failures * 100 < spec.failure_percent * judged {
             return;
         }
-        let allowed = (connected * spec.max_drained_percent / 100).max(1);
+        let allowed = (connected * spec.max_drained_percent / 100).max(TRIPWIRE_DRAIN_FLOOR);
         if drained >= allowed {
             if worker.tripwire != TripwireState::Held {
                 worker.tripwire = TripwireState::Held;

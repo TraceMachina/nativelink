@@ -701,8 +701,9 @@ const fn default_reservation_max_hold_s() -> u64 {
 /// least `failure_percent` of them is drained: it finishes what it runs and
 /// is offered nothing more until it reconnects or an operator undrains it.
 /// At most `max_drained_percent` of the workers connected to this
-/// scheduler, and at least one, are drained this way at once, so a fault
-/// every worker shares (a store down) drains a few workers, not the fleet.
+/// scheduler replica, and at least two (a node's pair), are drained this
+/// way at once, so a fault every worker shares (a store down) drains a few
+/// workers, not the fleet.
 #[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -734,7 +735,8 @@ pub struct WorkerOutcomeTripwireSpec {
     pub failure_percent: usize,
 
     /// Most workers drained this way at once, as a percentage of the
-    /// workers connected to this scheduler; at least one. At most 100.
+    /// workers connected to this scheduler replica; at least two. At most
+    /// 100.
     /// Default: 20
     #[serde(
         default = "default_tripwire_max_drained_percent",
