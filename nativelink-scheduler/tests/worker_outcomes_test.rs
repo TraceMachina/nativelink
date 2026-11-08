@@ -21,12 +21,14 @@ use core::time::Duration;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use mock_instant::thread_local::MockClock;
 use nativelink_config::schedulers::{SimpleSpec, WorkerOutcomeTripwireSpec};
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
     ConnectionResult, UpdateForWorker, update_for_worker,
 };
+use nativelink_scheduler::api_worker_scheduler::AVOID_FALLBACK_AFTER;
 use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_factory;
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
@@ -55,6 +57,13 @@ fn make_system_time(add_time: u64) -> SystemTime {
 }
 
 fn make_scheduler(spec: &SimpleSpec) -> Arc<SimpleScheduler> {
+    make_scheduler_with_notify(spec).0
+}
+
+/// The scheduler and the notify that wakes its matching pass, for a test
+/// that moves the clock and wants the pass to look again.
+fn make_scheduler_with_notify(spec: &SimpleSpec) -> (Arc<SimpleScheduler>, Arc<Notify>) {
+    MockClock::set_time(Duration::from_secs(NOW_TIME));
     let task_change_notify = Arc::new(Notify::new());
     let (scheduler, _worker_scheduler) = SimpleScheduler::new_with_callback(
         spec,
@@ -64,11 +73,11 @@ fn make_scheduler(spec: &SimpleSpec) -> Arc<SimpleScheduler> {
             MockInstantWrapped::default,
         ),
         || async move {},
-        task_change_notify,
+        task_change_notify.clone(),
         MockInstantWrapped::default,
         None,
     );
-    scheduler
+    (scheduler, task_change_notify)
 }
 
 fn tripwire(min_failures: usize, failure_percent: usize, max_drained_percent: usize) -> SimpleSpec {
@@ -306,7 +315,7 @@ async fn second_command_timeout_is_final_test() -> Result<(), Error> {
 
 #[nativelink_test]
 async fn command_timeout_retry_returns_to_a_lone_worker_test() -> Result<(), Error> {
-    let scheduler = make_scheduler(&SimpleSpec::default());
+    let (scheduler, notify) = make_scheduler_with_notify(&SimpleSpec::default());
     let w1 = WorkerId("w1".to_string());
     let mut rx1 = setup_new_worker(&scheduler, &w1).await?;
     let mut listener = setup_action(&scheduler, 3).await?;
@@ -317,7 +326,19 @@ async fn command_timeout_retry_returns_to_a_lone_worker_test() -> Result<(), Err
         .update_action(&w1, &operation_id, timed_out())
         .await?;
     expect_stage(&mut listener, "queued").await;
-    // No other worker can take it, so the one that timed it out does.
+    // Inside the grace the lone worker is not offered it: another replica
+    // might have a worker that did not fail it.
+    notify.notify_one();
+    tokio::task::yield_now().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), rx1.recv())
+            .await
+            .is_err(),
+        "the worker that timed the action out got it back inside the grace"
+    );
+    // Past the grace, with no other taker, the same worker does.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
+    notify.notify_one();
     assert_eq!(next_start(&mut rx1).await, operation_id);
     expect_stage(&mut listener, "executing").await;
     Ok(())

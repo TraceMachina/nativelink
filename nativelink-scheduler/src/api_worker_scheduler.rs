@@ -385,9 +385,20 @@ pub struct QueuedAction<'a> {
     pub unique_qualifier: &'a ActionUniqueQualifier,
     pub insert_timestamp: SystemTime,
     /// Workers this action failed or timed out on: any other worker that
-    /// can run it is preferred, and these only when none other can.
+    /// can run it is preferred, and these only when none other has taken
+    /// it within `AVOID_FALLBACK_AFTER` of its last requeue.
     pub avoid: &'a [WorkerId],
+    /// When the action was last queued, from its state.
+    pub queued_since: SystemTime,
 }
+
+/// How long a requeued action waits for a worker it did not fail on before
+/// the ones it did fail on may take it. Each scheduler replica matches its
+/// own workers only: a replica whose free workers are all avoided leaves
+/// the action for a peer with others, and only after this long with no
+/// taker (a lone worker, a fleet whose only room is the bad node) does any
+/// worker do.
+pub const AVOID_FALLBACK_AFTER: Duration = Duration::from_secs(30);
 
 /// Which of `owners`, sorted, distinct and not empty, holds a worker for
 /// `action`: the same one on every scheduler that sees the same owners,
@@ -1337,10 +1348,11 @@ impl ApiWorkerSchedulerImpl {
         full_worker_logging: bool,
         asking: Option<&ActionUniqueQualifier>,
         avoid: &[WorkerId],
+        fallback_ok: bool,
     ) -> Option<WorkerId> {
         // The workers this action failed or timed out on, and the others on
-        // their nodes, are offered it last: only when no other worker can
-        // take it.
+        // their nodes, are offered it last: only when no other worker has
+        // taken it for a while (`fallback_ok`).
         if !avoid.is_empty() {
             let avoid_nodes: HashSet<&str> = avoid
                 .iter()
@@ -1367,6 +1379,15 @@ impl ApiWorkerSchedulerImpl {
                 asking,
             ) {
                 return Some(worker_id);
+            }
+            if !fallback_ok {
+                if full_worker_logging {
+                    info!(
+                        ?avoid,
+                        "Only workers this action failed on, or their nodes, are free here; leaving it for a peer"
+                    );
+                }
+                return None;
             }
             if full_worker_logging {
                 info!(
@@ -1513,6 +1534,12 @@ impl ApiWorkerSchedulerImpl {
             now,
             asking.map(|action| action.unique_qualifier),
             asking.map_or(&[][..], |action| action.avoid),
+            asking.is_none_or(|action| {
+                action.avoid.is_empty()
+                    || now
+                        .duration_since(action.queued_since)
+                        .is_ok_and(|waited| waited >= AVOID_FALLBACK_AFTER)
+            }),
         );
         if matches!(outcome, MatchOutcome::WaitingForCapacity) {
             self.consider_hold(asking, platform_properties, now, full_worker_logging);
@@ -1528,6 +1555,7 @@ impl ApiWorkerSchedulerImpl {
         now: SystemTime,
         asking: Option<&ActionUniqueQualifier>,
         avoid: &[WorkerId],
+        fallback_ok: bool,
     ) -> MatchOutcome {
         if let Some(action) = asking {
             self.note_held_action_seen(action);
@@ -1553,6 +1581,7 @@ impl ApiWorkerSchedulerImpl {
                 full_worker_logging,
                 asking,
                 avoid,
+                fallback_ok,
             ) {
                 return MatchOutcome::Matched(worker_id);
             }

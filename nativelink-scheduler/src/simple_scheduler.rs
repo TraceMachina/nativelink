@@ -592,6 +592,8 @@ impl SimpleScheduler {
             action_info: ActionInfoWithProps,
             /// Workers a retry of this action should not go back to.
             avoid: Vec<WorkerId>,
+            /// When the action was last queued.
+            queued_since: SystemTime,
         }
 
         /// Reads what matching needs of a listed action. `None` when the
@@ -643,6 +645,10 @@ impl SimpleScheduler {
                 .avoid_worker_ids()
                 .await
                 .unwrap_or_default();
+            let queued_since = match action_state_result.as_state().await {
+                Ok((state, _)) => state.last_transition_timestamp,
+                Err(_) => action_info.insert_timestamp,
+            };
             Ok(Some(Loaded {
                 action_state_result,
                 action_info: ActionInfoWithProps {
@@ -652,6 +658,7 @@ impl SimpleScheduler {
                     scheduler_start_execute_event_id: None,
                 },
                 avoid,
+                queued_since,
             }))
         }
 
@@ -834,6 +841,7 @@ impl SimpleScheduler {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
                             avoid: &loaded.avoid,
+                            queued_since: loaded.queued_since,
                         }),
                     )
                     .await
@@ -976,6 +984,7 @@ impl SimpleScheduler {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
                             avoid: &loaded.avoid,
+                            queued_since: loaded.queued_since,
                         }),
                     )
                     .await;
