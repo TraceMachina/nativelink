@@ -446,11 +446,9 @@ async fn tripwire_holds_when_its_share_is_drained_test() -> Result<(), Error> {
     let mut rx2 = setup_new_worker(&scheduler, &ids[1]).await?;
     let mut rx3 = setup_new_worker(&scheduler, &ids[2]).await?;
     let mut rx4 = setup_new_worker(&scheduler, &ids[3]).await?;
-    let mut digest = 20u8;
     // Enough failures to trip every worker twice over, whoever gets them.
-    for _ in 0..12 {
+    for digest in 20u8..32 {
         let mut listener = setup_action(&scheduler, digest).await?;
-        digest += 1;
         let (which, operation_id) = tokio::select! {
             u = rx1.recv() => (0, start_action_id(u)),
             u = rx2.recv() => (1, start_action_id(u)),
