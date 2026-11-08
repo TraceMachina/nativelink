@@ -920,8 +920,9 @@ impl ApiWorkerSchedulerImpl {
 
     /// Records how an attempt on `worker_id` ended, `true` for a failure,
     /// and drains the worker when its recent attempts say so (the outcome
-    /// tripwire): at least `min_failures` failures among the last `window`
-    /// attempts that are at least `failure_percent` of them. At most
+    /// tripwire): its last `min_failures` attempts all failed, or at least
+    /// `min_failures` failures among the last `window` attempts that are at
+    /// least `failure_percent` of them. At most
     /// `max_drained_percent` of the connected workers, and at least
     /// `TRIPWIRE_DRAIN_FLOOR`, are drained this way at once; past that the
     /// worker is left alone and the hold is logged once.
@@ -947,7 +948,18 @@ impl ApiWorkerSchedulerImpl {
         }
         let judged = worker.recent_outcomes.len();
         let failures = worker.recent_outcomes.iter().filter(|f| **f).count();
-        if failures < spec.min_failures || failures * 100 < spec.failure_percent * judged {
+        // A run of failures trips on its own: a worker that was healthy and
+        // went bad carries a window of successes that would otherwise hide
+        // the turn until half of it had failed.
+        let in_a_row = worker
+            .recent_outcomes
+            .iter()
+            .rev()
+            .take_while(|failed| **failed)
+            .count();
+        let trips = in_a_row >= spec.min_failures
+            || (failures >= spec.min_failures && failures * 100 >= spec.failure_percent * judged);
+        if !trips {
             return;
         }
         let allowed = (connected * spec.max_drained_percent / 100).max(TRIPWIRE_DRAIN_FLOOR);

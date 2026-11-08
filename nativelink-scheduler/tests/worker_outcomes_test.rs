@@ -600,6 +600,39 @@ async fn the_node_is_remembered_after_the_worker_that_failed_leaves_test() -> Re
 }
 
 #[nativelink_test]
+async fn tripwire_trips_on_a_run_of_failures_after_a_healthy_history_test() -> Result<(), Error> {
+    // Eight good results, then two timeouts in a row: a fifth of the
+    // window failed, under the ratio, but the run alone drains the worker.
+    let scheduler = make_scheduler(&tripwire(2, 50, 100));
+    let w1 = WorkerId("w1".to_string());
+    let mut rx1 = setup_new_worker(&scheduler, &w1).await?;
+    for digest in 50u8..58 {
+        let mut listener = setup_action(&scheduler, digest).await?;
+        let operation_id = next_start(&mut rx1).await;
+        expect_stage(&mut listener, "executing").await;
+        scheduler
+            .update_action(&w1, &operation_id, finished(0))
+            .await?;
+        expect_stage(&mut listener, "completed").await;
+    }
+    for digest in [58u8, 59] {
+        assert!(!is_draining(&scheduler, &w1).await);
+        let mut listener = setup_action(&scheduler, digest).await?;
+        let operation_id = next_start(&mut rx1).await;
+        expect_stage(&mut listener, "executing").await;
+        scheduler
+            .update_action(&w1, &operation_id, timed_out())
+            .await?;
+        expect_stage(&mut listener, "completed").await;
+    }
+    assert!(
+        is_draining(&scheduler, &w1).await,
+        "two failures in a row drain the worker"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 async fn tripwire_spec_defaults_test() -> Result<(), Error> {
     let tripwire = WorkerOutcomeTripwireSpec::default();
     assert_eq!(

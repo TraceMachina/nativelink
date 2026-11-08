@@ -697,9 +697,13 @@ const fn default_reservation_max_hold_s() -> u64 {
 /// When the scheduler drains a worker on the outcomes of its own attempts.
 /// A command timeout, an input fetch timeout and a worker error are
 /// failures; a result, whatever its exit code, is a success. A worker whose
-/// last `window` attempts hold at least `min_failures` failures that are at
-/// least `failure_percent` of them is drained: it finishes what it runs and
-/// is offered nothing more until it reconnects or an operator undrains it.
+/// last `min_failures` attempts all failed, or whose last `window` attempts
+/// hold at least `min_failures` failures that are at least `failure_percent`
+/// of them, is drained: it finishes what it runs and is offered nothing
+/// more until it reconnects or an operator undrains it. The run of failures
+/// catches a worker that was healthy and went bad without waiting for half
+/// its window to fail; the ratio catches one that fails often but not in a
+/// row, and leaves alone one that fails a few of many.
 /// At most `max_drained_percent` of the workers connected to this
 /// scheduler replica, and at least two (a node's pair), are drained this
 /// way at once, so a fault every worker shares (a store down) drains a few
@@ -716,8 +720,9 @@ pub struct WorkerOutcomeTripwireSpec {
     )]
     pub window: usize,
 
-    /// Failures among the attempts judged that drain the worker. Must be
-    /// above zero and at most `window`.
+    /// Failures that drain the worker: this many in a row, or this many
+    /// among the attempts judged at `failure_percent` or more of them. Must
+    /// be above zero and at most `window`.
     /// Default: 3
     #[serde(
         default = "default_tripwire_min_failures",
