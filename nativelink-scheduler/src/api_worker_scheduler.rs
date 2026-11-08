@@ -905,7 +905,7 @@ impl ApiWorkerSchedulerImpl {
         }
         worker.is_draining = is_draining;
         if !is_draining {
-            // An operator undraining a tripped worker gives it a clean
+            // An operator lifting a tripped worker's drain gives it a clean
             // slate; the tripwire judges it afresh.
             worker.tripwire = TripwireState::Clear;
             worker.recent_outcomes.clear();

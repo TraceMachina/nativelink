@@ -103,7 +103,7 @@ pub const LOST_AFTER_MISSED_REPORTS: u32 = 2;
 /// What the outcome tripwire has done with a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TripwireState {
-    /// Nothing, or an operator undrained it since.
+    /// Nothing, or an operator lifted its drain since.
     #[default]
     Clear,
     /// It would have drained the worker, but as many workers were already
