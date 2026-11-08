@@ -39,6 +39,7 @@ use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::
     ActionAttemptEnded, ActionResourceUsage, AttemptEndReason, ConnectionResult,
     KillOperationRequest, StartExecute, UpdateForWorker, WorkerLoad, update_for_worker,
 };
+use nativelink_scheduler::api_worker_scheduler::AVOID_FALLBACK_AFTER;
 use nativelink_scheduler::awaited_action_db::{
     AwaitedAction, AwaitedActionDb, AwaitedActionSubscriber, SortedAwaitedAction,
     SortedAwaitedActionState,
@@ -2516,6 +2517,9 @@ async fn worker_retries_on_internal_error_and_fails_test() -> Result<(), Error> 
     }
 
     // Now connect a new worker and it should pickup the action.
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
     let mut rx_from_worker =
         setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     {
@@ -2695,6 +2699,9 @@ async fn store_unavailable_errors_spend_the_worker_loss_budget_test() -> Result<
         action_listener.changed().await.unwrap().0.stage,
         ActionStage::Queued
     );
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
     rx_from_worker =
         setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     match rx_from_worker.recv().await.unwrap().update {
@@ -2796,6 +2803,9 @@ async fn unmarked_unavailable_error_spends_max_job_retries_test() -> Result<(), 
         action_listener.changed().await.unwrap().0.stage,
         ActionStage::Queued
     );
+    // The retry keeps off the worker that failed it until the grace
+    // passes (RFC-0017); the worker here comes back under the same id.
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
     rx_from_worker =
         setup_new_worker(&scheduler, worker_id.clone(), PlatformProperties::default()).await?;
     match rx_from_worker.recv().await.unwrap().update {
