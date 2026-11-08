@@ -395,6 +395,29 @@ pub struct QueuedAction<'a> {
     pub queued_since: SystemTime,
 }
 
+/// What a requeued action asks the matcher to keep off: the workers it
+/// failed on, their nodes, and whether the wait for another taker is over.
+#[derive(Debug, Clone, Copy)]
+pub struct Avoidance<'a> {
+    pub workers: &'a [WorkerId],
+    pub nodes: &'a [String],
+    /// The action has waited `AVOID_FALLBACK_AFTER` since its requeue with
+    /// no other taker, so the avoided workers may have it.
+    pub fallback_ok: bool,
+}
+
+impl Avoidance<'_> {
+    const NONE: Avoidance<'static> = Avoidance {
+        workers: &[],
+        nodes: &[],
+        fallback_ok: true,
+    };
+
+    const fn is_empty(&self) -> bool {
+        self.workers.is_empty() && self.nodes.is_empty()
+    }
+}
+
 /// How long a requeued action waits for a worker it did not fail on before
 /// the ones it did fail on may take it. Each scheduler replica matches its
 /// own workers only: a replica whose free workers are all avoided leaves
@@ -1350,17 +1373,17 @@ impl ApiWorkerSchedulerImpl {
         candidates: &HashSet<WorkerId>,
         full_worker_logging: bool,
         asking: Option<&ActionUniqueQualifier>,
-        avoid: &[WorkerId],
-        avoid_nodes: &[String],
-        fallback_ok: bool,
+        avoidance: Avoidance<'_>,
     ) -> Option<WorkerId> {
         // The workers this action failed or timed out on, and the others on
         // their nodes, are offered it last: only when no other worker has
         // taken it for a while (`fallback_ok`). The nodes come from the
         // record, which every replica reads, and from the workers this
         // replica knows.
-        if !avoid.is_empty() || !avoid_nodes.is_empty() {
-            let shunned: HashSet<&str> = avoid_nodes
+        if !avoidance.is_empty() {
+            let avoid = avoidance.workers;
+            let shunned: HashSet<&str> = avoidance
+                .nodes
                 .iter()
                 .map(String::as_str)
                 .chain(
@@ -1391,7 +1414,7 @@ impl ApiWorkerSchedulerImpl {
             ) {
                 return Some(worker_id);
             }
-            if !fallback_ok {
+            if !avoidance.fallback_ok {
                 if full_worker_logging {
                     info!(
                         ?avoid,
@@ -1544,13 +1567,12 @@ impl ApiWorkerSchedulerImpl {
             full_worker_logging,
             now,
             asking.map(|action| action.unique_qualifier),
-            asking.map_or(&[][..], |action| action.avoid),
-            asking.map_or(&[][..], |action| action.avoid_nodes),
-            asking.is_none_or(|action| {
-                (action.avoid.is_empty() && action.avoid_nodes.is_empty())
-                    || now
-                        .duration_since(action.queued_since)
-                        .is_ok_and(|waited| waited >= AVOID_FALLBACK_AFTER)
+            asking.map_or(Avoidance::NONE, |action| Avoidance {
+                workers: action.avoid,
+                nodes: action.avoid_nodes,
+                fallback_ok: now
+                    .duration_since(action.queued_since)
+                    .is_ok_and(|waited| waited >= AVOID_FALLBACK_AFTER),
             }),
         );
         if matches!(outcome, MatchOutcome::WaitingForCapacity) {
@@ -1566,9 +1588,7 @@ impl ApiWorkerSchedulerImpl {
         full_worker_logging: bool,
         now: SystemTime,
         asking: Option<&ActionUniqueQualifier>,
-        avoid: &[WorkerId],
-        avoid_nodes: &[String],
-        fallback_ok: bool,
+        avoidance: Avoidance<'_>,
     ) -> MatchOutcome {
         if let Some(action) = asking {
             self.note_held_action_seen(action);
@@ -1593,9 +1613,7 @@ impl ApiWorkerSchedulerImpl {
                 &candidates,
                 full_worker_logging,
                 asking,
-                avoid,
-                avoid_nodes,
-                fallback_ok,
+                avoidance,
             ) {
                 return MatchOutcome::Matched(worker_id);
             }
