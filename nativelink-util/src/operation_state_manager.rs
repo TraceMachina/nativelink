@@ -58,6 +58,12 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
         Ok(None)
     }
+    /// Workers a retry of this action should not go back to while another
+    /// can take it: the ones it failed or timed out on. Empty where the
+    /// implementation does not track it.
+    async fn avoid_worker_ids(&self) -> Result<Vec<WorkerId>, Error> {
+        Ok(Vec::new())
+    }
 }
 
 /// The direction in which the results are ordered.

@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::serde_utils::{
     convert_data_size_with_shellexpand, convert_duration_with_shellexpand,
     convert_duration_with_shellexpand_and_negative, convert_numeric_with_shellexpand,
-    convert_string_with_shellexpand,
+    convert_optional_numeric_with_shellexpand, convert_string_with_shellexpand,
 };
 use crate::stores::{GrpcEndpoint, Retry, StoreRefName};
 
@@ -373,6 +373,33 @@ pub struct SimpleSpec {
     #[serde(default)]
     pub reservation_hold: Option<ReservationHoldSpec>,
 
+    /// How many times an action whose command ran past its timeout on a
+    /// worker is queued again for a different worker before the timeout
+    /// is final. A worker whose host has gone slow runs everything it is
+    /// given many times slower and times out actions that finish in
+    /// seconds elsewhere, and nothing tells that from an action that is
+    /// slow by itself until it has run elsewhere: the retry is that second
+    /// opinion, and the matcher prefers any worker but the one that timed
+    /// it out. An action that times out on the second worker fails with
+    /// the timeout, as before. Each retry runs the action again, so this
+    /// bounds the cost of an action that really is too slow. 0 keeps a
+    /// timeout final on its first occurrence.
+    /// Default: 1
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub max_timeout_retries: Option<usize>,
+
+    /// Drain a worker whose recent attempts keep failing. A worker that
+    /// times out or errors most of what it is given while the rest of the
+    /// fleet does not is a bad worker, whatever its host reports; this
+    /// stops dispatch to it on the scheduler's own evidence, without a
+    /// probe for the cause. See `WorkerOutcomeTripwireSpec`.
+    /// Default: unset (off)
+    #[serde(default)]
+    pub worker_outcome_tripwire: Option<WorkerOutcomeTripwireSpec>,
+
     /// The storage backend to use for the scheduler.
     /// Default: memory
     pub experimental_backend: Option<ExperimentalSimpleSchedulerBackend>,
@@ -665,6 +692,82 @@ const fn default_reservation_hold_after_s() -> u64 {
 
 const fn default_reservation_max_hold_s() -> u64 {
     300
+}
+
+/// When the scheduler drains a worker on the outcomes of its own attempts.
+/// A command timeout, an input fetch timeout and a worker error are
+/// failures; a result, whatever its exit code, is a success. A worker whose
+/// last `window` attempts hold at least `min_failures` failures that are at
+/// least `failure_percent` of them is drained: it finishes what it runs and
+/// is offered nothing more until it reconnects or an operator undrains it.
+/// At most `max_drained_percent` of the workers connected to this
+/// scheduler, and at least one, are drained this way at once, so a fault
+/// every worker shares (a store down) drains a few workers, not the fleet.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct WorkerOutcomeTripwireSpec {
+    /// Recent attempts judged, per worker.
+    /// Default: 20
+    #[serde(
+        default = "default_tripwire_window",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub window: usize,
+
+    /// Failures among the attempts judged that drain the worker. Must be
+    /// above zero and at most `window`.
+    /// Default: 3
+    #[serde(
+        default = "default_tripwire_min_failures",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub min_failures: usize,
+
+    /// Failures as a percentage of the attempts judged, also required, so
+    /// a worker that fails a few of many is left alone. At most 100.
+    /// Default: 50
+    #[serde(
+        default = "default_tripwire_failure_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub failure_percent: usize,
+
+    /// Most workers drained this way at once, as a percentage of the
+    /// workers connected to this scheduler; at least one. At most 100.
+    /// Default: 20
+    #[serde(
+        default = "default_tripwire_max_drained_percent",
+        deserialize_with = "convert_numeric_with_shellexpand"
+    )]
+    pub max_drained_percent: usize,
+}
+
+impl Default for WorkerOutcomeTripwireSpec {
+    fn default() -> Self {
+        Self {
+            window: default_tripwire_window(),
+            min_failures: default_tripwire_min_failures(),
+            failure_percent: default_tripwire_failure_percent(),
+            max_drained_percent: default_tripwire_max_drained_percent(),
+        }
+    }
+}
+
+const fn default_tripwire_window() -> usize {
+    20
+}
+
+const fn default_tripwire_min_failures() -> usize {
+    3
+}
+
+const fn default_tripwire_failure_percent() -> usize {
+    50
+}
+
+const fn default_tripwire_max_drained_percent() -> usize {
+    20
 }
 
 #[derive(Deserialize, Serialize, Debug, Default, Clone, Copy)]

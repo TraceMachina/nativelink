@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use core::hash::{Hash, Hasher};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -100,6 +100,19 @@ pub struct PendingActionInfoData {
 /// action and whose result never arrived.
 pub const LOST_AFTER_MISSED_REPORTS: u32 = 2;
 
+/// What the outcome tripwire has done with a worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TripwireState {
+    /// Nothing, or an operator undrained it since.
+    #[default]
+    Clear,
+    /// It would have drained the worker, but as many workers were already
+    /// drained as it may drain at once; logged once.
+    Held,
+    /// It drained the worker.
+    Tripped,
+}
+
 /// Represents a connection to a worker and used as the medium to
 /// interact with the worker from the client/scheduler.
 #[derive(Debug, MetricsComponent)]
@@ -153,6 +166,15 @@ pub struct Worker {
     /// Whether the worker is draining.
     #[metric(help = "If the worker is draining.")]
     pub is_draining: bool,
+
+    /// How the worker's recent attempts ended, oldest first, `true` for a
+    /// failure (a command or input fetch timeout, a worker error); a result
+    /// of any exit code is a success. Bounded by the outcome tripwire's
+    /// window; empty when there is no tripwire.
+    pub recent_outcomes: VecDeque<bool>,
+
+    /// What the outcome tripwire has done with this worker.
+    pub tripwire: TripwireState,
 
     /// Maximum inflight tasks for this worker (or 0 for unlimited)
     #[metric(help = "Maximum inflight tasks for this worker (or 0 for unlimited)")]
@@ -243,6 +265,8 @@ impl Worker {
             admits_when_idle: false,
             idle_declined_kb: None,
             is_draining: false,
+            recent_outcomes: VecDeque::new(),
+            tripwire: TripwireState::Clear,
             max_inflight_tasks,
             last_load: None,
             metrics: Arc::new(Metrics {

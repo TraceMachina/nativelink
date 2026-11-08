@@ -114,6 +114,30 @@ pub struct AwaitedAction {
     #[serde(default)]
     #[metric(help = "How many times the AwaitedAction's worker could not reach its store")]
     pub store_losses: usize,
+
+    /// Requeues after the command ran past its timeout on a worker. Not an
+    /// attempt: a worker gone slow times out everything it is given, and
+    /// the retry is the second opinion from another worker. Absent in
+    /// older records, and left out while zero so a record without one
+    /// reads as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[metric(help = "How many times the AwaitedAction timed out on a worker and was queued again")]
+    pub timeouts: usize,
+
+    /// Workers this action failed or timed out on, most recent last; a
+    /// retry prefers any other worker while one can take it. Absent in
+    /// older records, and left out while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    avoid_worker_ids: Vec<WorkerId>,
+}
+
+/// Most workers an action remembers failing on.
+const MAX_AVOIDED_WORKERS: usize = 8;
+
+// serde's `skip_serializing_if` takes the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl AwaitedAction {
@@ -158,6 +182,8 @@ impl AwaitedAction {
             worker_losses: 0,
             escalations: 0,
             store_losses: 0,
+            timeouts: 0,
+            avoid_worker_ids: Vec::new(),
             last_worker_updated_timestamp: now,
             last_client_keepalive_timestamp: now,
             maybe_origin_metadata,
@@ -220,6 +246,21 @@ impl AwaitedAction {
 
     pub(crate) const fn last_worker_updated_timestamp(&self) -> SystemTime {
         self.last_worker_updated_timestamp
+    }
+
+    /// Workers this action failed or timed out on, most recent last.
+    pub fn avoid_worker_ids(&self) -> &[WorkerId] {
+        &self.avoid_worker_ids
+    }
+
+    /// Remembers that this action failed or timed out on `worker_id`, so a
+    /// retry prefers another worker. Bounded; the oldest is forgotten.
+    pub(crate) fn avoid_worker(&mut self, worker_id: WorkerId) {
+        self.avoid_worker_ids.retain(|id| id != &worker_id);
+        self.avoid_worker_ids.push(worker_id);
+        if self.avoid_worker_ids.len() > MAX_AVOIDED_WORKERS {
+            self.avoid_worker_ids.remove(0);
+        }
     }
 
     pub(crate) const fn worker_keep_alive(&mut self, now: SystemTime) {

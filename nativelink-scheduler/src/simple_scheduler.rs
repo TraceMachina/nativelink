@@ -590,6 +590,8 @@ impl SimpleScheduler {
         struct Loaded {
             action_state_result: Box<dyn ActionStateResult>,
             action_info: ActionInfoWithProps,
+            /// Workers a retry of this action should not go back to.
+            avoid: Vec<WorkerId>,
         }
 
         /// Reads what matching needs of a listed action. `None` when the
@@ -637,6 +639,10 @@ impl SimpleScheduler {
             )
             .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
 
+            let avoid = action_state_result
+                .avoid_worker_ids()
+                .await
+                .unwrap_or_default();
             Ok(Some(Loaded {
                 action_state_result,
                 action_info: ActionInfoWithProps {
@@ -645,6 +651,7 @@ impl SimpleScheduler {
                     origin_metadata: maybe_origin_metadata.unwrap_or_default(),
                     scheduler_start_execute_event_id: None,
                 },
+                avoid,
             }))
         }
 
@@ -826,6 +833,7 @@ impl SimpleScheduler {
                         Some(QueuedAction {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            avoid: &loaded.avoid,
                         }),
                     )
                     .await
@@ -967,6 +975,7 @@ impl SimpleScheduler {
                         Some(QueuedAction {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
+                            avoid: &loaded.avoid,
                         }),
                     )
                     .await;
@@ -1291,6 +1300,9 @@ impl SimpleScheduler {
         let has_peers = awaited_action_db.shares_state();
         let retry_limits = RetryLimits {
             max_job_retries,
+            max_timeout_retries: spec
+                .max_timeout_retries
+                .unwrap_or(RetryLimits::DEFAULT_TIMEOUT_RETRIES),
             max_worker_loss_retries: if spec.max_worker_loss_retries == 0 {
                 RetryLimits::DEFAULT_WORKER_LOSS_RETRIES
             } else {
@@ -1320,6 +1332,7 @@ impl SimpleScheduler {
             spec.live_memory_veto.clone(),
             spec.memory_escalation.clone(),
             spec.reservation_hold,
+            spec.worker_outcome_tripwire,
             worker_change_notify.clone(),
             worker_timeout_s,
             unacknowledged_kill_timeout_s,
