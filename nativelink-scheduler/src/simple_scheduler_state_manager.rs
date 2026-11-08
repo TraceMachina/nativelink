@@ -115,6 +115,23 @@ const MAX_RETRY_JITTER_MS: u64 = 20;
 
 /// How long to wait before the `retry_count`th attempt at an update that
 /// lost a version conflict: exponential in the attempt, plus jitter.
+/// The store errors an operation update retries within its budget: the
+/// record moved (`Aborted`), or the store did not take the write for a
+/// reason that passes (unreachable, slow, out of room, or a server reply the
+/// client could not classify, which is what a Redis `-ERR` arrives as).
+/// Everything else, `Internal` included, is final at once: an internal
+/// error is the scheduler's own, not the store's weather.
+const fn is_transient_store_error(code: Code) -> bool {
+    matches!(
+        code,
+        Code::Aborted
+            | Code::Unavailable
+            | Code::DeadlineExceeded
+            | Code::ResourceExhausted
+            | Code::Unknown
+    )
+}
+
 fn version_conflict_backoff(retry_count: usize) -> Duration {
     let base_delay = BASE_RETRY_DELAY_MS * (1 << retry_count.saturating_sub(2).min(4));
     let jitter = SystemTime::now()
@@ -1228,7 +1245,7 @@ where
                     retry_count,
                     delay_ms = delay.as_millis(),
                     update_type = %update_type_str,
-                    "Retrying operation update due to version conflict (with backoff)"
+                    "Retrying operation update after a version conflict or a transient store error (with backoff)"
                 );
 
                 tokio::time::sleep(delay).await;
@@ -1512,15 +1529,22 @@ where
                 .await
                 .err_tip(|| "In SimpleSchedulerStateManager::update_operation");
             if let Err(err) = update_action_result {
-                // We use Aborted to signal that the action was not
-                // updated due to the data being set was not the latest
-                // but can be retried.
-                if err.code == Code::Aborted {
+                // Aborted says the record moved under us: re-read and apply
+                // again. A store that is unreachable, slow, full or answering
+                // with a server error is transient in the same way, and the
+                // cost of not retrying is not symmetric: the worker has
+                // already reported this result and will not report it again,
+                // so a dropped write parks the action until the executing
+                // ceiling (found by the simulation harness, 2026-11-04). The
+                // same bounded budget and backoff cover both; a store that
+                // stays down fails the update as before.
+                if is_transient_store_error(err.code) {
                     debug!(
                         %operation_id,
                         retry_count,
                         update_type = %update_type_str,
-                        "Version conflict (Aborted), will retry"
+                        code = ?err.code,
+                        "Store write did not land (transient), will retry"
                     );
                     last_err = Some(err);
                     continue;

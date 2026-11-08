@@ -281,10 +281,12 @@ fn journal_write_times_out_after_applying() -> Result<(), Error> {
         .map(drop)
 }
 
-/// Found by the harness on 2026-11-04: a result whose store write is
-/// refused once is dropped. `update_operation` logs the error as
-/// non-retryable, the worker has already reported it, and the client waits
-/// until the executing ceiling.
+/// Found by the harness on 2026-11-04: a result whose store write was
+/// refused was dropped, because `update_operation` retried only a version
+/// conflict; the worker had already reported it and the client waited until
+/// the executing ceiling. The update now retries a transient store error
+/// within the same budget, so two refusals cost two backoffs and the result
+/// lands.
 #[test]
 fn result_write_refused() -> Result<(), Error> {
     Scenario::new("result-write-refused", 27)
@@ -295,13 +297,6 @@ fn result_write_refused() -> Result<(), Error> {
             Step::redis_fail("EVALSHA", Fault::Error("refused".into()), 2),
         )
         .settle(Duration::from_mins(2))
-        .expect(
-            Backend::FakeRedis,
-            Expect::known_failure(
-                &[I1, I8],
-                "unassigned: a refused result write is not retried",
-            ),
-        )
         .run()
         .map(drop)
 }
@@ -342,8 +337,10 @@ fn clock_jumps_an_hour_on_redis() -> Result<(), Error> {
 }
 
 /// The review expected the refused result to spend an attempt (I7). It
-/// spends nothing: the result is dropped and the client waits, the
-/// result-write-refused defect.
+/// spends nothing: a full server's `OOM` is retried within the update's
+/// budget, so three refusals cost three backoffs and the result lands.
+/// Before the retry it was dropped and the client waited (the
+/// result-write-refused defect).
 #[test]
 fn redis_oom_during_results() -> Result<(), Error> {
     Scenario::new("redis-oom", 14)
@@ -351,19 +348,15 @@ fn redis_oom_during_results() -> Result<(), Error> {
         .at(0, Step::execute("c1", Action::new(1).run_ms(3_000)))
         .at(2_990, Step::redis_fail("EVALSHA", Fault::Oom, 3))
         .settle(Duration::from_mins(2))
-        .expect(
-            Backend::FakeRedis,
-            Expect::known_failure(
-                &[I1, I8],
-                "unassigned: a refused result write is not retried",
-            ),
-        )
         .run()
         .map(drop)
 }
 
-/// Five writes answer `READONLY` after the failover; the last of them meet
-/// c2's result, the result-write-refused defect again.
+/// Five writes answer `READONLY` after the failover and the last of them
+/// meet c2's result. `READONLY` is `Unavailable`, retried within the
+/// update's budget; both results land once the replica's replies are spent
+/// (about seven seconds after the executions end on this trace). Before
+/// the retry the result was dropped, the result-write-refused defect.
 #[test]
 fn redis_readonly_failover() -> Result<(), Error> {
     Scenario::new("redis-readonly-failover", 15)
@@ -372,18 +365,12 @@ fn redis_readonly_failover() -> Result<(), Error> {
         .at(100, Step::execute("c2", Action::new(2).run_ms(3_000)))
         .at(1_000, Step::RedisFailover { readonly_writes: 5 })
         .settle(Duration::from_mins(2))
-        .expect(
-            Backend::FakeRedis,
-            Expect::known_failure(
-                &[I1, I8],
-                "unassigned: a refused result write is not retried",
-            ),
-        )
         .run()
         .map(drop)
 }
 
-/// The failover lands as the results do: the same drop as a refused write.
+/// The failover lands as the result does: retried like a refused write,
+/// the result lands once the replica's `READONLY` replies are spent.
 #[test]
 fn redis_failover_as_results_land() -> Result<(), Error> {
     Scenario::new("redis-failover-at-results", 28)
@@ -391,13 +378,6 @@ fn redis_failover_as_results_land() -> Result<(), Error> {
         .at(0, Step::execute("c1", Action::new(1).run_ms(3_000)))
         .at(2_990, Step::RedisFailover { readonly_writes: 5 })
         .settle(Duration::from_mins(2))
-        .expect(
-            Backend::FakeRedis,
-            Expect::known_failure(
-                &[I1, I8],
-                "unassigned: a refused result write is not retried",
-            ),
-        )
         .run()
         .map(drop)
 }
