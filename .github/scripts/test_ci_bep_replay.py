@@ -216,9 +216,19 @@ class ProtoTest(unittest.TestCase):
         self.assertEqual(events[1].build_metadata.metadata['ROLE'], 'FORK_PR')
         self.assertEqual(report['injected metadata'], 1)
 
-    def test_stream_must_open_with_its_only_started_event(self):
+    def test_only_progress_and_fetch_may_precede_the_only_started_event(self):
         stream = self.stream()
-        for events in ([stream[1], stream[0]], [stream[0], stream[0]]):
+        fetch = self.protos.bes.BuildEvent()
+        fetch.id.fetch.url = 'https://github.com/example/rules.tar.gz'
+        fetch.fetch.success = True
+        progress = self.build_event('progress')
+        events, report = self.sanitize([progress, fetch, stream[0], stream[4]])
+        self.assertEqual([e.WhichOneof('payload') for e in events],
+                         ['progress', 'fetch', 'started', 'build_metadata', 'finished'])
+        self.assertEqual(events[2].started.uuid, 'inv')
+        self.assertEqual(report['injected metadata'], 1)
+        for events in ([stream[1], stream[0]], [stream[0], stream[0]], [progress, stream[4]],
+                       [stream[3], stream[0]]):
             with self.subTest(events=[e.WhichOneof('payload') for e in events]):
                 with self.assertRaises(ValueError):
                     self.sanitize(events)

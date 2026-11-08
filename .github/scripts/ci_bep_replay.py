@@ -266,19 +266,29 @@ def clear_untrusted_uris(message, hosts):
     return cleared
 
 
+# On a cold repository cache Bazel downloads modules before the build starts
+# and reports that as progress and fetch events ahead of `started`. Nothing
+# else may come first.
+BEFORE_STARTED = frozenset({'progress', 'fetch'})
+
+
 def sanitize(protos, raw_events, origin, invocation_id, uri_hosts):
     """Decoded, rewritten events and a report of what changed."""
     bes = protos.bes
     metadata = trusted_metadata(origin)
     low, high = origin.started - CLOCK_SKEW, origin.updated + CLOCK_SKEW
     report = collections.Counter()
-    events, saw_metadata = [], False
+    events, saw_metadata, started_at = [], False, None
     for index, raw in enumerate(raw_events):
         event = bes.BuildEvent()
         event.ParseFromString(raw)
         kind = event.WhichOneof('payload')
-        if (index == 0) != (kind == 'started'):
-            raise ValueError('the stream must open with its only started event')
+        if kind == 'started':
+            if started_at is not None:
+                raise ValueError('the stream has more than one started event')
+            started_at = len(events)
+        elif started_at is None and kind not in BEFORE_STARTED:
+            raise ValueError(f'a {kind} event comes before started')
         if kind == 'started':
             event.started.uuid = invocation_id
             report['clamped times'] += clamp(event.started.start_time, low, high)
@@ -303,13 +313,13 @@ def sanitize(protos, raw_events, origin, invocation_id, uri_hosts):
         if event.last_message:
             report['dropped after last message'] = len(raw_events) - index - 1
             break
-    if not events:
-        raise ValueError('no build events')
+    if started_at is None:
+        raise ValueError('the stream has no started event')
     if not saw_metadata:
         injected = bes.BuildEvent()
         injected.id.build_metadata.SetInParent()
         injected.build_metadata.metadata.update(metadata)
-        events.insert(1, injected)
+        events.insert(started_at + 1, injected)
         report['injected metadata'] = 1
     return events, {key: value for key, value in report.items() if value}
 
@@ -581,7 +591,8 @@ def main(argv=None):
         verb = 'Published' if summary['published'] else 'Would publish'
         print(f"{verb} {summary['artifact']}: {summary['events']} events as invocation "
               f"{summary['invocation_id']} ({summary['exit_code']}, "
-              f"{len(summary['failed_tests'])} failing tests); "
+              f"{len(summary['failed_tests'])} failing "
+              f"test{'' if len(summary['failed_tests']) == 1 else 's'}); "
               f"sanitized: {summary['sanitized'] or 'nothing'}")
         if summary.get('results_url'):
             print(f"Build results: {summary['results_url']}")
