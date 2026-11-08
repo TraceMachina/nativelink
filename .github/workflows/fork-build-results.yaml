@@ -2,7 +2,8 @@ name: CI / Fork build results
 
 # Fork PRs get no secrets, so their Bazel lanes cannot stream build events.
 # They upload them as bep-* artifacts instead (ci_bep_artifact.py). This
-# publishes those to the build-results UI and links each build from the PR.
+# publishes those to the build-results UI and links each build from the PR:
+# a check run per build, one PR comment listing them, and the job summary.
 #
 # workflow_run always runs this file as it is on the default branch, never
 # the PR's copy. The artifacts come from untrusted code: they are parsed as
@@ -30,7 +31,7 @@ jobs:
     permissions:
       actions: read # download the triggering run's artifacts
       checks: write # link each build from the PR
-      pull-requests: read # find the PR, which workflow_run omits for forks
+      pull-requests: write # find the PR (workflow_run omits it for forks) and comment on it
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

@@ -33,7 +33,9 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 from urllib.parse import quote, urlencode, urlsplit
+import urllib.error
 import urllib.request
 import uuid
 
@@ -77,6 +79,15 @@ FINISHED_OK = frozenset({'PASSED', 'FLAKY'})
 MAX_CHECK_TESTS = 10
 MAX_TAIL_BYTES = 4096
 MAX_CHECK_TEXT = 60000
+CHECK_PREFIX = 'Build results / '
+CHECK_JOB = re.compile(r'[A-Za-z0-9_ -]{1,80}')
+CHECK_TITLE = re.compile(r'[A-Za-z0-9_ ]{1,80}')
+# One comment per PR, found by this marker and rebuilt from the check runs.
+COMMENT_MARKER = '<!-- fork-build-results -->'
+COMMENT_AUTHOR = 'github-actions[bot]'
+# Each lane's run rebuilds the comment, waits this long and rebuilds it
+# again, so two lanes finishing together still end with both rows.
+COMMENT_SETTLE_SECONDS = 15
 
 
 def load_protos(output):
@@ -442,7 +453,8 @@ def github_request(path, token, body=None, method='GET'):
         headers['Content-Type'] = 'application/json'
     request = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+        payload = response.read()
+    return json.loads(payload) if payload else None
 
 
 def find_pull_request(event, token, request=github_request):
@@ -487,6 +499,15 @@ def log_tail(artifact, label):
     return tail if size <= MAX_TAIL_BYTES else '…' + tail.split('\n', 1)[-1]
 
 
+def result_title(exit_name, failed):
+    """A short result for a check run title, the comment and the job summary."""
+    if failed:
+        return f'{len(failed)} failing test' + ('' if len(failed) == 1 else 's')
+    if exit_name == 'SUCCESS':
+        return 'Passed'
+    return f'Bazel exited {exit_name}' if exit_name else 'No finished event'
+
+
 def check_run(origin, invocation_id, link, exit_name, failed, artifact):
     """A completed check run that links the build and quotes its failing tests."""
     name = f'Build results / {origin.job}' + (f' {origin.job_index}' if origin.job_index else '')
@@ -511,9 +532,101 @@ def check_run(origin, invocation_id, link, exit_name, failed, artifact):
         body = body[:MAX_CHECK_TEXT] + '\n\n(truncated)'
     return {'name': name, 'head_sha': origin.head_sha, 'status': 'completed',
             'conclusion': 'neutral', 'details_url': link, 'external_id': invocation_id,
-            'output': {'title': (f'{len(failed)} failing test' + ('s' if len(failed) > 1 else '')
-                                 if failed else 'Build results'),
+            'output': {'title': result_title(exit_name, failed),
                        'summary': '\n'.join(summary), 'text': body}}
+
+
+def check_rows(repository, sha, token, results_url, request=github_request):
+    """(job, result, check run URL, build link) for each build-results check on sha."""
+    path = (f'/repos/{quote(repository, safe="/")}/commits/{sha}/check-runs'
+            '?filter=latest&per_page=100')
+    rows = []
+    for run in request(path, token).get('check_runs', []):
+        name = run.get('name') or ''
+        if (not name.startswith(CHECK_PREFIX)
+                or (run.get('app') or {}).get('slug') != 'github-actions'
+                or not CHECK_JOB.fullmatch(name[len(CHECK_PREFIX):])
+                or not str(run.get('html_url', '')).startswith('https://')):
+            continue
+        try:
+            invocation_id = str(uuid.UUID(run.get('external_id') or ''))
+        except ValueError:
+            continue
+        title = (run.get('output') or {}).get('title') or ''
+        rows.append((name[len(CHECK_PREFIX):],
+                     title if CHECK_TITLE.fullmatch(title) else 'See the check run',
+                     run['html_url'], results_link(results_url, invocation_id)))
+    return sorted(rows)
+
+
+def comment_body(sha, rows):
+    lines = [COMMENT_MARKER,
+             f'**Build results** for this fork PR at `{sha[:12]}`:', '',
+             '| Job | Result | Links |', '| --- | --- | --- |']
+    lines += [f'| {job} | {result} | **[Open the build]({link})** · [check run]({check}) |'
+              for job, result, check, link in rows]
+    lines += ['', 'Fork PRs cannot stream build events, so a trusted workflow publishes '
+              'them after CI finishes and updates this comment as each job is published. '
+              'Opening a build needs a Trace Machina sign-in; the check run lists the '
+              'failing tests and their logs.']
+    return '\n'.join(lines)
+
+
+def upsert_comment(repository, pull_request, body, token, request=github_request):
+    """Update this workflow's comment on the PR, creating it or removing duplicates."""
+    repository = quote(repository, safe='/')
+    ours = []
+    for page in range(1, 11):
+        comments = request(f'/repos/{repository}/issues/{pull_request}/comments'
+                           f'?per_page=100&page={page}', token)
+        ours += [comment for comment in comments
+                 if (comment.get('user') or {}).get('login') == COMMENT_AUTHOR
+                 and (comment.get('body') or '').startswith(COMMENT_MARKER)]
+        if len(comments) < 100:
+            break
+    if not ours:
+        return request(f'/repos/{repository}/issues/{pull_request}/comments', token,
+                       {'body': body}, method='POST')['id']
+    ours.sort(key=lambda comment: comment['id'])
+    for duplicate in ours[1:]:
+        # Two lanes that finished together can both have created one.
+        request(f'/repos/{repository}/issues/comments/{duplicate["id"]}', token, method='DELETE')
+    if ours[0].get('body') != body:
+        request(f'/repos/{repository}/issues/comments/{ours[0]["id"]}', token,
+                {'body': body}, method='PATCH')
+    return ours[0]['id']
+
+
+def comment_on_pull_request(origin, token, results_url, request=github_request,
+                            sleep=time.sleep):
+    """Keep one PR comment listing every published build of the PR's head commit."""
+    written = None
+    for _ in range(2):
+        rows = check_rows(origin.repository, origin.head_sha, token, results_url, request)
+        body = comment_body(origin.head_sha, rows)
+        if not rows or body == written:
+            break
+        upsert_comment(origin.repository, origin.pull_request, body, token, request)
+        written = body
+        sleep(COMMENT_SETTLE_SECONDS)
+    return written
+
+
+def job_summary(summaries):
+    """Markdown for this run's job summary page."""
+    lines = ['## Fork build results', '', '| Artifact | Result | Build |', '| --- | --- | --- |']
+    for summary in summaries:
+        name = code(summary['artifact']).replace('|', r'\|')
+        if 'skipped' in summary:
+            lines.append(f"| {name} | Skipped: {summary['skipped']} | |")
+            continue
+        link = summary.get('results_url')
+        lines.append(f"| {name} | {result_title(summary['exit_code'], summary['failed_tests'])} | "
+                     + (f'**[Open the build]({link})**' if link else 'Dry run, not published')
+                     + ' |')
+    if not summaries:
+        lines.append('| | No bep-* artifacts in the triggering run | |')
+    return '\n'.join(lines) + '\n'
 
 
 def replay(protos, artifact, event, args, api_key, token, pull_request):
@@ -598,6 +711,16 @@ def main(argv=None):
             print(f"Build results: {summary['results_url']}")
     if args.summary:
         args.summary.write_text(json.dumps(summaries, indent=2) + '\n')
+    if step_summary := os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(step_summary, 'a', encoding='utf-8') as stream:
+            stream.write(job_summary(summaries))
+    if token and pull_request and any(summary.get('published') for summary in summaries):
+        origin = origin_from_event(event, 'bep-comment-0', pull_request)
+        try:
+            comment_on_pull_request(origin, token, args.results_url)
+        except (urllib.error.URLError, KeyError, TypeError) as error:
+            # The builds are published and linked from their check runs.
+            print(f'::warning::Could not update the PR comment: {error}')
     return 0
 
 

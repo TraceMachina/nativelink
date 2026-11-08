@@ -129,6 +129,26 @@ class GitHubTest(unittest.TestCase):
         self.assertLess(len(text), ci_bep_replay.MAX_TAIL_BYTES + 500)
         self.assertNotIn('escape', text)
 
+    def test_result_titles(self):
+        failed = [{'label': '//a:b', 'status': 'FAILED'}]
+        self.assertEqual(ci_bep_replay.result_title('TESTS_FAILED', failed), '1 failing test')
+        self.assertEqual(ci_bep_replay.result_title('TESTS_FAILED', failed * 2), '2 failing tests')
+        self.assertEqual(ci_bep_replay.result_title('SUCCESS', []), 'Passed')
+        self.assertEqual(ci_bep_replay.result_title('REMOTE_CACHE_EVICTED', []),
+                         'Bazel exited REMOTE_CACHE_EVICTED')
+        self.assertEqual(ci_bep_replay.result_title(None, []), 'No finished event')
+
+    def test_job_summary_links_published_builds(self):
+        text = ci_bep_replay.job_summary([
+            {'artifact': 'bep-unit-tests-0', 'exit_code': 'SUCCESS', 'failed_tests': [],
+             'results_url': 'https://ui.example/builds/inv', 'published': True},
+            {'artifact': 'bep-pull-request-0', 'exit_code': 'TESTS_FAILED', 'published': False,
+             'failed_tests': [{'label': '//a:b', 'status': 'FAILED'}]},
+            {'artifact': 'bep-x|y', 'skipped': 'unexpected name'}])
+        self.assertIn('| Passed | **[Open the build](https://ui.example/builds/inv)** |', text)
+        self.assertIn('| 1 failing test | Dry run, not published |', text)
+        self.assertIn(r'bep-x\|y', text)
+
     def test_public_cache_host_comes_from_the_setup_action(self):
         host = ci_bep_replay.public_cache_host()
         action = (ROOT / '.github/actions/setup-nativelink-cloud/action.yaml').read_text()
@@ -143,6 +163,114 @@ def proto_dependencies():
     except ImportError:
         return False
     return True
+
+
+INVOCATION = '908a87ac-6bda-5349-bd26-e7ff2c91eafe'
+
+
+def check(name, title, external_id=INVOCATION, app='github-actions'):
+    return {'name': name, 'external_id': external_id, 'app': {'slug': app},
+            'html_url': f'https://github.com/o/r/runs/{len(name)}', 'output': {'title': title}}
+
+
+class FakeGitHub:
+    """Check runs and issue comments, as the REST API returns them."""
+
+    def __init__(self, checks, comments=()):
+        self.checks, self.comments, self.calls = list(checks), list(comments), []
+
+    def __call__(self, path, token, body=None, method='GET'):
+        self.calls.append((method, path))
+        if '/check-runs' in path:
+            return {'check_runs': self.checks}
+        if method == 'GET':
+            return list(self.comments)
+        if method == 'POST':
+            comment = {'id': 100 + len(self.calls), 'body': body['body'],
+                       'user': {'login': ci_bep_replay.COMMENT_AUTHOR}}
+            self.comments.append(comment)
+            return comment
+        comment_id = int(path.rsplit('/', 1)[1])
+        if method == 'DELETE':
+            self.comments = [c for c in self.comments if c['id'] != comment_id]
+            return None
+        next(c for c in self.comments if c['id'] == comment_id)['body'] = body['body']
+        return {}
+
+
+class CommentTest(unittest.TestCase):
+    def setUp(self):
+        self.origin = ci_bep_replay.origin_from_event(event(), 'bep-unit-tests-0', 7)
+
+    def comment(self, github, sleeps=None):
+        return ci_bep_replay.comment_on_pull_request(
+            self.origin, 'token', 'https://ui.example/a/acct/builds/', github,
+            sleep=(lambda _: None) if sleeps is None else
+            (sleeps if callable(sleeps) else sleeps.append))
+
+    def test_rows_come_only_from_valid_build_results_checks(self):
+        github = FakeGitHub([
+            check('Build results / unit-tests', 'Bazel exited REMOTE_CACHE_EVICTED'),
+            check('Build results / pull-request', '1 failing test | [x](https://evil)'),
+            check('Build results / spoof', 'Passed', app='someone-else'),
+            check('Build results / bad-id', 'Passed', external_id='../../x'),
+            check('Lint', 'Passed')])
+        rows = ci_bep_replay.check_rows('o/r', FORK_SHA, 'token', 'https://ui.example/b/', github)
+        self.assertEqual([row[:2] for row in rows],
+                         [('pull-request', 'See the check run'),
+                          ('unit-tests', 'Bazel exited REMOTE_CACHE_EVICTED')])
+        self.assertEqual(rows[1][3], 'https://ui.example/b/' + INVOCATION)
+
+    def test_one_comment_is_created_then_updated_in_place(self):
+        github = FakeGitHub([check('Build results / unit-tests', 'Passed')])
+        sleeps = []
+        body = self.comment(github, sleeps)
+        self.assertEqual(len(github.comments), 1)
+        self.assertTrue(body.startswith(ci_bep_replay.COMMENT_MARKER))
+        self.assertIn(f'(https://ui.example/a/acct/builds/{INVOCATION})', body)
+        self.assertEqual(sleeps, [ci_bep_replay.COMMENT_SETTLE_SECONDS])
+        github.checks.append(check('Build results / pull-request', '1 failing test',
+                                   external_id='1fd254ed-d9ac-574a-ba84-9ae6d5c5e66c'))
+        body = self.comment(github)
+        self.assertEqual(len(github.comments), 1)
+        self.assertIn('| pull-request | 1 failing test |', github.comments[0]['body'])
+        self.assertIn('| unit-tests | Passed |', github.comments[0]['body'])
+
+    def test_a_lane_finishing_meanwhile_is_picked_up_on_the_second_pass(self):
+        github = FakeGitHub([check('Build results / unit-tests', 'Passed')])
+        late = check('Build results / pull-request', 'Passed',
+                      external_id='1fd254ed-d9ac-574a-ba84-9ae6d5c5e66c')
+        self.comment(github, sleeps=_Appender(lambda: github.checks.append(late)))
+        self.assertIn('| pull-request |', github.comments[0]['body'])
+
+    def test_duplicates_are_removed_and_other_comments_left_alone(self):
+        marker = ci_bep_replay.COMMENT_MARKER
+        github = FakeGitHub([check('Build results / unit-tests', 'Passed')], [
+            {'id': 5, 'body': marker + ' old', 'user': {'login': ci_bep_replay.COMMENT_AUTHOR}},
+            {'id': 9, 'body': marker + ' racing', 'user': {'login': ci_bep_replay.COMMENT_AUTHOR}},
+            {'id': 3, 'body': marker + ' quoted', 'user': {'login': 'someone'}}])
+        self.comment(github)
+        self.assertEqual(sorted(c['id'] for c in github.comments), [3, 5])
+        kept = next(c for c in github.comments if c['id'] == 5)
+        self.assertIn('| unit-tests | Passed |', kept['body'])
+
+    def test_nothing_is_posted_without_published_builds(self):
+        github = FakeGitHub([check('Lint', 'Passed')])
+        self.assertIsNone(self.comment(github))
+        self.assertFalse([call for call in github.calls if call[0] != 'GET'])
+
+
+class _Appender(list):
+    """A sleep stand-in that runs a callback the first time it is called."""
+
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    def __call__(self, seconds):
+        if not self:
+            self.callback()
+        self.append(seconds)
 
 
 @unittest.skipUnless(REQUIRED or proto_dependencies(),
@@ -365,6 +493,8 @@ class WorkflowTest(unittest.TestCase):
             self.assertNotIn(line, self.text)
         self.assertIn('--require-hashes', self.text)
         self.assertEqual(self.text.count('secrets.'), 1)
+        self.assertIn('pull-requests: write', self.text)
+        self.assertNotIn('contents: write', self.text)
 
     def test_pre_commit_runs_these_tests_with_their_dependencies(self):
         text = (ROOT / '.github/workflows/pre-commit.yaml').read_text()
