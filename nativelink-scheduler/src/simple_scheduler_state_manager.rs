@@ -28,7 +28,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::AttemptEndReason;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
-    OperationId, STORE_UNREACHABLE_ERROR_TIP, WorkerId,
+    LOST_RESULT_ERROR_TIP, OperationId, STORE_UNREACHABLE_ERROR_TIP, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
@@ -36,8 +36,9 @@ use nativelink_util::metrics::{
     ExecutionStage, record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, DispatchFacts,
+    MatchingEngineStateManager, OperationFilter, OperationStageFlags, OrderDirection,
+    UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::PlatformProperties;
@@ -354,6 +355,19 @@ where
         Ok(Some(awaited_action.last_client_keepalive_timestamp()))
     }
 
+    async fn dispatch_facts(&self) -> Result<DispatchFacts, Error> {
+        let awaited_action = self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::dispatch_facts")?;
+        Ok(DispatchFacts {
+            avoid_worker_ids: awaited_action.avoid_worker_ids().to_vec(),
+            avoid_node_names: awaited_action.avoid_node_names().to_vec(),
+            queued_since: Some(awaited_action.state().last_transition_timestamp),
+        })
+    }
+
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut timeout_attempts = 0;
         loop {
@@ -448,11 +462,17 @@ pub struct RetryLimits {
     pub max_worker_loss_retries: usize,
     /// Memory escalations; 0 leaves only the fleet's ceiling to bound them.
     pub max_escalations: usize,
+    /// Command timeouts queued again for another worker; 0 keeps the
+    /// first timeout final.
+    pub max_timeout_retries: usize,
 }
 
 impl RetryLimits {
     /// Lost workers allowed by default; the action did nothing wrong.
     pub const DEFAULT_WORKER_LOSS_RETRIES: usize = 10;
+    /// Command timeouts tried again elsewhere by default: one second
+    /// opinion, since a worker gone slow times out whatever it is given.
+    pub const DEFAULT_TIMEOUT_RETRIES: usize = 1;
 }
 
 /// Only the job budget stated: the other two take their defaults, which is
@@ -463,6 +483,7 @@ impl From<usize> for RetryLimits {
             max_job_retries,
             max_worker_loss_retries: Self::DEFAULT_WORKER_LOSS_RETRIES,
             max_escalations: 0,
+            max_timeout_retries: Self::DEFAULT_TIMEOUT_RETRIES,
         }
     }
 }
@@ -496,6 +517,11 @@ where
         help = "Maximum number of memory escalations for a job; 0 leaves the ceiling to bound them"
     )]
     max_escalations: usize,
+
+    #[metric(
+        help = "Maximum number of times a job is queued again for another worker after its command timed out"
+    )]
+    max_timeout_retries: usize,
 
     /// Duration after which an action is considered to be timed out if
     /// no event is received.
@@ -549,12 +575,14 @@ where
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            max_timeout_retries,
         } = retry_limits.into();
         Arc::new_cyclic(|weak_self| Self {
             action_db,
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            max_timeout_retries,
             no_event_action_timeout,
             client_action_timeout,
             max_executing_timeout,
@@ -711,9 +739,10 @@ where
                         .inner_update_operation(
                             &operation_id,
                             Some(worker_id),
+                            None,
                             UpdateOperationType::UpdateWithError(make_err!(
                                 Code::Internal,
-                                "The worker finished this operation but its result never reached the scheduler"
+                                "{LOST_RESULT_ERROR_TIP}"
                             )),
                         )
                         .await
@@ -1206,6 +1235,7 @@ where
         &self,
         operation_id: &OperationId,
         maybe_worker_id: Option<&WorkerId>,
+        worker_node: Option<&str>,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
         let update_type_str = match &update {
@@ -1348,7 +1378,37 @@ where
                         warn!(state = ?awaited_action.state(), "Action already assigned");
                         return Err(make_err!(Code::Aborted, "Action already assigned"));
                     }
-                    stage.clone()
+                    // A command that ran past its timeout on a worker comes
+                    // back as a result. Once, it is queued again for another
+                    // worker: a worker whose host has gone slow times out
+                    // everything it is given, and only a second worker tells
+                    // that from an action that is slow by itself. A timeout
+                    // there, or with no budget, is final as before.
+                    if let (ActionStage::Completed(result), Some(worker_id)) =
+                        (stage, maybe_worker_id)
+                        && result
+                            .error
+                            .as_ref()
+                            .is_some_and(|err| err.code == Code::DeadlineExceeded)
+                        && awaited_action.timeouts < self.max_timeout_retries
+                    {
+                        awaited_action.timeouts += 1;
+                        awaited_action.avoid_worker(worker_id.clone());
+                        if let Some(node) = worker_node {
+                            awaited_action.avoid_node(node);
+                        }
+                        warn!(
+                            %operation_id,
+                            %worker_id,
+                            timeouts = awaited_action.timeouts,
+                            max_timeout_retries = self.max_timeout_retries,
+                            "Command timed out on the worker; queued again for another worker"
+                        );
+                        is_retry = true;
+                        ActionStage::Queued
+                    } else {
+                        stage.clone()
+                    }
                 }
                 UpdateOperationType::UpdateWithError(err) => {
                     // Don't count a backpressure failure as an attempt for an action.
@@ -1361,6 +1421,12 @@ where
                     // comes back is bounded like a lost worker.
                     let store_unreachable =
                         err.message_string().contains(STORE_UNREACHABLE_ERROR_TIP);
+                    // A result that never reached the scheduler is not the
+                    // worker's doing either: it ran the action. The retry
+                    // spends max_job_retries, as before, but may go straight
+                    // back to that worker; avoiding it would make a lone
+                    // worker wait out the fallback for its own lost result.
+                    let lost_result = err.message_string().contains(LOST_RESULT_ERROR_TIP);
                     if store_unreachable {
                         awaited_action.store_losses += 1;
                     } else if !due_to_backpressure {
@@ -1405,6 +1471,18 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        if let Some(worker_id) = maybe_worker_id
+                            && !store_unreachable
+                            && !due_to_backpressure
+                            && !lost_result
+                        {
+                            // The action failed on this worker; a retry
+                            // prefers another while one can take it.
+                            awaited_action.avoid_worker(worker_id.clone());
+                            if let Some(node) = worker_node {
+                                awaited_action.avoid_node(node);
+                            }
+                        }
                         is_retry = true;
                         ActionStage::Queued
                     }
@@ -1837,7 +1915,18 @@ where
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
-        self.inner_update_operation(operation_id, Some(worker_id), update)
+        self.inner_update_operation(operation_id, Some(worker_id), None, update)
+            .await
+    }
+
+    async fn update_operation_on_node(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+        worker_node: Option<&str>,
+        update: UpdateOperationType,
+    ) -> Result<(), Error> {
+        self.inner_update_operation(operation_id, Some(worker_id), worker_node, update)
             .await
     }
 
@@ -1905,7 +1994,7 @@ where
             ),
             Err(err) => (None, UpdateOperationType::UpdateWithError(err)),
         };
-        self.inner_update_operation(operation_id, maybe_worker_id, update)
+        self.inner_update_operation(operation_id, maybe_worker_id, None, update)
             .await
     }
 

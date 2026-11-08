@@ -27,6 +27,12 @@ concurrency:
 
 jobs:
   unit-tests:
+    # Bazel 8 compatibility is informational, not a per-change correctness
+    # gate: the pinned Bazel 9 suite runs on every pull request, and a
+    # compatibility regression is caught on the merge itself or by the
+    # nightly schedule. Keeping this lane off the pull-request path removes
+    # its runner cost and remote-cache flake surface from every PR.
+    if: ${{ github.event_name != 'pull_request' }}
     strategy:
       fail-fast: false
       matrix:
@@ -86,10 +92,14 @@ jobs:
         run: |
           # See .github/scripts/README-bazel8-lockfile.md for regeneration.
           cp MODULE.bazel8.lock MODULE.bazel.lock
+          # The staging remote cache can drop a blob between its existence
+          # check and the consuming action ("lost inputs"). Let Bazel retry
+          # the invocation and re-execute the producers instead of failing.
           ./tools/bazel-retry.sh test //... \
             --config=nl-quiet \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures
 
   redis-store-tester:
@@ -142,6 +152,7 @@ jobs:
           ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures -- --redis-mode sentinel --mode sequential
         env:
           RUST_LOG: trace
@@ -153,6 +164,7 @@ jobs:
           ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures -- --redis-mode standard --mode sequential
         env:
           RUST_LOG: trace
@@ -164,6 +176,7 @@ jobs:
           ./tools/bazel-retry.sh run //:redis_store_tester \
             --lockfile_mode=error \
             --extra_toolchains=@rust_toolchains//:all \
+            --experimental_remote_cache_eviction_retries=5 \
             --verbose_failures -- --redis-mode cluster --mode sequential
         env:
           RUST_LOG: trace
