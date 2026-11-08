@@ -5,9 +5,11 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -41,15 +43,84 @@ class BenchmarkTest(unittest.TestCase):
         self.assertNotIn(f'bazel_version: {pinned_version}',
                          Path('.github/workflows/native-bazel.yaml').read_text())
 
-    def test_pull_requests_build_without_cluster_credentials(self):
+    def test_pull_requests_use_rbe_without_retained_client_credentials(self):
         workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
         pr_job = workflow.split('  pull-request:', 1)[1].split('  cluster:', 1)[0]
         self.assertIn("if: github.event_name == 'pull_request'", pr_job)
-        for privileged_setting in ('environment:', 'secrets.', 'id-token:', 'cluster_ci.py'):
+        for privileged_setting in ('id-token:', 'cluster_ci.py', 'NL_GKE_', 'NL_GCP_',
+                                   'NATIVELINK_STAGING_API_KEY_RW'):
             self.assertNotIn(privileged_setting, pr_job)
+        same_repository = 'github.event.pull_request.head.repo.full_name == github.repository'
+        self.assertIn(same_repository + " && 'cluster-ci-benchmark' || 'public-ci'", pr_job)
+        configuration = pr_job.split('      - name: Configure loadtest remote execution\n', 1)[1]
+        configuration = configuration.split('\n      - ', 1)[0]
+        self.assertIn('if: ' + same_repository, configuration)
+        self.assertIn('secrets.NATIVELINK_CLUSTER_API_KEY', configuration)
+        self.assertIn('ci_benchmark.py configure-pr', configuration)
+        public = pr_job.split('      - name: Setup NativeLink Cloud\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('if: github.event.pull_request.head.repo.full_name != github.repository', public)
+        self.assertNotIn('secrets.', public)
+        self.assertIn("grep -qx 'common --config=nl-rbe' user.bazelrc", pr_job)
         self.assertIn('./tools/bazel-retry.sh test //...', pr_job)
         self.assertIn('--lockfile_mode=error', pr_job)
         self.assertNotIn('USE_BAZEL_VERSION', pr_job)
+
+    def test_pr_rbe_configuration_and_missing_credentials(self):
+        workflow = Path('.github/workflows/parallel-cluster-ci.yaml').read_text()
+        guard = workflow.split('      - name: Require remote execution for repository PRs\n', 1)[1]
+        guard = textwrap.dedent(guard.split('        run: |\n', 1)[1].split('\n      - ', 1)[0])
+        for private_credentials in (True, False):
+            with self.subTest(private_credentials=private_credentials), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                env = {'PATH': os.environ['PATH'], 'GITHUB_SHA': 'a' * 40,
+                       'NL_API_KEY': 'private-test-key' if private_credentials else '',
+                       'NL_CLUSTER_ENDPOINT': 'grpcs://loadtest.example:443',
+                       'NL_CLUSTER_BEP_ENDPOINT': 'grpcs://loadtest.example:443',
+                       'NL_INSTANCE': 'main', 'NL_RESULTS_URL': 'https://ui.example/build/',
+                       'NL_WORKER_IMAGE': 'image@sha256:123'}
+                rc_file = root / 'user.bazelrc'
+                with patch.dict(os.environ, env, clear=True):
+                    if private_credentials:
+                        ci_benchmark.configure_pr(rc_file)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'CI API key is missing'):
+                            ci_benchmark.configure_pr(rc_file)
+                checked = subprocess.run(['bash', '-c', guard], cwd=root, env=env,
+                                         capture_output=True, text=True)
+                if private_credentials:
+                    self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+                    rc = rc_file.read_text()
+                    flags = [shlex.split(line)[1] for line in rc.splitlines()]
+                    expected, _ = ci_benchmark.configuration('cluster', env)
+                    for flag in expected:
+                        if not flag.startswith(('--remote_upload_local_results=', '--build_metadata=BENCHMARK_LANE=')):
+                            self.assertIn(flag, flags)
+                    self.assertIn('--remote_upload_local_results=false', flags)
+                    self.assertNotIn('--remote_upload_local_results=true', flags)
+                    self.assertIn('--remote_executor=grpcs://loadtest.example:443', flags)
+                    self.assertIn('--remote_instance_name=main', flags)
+                    self.assertIn('common --config=nl-rbe', rc)
+                    self.assertNotIn('private-test-key', rc)
+                else:
+                    self.assertNotEqual(checked.returncode, 0)
+                    self.assertIn('This PR requires remote execution', checked.stdout)
+                    self.assertFalse(rc_file.exists())
+
+    def test_web_only_changes_skip_bazel_lanes(self):
+        # A pull request that only touches web/ is covered by CI / Web. The
+        # Bazel lanes must filter it out at the trigger, not in a job `if`,
+        # so no Bazel run is spawned at all.
+        for workflow in ('parallel-cluster-ci.yaml', 'native-bazel.yaml',
+                         'sanitizers.yaml', 'clusterfuzzlite.yaml'):
+            text = Path('.github/workflows', workflow).read_text()
+            triggers = text.split('\non:\n', 1)[1].split('\njobs:\n', 1)[0].splitlines()
+            start = triggers.index('  pull_request:') + 1
+            end = next((i for i, line in enumerate(triggers[start:], start)
+                        if line.strip() and not line.startswith('    ')), len(triggers))
+            pull_request = '\n'.join(triggers[start:end])
+            self.assertIn("    paths-ignore:\n      - \"web/**\"", pull_request, workflow)
+        web = Path('.github/workflows/web.yaml').read_text()
+        self.assertIn("  pull_request:\n    branches: [main]\n    paths:\n      - \"web/**\"", web)
 
     def test_cluster_summary_preserves_failures_and_unknown_cache_coverage(self):
         with tempfile.TemporaryDirectory() as directory:

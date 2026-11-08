@@ -7,7 +7,11 @@ export interface BookDownload {
   time: string;
 }
 
-function resend(path: string, apiKey: string, body: unknown): Promise<Response> {
+function resend(
+  path: string,
+  apiKey: string,
+  body: unknown,
+): Promise<Response> {
   return fetch(`${RESEND_API}${path}`, {
     method: "POST",
     headers: {
@@ -22,8 +26,12 @@ async function isExistingContact(res: Response): Promise<boolean> {
   if (res.status === 409) {
     return true;
   }
-  const error = (await res.json().catch(() => null)) as { message?: unknown } | null;
-  return typeof error?.message === "string" && /already exists/i.test(error.message);
+  const error = (await res.json().catch(() => null)) as {
+    message?: unknown;
+  } | null;
+  return (
+    typeof error?.message === "string" && /already exists/i.test(error.message)
+  );
 }
 
 /**
@@ -31,7 +39,10 @@ async function isExistingContact(res: Response): Promise<boolean> {
  * the notification is best-effort so a dropped internal email never costs a download.
  * Requires `RESEND_API_KEY`; `RESEND_SEGMENT_ID` optionally files the contact under a segment.
  */
-export async function recordBookDownload({ email, time }: BookDownload): Promise<void> {
+export async function recordBookDownload({
+  email,
+  time,
+}: BookDownload): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     throw new Error("RESEND_API_KEY is not configured");
@@ -44,7 +55,9 @@ export async function recordBookDownload({ email, time }: BookDownload): Promise
     ...(segmentId ? { segments: [{ id: segmentId }] } : {}),
   });
   if (!contact.ok && !(await isExistingContact(contact))) {
-    throw new Error(`Failed to store contact: ${contact.status} ${contact.statusText}`);
+    throw new Error(
+      `Failed to store contact: ${contact.status} ${contact.statusText}`,
+    );
   }
 
   try {
@@ -56,7 +69,10 @@ export async function recordBookDownload({ email, time }: BookDownload): Promise
       text: `New book download from ${email}\nTime: ${time}\n`,
     });
     if (!notification.ok) {
-      console.error("Failed to send download notification:", notification.status);
+      console.error(
+        "Failed to send download notification:",
+        notification.status,
+      );
     }
   } catch (error) {
     console.error("Failed to send download notification:", error);
@@ -74,7 +90,10 @@ export interface SlackInviteRequest {
  * the team is the whole action and a failure to send is a failure.
  * Requires `RESEND_API_KEY`.
  */
-export async function sendSlackInviteRequest({ email, time }: SlackInviteRequest): Promise<void> {
+export async function sendSlackInviteRequest({
+  email,
+  time,
+}: SlackInviteRequest): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     throw new Error("RESEND_API_KEY is not configured");
@@ -87,6 +106,8 @@ export async function sendSlackInviteRequest({ email, time }: SlackInviteRequest
     text: `${email} asked to join the NativeLink Slack community.\nTime: ${time}\n\nSend them an invite from the Slack admin console.\n`,
   });
   if (!res.ok) {
-    throw new Error(`Failed to send Slack invite request: ${res.status} ${res.statusText}`);
+    throw new Error(
+      `Failed to send Slack invite request: ${res.status} ${res.statusText}`,
+    );
   }
 }

@@ -22,10 +22,18 @@ export const metadata: Metadata = {
 // Dev-only: the design-system catalog has no place in the production bundle.
 const IS_PROD = process.env.NODE_ENV === "production";
 
-function Group({ label, children }: { label: string; children: React.ReactNode }) {
+function Group({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="mb-16">
-      <h2 className="mb-2 font-mono text-xs uppercase tracking-widest text-muted">{label}</h2>
+      <h2 className="mb-2 font-mono text-xs uppercase tracking-widest text-muted">
+        {label}
+      </h2>
       <Divider className="mb-8" />
       <div className="flex flex-wrap items-center gap-4">{children}</div>
     </section>
@@ -44,8 +52,8 @@ export default function LabPage() {
           Design system lab
         </h1>
         <p className="mt-3 max-w-[60ch] text-base text-muted">
-          Every primitive in <code>@nativelink/ui</code>, in every meaningful state.
-          The living reference for the "Technical Warmth" system.
+          Every primitive in <code>@nativelink/ui</code>, in every meaningful
+          state. The living reference for the "Technical Warmth" system.
         </p>
       </header>
 
@@ -84,8 +92,8 @@ export default function LabPage() {
               <CardTitle>Basic card</CardTitle>
             </CardHeader>
             <CardBody>
-              Standard card with header, body, and a 2px border. Semi-transparent surface
-              over the warm background.
+              Standard card with header, body, and a 2px border.
+              Semi-transparent surface over the warm background.
             </CardBody>
           </Card>
           <Card>
@@ -107,8 +115,8 @@ export default function LabPage() {
               <CardTitle>Dense</CardTitle>
             </CardHeader>
             <CardBody>
-              Same card, more content. Body text uses the muted foreground color and
-              relaxed line-height for long-form reading.
+              Same card, more content. Body text uses the muted foreground color
+              and relaxed line-height for long-form reading.
             </CardBody>
           </Card>
         </div>
@@ -121,7 +129,9 @@ export default function LabPage() {
             <Divider />
           </div>
           <div>
-            <p className="mb-2 text-sm text-muted">Inset 10% (matches Section divider)</p>
+            <p className="mb-2 text-sm text-muted">
+              Inset 10% (matches Section divider)
+            </p>
             <Divider inset />
           </div>
         </div>
@@ -133,8 +143,9 @@ export default function LabPage() {
           <h2>Heading 2</h2>
           <h3>Heading 3</h3>
           <p>
-            Body paragraphs render at <code>16px</code> with a <code>1.7</code> line-height
-            for comfortable reading. Inline code uses a subtle background tint.
+            Body paragraphs render at <code>16px</code> with a <code>1.7</code>{" "}
+            line-height for comfortable reading. Inline code uses a subtle
+            background tint.
           </p>
           <pre>
             <code>{`function add(a: number, b: number) {\n  return a + b;\n}`}</code>
@@ -144,7 +155,8 @@ export default function LabPage() {
             <li>Spacing follows the 8px rhythm.</li>
           </ul>
           <blockquote>
-            Quotes use a 2px left border and muted color. They lean into the technical-but-warm tone.
+            Quotes use a 2px left border and muted color. They lean into the
+            technical-but-warm tone.
           </blockquote>
         </Prose>
       </Group>
@@ -165,7 +177,10 @@ export default function LabPage() {
               key={name}
               className="overflow-hidden rounded-md border-2 border-border bg-surface/50"
             >
-              <div className="h-16 w-full" style={{ background: `rgb(var(${varName}))` }} />
+              <div
+                className="h-16 w-full"
+                style={{ background: `rgb(var(${varName}))` }}
+              />
               <div className="border-t border-border px-3 py-2">
                 <div className="font-mono text-sm font-medium">{name}</div>
                 <div className="font-mono text-xs text-muted">{varName}</div>
