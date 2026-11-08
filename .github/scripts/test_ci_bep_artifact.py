@@ -147,12 +147,9 @@ class WorkflowTest(unittest.TestCase):
             with self.subTest(workflow=workflow):
                 text = (root / '.github/workflows' / workflow).read_text()
                 self.assertIn('--build_event_binary_file="$RUNNER_TEMP/bep/events.pb"', text)
-                # Seen on a real fork run: setup-bazel's exported job token
-                # otherwise lands in the recorded client environment.
                 self.assertIn('env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //...', text)
                 guard = ("if: always() && contains(fromJSON('[\"public\", \"none\"]'), "
                          "steps.setup-nativelink-cloud.outputs.credential)")
-                # Both the staging and the upload step, and nothing weaker.
                 self.assertEqual(text.count(guard), 2)
                 self.assertNotIn("credential != 'private'", text)
 

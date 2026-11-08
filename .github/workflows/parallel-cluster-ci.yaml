@@ -97,13 +97,8 @@ jobs:
           NL_API_KEY: ${{ secrets.NATIVELINK_CLUSTER_API_KEY }}
           NL_ENDPOINTS: ${{ vars.NATIVELINK_CLUSTER_ENDPOINT }} ${{ vars.NATIVELINK_CLUSTER_BEP_ENDPOINT }}
         run: |
-          # setup-bazel exports the job token as BAZELISK_GITHUB_TOKEN, and
-          # Bazel records the client environment in its build events (and
-          # streams them on BES lanes). Bazelisk fetched Bazel in the version
-          # step, so this invocation does not need the token.
-          # Fork PRs get no secrets, so NL_API_KEY is set but empty. Bazel
-          # records it by name all the same, and staging refuses an event
-          # file that names a credential.
+          # Bazel records the client environment; keep the job token out.
+          # Forks get an empty key, whose name staging would still refuse.
           [ -n "$NL_API_KEY" ] || unset NL_API_KEY
           env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-toolchain \
@@ -112,11 +107,7 @@ jobs:
             --verbose_failures \
             --build_event_binary_file="$RUNNER_TEMP/bep/events.pb"
 
-      # No write credential means no BES stream, so the build never reaches
-      # the build-results UI. Stage its events for a trusted workflow_run job
-      # to publish. Allowlist, not denylist: Bazel records the client
-      # environment and options in the event file, so any run that held a
-      # key (including one that skipped the setup step) must not upload.
+      # Keyless runs only: event files record the key a run held.
       - name: Stage build events for the build-results UI
         if: always() && contains(fromJSON('["public", "none"]'), steps.setup-nativelink-cloud.outputs.credential)
         run: |

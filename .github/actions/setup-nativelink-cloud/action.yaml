@@ -81,10 +81,8 @@ outputs:
     value: ${{ steps.configure.outputs.enabled }}
   credential:
     description: >-
-      'private' (secret-fed key; the build streams BES), 'public' (committed
-      read-only key; no BES) or 'none'. Build event files from a 'private'
-      run carry that key in their recorded options and must never be
-      published as artifacts.
+      'private', 'public' (committed read-only key) or 'none'. Event files
+      from a 'private' run contain the key.
     value: ${{ steps.configure.outputs.credential }}
 
 runs:

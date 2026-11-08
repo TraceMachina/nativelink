@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
-"""Stage a PR build's event file and failed-test logs for later ingestion.
+"""Stage a keyless PR build's event file and failed-test logs for ci_bep_replay.py.
 
-PR runs that hold no write credential (fork PRs, and every run of the hosted
-PR lane) cannot stream BES, so their builds never reach the build-results UI.
-This stages what a trusted workflow_run job needs to publish them afterwards:
-the binary BEP file and the logs of failed tests, bounded in size.
-
-Everything staged here is produced by code under review and is untrusted.
-The manifest is a convenience for the consumer, not evidence: the consumer
-takes commit, PR and run identity from the triggering workflow_run event.
+Everything staged is untrusted; the consumer takes identity from workflow_run.
 """
 
 import argparse
@@ -29,9 +22,7 @@ MAX_TOTAL_LOG_BYTES = 32 << 20
 MAX_FAILED_TARGETS = 50
 LOG_NAMES = ('test.log', 'test.xml')
 TRUNCATED_MARKER = b'[ci_bep_artifact: truncated, kept the last %d of %d bytes]\n'
-# Bazel records the whole client environment in the event stream as
-# --client_env=NAME=value. A credential-looking name means this run's
-# environment held something that must not be published.
+# Bazel records the client environment as --client_env=NAME=value.
 CLIENT_ENV = re.compile(rb'--client_env=([A-Za-z_][A-Za-z0-9_]*)=')
 SENSITIVE_NAME = re.compile(r'TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|API_KEY',
                             re.IGNORECASE)
@@ -105,10 +96,9 @@ def collect(events, testlogs, output, environ):
     if events.is_file() and not events.is_symlink():
         size = events.stat().st_size
         if size > MAX_EVENTS_BYTES:
-            # A truncated event stream cannot be replayed; leave it out.
             skipped.append({'path': EVENTS_NAME, 'reason': f'{size} bytes exceeds the cap'})
         elif names := sensitive_env_names(events):
-            # Names only: the values are exactly what must not be echoed.
+            # Names only, never values.
             skipped.append({'path': EVENTS_NAME,
                             'reason': 'credential-like client environment: ' + ', '.join(names)})
         else:

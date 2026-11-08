@@ -13,7 +13,7 @@ class Bazel8LockfileTest(unittest.TestCase):
         workflow = Path('.github/workflows/native-bazel.yaml').read_text()
         step = workflow.split('      - name: Run Bazel compatibility tests\n', 1)[1]
         body = step.split('        run: |\n', 1)[1].split('\n  redis-store-tester:', 1)[0]
-        # Stop at the next step so later steps' YAML is not run as shell.
+        # Stop at the next step.
         script = textwrap.dedent(body.split('\n      - ', 1)[0])
         return subprocess.run(['bash', '-e', '-c', script], cwd=root,
                               capture_output=True, text=True, check=False)

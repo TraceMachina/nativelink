@@ -98,10 +98,7 @@ jobs:
           # The staging remote cache can drop a blob between its existence
           # check and the consuming action ("lost inputs"). Let Bazel retry
           # the invocation and re-execute the producers instead of failing.
-          # setup-bazel exports the job token as BAZELISK_GITHUB_TOKEN, and
-          # Bazel records the client environment in its build events (and
-          # streams them on BES lanes). Bazelisk fetched Bazel in the version
-          # step, so this invocation does not need the token.
+          # Bazel records the client environment; keep the job token out.
           env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-quiet \
             --lockfile_mode=error \
@@ -110,11 +107,7 @@ jobs:
             --verbose_failures \
             --build_event_binary_file="$RUNNER_TEMP/bep/events.pb"
 
-      # No write credential means no BES stream, so the build never reaches
-      # the build-results UI. Stage its events for a trusted workflow_run job
-      # to publish. Allowlist, not denylist: Bazel records the client
-      # environment and options in the event file, so any run that held a
-      # key (including one that skipped the setup step) must not upload.
+      # Keyless runs only: event files record the key a run held.
       - name: Stage build events for the build-results UI
         if: always() && contains(fromJSON('["public", "none"]'), steps.setup-nativelink-cloud.outputs.credential)
         run: |
