@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 exports_files(
@@ -39,6 +39,14 @@ rust_binary(
         "@crates//:tower",
         "@crates//:tracing",
     ],
+)
+
+rust_test(
+    name = "nativelink_test",
+    timeout = "short",
+    crate = ":nativelink",
+    proc_macro_deps = ["//nativelink-macro"],
+    deps = ["@crates//:tracing-test"],
 )
 
 rust_binary(
@@ -98,6 +106,7 @@ filegroup(
 test_suite(
     name = "unit_tests",
     tests = [
+        ":nativelink_test",
         "//nativelink-config:unit_test",
         "//nativelink-error:unit_test",
         "//nativelink-macro:unit_test",

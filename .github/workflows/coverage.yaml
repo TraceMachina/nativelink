@@ -83,3 +83,7 @@ jobs:
         id: deployment
         uses: >- # v4.0.5
           actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e
+        with:
+          # GitHub Pages can sit in syncing_files well past the action's
+          # 10-minute default when the service is degraded. Give it 30.
+          timeout: 1800000
