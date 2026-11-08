@@ -37,6 +37,7 @@ use nativelink_config::stores::ExperimentalAzureSpec;
 use nativelink_error::{Code, Error, ResultExt, make_err};
 use nativelink_metric::MetricsComponent;
 use nativelink_util::adaptive_permits::{AdaptivePermit, AdaptivePermits};
+use nativelink_util::background_spawn;
 use nativelink_util::buf_channel::{DropCloserReadHalf, DropCloserWriteHalf};
 use nativelink_util::health_utils::{HealthRegistryBuilder, HealthStatus, HealthStatusIndicator};
 use nativelink_util::instant_wrapper::InstantWrapper;
@@ -45,7 +46,6 @@ use nativelink_util::retry::{Retrier, RetryResult};
 use nativelink_util::store_trait::{
     RemoveCallback, StoreDriver, StoreKey, StoreOptimizations, UploadSizeInfo,
 };
-use nativelink_util::{background_spawn, fs};
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio::time::sleep;
@@ -262,8 +262,9 @@ async fn discard_staged_blocks(
 
 /// A permit from the store's request pool when requests are bounded,
 /// counted on `store.object.request_waits` when none was free. Every path
-/// takes it after the read permit and before the process-wide open-file
-/// permit, so no two requests wait on each other's pools in opposite order.
+/// takes it after the read permit. HTTP requests must not acquire filesystem
+/// permits: a fast filesystem tier can hold those while waiting for this
+/// store to consume the same stream, which would form a circular wait.
 async fn request_permit(requests: Option<&Arc<Semaphore>>) -> Option<OwnedSemaphorePermit> {
     let requests = requests?;
     if requests.available_permits() == 0 {
@@ -398,6 +399,16 @@ where
                 spec.common.throttle_retry_delay_s
             ));
         }
+        let max_concurrent_uploads = spec
+            .common
+            .multipart_max_concurrent_uploads
+            .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS);
+        if max_concurrent_uploads == 0 {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "multipart_max_concurrent_uploads must be greater than zero"
+            ));
+        }
         let read_permits = (spec.common.max_concurrent_reads > 0).then(|| {
             let max = spec.common.max_concurrent_reads;
             let (min, grow_after) = if spec.common.adaptive_read_concurrency {
@@ -453,10 +464,7 @@ where
                 .common
                 .max_retry_buffer_per_request
                 .unwrap_or(DEFAULT_MAX_RETRY_BUFFER_PER_REQUEST),
-            max_concurrent_uploads: spec
-                .common
-                .multipart_max_concurrent_uploads
-                .unwrap_or(DEFAULT_MAX_CONCURRENT_UPLOADS),
+            max_concurrent_uploads,
             throttle_retry_delay,
             throttle_retry_max_delay,
             read_permits,
@@ -617,18 +625,6 @@ where
                 let client = Arc::clone(&self.client);
                 async move {
                     let _request_permit = self.request_permit().await;
-                    let _permit = match fs::get_permit().await {
-                        Ok(permit) => permit,
-                        Err(e) => {
-                            return Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Failed to acquire permit: {e}"
-                                )),
-                                state,
-                            ));
-                        }
-                    };
 
                     let result = client.blob_client(&blob_path).get_properties(None).await;
 
@@ -753,18 +749,6 @@ where
                                     let blob_path = blob_path.clone();
                                     async move {
                                         let _request_permit = self.request_permit().await;
-                                        let _permit = match fs::get_permit().await {
-                                            Ok(permit) => permit,
-                                            Err(e) => {
-                                                return Some((
-                                                    RetryResult::Retry(make_err!(
-                                                        Code::Unavailable,
-                                                        "Failed to acquire permit: {e}"
-                                                    )),
-                                                    (write_buf, block_id),
-                                                ));
-                                            }
-                                        };
                                         let content_length = write_buf.len() as u64;
                                         let retry_result = client
                                             .blob_client(&blob_path)
@@ -831,7 +815,10 @@ where
                         break;
                     }
                 },
-                Some(fut) = rx.recv() => upload_futures.push(fut),
+                // The queue only bounds waiting blocks. Bound the active set too.
+                Some(fut) = rx.recv(), if upload_futures.len() < self.max_concurrent_uploads => {
+                    upload_futures.push(fut);
+                },
             }
         }
         if let Some(err) = failure {
@@ -863,18 +850,6 @@ where
 
                 async move {
                     let _request_permit = self.request_permit().await;
-                    let _permit = match fs::get_permit().await {
-                        Ok(permit) => permit,
-                        Err(e) => {
-                            return Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Failed to acquire permit: {e}"
-                                )),
-                                block_list,
-                            ));
-                        }
-                    };
 
                     let blocks = match RequestContent::try_from(block_list.clone()) {
                         Ok(blocks) => blocks,
@@ -1004,21 +979,6 @@ where
                         }
 
                         let _request_permit = self.request_permit().await;
-                        let _permit = match fs::get_permit().await {
-                            Ok(permit) => permit,
-                            Err(e) => {
-                                // The next attempt reads the content again.
-                                let err = make_err!(
-                                    Code::Unavailable,
-                                    "Failed to acquire permit: {e}"
-                                );
-                                let retry = match reader.try_reset_stream() {
-                                    Ok(()) => RetryResult::Retry(err),
-                                    Err(reset_err) => RetryResult::Err(err.merge(reset_err)),
-                                };
-                                return Some((retry, reader));
-                            }
-                        };
                         let result = client
                             .blob_client(&blob_path)
                             .block_blob_client()
@@ -1144,18 +1104,6 @@ where
                     // read limit says, not only what has been started.
                     let _read_permit = self.read_permit().await;
                     let _request_permit = self.request_permit().await;
-                    let _permit = match fs::get_permit().await {
-                        Ok(permit) => permit,
-                        Err(e) => {
-                            return Some((
-                                RetryResult::Retry(make_err!(
-                                    Code::Unavailable,
-                                    "Failed to acquire permit: {e}"
-                                )),
-                                writer,
-                            ));
-                        }
-                    };
 
                     // The error carries the wait a throttled response asked for.
                     let result: Result<(), (Error, Option<Duration>)> = async {

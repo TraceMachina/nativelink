@@ -16,13 +16,19 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use nativelink_config::stores::ExperimentalAzureSpec;
+use nativelink_config::stores::{
+    ExperimentalAzureSpec, ExperimentalCloudObjectSpec, FastSlowSpec, FilesystemSpec,
+    StoreDirection, StoreSpec,
+};
 use nativelink_error::{Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_store::azure_blob_store::AzureBlobStore;
 use nativelink_store::cas_utils::ZERO_BYTE_DIGESTS;
-use nativelink_util::common::DigestInfo;
-use nativelink_util::store_trait::StoreLike;
+use nativelink_store::fast_slow_store::FastSlowStore;
+use nativelink_store::filesystem_store::{FileEntryImpl, FilesystemStore};
+use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::common::{DigestInfo, make_temp_path};
+use nativelink_util::store_trait::{Store, StoreLike, UploadSizeInfo};
 use tonic::Code;
 use tracing::warn;
 use uuid::Uuid;
@@ -173,6 +179,64 @@ async fn upload_and_get_data() -> Result<(), Error> {
 
     assert_eq!(result, data, "Expected azure store to have updated value");
 
+    Ok(())
+}
+
+#[nativelink_test]
+async fn bounded_multipart_fast_slow_upload_round_trips() -> Result<(), Error> {
+    let (mut spec, process) = match TestAzuriteHelper::new_spec().await {
+        Ok(parts) => parts,
+        Err(e) if e.code == Code::NotFound => {
+            warn!("Error getting azurite helper, skipping: {e}");
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+    spec.common.multipart_max_concurrent_uploads = Some(1);
+    spec.common.max_concurrent_requests = 2;
+    spec.common.max_concurrent_reads = 1;
+    let helper = TestAzuriteHelper::new_with_spec_and_process(spec.clone(), process).await?;
+    let filesystem_spec = FilesystemSpec {
+        content_path: make_temp_path("content_path"),
+        temp_path: make_temp_path("temp_path"),
+        ..Default::default()
+    };
+    let fast = Store::new(FilesystemStore::<FileEntryImpl>::new(&filesystem_spec).await?);
+    let store = Store::new(FastSlowStore::new(
+        &FastSlowSpec {
+            fast: StoreSpec::Filesystem(filesystem_spec),
+            slow: StoreSpec::ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec::Azure(spec)),
+            fast_direction: StoreDirection::default(),
+            slow_direction: StoreDirection::default(),
+            bypass_dedup_threshold_bytes: 0,
+            has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
+        },
+        fast.clone(),
+        Store::new(helper.store.clone()),
+    ));
+    let data = Bytes::from(vec![7u8; 40 * 1024 * 1024]);
+    let digest = DigestInfo::try_new(VALID_HASH1, data.len())?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    let send = async {
+        for offset in (0..data.len()).step_by(1024 * 1024) {
+            tx.send(data.slice(offset..offset + 1024 * 1024)).await?;
+        }
+        tx.send_eof()
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::try_join!(
+            store.update(digest, rx, UploadSizeInfo::ExactSize(digest.size_bytes())),
+            send
+        )
+    })
+    .await
+    .expect("the bounded streaming upload must finish")?;
+    assert_eq!(fast.get_part_unchunked(digest, 0, None).await?, data);
+    assert_eq!(
+        helper.store.get_part_unchunked(digest, 0, None).await?,
+        data
+    );
     Ok(())
 }
 
