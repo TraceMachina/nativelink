@@ -283,8 +283,14 @@ impl StoreDriver for DedupStore {
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        // Special case for if a client tries to read zero bytes or the canonical zero digest.
-        if length == Some(0) || is_zero_digest(key.borrow()) {
+        if is_zero_digest(key.borrow()) {
+            writer
+                .send_eof()
+                .err_tip(|| "Failed to send zero EOF in dedup store get_part")?;
+            return Ok(());
+        }
+        // Special case for if a client tries to read zero bytes.
+        if length == Some(0) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to write EOF out from get_part dedup")?;
