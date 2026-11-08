@@ -101,6 +101,10 @@ jobs:
           # Bazel records the client environment in its build events (and
           # streams them on BES lanes). Bazelisk fetched Bazel in the version
           # step, so this invocation does not need the token.
+          # Fork PRs get no secrets, so NL_API_KEY is set but empty. Bazel
+          # records it by name all the same, and staging refuses an event
+          # file that names a credential.
+          [ -n "$NL_API_KEY" ] || unset NL_API_KEY
           env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //... \
             --config=nl-toolchain \
             --config=nl-quiet \
