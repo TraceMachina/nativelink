@@ -129,6 +129,13 @@ pub struct AwaitedAction {
     /// older records, and left out while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     avoid_worker_ids: Vec<WorkerId>,
+
+    /// The nodes of those workers, as they advertised them, so every
+    /// scheduler replica can keep a retry off the node and not only the
+    /// replica that knows the worker. Absent in older records, and left out
+    /// while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    avoid_node_names: Vec<String>,
 }
 
 /// Most workers an action remembers failing on.
@@ -184,6 +191,7 @@ impl AwaitedAction {
             store_losses: 0,
             timeouts: 0,
             avoid_worker_ids: Vec::new(),
+            avoid_node_names: Vec::new(),
             last_worker_updated_timestamp: now,
             last_client_keepalive_timestamp: now,
             maybe_origin_metadata,
@@ -260,6 +268,21 @@ impl AwaitedAction {
         self.avoid_worker_ids.push(worker_id);
         if self.avoid_worker_ids.len() > MAX_AVOIDED_WORKERS {
             self.avoid_worker_ids.remove(0);
+        }
+    }
+
+    /// The nodes this action failed or timed out on, most recent last.
+    pub fn avoid_node_names(&self) -> &[String] {
+        &self.avoid_node_names
+    }
+
+    /// Remembers the node of a worker this action failed on. Bounded like
+    /// the workers.
+    pub(crate) fn avoid_node(&mut self, node: &str) {
+        self.avoid_node_names.retain(|n| n != node);
+        self.avoid_node_names.push(node.to_owned());
+        if self.avoid_node_names.len() > MAX_AVOIDED_WORKERS {
+            self.avoid_node_names.remove(0);
         }
     }
 

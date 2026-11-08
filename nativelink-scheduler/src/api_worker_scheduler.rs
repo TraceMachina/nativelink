@@ -388,6 +388,9 @@ pub struct QueuedAction<'a> {
     /// can run it is preferred, and these only when none other has taken
     /// it within `AVOID_FALLBACK_AFTER` of its last requeue.
     pub avoid: &'a [WorkerId],
+    /// The nodes of those workers, as the record remembers them: the
+    /// worker itself may be connected to another replica.
+    pub avoid_nodes: &'a [String],
     /// When the action was last queued, from its state.
     pub queued_since: SystemTime,
 }
@@ -1348,27 +1351,35 @@ impl ApiWorkerSchedulerImpl {
         full_worker_logging: bool,
         asking: Option<&ActionUniqueQualifier>,
         avoid: &[WorkerId],
+        avoid_nodes: &[String],
         fallback_ok: bool,
     ) -> Option<WorkerId> {
         // The workers this action failed or timed out on, and the others on
         // their nodes, are offered it last: only when no other worker has
-        // taken it for a while (`fallback_ok`).
-        if !avoid.is_empty() {
-            let avoid_nodes: HashSet<&str> = avoid
+        // taken it for a while (`fallback_ok`). The nodes come from the
+        // record, which every replica reads, and from the workers this
+        // replica knows.
+        if !avoid.is_empty() || !avoid_nodes.is_empty() {
+            let shunned: HashSet<&str> = avoid_nodes
                 .iter()
-                .filter_map(|id| self.workers.peek(id))
-                .filter_map(node_name_of)
+                .map(String::as_str)
+                .chain(
+                    avoid
+                        .iter()
+                        .filter_map(|id| self.workers.peek(id))
+                        .filter_map(node_name_of),
+                )
                 .collect();
             let others: HashSet<WorkerId> = candidates
                 .iter()
                 .filter(|id| !avoid.contains(id))
                 .filter(|id| {
-                    avoid_nodes.is_empty()
+                    shunned.is_empty()
                         || self
                             .workers
                             .peek(id)
                             .and_then(node_name_of)
-                            .is_none_or(|node| !avoid_nodes.contains(node))
+                            .is_none_or(|node| !shunned.contains(node))
                 })
                 .cloned()
                 .collect();
@@ -1534,8 +1545,9 @@ impl ApiWorkerSchedulerImpl {
             now,
             asking.map(|action| action.unique_qualifier),
             asking.map_or(&[][..], |action| action.avoid),
+            asking.map_or(&[][..], |action| action.avoid_nodes),
             asking.is_none_or(|action| {
-                action.avoid.is_empty()
+                (action.avoid.is_empty() && action.avoid_nodes.is_empty())
                     || now
                         .duration_since(action.queued_since)
                         .is_ok_and(|waited| waited >= AVOID_FALLBACK_AFTER)
@@ -1555,6 +1567,7 @@ impl ApiWorkerSchedulerImpl {
         now: SystemTime,
         asking: Option<&ActionUniqueQualifier>,
         avoid: &[WorkerId],
+        avoid_nodes: &[String],
         fallback_ok: bool,
     ) -> MatchOutcome {
         if let Some(action) = asking {
@@ -1581,6 +1594,7 @@ impl ApiWorkerSchedulerImpl {
                 full_worker_logging,
                 asking,
                 avoid,
+                avoid_nodes,
                 fallback_ok,
             ) {
                 return MatchOutcome::Matched(worker_id);
@@ -1853,6 +1867,9 @@ impl ApiWorkerSchedulerImpl {
         let worker = self.workers.get_mut(worker_id).err_tip(|| {
             format!("Worker {worker_id} does not exist in SimpleScheduler::update_action")
         })?;
+        // The node the worker says it is on, for the record to remember
+        // against a failure here.
+        let worker_node = node_name_of(worker).map(str::to_owned);
 
         // Ensure the worker is supposed to be running the operation. A
         // result for something this worker no longer holds is stale, not
@@ -1956,7 +1973,7 @@ impl ApiWorkerSchedulerImpl {
         } else {
             let update_operation_res = self
                 .worker_state_manager
-                .update_operation(operation_id, worker_id, update)
+                .update_operation_on_node(operation_id, worker_id, worker_node.as_deref(), update)
                 .await
                 .err_tip(|| "in update_operation on SimpleScheduler::update_action");
             match &update_operation_res {

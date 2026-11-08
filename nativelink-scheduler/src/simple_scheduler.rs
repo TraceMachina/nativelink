@@ -590,8 +590,10 @@ impl SimpleScheduler {
         struct Loaded {
             action_state_result: Box<dyn ActionStateResult>,
             action_info: ActionInfoWithProps,
-            /// Workers a retry of this action should not go back to.
+            /// Workers a retry of this action should not go back to, and
+            /// their nodes.
             avoid: Vec<WorkerId>,
+            avoid_nodes: Vec<String>,
             /// When the action was last queued.
             queued_since: SystemTime,
         }
@@ -645,6 +647,10 @@ impl SimpleScheduler {
                 .avoid_worker_ids()
                 .await
                 .unwrap_or_default();
+            let avoid_nodes = action_state_result
+                .avoid_node_names()
+                .await
+                .unwrap_or_default();
             let queued_since = match action_state_result.as_state().await {
                 Ok((state, _)) => state.last_transition_timestamp,
                 Err(_) => action_info.insert_timestamp,
@@ -658,6 +664,7 @@ impl SimpleScheduler {
                     scheduler_start_execute_event_id: None,
                 },
                 avoid,
+                avoid_nodes,
                 queued_since,
             }))
         }
@@ -841,6 +848,7 @@ impl SimpleScheduler {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
                             avoid: &loaded.avoid,
+                            avoid_nodes: &loaded.avoid_nodes,
                             queued_since: loaded.queued_since,
                         }),
                     )
@@ -984,6 +992,7 @@ impl SimpleScheduler {
                             unique_qualifier: &loaded.action_info.inner.unique_qualifier,
                             insert_timestamp: loaded.action_info.inner.insert_timestamp,
                             avoid: &loaded.avoid,
+                            avoid_nodes: &loaded.avoid_nodes,
                             queued_since: loaded.queued_since,
                         }),
                     )

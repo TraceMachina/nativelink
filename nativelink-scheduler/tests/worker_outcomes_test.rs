@@ -568,6 +568,38 @@ async fn command_timeout_retry_keeps_off_the_whole_node_test() -> Result<(), Err
 }
 
 #[nativelink_test]
+async fn the_node_is_remembered_after_the_worker_that_failed_leaves_test() -> Result<(), Error> {
+    // Another scheduler replica would not know w1 at all; here w1 is gone
+    // by the time the retry is matched, which is the same for the matcher.
+    let scheduler = make_scheduler(&SimpleSpec::default());
+    let (w1, w2, w3) = (
+        WorkerId("w1".to_string()),
+        WorkerId("w2".to_string()),
+        WorkerId("w3".to_string()),
+    );
+    let mut rx1 = setup_new_worker_with(&scheduler, &w1, on_node("a")).await?;
+    let mut listener = setup_action(&scheduler, 8).await?;
+    let operation_id = next_start(&mut rx1).await;
+    expect_stage(&mut listener, "executing").await;
+    scheduler
+        .update_action(&w1, &operation_id, timed_out())
+        .await?;
+    expect_stage(&mut listener, "queued").await;
+    scheduler.remove_worker(&w1).await?;
+
+    // w2 shares w1's node; w3 does not. The record names the node.
+    let mut rx2 = setup_new_worker_with(&scheduler, &w2, on_node("a")).await?;
+    let mut rx3 = setup_new_worker_with(&scheduler, &w3, on_node("b")).await?;
+    let (which, retried) = next_start_on_either(&mut rx2, &mut rx3).await;
+    assert_eq!(retried, operation_id);
+    assert_eq!(
+        which, 2,
+        "the retry went to w2, on the node w1 timed it out on"
+    );
+    Ok(())
+}
+
+#[nativelink_test]
 async fn tripwire_spec_defaults_test() -> Result<(), Error> {
     let tripwire = WorkerOutcomeTripwireSpec::default();
     assert_eq!(

@@ -64,6 +64,12 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn avoid_worker_ids(&self) -> Result<Vec<WorkerId>, Error> {
         Ok(Vec::new())
     }
+    /// Nodes a retry of this action should keep off while another can take
+    /// it: the nodes of the workers it failed on, as they advertised them.
+    /// Empty where the implementation does not track it.
+    async fn avoid_node_names(&self) -> Result<Vec<String>, Error> {
+        Ok(Vec::new())
+    }
 }
 
 /// The direction in which the results are ordered.
@@ -189,6 +195,21 @@ pub trait WorkerStateManager: Sync + Send + MetricsComponent {
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error>;
+
+    /// `update_operation` from a worker whose node is known (its `node_name`
+    /// property): a failure the worker is answerable for is remembered
+    /// against the node too, so a retry keeps off the whole node, on every
+    /// scheduler replica. Implementations that do not track it take the
+    /// plain update.
+    async fn update_operation_on_node(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+        _worker_node: Option<&str>,
+        update: UpdateOperationType,
+    ) -> Result<(), Error> {
+        self.update_operation(operation_id, worker_id, update).await
+    }
 
     /// Whether the operation is still executing on this worker. False once
     /// it has finished, been requeued or reassigned, or no longer exists.

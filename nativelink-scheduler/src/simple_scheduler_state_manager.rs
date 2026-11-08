@@ -346,6 +346,15 @@ where
         Ok(awaited_action.avoid_worker_ids().to_vec())
     }
 
+    async fn avoid_node_names(&self) -> Result<Vec<String>, Error> {
+        let awaited_action = self
+            .awaited_action_sub
+            .borrow()
+            .await
+            .err_tip(|| "In MatchingEngineActionStateResult::avoid_node_names")?;
+        Ok(awaited_action.avoid_node_names().to_vec())
+    }
+
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
         let mut timeout_attempts = 0;
         loop {
@@ -717,6 +726,7 @@ where
                         .inner_update_operation(
                             &operation_id,
                             Some(worker_id),
+                            None,
                             UpdateOperationType::UpdateWithError(make_err!(
                                 Code::Internal,
                                 "The worker finished this operation but its result never reached the scheduler"
@@ -1212,6 +1222,7 @@ where
         &self,
         operation_id: &OperationId,
         maybe_worker_id: Option<&WorkerId>,
+        worker_node: Option<&str>,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
         let update_type_str = match &update {
@@ -1370,6 +1381,9 @@ where
                     {
                         awaited_action.timeouts += 1;
                         awaited_action.avoid_worker(worker_id.clone());
+                        if let Some(node) = worker_node {
+                            awaited_action.avoid_node(node);
+                        }
                         warn!(
                             %operation_id,
                             %worker_id,
@@ -1445,6 +1459,9 @@ where
                             // The action failed on this worker; a retry
                             // prefers another while one can take it.
                             awaited_action.avoid_worker(worker_id.clone());
+                            if let Some(node) = worker_node {
+                                awaited_action.avoid_node(node);
+                            }
                         }
                         is_retry = true;
                         ActionStage::Queued
@@ -1871,7 +1888,18 @@ where
         worker_id: &WorkerId,
         update: UpdateOperationType,
     ) -> Result<(), Error> {
-        self.inner_update_operation(operation_id, Some(worker_id), update)
+        self.inner_update_operation(operation_id, Some(worker_id), None, update)
+            .await
+    }
+
+    async fn update_operation_on_node(
+        &self,
+        operation_id: &OperationId,
+        worker_id: &WorkerId,
+        worker_node: Option<&str>,
+        update: UpdateOperationType,
+    ) -> Result<(), Error> {
+        self.inner_update_operation(operation_id, Some(worker_id), worker_node, update)
             .await
     }
 
@@ -1939,7 +1967,7 @@ where
             ),
             Err(err) => (None, UpdateOperationType::UpdateWithError(err)),
         };
-        self.inner_update_operation(operation_id, maybe_worker_id, update)
+        self.inner_update_operation(operation_id, maybe_worker_id, None, update)
             .await
     }
 
