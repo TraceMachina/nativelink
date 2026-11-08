@@ -22,7 +22,7 @@
 use core::time::Duration;
 
 use nativelink_config::schedulers::PropertyType;
-use nativelink_error::Error;
+use nativelink_error::{Code, Error};
 use nativelink_sim::Invariant::{I1, I8, I11};
 use nativelink_sim::{
     Action, Backend, Event, Expect, Fault, Link, Outcome, Report, Run, Scenario, Step, WorkerSpec,
@@ -547,8 +547,8 @@ fn failed_attempts_are_retried() -> Result<(), Error> {
             Step::execute(
                 "c1",
                 Action::new(1).attempts(&[
-                    Run::Error(nativelink_error::Code::Internal),
-                    Run::Error(nativelink_error::Code::Internal),
+                    Run::Error(Code::Internal),
+                    Run::Error(Code::Internal),
                     Run::Succeed,
                 ]),
             ),
@@ -633,4 +633,27 @@ fn two_clients_one_execution() -> Result<(), Error> {
         );
     }
     Ok(())
+}
+
+/// RFC-0017: an action that failed on the only worker that fits is kept
+/// off it while another worker could take it, and offered back to it once
+/// it has waited the fallback grace. With no periodic pass, as here, the
+/// matcher wakes for that moment itself; the property test (seed 43) found
+/// the retry left waiting until the settle budget ran out.
+#[test]
+fn lone_worker_retry_after_its_own_error() -> Result<(), Error> {
+    Scenario::new("lone-worker-retry", 29)
+        .workers(1, WorkerSpec::default().max_inflight(2))
+        .at(
+            0,
+            Step::execute(
+                "c1",
+                Action::new(1)
+                    .run_ms(3_000)
+                    .attempts(&[Run::Error(Code::Internal), Run::Succeed]),
+            ),
+        )
+        .settle(Duration::from_mins(2))
+        .run()
+        .map(drop)
 }

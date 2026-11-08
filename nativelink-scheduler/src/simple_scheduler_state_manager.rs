@@ -28,7 +28,7 @@ use nativelink_metric::MetricsComponent;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::AttemptEndReason;
 use nativelink_util::action_messages::{
     ActionInfo, ActionResult, ActionStage, ActionState, ActionUniqueQualifier, ExecutionMetadata,
-    OperationId, STORE_UNREACHABLE_ERROR_TIP, WorkerId,
+    LOST_RESULT_ERROR_TIP, OperationId, STORE_UNREACHABLE_ERROR_TIP, WorkerId,
 };
 use nativelink_util::instant_wrapper::InstantWrapper;
 use nativelink_util::metrics::{
@@ -36,8 +36,9 @@ use nativelink_util::metrics::{
     ExecutionStage, record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, MatchingEngineStateManager,
-    OperationFilter, OperationStageFlags, OrderDirection, UpdateOperationType, WorkerStateManager,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, DispatchFacts,
+    MatchingEngineStateManager, OperationFilter, OperationStageFlags, OrderDirection,
+    UpdateOperationType, WorkerStateManager,
 };
 use nativelink_util::origin_event::OriginMetadata;
 use nativelink_util::platform_properties::PlatformProperties;
@@ -337,22 +338,17 @@ where
         Ok(Some(awaited_action.last_client_keepalive_timestamp()))
     }
 
-    async fn avoid_worker_ids(&self) -> Result<Vec<WorkerId>, Error> {
+    async fn dispatch_facts(&self) -> Result<DispatchFacts, Error> {
         let awaited_action = self
             .awaited_action_sub
             .borrow()
             .await
-            .err_tip(|| "In MatchingEngineActionStateResult::avoid_worker_ids")?;
-        Ok(awaited_action.avoid_worker_ids().to_vec())
-    }
-
-    async fn avoid_node_names(&self) -> Result<Vec<String>, Error> {
-        let awaited_action = self
-            .awaited_action_sub
-            .borrow()
-            .await
-            .err_tip(|| "In MatchingEngineActionStateResult::avoid_node_names")?;
-        Ok(awaited_action.avoid_node_names().to_vec())
+            .err_tip(|| "In MatchingEngineActionStateResult::dispatch_facts")?;
+        Ok(DispatchFacts {
+            avoid_worker_ids: awaited_action.avoid_worker_ids().to_vec(),
+            avoid_node_names: awaited_action.avoid_node_names().to_vec(),
+            queued_since: Some(awaited_action.state().last_transition_timestamp),
+        })
     }
 
     async fn changed(&mut self) -> Result<(Arc<ActionState>, Option<OriginMetadata>), Error> {
@@ -729,7 +725,7 @@ where
                             None,
                             UpdateOperationType::UpdateWithError(make_err!(
                                 Code::Internal,
-                                "The worker finished this operation but its result never reached the scheduler"
+                                "{LOST_RESULT_ERROR_TIP}"
                             )),
                         )
                         .await
@@ -1408,6 +1404,12 @@ where
                     // comes back is bounded like a lost worker.
                     let store_unreachable =
                         err.message_string().contains(STORE_UNREACHABLE_ERROR_TIP);
+                    // A result that never reached the scheduler is not the
+                    // worker's doing either: it ran the action. The retry
+                    // spends max_job_retries, as before, but may go straight
+                    // back to that worker; avoiding it would make a lone
+                    // worker wait out the fallback for its own lost result.
+                    let lost_result = err.message_string().contains(LOST_RESULT_ERROR_TIP);
                     if store_unreachable {
                         awaited_action.store_losses += 1;
                     } else if !due_to_backpressure {
@@ -1455,6 +1457,7 @@ where
                         if let Some(worker_id) = maybe_worker_id
                             && !store_unreachable
                             && !due_to_backpressure
+                            && !lost_result
                         {
                             // The action failed on this worker; a retry
                             // prefers another while one can take it.

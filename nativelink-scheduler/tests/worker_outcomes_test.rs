@@ -33,7 +33,9 @@ use nativelink_scheduler::default_scheduler_factory::memory_awaited_action_db_fa
 use nativelink_scheduler::simple_scheduler::SimpleScheduler;
 use nativelink_scheduler::worker::Worker;
 use nativelink_scheduler::worker_scheduler::WorkerScheduler;
-use nativelink_util::action_messages::{ActionResult, ActionStage, OperationId, WorkerId};
+use nativelink_util::action_messages::{
+    ActionResult, ActionStage, LOST_RESULT_ERROR_TIP, OperationId, WorkerId,
+};
 use nativelink_util::common::DigestInfo;
 use nativelink_util::instant_wrapper::MockInstantWrapped;
 use nativelink_util::operation_state_manager::{
@@ -338,6 +340,76 @@ async fn command_timeout_retry_returns_to_a_lone_worker_test() -> Result<(), Err
     );
     // Past the grace, with no other taker, the same worker does.
     MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
+    notify.notify_one();
+    assert_eq!(next_start(&mut rx1).await, operation_id);
+    expect_stage(&mut listener, "executing").await;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_lost_result_does_not_avoid_the_worker_test() -> Result<(), Error> {
+    // The sweep requeues an operation whose result never reached the
+    // scheduler through the error path. The worker ran it; the retry may go
+    // straight back to that worker, with no wait for another.
+    let scheduler = make_scheduler(&SimpleSpec {
+        max_job_retries: 3,
+        ..Default::default()
+    });
+    let w1 = WorkerId("w1".to_string());
+    let mut rx1 = setup_new_worker(&scheduler, &w1).await?;
+    let mut listener = setup_action(&scheduler, 6).await?;
+
+    let operation_id = next_start(&mut rx1).await;
+    expect_stage(&mut listener, "executing").await;
+    scheduler
+        .update_action(
+            &w1,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(
+                Code::Internal,
+                "{LOST_RESULT_ERROR_TIP}"
+            )),
+        )
+        .await?;
+    expect_stage(&mut listener, "queued").await;
+    assert_eq!(next_start(&mut rx1).await, operation_id);
+    expect_stage(&mut listener, "executing").await;
+    Ok(())
+}
+
+#[nativelink_test]
+async fn a_lone_worker_retry_wakes_the_matcher_for_the_fallback_test() -> Result<(), Error> {
+    // With the only worker that fits avoided, the retry waits for a peer
+    // until AVOID_FALLBACK_AFTER. There is no periodic pass here (the
+    // spec's default interval is off), so the pass that left it waiting
+    // must arrange the wake-up for that moment itself; the simulation's
+    // property test found a retry left waiting until its budget ran out.
+    let (scheduler, notify) = make_scheduler_with_notify(&SimpleSpec {
+        max_job_retries: 3,
+        ..Default::default()
+    });
+    let w1 = WorkerId("w1".to_string());
+    let mut rx1 = setup_new_worker(&scheduler, &w1).await?;
+    let mut listener = setup_action(&scheduler, 7).await?;
+
+    let operation_id = next_start(&mut rx1).await;
+    expect_stage(&mut listener, "executing").await;
+    scheduler
+        .update_action(
+            &w1,
+            &operation_id,
+            UpdateOperationType::UpdateWithError(make_err!(Code::Internal, "disk full")),
+        )
+        .await?;
+    expect_stage(&mut listener, "queued").await;
+    scheduler.do_try_match_for_test().await?;
+    assert_eq!(
+        scheduler.next_wake_for_test(),
+        Some(AVOID_FALLBACK_AFTER),
+        "the pass that left the retry waiting arms the wake-up for its fallback"
+    );
+    MockClock::advance(AVOID_FALLBACK_AFTER + Duration::from_secs(1));
+    assert_eq!(scheduler.next_wake_for_test(), Some(Duration::ZERO));
     notify.notify_one();
     assert_eq!(next_start(&mut rx1).await, operation_id);
     expect_stage(&mut listener, "executing").await;

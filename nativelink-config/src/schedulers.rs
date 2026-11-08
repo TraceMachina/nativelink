@@ -384,6 +384,11 @@ pub struct SimpleSpec {
     /// the timeout, as before. Each retry runs the action again, so this
     /// bounds the cost of an action that really is too slow. 0 keeps a
     /// timeout final on its first occurrence.
+    /// The retry also keeps off every worker on the node the timeout
+    /// happened on, where workers say which node they are on through the
+    /// `node_name` platform property (the chart's `advertiseNodeName`,
+    /// off by default). Without it the retry keeps off that worker only
+    /// and may land on another worker of the same host.
     /// Default: 1
     #[serde(
         default,
@@ -700,7 +705,11 @@ const fn default_reservation_max_hold_s() -> u64 {
 /// last `min_failures` attempts all failed, or whose last `window` attempts
 /// hold at least `min_failures` failures that are at least `failure_percent`
 /// of them, is drained: it finishes what it runs and is offered nothing
-/// more until it reconnects or an operator lifts its drain. The run of failures
+/// more until it reconnects or an operator lifts its drain. Where a worker
+/// provisioner runs the fleet, the drain ends with the pod: the provisioner
+/// deletes a drained worker once it is idle and replaces it, so the
+/// provisioner has to read the drain as evidence about the node, or the
+/// replacement lands on the same host and is drained again. The run of failures
 /// catches a worker that was healthy and went bad without waiting for half
 /// its window to fail; the ratio catches one that fails often but not in a
 /// row, and leaves alone one that fails a few of many.

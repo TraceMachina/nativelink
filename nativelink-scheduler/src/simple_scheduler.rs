@@ -54,7 +54,7 @@ use tokio::time::Duration;
 use tracing::{debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::api_worker_scheduler::{ApiWorkerScheduler, QueuedAction};
+use crate::api_worker_scheduler::{AVOID_FALLBACK_AFTER, ApiWorkerScheduler, QueuedAction};
 use crate::awaited_action_db::{AwaitedActionDb, CLIENT_KEEPALIVE_DURATION, PeerScheduler};
 use crate::known_platform_property_provider::KnownPlatformPropertyProvider;
 use crate::match_outcome::{MatchOutcome, PropertyShape, UnsatisfiableReason};
@@ -222,6 +222,12 @@ pub struct SimpleScheduler {
     /// The clock for actions queued while no worker is connected anywhere
     /// (`no_worker_action_timeout_s`); `None` when that timeout is off.
     no_worker_tracker: Option<Mutex<UnsatisfiableTracker>>,
+
+    /// When the earliest action the last pass left waiting, because only
+    /// workers it failed on were free here, may be offered to one of them:
+    /// `AVOID_FALLBACK_AFTER` after its requeue. The matching task wakes
+    /// for it, so that fallback does not wait on some other event.
+    avoid_fallback_due: Mutex<Option<SystemTime>>,
 
     /// Typed platform properties by the hash of the raw ones. Typing is a
     /// lookup and a parse per property per queued action per pass, and the
@@ -452,22 +458,27 @@ impl SimpleScheduler {
 
     /// How long until the matching loop would next wake on behalf of an
     /// unsatisfiable shape, if at all.
-    pub fn unsatisfiable_deadline_for_test(&self) -> Option<Duration> {
-        self.unsatisfiable_deadline((self.now_fn)())
+    pub fn next_wake_for_test(&self) -> Option<Duration> {
+        self.next_wake((self.now_fn)())
     }
 
-    /// How long until a pass should run for an unsatisfiable or a no-worker
-    /// shape, whichever comes first.
-    fn unsatisfiable_deadline(&self, now: SystemTime) -> Option<Duration> {
+    /// How long until a pass should run without being told to: for an
+    /// unsatisfiable or a no-worker shape, or for an action whose avoidance
+    /// fallback comes due, whichever comes first.
+    fn next_wake(&self, now: SystemTime) -> Option<Duration> {
         let unsatisfiable = self.unsatisfiable_tracker.lock().next_deadline(now);
         let no_worker = self
             .no_worker_tracker
             .as_ref()
             .and_then(|tracker| tracker.lock().next_deadline(now));
-        match (unsatisfiable, no_worker) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        let avoid_fallback = self
+            .avoid_fallback_due
+            .lock()
+            .map(|due| due.duration_since(now).unwrap_or(Duration::ZERO));
+        [unsatisfiable, no_worker, avoid_fallback]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     // TODO(palfrey) This is an O(n*m) (aka n^2) algorithm. In theory we
@@ -643,18 +654,12 @@ impl SimpleScheduler {
             )
             .err_tip(|| "Failed to make platform properties in SimpleScheduler::do_try_match")?;
 
-            let avoid = action_state_result
-                .avoid_worker_ids()
+            // One read of the record for what the pass needs of it.
+            let facts = action_state_result
+                .dispatch_facts()
                 .await
                 .unwrap_or_default();
-            let avoid_nodes = action_state_result
-                .avoid_node_names()
-                .await
-                .unwrap_or_default();
-            let queued_since = match action_state_result.as_state().await {
-                Ok((state, _)) => state.last_transition_timestamp,
-                Err(_) => action_info.insert_timestamp,
-            };
+            let queued_since = facts.queued_since.unwrap_or(action_info.insert_timestamp);
             Ok(Some(Loaded {
                 action_state_result,
                 action_info: ActionInfoWithProps {
@@ -663,8 +668,8 @@ impl SimpleScheduler {
                     origin_metadata: maybe_origin_metadata.unwrap_or_default(),
                     scheduler_start_execute_event_id: None,
                 },
-                avoid,
-                avoid_nodes,
+                avoid: facts.avoid_worker_ids,
+                avoid_nodes: facts.avoid_node_names,
                 queued_since,
             }))
         }
@@ -1097,6 +1102,16 @@ impl SimpleScheduler {
                 .await,
             );
         }
+        // An action left waiting because only workers it failed on were
+        // free here goes to one of them once it has waited
+        // AVOID_FALLBACK_AFTER (RFC-0017). Nothing else need happen by
+        // then, so the pass arranges the wake-up for the earliest one.
+        *self.avoid_fallback_due.lock() = parked
+            .queue
+            .iter()
+            .filter(|(_, loaded)| !loaded.avoid.is_empty() || !loaded.avoid_nodes.is_empty())
+            .filter_map(|(_, loaded)| loaded.queued_since.checked_add(AVOID_FALLBACK_AFTER))
+            .min();
         // The whole queue was read: a held action the pass did not meet
         // is gone, and a hold past its time is given up.
         workers
@@ -1556,12 +1571,13 @@ impl SimpleScheduler {
                             Some(Duration::from_millis(100))
                         };
                         // Wake in time to fail actions no worker can run,
-                        // even when nothing else triggers a pass.
-                        let unsatisfiable_deadline = weak_inner.upgrade().and_then(|scheduler| {
+                        // and to offer an action back to the workers it
+                        // failed on, even when nothing else triggers a pass.
+                        let next_wake = weak_inner.upgrade().and_then(|scheduler| {
                             let now = (scheduler.now_fn)();
-                            scheduler.unsatisfiable_deadline(now)
+                            scheduler.next_wake(now)
                         });
-                        let max_wait = match (max_wait, unsatisfiable_deadline) {
+                        let max_wait = match (max_wait, next_wake) {
                             (Some(max_wait), Some(deadline)) => Some(max_wait.min(deadline)),
                             (max_wait, deadline) => max_wait.or(deadline),
                         };
@@ -1638,6 +1654,7 @@ impl SimpleScheduler {
                 )),
                 no_worker_tracker: no_worker_action_timeout
                     .map(|timeout| Mutex::new(UnsatisfiableTracker::new(Some(timeout)))),
+                avoid_fallback_due: Mutex::new(None),
                 last_unsatisfiable_backlog: AtomicUsize::new(0),
                 now_fn: scheduler_now_fn,
             }

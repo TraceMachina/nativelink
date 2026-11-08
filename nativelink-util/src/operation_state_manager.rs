@@ -58,18 +58,26 @@ pub trait ActionStateResult: Send + Sync + 'static {
     async fn client_last_seen(&self) -> Result<Option<SystemTime>, Error> {
         Ok(None)
     }
-    /// Workers a retry of this action should not go back to while another
-    /// can take it: the ones it failed or timed out on. Empty where the
-    /// implementation does not track it.
-    async fn avoid_worker_ids(&self) -> Result<Vec<WorkerId>, Error> {
-        Ok(Vec::new())
+    /// What a matching pass needs of a queued action beyond its info, in
+    /// one read of the record. Empty where the implementation does not
+    /// track it.
+    async fn dispatch_facts(&self) -> Result<DispatchFacts, Error> {
+        Ok(DispatchFacts::default())
     }
+}
+
+/// The facts a matching pass reads of a queued action, together, so a pass
+/// over the queue borrows each record once.
+#[derive(Debug, Default, Clone)]
+pub struct DispatchFacts {
+    /// Workers a retry of this action should not go back to while another
+    /// can take it: the ones it failed or timed out on.
+    pub avoid_worker_ids: Vec<WorkerId>,
     /// Nodes a retry of this action should keep off while another can take
     /// it: the nodes of the workers it failed on, as they advertised them.
-    /// Empty where the implementation does not track it.
-    async fn avoid_node_names(&self) -> Result<Vec<String>, Error> {
-        Ok(Vec::new())
-    }
+    pub avoid_node_names: Vec<String>,
+    /// When the action last changed stage: since when it has been queued.
+    pub queued_since: Option<SystemTime>,
 }
 
 /// The direction in which the results are ordered.
