@@ -434,7 +434,7 @@ async fn young_actions_do_not_back_off_the_wake_for_their_shape() -> Result<(), 
         assert_eq!(stage_of(second.as_ref()).await?, ActionStage::Queued);
     }
     assert_eq!(
-        scheduler.unsatisfiable_deadline_for_test(),
+        scheduler.next_wake_for_test(),
         Some(Duration::from_secs(TIMEOUT_S - 6)),
         "the loop must wake when the action becomes eligible, not after a backoff"
     );

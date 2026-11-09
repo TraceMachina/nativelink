@@ -495,5 +495,7 @@ Flybody
 MuJoCo
 connectome
 simulatable
+[Dd]ownloader
+URIs
 [Aa]bliterated
 [Uu]npatched

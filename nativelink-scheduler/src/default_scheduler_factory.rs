@@ -240,6 +240,20 @@ async fn simple_scheduler_factory(
             hold.max_hold_s
         ));
     }
+    if let Some(tripwire) = &spec.worker_outcome_tripwire
+        && (tripwire.min_failures == 0
+            || tripwire.window < tripwire.min_failures
+            || tripwire.failure_percent > 100
+            || tripwire.max_drained_percent > 100)
+    {
+        return Err(make_input_err!(
+            "worker_outcome_tripwire needs min_failures above zero and at most window, and percentages at most 100, got window {}, min_failures {}, failure_percent {}, max_drained_percent {}",
+            tripwire.window,
+            tripwire.min_failures,
+            tripwire.failure_percent,
+            tripwire.max_drained_percent
+        ));
+    }
     match spec
         .experimental_backend
         .as_ref()
