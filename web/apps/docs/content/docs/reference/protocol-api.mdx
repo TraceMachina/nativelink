@@ -93,8 +93,8 @@ which kills an action nobody is listening to.
 | --- | --- |
 | Supported API versions | 2.0.0 to 2.3.0 |
 | Digest functions | `SHA256`, `BLAKE3` |
-| `max_batch_total_size_bytes` | 65536 (64 KiB) |
-| `max_cas_blob_size_bytes` | 0 (no limit advertised) |
+| `max_batch_total_size_bytes` | the listener's `max_decoding_message_size` less 1/16 (3.75 MiB with the 4 MiB default) |
+| `max_cas_blob_size_bytes` | the instance's CAS store upload limit when the store reports one (for example S3, GCS or Azure used directly); 0, meaning no limit, otherwise |
 | `symlink_absolute_path_strategy` | `DISALLOWED` |
 | `update_enabled` (action cache) | `true` |
 | `supported_compressors` | `ZSTD` when the instance's `capabilities` entry sets `remote_cache_compression: true`; empty otherwise |
@@ -112,11 +112,13 @@ scheduler, execution is advertised as enabled; there is no way to advertise
 `remote_execution`) omits `execution_capabilities` altogether, which is the
 correct signal for a cache-only deployment.
 
-**The 64 KiB batch limit is advisory and small** relative to what some
-clients assume. The CAS handlers do not enforce it themselves; the hard stop
-is the listener's `max_decoding_message_size` (4 MiB unless configured), and
-a batch request above that is rejected at the gRPC layer. Clients that honour
-the advertised limit send anything larger through ByteStream.
+**The batch limit follows the listener.** `max_batch_total_size_bytes` counts
+only blob data, while a batch request also carries each blob's digest and
+framing, so NativeLink advertises 1/16 less than the listener's
+`max_decoding_message_size` (4 MiB unless configured). The CAS handlers do
+not enforce the advertised value themselves; a request above the decoding
+limit is rejected at the gRPC layer. Clients that honour the advertised limit
+send anything larger through ByteStream.
 
 ## Wire-level details worth knowing [#wire-level-details-worth-knowing]
 

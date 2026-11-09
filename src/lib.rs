@@ -401,6 +401,12 @@ pub async fn build_server(
                         &action_schedulers,
                         &remote_cache_compression_instances,
                         &all_cas_configs,
+                        &store_manager,
+                        if http_config.max_decoding_message_size == 0 {
+                            DEFAULT_MAX_DECODING_MESSAGE_SIZE
+                        } else {
+                            http_config.max_decoding_message_size
+                        },
                     )
                 }))
                 .await
