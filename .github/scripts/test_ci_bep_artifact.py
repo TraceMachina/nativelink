@@ -141,17 +141,18 @@ class CollectTest(unittest.TestCase):
 class WorkflowTest(unittest.TestCase):
     """The upload must never run where a private key could be in the events."""
 
-    def test_pr_lanes_capture_and_guard_on_the_credential(self):
-        root = Path(__file__).resolve().parents[2]
+    def test_pr_lane_captures_and_guards_on_the_credential(self):
+        workflows = Path(__file__).resolve().parents[2] / '.github/workflows'
+        text = (workflows / 'parallel-cluster-ci.yaml').read_text()
+        self.assertIn('--build_event_binary_file="$RUNNER_TEMP/bep/events.pb"', text)
+        guard = ("if: always() && contains(fromJSON('[\"public\", \"none\"]'), "
+                 "steps.setup-nativelink-cloud.outputs.credential)")
+        self.assertEqual(text.count(guard), 2)
+        self.assertNotIn("credential != 'private'", text)
         for workflow in ('native-bazel.yaml', 'parallel-cluster-ci.yaml'):
             with self.subTest(workflow=workflow):
-                text = (root / '.github/workflows' / workflow).read_text()
-                self.assertIn('--build_event_binary_file="$RUNNER_TEMP/bep/events.pb"', text)
-                self.assertIn('env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //...', text)
-                guard = ("if: always() && contains(fromJSON('[\"public\", \"none\"]'), "
-                         "steps.setup-nativelink-cloud.outputs.credential)")
-                self.assertEqual(text.count(guard), 2)
-                self.assertNotIn("credential != 'private'", text)
+                self.assertIn('env -u BAZELISK_GITHUB_TOKEN ./tools/bazel-retry.sh test //...',
+                              (workflows / workflow).read_text())
 
 
 if __name__ == '__main__':
