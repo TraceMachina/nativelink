@@ -57,6 +57,13 @@ pub const MISSING_INPUT_ERROR_TIP: &str = "action input missing from CAS";
 /// trusting a bare `Unavailable`, which the scheduler raises itself.
 pub const STORE_UNREACHABLE_ERROR_TIP: &str = "worker could not reach its store";
 
+/// The error the scheduler requeues an executing operation with when its
+/// worker no longer runs it and no result arrived: the worker ran the
+/// action, the result was lost on the way. A retry spends `max_job_retries`
+/// but does not avoid the worker.
+pub const LOST_RESULT_ERROR_TIP: &str =
+    "The worker finished this operation but its result never reached the scheduler";
+
 /// Default priority remote execution jobs will get when not provided.
 pub const DEFAULT_EXECUTION_PRIORITY: i32 = 0;
 

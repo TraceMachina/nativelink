@@ -623,6 +623,7 @@ async fn new_local_worker_creates_work_directory_test() -> Result<(), Error> {
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -666,6 +667,7 @@ async fn new_local_worker_removes_work_directory_before_start_test() -> Result<(
             slow_direction: StoreDirection::default(),
             bypass_dedup_threshold_bytes: 0,
             has_slow_write_wait_timeout_s: 0,
+            leader_inactivity_timeout_s: 0,
         },
         Store::new(
             <FilesystemStore>::new(&FilesystemSpec {
@@ -2040,5 +2042,46 @@ async fn registration_flag_follows_the_scheduler_connection() -> Result<(), Erro
         }
         other => panic!("a lost registration must read Initializing, got {other:?}"),
     }
+    Ok(())
+}
+
+/// The reconnect backoff takes its jitter from `with_jitter_fn`: with the
+/// lowest jitter the first two delays are half the 0.5 s and 1 s figures.
+#[nativelink_test]
+async fn reconnect_backoff_takes_its_jitter_from_the_jitter_fn() -> Result<(), Error> {
+    use utils::local_worker_test_utils::MockWorkerApiClient;
+    use utils::mock_running_actions_manager::MockRunningActionsManager;
+
+    let delays = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done_tx = std::sync::Mutex::new(Some(done_tx));
+    let recorded = delays.clone();
+    let worker = nativelink_worker::local_worker::LocalWorker::<MockWorkerApiClient, _>::new_with_connection_factory_and_actions_manager(
+        Arc::new(LocalWorkerConfig::default()),
+        Arc::new(MockRunningActionsManager::new()),
+        Box::new(|| Box::pin(async { Err(make_err!(Code::Unavailable, "no scheduler")) })),
+        Box::new(move |delay| {
+            let mut delays = recorded.lock().unwrap();
+            delays.push(delay);
+            let done = (delays.len() == 2)
+                .then(|| done_tx.lock().unwrap().take())
+                .flatten();
+            if let Some(done) = done {
+                done.send(()).unwrap();
+            }
+            // Yield, so the reconnect loop lets this test run.
+            Box::pin(tokio::task::yield_now())
+        }),
+    )
+    .with_jitter_fn(Box::new(|| 0));
+    let (shutdown, _) = tokio::sync::broadcast::channel(1);
+    let run = nativelink_util::spawn!("jitter_test_worker", worker.run(shutdown.subscribe()));
+    done_rx.await.unwrap();
+    drop(run);
+    let delays = delays.lock().unwrap().clone();
+    assert_eq!(
+        delays[..2],
+        [Duration::from_millis(250), Duration::from_millis(500)]
+    );
     Ok(())
 }

@@ -210,7 +210,12 @@ struct InstanceInfo {
     /// or `WaitExecution` stream at this interval. `None` sends no
     /// heartbeats.
     execute_stream_heartbeat: Option<Duration>,
+    /// The time an action is queued at.
+    now_fn: NowFn,
 }
+
+/// The clock queued actions are stamped from.
+pub type NowFn = Arc<dyn Fn() -> SystemTime + Send + Sync>;
 
 impl fmt::Debug for InstanceInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -301,7 +306,10 @@ impl InstanceInfo {
             digest_function,
             digest: action_digest,
         };
-        let unique_qualifier = if skip_cache_lookup {
+        // REv2 `Action.do_not_cache`: "the Action's result cannot be cached,
+        // and in-flight requests for the same Action may not be merged".
+        // `Uncacheable` skips the cache lookup and the in-flight merge.
+        let unique_qualifier = if skip_cache_lookup || action.do_not_cache {
             ActionUniqueQualifier::Uncacheable(action_key)
         } else {
             ActionUniqueQualifier::Cacheable(action_key)
@@ -314,7 +322,7 @@ impl InstanceInfo {
             platform_properties,
             priority,
             load_timestamp: UNIX_EPOCH,
-            insert_timestamp: SystemTime::now(),
+            insert_timestamp: (self.now_fn)(),
             unique_qualifier,
         })
     }
@@ -401,10 +409,22 @@ impl ExecutionServer {
                     buck2_invocation_isolation: config.experimental_buck2_invocation_isolation,
                     execute_stream_heartbeat: (config.execute_stream_heartbeat_s > 0)
                         .then(|| Duration::from_secs(config.execute_stream_heartbeat_s as u64)),
+                    now_fn: Arc::new(SystemTime::now),
                 },
             );
         }
         Ok(Self { instance_infos })
+    }
+
+    /// Stamps queued actions from `now_fn` instead of the wall clock, so
+    /// they share the scheduler's clock in a test that injects one.
+    #[must_use]
+    pub fn with_now_fn(mut self, now_fn: impl Fn() -> SystemTime + Send + Sync + 'static) -> Self {
+        let now_fn: NowFn = Arc::new(now_fn);
+        for info in self.instance_infos.values_mut() {
+            info.now_fn = now_fn.clone();
+        }
+        self
     }
 
     pub fn into_service(self) -> Server<Self> {
@@ -499,7 +519,7 @@ impl ExecutionServer {
                         }
                     }
                     Err(err) => {
-                        let _ = tx.send(Err(err.into())).await;
+                        drop(tx.send(Err(err.into())).await);
                         return;
                     }
                 }

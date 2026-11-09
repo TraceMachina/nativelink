@@ -4458,6 +4458,11 @@ contain slashes, so left-to-right parsing cannot find the boundary, while
 right-to-left can, because the trailing components are fixed. See
 .
 
+## Intentional deviations from the specification
+
+Two behaviors differ from what the REAPI or ByteStream text suggests. Both are
+deliberate, and changing either would break existing clients.
+
 ## Related
 
 - [Architecture deep dive](/explanations/architecture-deep-dive): where each

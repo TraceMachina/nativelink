@@ -5,6 +5,7 @@ exclude = [
   "nativelink-test/fuzz",
   "tools/generate-bazel-rc",
 ]
+members = ["nativelink-sim"]
 resolver = "2"
 
 [package]
@@ -12,6 +13,10 @@ edition = "2024"
 name = "nativelink"
 rust-version = "1.97.1"
 version = "1.8.3"
+
+[package.metadata.cargo-machete]
+# Used by the nativelink_test macro in the binary's socket regression test.
+ignored = ["tracing-test"]
 
 [profile.release]
 lto = true
@@ -26,6 +31,10 @@ strip = true
 
 [[bin]]
 name = "nativelink"
+
+[lib]
+name = "nativelink"
+path = "src/lib.rs"
 
 [features]
 nix = ["nativelink-worker/nix"]
@@ -83,6 +92,15 @@ tonic = { version = "0.14.0", features = [
 tower = { version = "0.5.2", default-features = false }
 tracing = { version = "0.1.41", default-features = false }
 
+[dev-dependencies]
+nativelink-macro = { path = "nativelink-macro" }
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "rustls",
+] }
+tracing-test = { version = "0.2.5", default-features = false, features = [
+  "no-env-filter",
+] }
+
 [workspace.cargo-features-manager.keep]
 async-lock = ["std"]
 aws-sdk-s3 = ["rt-tokio"]
@@ -113,9 +131,11 @@ invalid-macro-export-arguments = "deny"
 invalid-nan-comparisons = "deny"
 invalid-reference-casting = "deny"
 invalid-value = "deny"
+let-underscore = "deny"
 opaque-hidden-inferred-bound = "deny"
 overlapping-range-endpoints = "deny"
 suspicious-double-ref-op = "deny"
+trivial-casts = "deny"
 unconditional-recursion = "deny"
 unexpected-cfgs = "deny"
 unknown-lints = "allow"                     # FIXME(palfrey): Needed for unused_async_trait_impl because it's nightly-only
@@ -123,22 +143,20 @@ unnameable-test-items = "deny"
 unsafe-op-in-unsafe-fn = "deny"
 unstable-syntax-pre-expansion = "deny"
 unused-imports = "deny"
+unused-qualifications = "deny"
 
 keyword-idents = "warn"
-let-underscore = "warn"
 macro-use-extern-crate = "warn"
 meta-variable-misuse = "warn"
 missing-abi = "warn"
 missing-copy-implementations = "warn"
 missing-debug-implementations = "warn"
 noop-method-call = "warn"
-trivial-casts = "warn"
 trivial-numeric-casts = "warn"
 unreachable-pub = "warn"
 unused = { level = "warn", priority = -1 }
 unused-import-braces = "warn"
 unused-lifetimes = "warn"
-unused-qualifications = "warn"
 variant-size-differences = "warn"
 
 [workspace.lints.clippy]
