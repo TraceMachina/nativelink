@@ -4,7 +4,7 @@ name: CI / Fork build results
 # default branch; the artifacts are untrusted and only parsed, never executed.
 on:
   workflow_run:
-    workflows: ["CI / Bazel", "CI / NativeLink"]
+    workflows: ["CI / NativeLink"]
     types: [completed]
 
 permissions: {}

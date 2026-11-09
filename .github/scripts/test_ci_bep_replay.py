@@ -18,7 +18,7 @@ REQUIRED = os.environ.get('BEP_REPLAY_TESTS_REQUIRED') == '1'
 
 def event(**run):
     payload = {
-        'id': 7, 'run_attempt': 2, 'run_number': 9, 'name': 'CI / Bazel',
+        'id': 7, 'run_attempt': 2, 'run_number': 9, 'name': 'CI / NativeLink',
         'event': 'pull_request', 'head_sha': FORK_SHA, 'head_branch': 'main',
         'head_repository': {'full_name': 'someone/nativelink', 'owner': {'login': 'someone'}},
         'actor': {'login': 'someone'},
@@ -477,11 +477,10 @@ class WorkflowTest(unittest.TestCase):
     def setUp(self):
         self.text = (ROOT / '.github/workflows/fork-build-results.yaml').read_text()
 
-    def test_triggers_on_the_lanes_that_stage_events(self):
-        names = [line.split(':', 1)[1].strip() for workflow in ('native-bazel.yaml',
-                                                                 'parallel-cluster-ci.yaml')
-                 for line in (ROOT / '.github/workflows' / workflow).read_text().splitlines()
-                 if line.startswith('name:')]
+    def test_triggers_on_the_lane_that_stages_events(self):
+        names = [line.split(':', 1)[1].strip()
+                 for line in (ROOT / '.github/workflows/parallel-cluster-ci.yaml')
+                 .read_text().splitlines() if line.startswith('name:')]
         self.assertIn(f'workflows: {json.dumps(names)}', self.text)
 
     def test_runs_only_for_fork_pull_requests_with_least_privilege(self):
