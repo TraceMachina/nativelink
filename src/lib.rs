@@ -974,25 +974,36 @@ mod tests {
         Ok(())
     }
 
+    /// Ask the OS for a currently-free TCP port.
+    fn get_ephemeral_port() -> Result<u16, Error> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .err_tip(|| "Binding an ephemeral port for test server")?;
+        Ok(listener
+            .local_addr()
+            .err_tip(|| "Getting ephemeral port for test server")?
+            .port())
+    }
+
     #[nativelink_test]
     async fn build_server_boots() -> Result<(), Error> {
         let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
         let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
-        let config = CasConfig::try_from_json5_str(
-            r#"{ stores: [], servers: [
-        {
+        let port = get_ephemeral_port()?;
+        let config = CasConfig::try_from_json5_str(&format!(
+            r#"{{ stores: [], servers: [
+        {{
             name: "test_server",
-            listener: {
-                http: {
-                    socket_address: "0.0.0.0:50061",
-                },
-            },
-            services: {
-                health: {},
-            },
-            },
-        ] }"#,
-        )
+            listener: {{
+                http: {{
+                    socket_address: "0.0.0.0:{port}",
+                }},
+            }},
+            services: {{
+                health: {{}},
+            }},
+        }},
+        ] }}"#
+        ))
         .unwrap();
         let server = build_server(config, shutdown_tx, scheduler_shutdown_tx).await?;
         let client = reqwest::Client::builder()
@@ -1001,7 +1012,7 @@ mod tests {
 
         drop(select! {
             result = try_join_all(server.root_futures) => result.map(|_| ()),
-            result = client.get("http://localhost:50061/status").send() => {
+            result = client.get(format!("http://localhost:{port}/status")).send() => {
                 let ok_res = result?;
                 assert_eq!(ok_res.status(), 200);
                 assert_eq!(ok_res.text().await?, "[]");
