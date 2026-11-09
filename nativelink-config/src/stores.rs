@@ -230,6 +230,21 @@ pub enum StoreSpec {
     ///      }
     ///    }
     ///    ```
+    ///
+    /// 7. **Alibaba Cloud OSS:**
+    ///    Uses the OSS S3-compatible endpoint and AWS SigV4. Supply the OSS
+    ///    AccessKey using the AWS SDK credential chain (for example
+    ///    `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`).
+    ///
+    ///    **Example JSON Config:**
+    ///    ```json
+    ///    "experimental_cloud_object_store": {
+    ///      "provider": "oss",
+    ///      "region": "cn-hangzhou",
+    ///      "bucket": "example-build-cache",
+    ///      "key_prefix": "cas/"
+    ///    }
+    ///    ```
     ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec),
 
     /// ONTAP S3 Existence Cache provides a caching layer on top of the ONTAP S3 store

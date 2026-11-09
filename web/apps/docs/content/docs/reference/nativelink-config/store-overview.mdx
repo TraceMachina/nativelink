@@ -60,7 +60,7 @@ store name the server exposes.
 | --- | --- | --- |
 | `memory` | An in-process hash map | Fastest, gone on restart. Good for AC tiers and dev. |
 | `filesystem` | Local disk | Survives restarts; scans and rebuilds its index on startup. |
-| `experimental_cloud_object_store` | A cloud object bucket | One store type, six `provider`s: `aws` (S3), `gcs`, `azure`, `ontap` (NetApp ONTAP S3), `r2` (Cloudflare), `oci` (Oracle Cloud Infrastructure). All speak an S3-compatible API except `gcs` and `azure`. |
+| `experimental_cloud_object_store` | A cloud object bucket | One store type with `provider`s: `aws` (S3), `gcs`, `azure`, `ontap` (NetApp ONTAP S3), `r2` (Cloudflare), `oci` (Oracle Cloud Infrastructure), and `oss` (Alibaba Cloud OSS, development builds). All speak an S3-compatible API except `gcs` and `azure`. |
 | `redis_store` | Any Redis-API-compatible service | Pairs well with `size_partitioning`; most Redis services cap uploads around 256 to 512 MB. |
 | `experimental_mongo` | MongoDB | Supports CAS and scheduler data, with optional change streams for scheduler subscriptions. |
 | `grpc` | Another NativeLink-compatible gRPC endpoint | Proxies calls upstream. Useful for a regional cache in front of a central cluster. |
