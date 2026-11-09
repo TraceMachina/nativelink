@@ -305,6 +305,24 @@ pub struct ExecutionConfig {
     )]
     pub execute_stream_heartbeat_s: usize,
 
+    /// The longest `Action.timeout` this instance accepts, in seconds. An
+    /// `Execute` for an action that asks for more is rejected with
+    /// `INVALID_ARGUMENT`, as the Remote Execution API requires of a server
+    /// with a maximum. An action without a timeout is always accepted, and
+    /// runs for at most the worker's `max_action_timeout_s`. Keep this no
+    /// higher than the workers' limit. Bazel gives `eternal` tests 3600
+    /// seconds. Unset, a longer timeout is accepted and the worker clamps it
+    /// to its own `max_action_timeout_s`.
+    ///
+    /// Default: 0 (no maximum)
+    #[serde(
+        default,
+        deserialize_with = "convert_duration_with_shellexpand",
+        skip_serializing_if = "is_default",
+        alias = "max_action_timeout"
+    )]
+    pub max_action_timeout_s: usize,
+
     /// The store name referenced in the `stores` map in the main config.
     /// This store name referenced here may be reused multiple times.
     /// This value must be a CAS store reference.
@@ -1421,8 +1439,10 @@ pub struct LocalWorkerConfig {
     /// Endpoint which the worker will connect to the scheduler's `WorkerApiService`.
     pub worker_api_endpoint: EndpointConfig,
 
-    /// The maximum time an action is allowed to run. If a task requests for a timeout
-    /// longer than this time limit, the task will be rejected. Value in seconds.
+    /// The maximum time an action is allowed to run. An action asking for a
+    /// longer timeout is clamped to this limit, and an action without a
+    /// timeout gets it. To reject longer timeouts at `Execute` instead, set
+    /// `max_action_timeout_s` on the execution service. Value in seconds.
     ///
     /// Default: 20 minutes
     #[serde(

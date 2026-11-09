@@ -171,7 +171,10 @@ uploaded" mistake into a fast error, not to provide a guarantee. See
 **A malformed `Action.timeout` is rejected.** A negative `seconds` or `nanos`,
 or `nanos` of 1,000,000,000 or more, is not a valid `google.protobuf.Duration`,
 so `Execute` returns `INVALID_ARGUMENT`. A valid timeout longer than the
-worker's `max_action_timeout_s` is still accepted, and the worker clamps it.
+worker's `max_action_timeout_s` is accepted and clamped by the worker, unless
+the execution service sets its own `max_action_timeout_s`: then `Execute`
+rejects a longer timeout with `INVALID_ARGUMENT`, as the REAPI requires of a
+server with a maximum.
 
 **`ActionStage::CacheCheck` is never emitted.** The cache lookup happens in a
 decorator in front of the scheduler, so the state is skipped entirely. A

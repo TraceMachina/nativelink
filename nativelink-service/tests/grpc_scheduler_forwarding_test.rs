@@ -218,6 +218,7 @@ fn make_execution_server(
             config: ExecutionConfig {
                 experimental_buck2_invocation_isolation: false,
                 execute_stream_heartbeat_s: 0,
+                max_action_timeout_s: 0,
                 cas_store: "main_cas".to_string(),
                 scheduler: "scheduler".to_string(),
             },
