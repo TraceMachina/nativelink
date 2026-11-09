@@ -773,3 +773,26 @@ mod convert_optional_numeric_with_shellexpand_tests {
         assert_eq!(deserialized.value, None);
     }
 }
+
+#[test]
+fn http_listener_tcp_nodelay_defaults_and_overrides() {
+    use nativelink_config::cas_server::HttpListener;
+
+    assert!(!HttpListener::default().tcp_nodelay);
+    for (input, expected) in [
+        ("{socket_address: '127.0.0.1:0'}", false),
+        ("{socket_address: '127.0.0.1:0', tcp_nodelay: true}", true),
+        ("{socket_address: '127.0.0.1:0', tcp_nodelay: false}", false),
+    ] {
+        let config: HttpListener = serde_json5::from_str(input).unwrap();
+        assert_eq!(config.tcp_nodelay, expected);
+        let serialized = serde_json::to_value(&config).unwrap();
+        assert_eq!(serialized["tcp_nodelay"], expected);
+        let round_trip: HttpListener = serde_json::from_value(serialized).unwrap();
+        assert_eq!(round_trip.tcp_nodelay, expected);
+    }
+    for invalid in ["null", "0", "'false'"] {
+        let input = format!("{{socket_address: '127.0.0.1:0', tcp_nodelay: {invalid}}}");
+        assert!(serde_json5::from_str::<HttpListener>(&input).is_err());
+    }
+}

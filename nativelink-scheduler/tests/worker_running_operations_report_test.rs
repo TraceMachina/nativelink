@@ -110,6 +110,7 @@ async fn dispatched() -> Result<Fixture, Error> {
         None,
         None,
         None,
+        None, // worker_outcome_tripwire
         Arc::new(Notify::new()),
         WORKER_TIMEOUT_S,
         60,

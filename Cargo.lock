@@ -3011,6 +3011,7 @@ dependencies = [
  "mimalloc",
  "nativelink-config",
  "nativelink-error",
+ "nativelink-macro",
  "nativelink-proto",
  "nativelink-scheduler",
  "nativelink-service",
@@ -3025,6 +3026,7 @@ dependencies = [
  "tonic",
  "tower",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]
