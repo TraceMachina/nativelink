@@ -12,6 +12,9 @@ The `oss` provider uses the [OSS S3-compatible API](https://www.alibabacloud.com
 and the shared NativeLink S3 store. It derives the service endpoint from the
 bucket region, uses virtual-hosted addressing, and signs requests with AWS SigV4.
 Optional trailing checksums are disabled to avoid `aws-chunked` uploads.
+OSS lists the required object and multipart operations in its
+[S3 compatibility reference](https://www.alibabacloud.com/help/en/oss/developer-reference/compatibility-with-amazon-s3).
+This is an API compatibility basis, not evidence of a successful live deployment.
 
 This provider is available in development builds. It does not migrate objects
 from another backend. Object names are `key_prefix` followed by the standard

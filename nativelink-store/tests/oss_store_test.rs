@@ -194,8 +194,7 @@ async fn ranged_get_and_encoded_key_use_oss_endpoint() -> Result<(), Error> {
             .uri()
             .starts_with(&format!("https://{HOST}/cas/a%20b%3Fc"))
     );
-    // The shared S3 store requests an inclusive extra byte then caps delivery.
-    assert_eq!(requests[0].headers().get("range"), Some("bytes=1-4"));
+    assert_eq!(requests[0].headers().get("range"), Some("bytes=1-3"));
     Ok(())
 }
 
@@ -272,6 +271,9 @@ async fn multipart_upload_initiates_uploads_and_completes() -> Result<(), Error>
     assert!(requests[1].uri().contains("uploadId=upload-1"));
     assert_eq!(requests[2].method(), "POST");
     assert!(requests[2].uri().contains("uploadId=upload-1"));
+    let completion = std::str::from_utf8(requests[2].body().bytes().unwrap()).unwrap();
+    assert!(completion.contains("<PartNumber>1</PartNumber>"));
+    assert!(completion.contains("<ETag>part-etag</ETag>"));
     Ok(())
 }
 
@@ -329,5 +331,78 @@ async fn transient_head_retries_through_shared_store() -> Result<(), Error> {
         Some(5)
     );
     assert_eq!(mock.actual_requests().count(), 2);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn streaming_read_requests_exact_inclusive_range() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![event(StatusCode::PARTIAL_CONTENT, "bcd")]);
+    let store = store(mock.clone())?;
+    let (mut tx, mut rx) = make_buf_channel_pair();
+    let read = store.get_part(StoreKey::new_str("key"), &mut tx, 1, Some(3));
+    let (_, bytes) = futures::try_join!(read, rx.consume(None))?;
+    assert_eq!(bytes, "bcd");
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(requests[0].headers().get("range"), Some("bytes=1-3"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn zero_length_read_makes_no_request() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![]);
+    let bytes = store(mock.clone())?
+        .get_part_unchunked(StoreKey::new_str("key"), 1, Some(0))
+        .await?;
+    assert!(bytes.is_empty());
+    assert_eq!(mock.actual_requests().count(), 0);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn endpoint_override_and_temporary_credentials_reach_the_wire() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![event(StatusCode::NOT_FOUND, "")]);
+    let spec = ExperimentalOssSpec {
+        endpoint: Some("https://s3.oss-cn-hangzhou-internal.aliyuncs.com".into()),
+        ..spec()
+    };
+    let store = OssStore::new_with_http_client(
+        &spec,
+        mock.clone(),
+        Credentials::new(
+            "TESTKEY",
+            "TESTSECRET",
+            Some("TESTTOKEN".into()),
+            None,
+            "test",
+        ),
+        NOW,
+    )?;
+    assert_eq!(store.has(StoreKey::new_str("key")).await?, None);
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(
+        requests[0].uri(),
+        "https://test-bucket.s3.oss-cn-hangzhou-internal.aliyuncs.com/cas/key"
+    );
+    assert_eq!(
+        requests[0].headers().get("x-amz-security-token"),
+        Some("TESTTOKEN")
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn exact_size_error_does_not_publish_an_object() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![]);
+    let store = store(mock.clone())?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    let upload = store.update(StoreKey::new_str("key"), rx, UploadSizeInfo::ExactSize(4));
+    let send = async {
+        tx.send("abc".into()).await?;
+        tx.send_eof()
+    };
+    let (written, sent) = tokio::join!(upload, send);
+    sent?;
+    assert_eq!(written.unwrap_err().code, Code::InvalidArgument);
+    assert_eq!(mock.actual_requests().count(), 0);
     Ok(())
 }

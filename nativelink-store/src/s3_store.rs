@@ -633,7 +633,7 @@ where
         offset: u64,
         length: Option<u64>,
     ) -> Result<(), Error> {
-        if is_zero_digest(key.borrow()) {
+        if is_zero_digest(key.borrow()) || length == Some(0) {
             writer
                 .send_eof()
                 .err_tip(|| "Failed to send zero EOF in filesystem store get_part")?;
@@ -642,7 +642,7 @@ where
 
         let s3_path = &self.make_s3_path(&key);
         let end_read_byte = length
-            .map_or(Some(None), |length| Some(offset.checked_add(length)))
+            .map_or(Some(None), |length| Some(offset.checked_add(length - 1)))
             .err_tip(|| "Integer overflow protection triggered")?;
 
         self.retrier
