@@ -17,8 +17,9 @@ use std::sync::Arc;
 
 use futures::join;
 use nativelink_config::cas_server::{
-    CapabilitiesConfig, CapabilitiesRemoteExecutionConfig, WithInstanceName,
+    CapabilitiesConfig, CapabilitiesRemoteExecutionConfig, CasStoreConfig, WithInstanceName,
 };
+use nativelink_config::stores::MemorySpec;
 use nativelink_macro::nativelink_test;
 use nativelink_proto::build::bazel::remote::execution::v2::capabilities_server::Capabilities;
 use nativelink_proto::build::bazel::remote::execution::v2::{
@@ -28,6 +29,9 @@ use nativelink_scheduler::known_platform_property_provider::KnownPlatformPropert
 use nativelink_scheduler::mock_scheduler::MockActionScheduler;
 use nativelink_service::capabilities_server::CapabilitiesServer;
 use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
+use nativelink_store::memory_store::MemoryStore;
+use nativelink_store::store_manager::StoreManager;
+use nativelink_util::store_trait::Store;
 use pretty_assertions::assert_eq;
 use tonic::Request;
 
@@ -35,6 +39,8 @@ const COMPRESSION_INSTANCE: &str = "compression";
 const EXECUTION_INSTANCE: &str = "execution";
 const AC_INSTANCE: &str = "ac";
 const SCHEDULER_NAME: &str = "main_scheduler";
+/// The listener's default `max_decoding_message_size`.
+const DECODING_LIMIT: usize = 4 * 1024 * 1024;
 
 const fn update_enabled(response: &ServerCapabilities) -> bool {
     response
@@ -81,12 +87,15 @@ async fn compression_only_instance_advertises_zstd_cache_capabilities()
     let configs = [capabilities_config(COMPRESSION_INSTANCE, true, false)];
     let remote_cache_compression_instances =
         RemoteCacheCompressionInstances::from_capabilities_configs(&configs);
+    let store_manager = StoreManager::new();
     let server = CapabilitiesServer::new(
         &configs,
         &HashMap::new(),
         &remote_cache_compression_instances,
         &[],
         &HashMap::new(),
+        &store_manager,
+        DECODING_LIMIT,
     )
     .await?;
 
@@ -120,12 +129,15 @@ async fn compression_only_instance_does_not_advertise_execution_capabilities()
     let configs = [capabilities_config(COMPRESSION_INSTANCE, true, false)];
     let remote_cache_compression_instances =
         RemoteCacheCompressionInstances::from_capabilities_configs(&configs);
+    let store_manager = StoreManager::new();
     let server = CapabilitiesServer::new(
         &configs,
         &HashMap::new(),
         &remote_cache_compression_instances,
         &[],
         &HashMap::new(),
+        &store_manager,
+        DECODING_LIMIT,
     )
     .await?;
 
@@ -151,12 +163,15 @@ async fn remote_execution_instance_advertises_execution_capabilities_and_node_pr
 
     let expected_properties = vec!["cpu".to_string(), "os".to_string()];
     let ac_read_only_for_instance = HashMap::new();
+    let store_manager = StoreManager::new();
     let new_server_fut = CapabilitiesServer::new(
         &configs,
         &scheduler_map,
         &remote_cache_compression_instances,
         &[],
         &ac_read_only_for_instance,
+        &store_manager,
+        DECODING_LIMIT,
     );
     let expected_scheduler_call_fut =
         mock_scheduler.expect_get_known_properties(Ok(expected_properties.clone()));
@@ -203,6 +218,8 @@ async fn writable_action_cache_reports_update_enabled_true()
         &remote_cache_compression_instances,
         &[],
         &ac_read_only_for_instance,
+        &StoreManager::new(),
+        DECODING_LIMIT,
     )
     .await?;
 
@@ -228,6 +245,8 @@ async fn read_only_action_cache_reports_update_enabled_false()
         &remote_cache_compression_instances,
         &[],
         &ac_read_only_for_instance,
+        &StoreManager::new(),
+        DECODING_LIMIT,
     )
     .await?;
 
@@ -237,5 +256,47 @@ async fn read_only_action_cache_reports_update_enabled_false()
         !update_enabled(&response),
         "a read-only action cache must advertise update_enabled=false"
     );
+    Ok(())
+}
+
+// REv2 CacheCapabilities: `max_batch_total_size_bytes` should match what the
+// server accepts, and `max_cas_blob_size_bytes` is 0 when no limit is set.
+// The batch limit follows the listener's decoding limit (less headroom for
+// per-blob framing) instead of a hard-coded 64 KiB, and a CAS store that
+// reports no upload limit, like the memory store, advertises 0.
+#[nativelink_test]
+async fn cache_size_limits_follow_listener_and_store() -> Result<(), Box<dyn core::error::Error>> {
+    let configs = [capabilities_config(COMPRESSION_INSTANCE, false, false)];
+    let store_manager = StoreManager::new();
+    store_manager.add_store(
+        "main_cas",
+        Store::new(MemoryStore::new(&MemorySpec::default())),
+    )?;
+    let server = CapabilitiesServer::new(
+        &configs,
+        &HashMap::new(),
+        &RemoteCacheCompressionInstances::from_capabilities_configs(&configs),
+        &[WithInstanceName {
+            instance_name: COMPRESSION_INSTANCE.to_string(),
+            config: CasStoreConfig {
+                cas_store: "main_cas".to_string(),
+                experimental_chunking: None,
+            },
+        }],
+        &HashMap::new(),
+        &store_manager,
+        16 * 1024 * 1024,
+    )
+    .await?;
+
+    let cache_capabilities = get_capabilities(&server, COMPRESSION_INSTANCE)
+        .await?
+        .cache_capabilities
+        .expect("cache capabilities should be set");
+    assert_eq!(
+        cache_capabilities.max_batch_total_size_bytes,
+        16 * 1024 * 1024 - 1024 * 1024
+    );
+    assert_eq!(cache_capabilities.max_cas_blob_size_bytes, 0);
     Ok(())
 }
