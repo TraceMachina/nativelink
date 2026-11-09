@@ -136,6 +136,10 @@ contain slashes, so left-to-right parsing cannot find the boundary, while
 right-to-left can, because the trailing components are fixed. See
 <SourceLink file="nativelink-util/src/resource_info.rs" symbol="ResourceInfo" />.
 
+**`GetTree` returns each distinct directory once.** A `Directory` that occurs
+more than once in a tree (two empty subdirectories, say) appears once in the
+response, so a client paging through such a tree reaches the end.
+
 **`GetTree` page tokens are `"{hash}-{size}"`**, constructed and parsed by
 splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the

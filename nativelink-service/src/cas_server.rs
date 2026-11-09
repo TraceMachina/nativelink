@@ -16,7 +16,7 @@ use core::convert::Into;
 use core::pin::{Pin, pin};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::time::Duration;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bytes::Bytes;
 use fastcdc::v2020::{AsyncStreamCDC, Normalization};
@@ -540,6 +540,12 @@ impl CasServer {
             .err_tip(|| "In GetTreeRequest::root_digest")?;
 
         let mut deque: VecDeque<DigestInfo> = VecDeque::new();
+        // Each distinct Directory is visited, and returned, once. The page
+        // token names the next digest to return, so a digest repeated in the
+        // tree (two empty subdirectories, say) made it ambiguous: the next page
+        // started at the first copy again and paging never finished.
+        let mut queued: HashSet<DigestInfo> = HashSet::new();
+        queued.insert(root_digest);
         let mut directories: Vec<Directory> = Vec::new();
         // `page_token` will return the `{hash_str}-{size_bytes}` of the current request's first directory digest.
         let page_token_digest = if request.page_token.is_empty() {
@@ -583,7 +589,9 @@ impl CasServer {
                     .err_tip(|| "Expected Digest to exist in Directory::directories::digest")?
                     .try_into()
                     .err_tip(|| "In Directory::file::digest")?;
-                deque.push_back(digest);
+                if queued.insert(digest) {
+                    deque.push_back(digest);
+                }
             }
 
             let page_size_usize = usize::try_from(page_size).unwrap_or(usize::MAX);
