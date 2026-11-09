@@ -800,7 +800,7 @@ fn http_listener_tcp_nodelay_defaults_and_overrides() {
 #[test]
 fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
     use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
-    let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket"}}"#;
+    let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET"}}"#;
     let parsed: StoreSpec = serde_json5::from_str(config).unwrap();
     assert!(matches!(
         parsed,
@@ -813,11 +813,32 @@ fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
         "upload_queue_timeout_s",
     ] {
         let config = format!(
-            r#"{{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","{field}":1}}"#
+            r#"{{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","access_key_id":"OSS_TEST_KEY","secret_access_key":"OSS_TEST_SECRET","{field}":1}}"#
         );
         assert!(
             serde_json5::from_str::<ExperimentalCloudObjectSpec>(&config).is_err(),
             "unexpected OSS field accepted: {field}"
         );
+    }
+}
+
+#[test]
+fn oss_credentials_are_required_and_redacted_from_debug() {
+    use nativelink_config::stores::ExperimentalOssSpec;
+    let missing = r#"{"region":"cn-hangzhou","bucket":"test-bucket"}"#;
+    assert!(serde_json5::from_str::<ExperimentalOssSpec>(missing).is_err());
+    let spec = ExperimentalOssSpec {
+        access_key_id: "PRIVATE_OSS_KEY_ID".into(),
+        secret_access_key: "PRIVATE_OSS_SECRET".into(),
+        session_token: Some("PRIVATE_OSS_TOKEN".into()),
+        ..Default::default()
+    };
+    let debug = format!("{spec:?}");
+    for credential in [
+        "PRIVATE_OSS_KEY_ID",
+        "PRIVATE_OSS_SECRET",
+        "PRIVATE_OSS_TOKEN",
+    ] {
+        assert!(!debug.contains(credential));
     }
 }

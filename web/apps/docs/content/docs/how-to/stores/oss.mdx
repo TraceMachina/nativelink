@@ -22,10 +22,15 @@ NativeLink store key, as in the [S3 store](/how-to/stores/s3-and-compatible).
 
 ## Configure the store [#configure-the-store]
 
-Supply the OSS AccessKey using `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-For temporary credentials, also set `AWS_SESSION_TOKEN`. The AWS SDK credential
-chain also supports shared credential files; it does not discover Alibaba Cloud
-RAM roles automatically. Keep credentials out of JSON5 and source control.
+Configure credentials explicitly for each OSS store. Reference independent
+variables such as `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` through shell
+expansion. For temporary credentials, also configure `session_token`, for example
+`${OSS_SESSION_TOKEN}`. Keep the values out of source control.
+
+There is no fallback to the AWS credential chain or `AWS_*` variables, so an AWS
+S3 store in the same process can use its own credentials. Different OSS stores
+can reference different variable names. Automatic Alibaba Cloud RAM role
+discovery is not supported.
 
 ```json5
 stores: [
@@ -35,6 +40,8 @@ stores: [
       provider: "oss",
       region: "cn-hangzhou",
       bucket: "example-build-cache",
+      access_key_id: "${OSS_ACCESS_KEY_ID}",
+      secret_access_key: "${OSS_ACCESS_KEY_SECRET}",
       key_prefix: "cas/",
     },
   },

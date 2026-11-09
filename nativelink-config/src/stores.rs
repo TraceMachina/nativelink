@@ -233,8 +233,8 @@ pub enum StoreSpec {
     ///
     /// 7. **Alibaba Cloud OSS:**
     ///    Uses the OSS S3-compatible endpoint and AWS SigV4. Supply the OSS
-    ///    AccessKey using the AWS SDK credential chain (for example
-    ///    `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`).
+    ///    AccessKey explicitly per store, for example by shell-expanding
+    ///    `OSS_ACCESS_KEY_ID` and `OSS_ACCESS_KEY_SECRET` in the config.
     ///
     ///    **Example JSON Config:**
     ///    ```json
@@ -242,6 +242,8 @@ pub enum StoreSpec {
     ///      "provider": "oss",
     ///      "region": "cn-hangzhou",
     ///      "bucket": "example-build-cache",
+    ///      "access_key_id": "${OSS_ACCESS_KEY_ID}",
+    ///      "secret_access_key": "${OSS_ACCESS_KEY_SECRET}",
     ///      "key_prefix": "cas/"
     ///    }
     ///    ```
@@ -964,7 +966,7 @@ pub struct ExperimentalOciSpec {
 }
 
 /// Alibaba Cloud OSS through its S3-compatible API.
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
 pub struct ExperimentalOssSpec {
@@ -973,11 +975,23 @@ pub struct ExperimentalOssSpec {
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub region: String,
 
-    /// Bucket name. Credentials come from the AWS SDK credential chain:
-    /// supply the OSS AccessKey using `AWS_ACCESS_KEY_ID` and
-    /// `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary keys).
+    /// Bucket name to use as the backend.
     #[serde(deserialize_with = "convert_string_with_shellexpand")]
     pub bucket: String,
+
+    /// AccessKey ID for this store. Required; no AWS credential-chain fallback.
+    /// Use shell expansion, for example `${OSS_ACCESS_KEY_ID}`.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub access_key_id: String,
+
+    /// AccessKey secret for this store. Use `${OSS_ACCESS_KEY_SECRET}` to
+    /// keep it out of the config file. Independent of AWS S3 store credentials.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub secret_access_key: String,
+
+    /// Optional STS token for this store, for example `${OSS_SESSION_TOKEN}`.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub session_token: Option<String>,
 
     /// Optional HTTPS S3-compatible service endpoint, without a bucket or path.
     /// Default: `https://s3.oss-{region}.aliyuncs.com`.
@@ -1002,6 +1016,23 @@ pub struct ExperimentalOssSpec {
         deserialize_with = "convert_optional_numeric_with_shellexpand"
     )]
     pub multipart_max_concurrent_uploads: Option<usize>,
+}
+
+impl core::fmt::Debug for ExperimentalOssSpec {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ExperimentalOssSpec")
+            .field("region", &self.region)
+            .field("bucket", &self.bucket)
+            .field("endpoint", &self.endpoint)
+            .field("key_prefix", &self.key_prefix)
+            .field("retry", &self.retry)
+            .field(
+                "multipart_max_concurrent_uploads",
+                &self.multipart_max_concurrent_uploads,
+            )
+            .field("credentials", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

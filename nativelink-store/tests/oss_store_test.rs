@@ -16,7 +16,6 @@
 
 use std::sync::Arc;
 
-use aws_sdk_s3::config::Credentials;
 use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
 use aws_smithy_types::body::SdkBody;
 use http::StatusCode;
@@ -36,6 +35,8 @@ fn spec() -> ExperimentalOssSpec {
     ExperimentalOssSpec {
         region: "cn-hangzhou".into(),
         bucket: "test-bucket".into(),
+        access_key_id: "TESTKEY".into(),
+        secret_access_key: "TESTSECRET".into(),
         key_prefix: Some("cas/".into()),
         retry: Retry {
             max_retries: 1,
@@ -48,12 +49,7 @@ fn spec() -> ExperimentalOssSpec {
 }
 
 fn store(mock: StaticReplayClient) -> Result<Arc<S3Store<fn() -> MockInstantWrapped>>, Error> {
-    OssStore::new_with_http_client(
-        &spec(),
-        mock,
-        Credentials::new("TESTKEY", "TESTSECRET", None, None, "test"),
-        NOW,
-    )
+    OssStore::new_with_http_client(&spec(), mock, NOW)
 }
 
 fn event(status: StatusCode, body: &'static str) -> ReplayEvent {
@@ -375,20 +371,10 @@ async fn endpoint_override_and_temporary_credentials_reach_the_wire() -> Result<
     let mock = StaticReplayClient::new(vec![event(StatusCode::NOT_FOUND, "")]);
     let spec = ExperimentalOssSpec {
         endpoint: Some("https://s3.oss-cn-hangzhou-internal.aliyuncs.com".into()),
+        session_token: Some("TESTTOKEN".into()),
         ..spec()
     };
-    let store = OssStore::new_with_http_client(
-        &spec,
-        mock.clone(),
-        Credentials::new(
-            "TESTKEY",
-            "TESTSECRET",
-            Some("TESTTOKEN".into()),
-            None,
-            "test",
-        ),
-        NOW,
-    )?;
+    let store = OssStore::new_with_http_client(&spec, mock.clone(), NOW)?;
     assert_eq!(store.has(StoreKey::new_str("key")).await?, None);
     let requests: Vec<_> = mock.actual_requests().collect();
     assert_eq!(
@@ -479,12 +465,7 @@ async fn slow_backend_bounds_in_flight_multipart_requests() -> Result<(), Error>
         peak: Arc::new(AtomicUsize::new(0)),
         parts: Arc::new(AtomicUsize::new(0)),
     };
-    let store = OssStore::new_with_http_client(
-        &spec(),
-        client.clone(),
-        Credentials::new("TESTKEY", "TESTSECRET", None, None, "test"),
-        NOW,
-    )?;
+    let store = OssStore::new_with_http_client(&spec(), client.clone(), NOW)?;
     let (mut tx, rx) = make_buf_channel_pair();
     let upload = tokio::spawn(async move {
         store
@@ -516,5 +497,63 @@ async fn slow_backend_bounds_in_flight_multipart_requests() -> Result<(), Error>
     assert_eq!(client.parts.load(Ordering::SeqCst), PARTS);
     assert!(peak_while_blocked > 0 && peak_while_blocked <= 2);
     assert!(client.peak.load(Ordering::SeqCst) <= 2);
+    Ok(())
+}
+
+#[test]
+fn missing_store_credentials_are_rejected() {
+    for (access_key_id, secret_access_key) in [("", "SECRET"), ("KEY", ""), (" ", "SECRET")] {
+        let error = OssStore::build_aws_spec(&ExperimentalOssSpec {
+            access_key_id: access_key_id.into(),
+            secret_access_key: secret_access_key.into(),
+            ..spec()
+        })
+        .unwrap_err();
+        assert_eq!(error.code, Code::InvalidArgument);
+        assert!(!error.to_string().contains("SECRET"));
+    }
+}
+
+#[nativelink_test]
+async fn configured_credentials_are_isolated_between_stores() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![
+        event(StatusCode::NOT_FOUND, ""),
+        event(StatusCode::NOT_FOUND, ""),
+    ]);
+    let first = OssStore::new_with_http_client(
+        &ExperimentalOssSpec {
+            access_key_id: "OSS_FIRST_KEY".into(),
+            secret_access_key: "OSS_FIRST_SECRET".into(),
+            ..spec()
+        },
+        mock.clone(),
+        NOW,
+    )?;
+    let second = OssStore::new_with_http_client(
+        &ExperimentalOssSpec {
+            access_key_id: "OSS_SECOND_KEY".into(),
+            secret_access_key: "OSS_SECOND_SECRET".into(),
+            ..spec()
+        },
+        mock.clone(),
+        NOW,
+    )?;
+    assert_eq!(first.has(StoreKey::new_str("key")).await?, None);
+    assert_eq!(second.has(StoreKey::new_str("key")).await?, None);
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert!(
+        requests[0]
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .contains("Credential=OSS_FIRST_KEY/")
+    );
+    assert!(
+        requests[1]
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .contains("Credential=OSS_SECOND_KEY/")
+    );
     Ok(())
 }

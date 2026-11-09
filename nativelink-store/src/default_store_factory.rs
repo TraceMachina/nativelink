@@ -80,7 +80,7 @@ pub fn store_factory<'a>(
                     R2Store::new(r2_config, SystemTime::now).await?
                 }
                 ExperimentalCloudObjectSpec::Oss(oss_config) => {
-                    OssStore::new(oss_config, SystemTime::now).await?
+                    OssStore::new(oss_config, SystemTime::now)?
                 }
                 ExperimentalCloudObjectSpec::Oci(oci_config) => {
                     OciStore::new(oci_config, SystemTime::now).await?

@@ -15,13 +15,11 @@
 use core::time::Duration;
 use std::sync::Arc;
 
-use aws_config::default_provider::credentials::DefaultCredentialsChain;
-use aws_config::provider_config::ProviderConfig;
 use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::retry::RetryConfig;
 use aws_sdk_s3::config::{
-    ProvideCredentials, Region, RequestChecksumCalculation, ResponseChecksumValidation,
+    Credentials, Region, RequestChecksumCalculation, ResponseChecksumValidation,
 };
 use aws_smithy_runtime_api::client::http::HttpClient as SmithyHttpClient;
 use nativelink_config::stores::{CommonObjectSpec, ExperimentalAwsSpec, ExperimentalOssSpec};
@@ -38,7 +36,7 @@ pub struct OssStore;
 
 impl OssStore {
     #[allow(clippy::new_ret_no_self)]
-    pub async fn new<I, NowFn>(
+    pub fn new<I, NowFn>(
         spec: &ExperimentalOssSpec,
         now_fn: NowFn,
     ) -> Result<Arc<S3Store<NowFn>>, Error>
@@ -48,30 +46,20 @@ impl OssStore {
     {
         let aws_spec = Self::build_aws_spec(spec)?;
         let http_client = TlsClient::new(&aws_spec.common)?;
-        let credentials = DefaultCredentialsChain::builder()
-            .configure(
-                ProviderConfig::without_region()
-                    .with_region(Some(Region::new(spec.region.clone())))
-                    .with_http_client(http_client.clone()),
-            )
-            .build()
-            .await;
-        Self::new_with_http_client(spec, http_client, credentials, now_fn)
+        Self::new_with_http_client(spec, http_client, now_fn)
     }
 
-    /// Allows wire tests to supply HTTP and credential providers without contacting OSS.
+    /// Allows wire tests to supply an HTTP client without contacting OSS.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new_with_http_client<I, NowFn, C, P>(
+    pub fn new_with_http_client<I, NowFn, C>(
         spec: &ExperimentalOssSpec,
         http_client: C,
-        credentials: P,
         now_fn: NowFn,
     ) -> Result<Arc<S3Store<NowFn>>, Error>
     where
         I: InstantWrapper,
         NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
         C: SmithyHttpClient + Clone + 'static,
-        P: ProvideCredentials + 'static,
     {
         let aws_spec = Self::build_aws_spec(spec)?;
         let region = Region::new(spec.region.clone());
@@ -92,7 +80,13 @@ impl OssStore {
                     .operation_attempt_timeout(Duration::from_secs(120))
                     .build(),
             )
-            .credentials_provider(credentials)
+            .credentials_provider(Credentials::new(
+                &spec.access_key_id,
+                &spec.secret_access_key,
+                spec.session_token.clone(),
+                None,
+                "oss-config",
+            ))
             .http_client(http_client)
             .build();
         S3Store::new_with_client_and_jitter(
@@ -144,6 +138,12 @@ impl OssStore {
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
         {
             return Err(make_err!(Code::InvalidArgument, "Invalid OSS bucket name"));
+        }
+        if spec.access_key_id.trim().is_empty() || spec.secret_access_key.trim().is_empty() {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "OSS requires explicit access_key_id and secret_access_key"
+            ));
         }
         let concurrency = spec.multipart_max_concurrent_uploads.unwrap_or(2);
         if concurrency == 0 || concurrency > tokio::sync::Semaphore::MAX_PERMITS {
