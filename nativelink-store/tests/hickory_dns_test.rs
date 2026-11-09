@@ -136,27 +136,17 @@ async fn concurrent_lookups_share_cache_and_preserve_all_addresses() {
 #[nativelink_test]
 async fn positive_ttl_expires_and_refreshes_addresses() {
     let (mut resolver, state, _server) = dns_fixture().await;
-    assert_eq!(
-        lookup(&mut resolver, "ttl.example.").await.unwrap()[0]
-            .ip()
-            .to_string(),
-        "127.0.0.1"
-    );
+    let initial = lookup(&mut resolver, "ttl.example.").await.unwrap();
+    assert!(initial.contains(&SocketAddr::from(([127, 0, 0, 1], 0))));
     state.address.store(11, Ordering::SeqCst);
-    assert_eq!(
-        lookup(&mut resolver, "ttl.example.").await.unwrap()[0]
-            .ip()
-            .to_string(),
-        "127.0.0.1"
-    );
+    let cached = lookup(&mut resolver, "ttl.example.").await.unwrap();
+    assert!(cached.contains(&SocketAddr::from(([127, 0, 0, 1], 0))));
+    assert!(!cached.contains(&SocketAddr::from(([127, 0, 0, 11], 0))));
     assert_eq!(state.queries.load(Ordering::SeqCst), 1);
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    assert_eq!(
-        lookup(&mut resolver, "ttl.example.").await.unwrap()[0]
-            .ip()
-            .to_string(),
-        "127.0.0.11"
-    );
+    let refreshed = lookup(&mut resolver, "ttl.example.").await.unwrap();
+    assert!(refreshed.contains(&SocketAddr::from(([127, 0, 0, 11], 0))));
+    assert!(!refreshed.contains(&SocketAddr::from(([127, 0, 0, 1], 0))));
     assert_eq!(state.queries.load(Ordering::SeqCst), 2);
 }
 
