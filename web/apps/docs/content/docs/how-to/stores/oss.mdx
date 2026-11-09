@@ -57,12 +57,37 @@ REST endpoint (`oss-...`) is not interchangeable with an S3-compatible endpoint
 Check [OSS endpoint access restrictions](https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss)
 for the bucket's account and region before deploying.
 
+## DNS resolution [#dns-resolution]
+
+The default `dns_resolver` is `hickory`. Active OSS clients share its DNS cache,
+including after TCP connections close. Concurrent lookups of the same name are
+serialized through the cache to avoid duplicate queries on a cache miss.
+The resolver reads the system nameservers, search domains and hosts-file policy;
+it does not replace cluster DNS with public nameservers.
+
+Queries use a two-second timeout and an attempt count of two. Positive answers
+retain their DNS TTL up to five minutes; negative responses are cached for one
+to thirty seconds. Transport timeouts are not negative-cached. A five-second
+lookup deadline includes time waiting behind an in-flight lookup, and at most
+256 distinct names may be pending. DNS errors propagate to the normal request
+retry path.
+
+Set `dns_resolver` to `system` to use the platform resolver. System configuration
+errors in Hickory mode fail store construction instead of silently selecting
+different nameservers. Both modes preserve the original HTTP Host, TLS SNI and
+SigV4 signing hostname. Other providers keep their existing resolver selection.
+
 ## Retry and resource behavior [#retry-and-resource-behavior]
 
 The optional `retry` object uses the standard store retry policy. SDK retries
-are disabled so they do not multiply store attempts. Connections have a
-15-second timeout; each SDK operation attempt has a 120-second timeout.
-These timeouts do not impose an overall upload or download deadline.
+are disabled, but the shared HTTP transport also retries: its attempts can
+multiply the store retry loop. There is not yet one total retry budget.
+
+Each SDK operation attempt has a 120-second timeout. The custom HTTP connector
+does not currently apply the SDK connection-timeout setting to TCP connections.
+Receiving an upload part before an SDK call, reading a download body after the
+response headers, and waiting for a consumer are not covered by a total transfer
+deadline. These limits need separate validation before production use.
 
 Uploads and downloads use the existing S3 transfer implementation, including
 multipart uploads and transfer size validation. Its buffering and concurrency

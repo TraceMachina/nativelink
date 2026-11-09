@@ -999,6 +999,13 @@ pub struct ExperimentalOssSpec {
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub endpoint: Option<String>,
 
+    /// DNS resolver for OSS requests. Hickory shares a bounded DNS cache
+    /// across live OSS clients and uses system-configured nameservers.
+    /// Select system to use the platform resolver instead.
+    /// Default: hickory.
+    #[serde(default)]
+    pub dns_resolver: OssDnsResolver,
+
     /// Prefix prepended verbatim to each object key, for example `cas/`.
     #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
     pub key_prefix: Option<String>,
@@ -1018,12 +1025,22 @@ pub struct ExperimentalOssSpec {
     pub multipart_max_concurrent_uploads: Option<usize>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub enum OssDnsResolver {
+    System,
+    #[default]
+    Hickory,
+}
+
 impl core::fmt::Debug for ExperimentalOssSpec {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ExperimentalOssSpec")
             .field("region", &self.region)
             .field("bucket", &self.bucket)
             .field("endpoint", &self.endpoint)
+            .field("dns_resolver", &self.dns_resolver)
             .field("key_prefix", &self.key_prefix)
             .field("retry", &self.retry)
             .field(

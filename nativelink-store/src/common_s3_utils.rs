@@ -32,6 +32,7 @@ use futures::Stream;
 use http_body::{Frame, SizeHint};
 use http_body_util::BodyExt;
 use hyper::{Method, Request};
+use hyper_rustls::builderstates::WantsProtocols1;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client as LegacyClient;
 use hyper_util::client::legacy::connect::HttpConnector as LegacyHttpConnector;
@@ -52,8 +53,31 @@ pub(crate) fn install_default_rustls_crypto_provider() {
 }
 
 #[derive(Clone)]
+pub(crate) enum HttpTransport {
+    System(LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>),
+    Hickory(
+        LegacyClient<
+            HttpsConnector<LegacyHttpConnector<crate::hickory_dns::HickoryDnsResolver>>,
+            SdkBody,
+        >,
+    ),
+}
+
+impl HttpTransport {
+    async fn request(
+        &self,
+        request: Request<SdkBody>,
+    ) -> Result<hyper::Response<hyper::body::Incoming>, hyper_util::client::legacy::Error> {
+        match self {
+            Self::System(client) => client.request(request).await,
+            Self::Hickory(client) => client.request(request).await,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct TlsClient {
-    client: LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>,
+    client: HttpTransport,
     retrier: Retrier,
 }
 
@@ -70,7 +94,9 @@ impl TlsClient {
         Self::new_with_http_support(common, true)
     }
 
-    fn new_with_http_support(common: &CommonObjectSpec, allow_http: bool) -> Result<Self, Error> {
+    fn connector_builder(
+        allow_http: bool,
+    ) -> Result<HttpsConnectorBuilder<WantsProtocols1>, Error> {
         install_default_rustls_crypto_provider();
 
         let connector_with_roots = HttpsConnectorBuilder::new()
@@ -90,6 +116,11 @@ impl TlsClient {
             connector_with_roots.https_only()
         };
 
+        Ok(connector_with_schemes)
+    }
+
+    fn new_with_http_support(common: &CommonObjectSpec, allow_http: bool) -> Result<Self, Error> {
+        let connector_with_schemes = Self::connector_builder(allow_http)?;
         let connector = if common.disable_http2 {
             connector_with_schemes.enable_http1().build()
         } else {
@@ -97,6 +128,32 @@ impl TlsClient {
         };
 
         Ok(Self::with_https_connector(common, connector))
+    }
+
+    /// Use the shared, cached resolver for OSS while other providers keep the
+    /// existing system-resolver connector.
+    pub fn new_with_hickory(common: &CommonObjectSpec) -> Result<Self, Error> {
+        Self::with_hickory_resolver(
+            common,
+            crate::hickory_dns::HickoryDnsResolver::shared_system()?,
+        )
+    }
+
+    /// Allows a caller to inject DNS without replacing Host, TLS SNI or signing.
+    pub fn with_hickory_resolver(
+        common: &CommonObjectSpec,
+        resolver: crate::hickory_dns::HickoryDnsResolver,
+    ) -> Result<Self, Error> {
+        let builder = Self::connector_builder(common.insecure_allow_http)?;
+        let mut http = LegacyHttpConnector::new_with_resolver(resolver);
+        http.enforce_http(false);
+        let connector = if common.disable_http2 {
+            builder.enable_http1().wrap_connector(http)
+        } else {
+            builder.enable_http1().enable_http2().wrap_connector(http)
+        };
+        let client = LegacyClient::builder(TokioExecutor::new()).build(connector);
+        Ok(Self::from_transport(common, HttpTransport::Hickory(client)))
     }
 
     pub fn with_https_connector(
@@ -107,6 +164,10 @@ impl TlsClient {
 
         let client = LegacyClient::builder(TokioExecutor::new()).build(connector);
 
+        Self::from_transport(common, HttpTransport::System(client))
+    }
+
+    fn from_transport(common: &CommonObjectSpec, client: HttpTransport) -> Self {
         Self {
             client,
             retrier: Retrier::new(
@@ -172,13 +233,13 @@ impl<'a> RequestBuilder<'a> {
 mod execution {
     use super::conversions::ResponseExt;
     use super::{
-        Code, HttpsConnector, LegacyClient, LegacyHttpConnector, RequestBuilder, RequestComponents,
-        Response, RetryResult, SdkBody, fs, make_err,
+        Code, HttpTransport, RequestBuilder, RequestComponents, Response, RetryResult, SdkBody, fs,
+        make_err,
     };
 
     #[inline]
     pub(crate) async fn execute_request(
-        client: LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>,
+        client: HttpTransport,
         components: &RequestComponents,
     ) -> RetryResult<Response<SdkBody>> {
         let _permit = match fs::get_permit().await {
@@ -212,7 +273,7 @@ mod execution {
 
     #[inline]
     pub(crate) fn create_retry_stream(
-        client: LegacyClient<HttpsConnector<LegacyHttpConnector>, SdkBody>,
+        client: HttpTransport,
         components: RequestComponents,
     ) -> impl futures::Stream<Item = RetryResult<Response<SdkBody>>> {
         futures::stream::unfold(components, move |components| {

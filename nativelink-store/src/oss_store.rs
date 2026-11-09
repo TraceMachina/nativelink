@@ -22,7 +22,9 @@ use aws_sdk_s3::config::{
     Credentials, Region, RequestChecksumCalculation, ResponseChecksumValidation,
 };
 use aws_smithy_runtime_api::client::http::HttpClient as SmithyHttpClient;
-use nativelink_config::stores::{CommonObjectSpec, ExperimentalAwsSpec, ExperimentalOssSpec};
+use nativelink_config::stores::{
+    CommonObjectSpec, ExperimentalAwsSpec, ExperimentalOssSpec, OssDnsResolver,
+};
 use nativelink_error::{Code, Error, make_err};
 use nativelink_util::instant_wrapper::InstantWrapper;
 
@@ -45,7 +47,10 @@ impl OssStore {
         NowFn: Fn() -> I + Send + Sync + Unpin + 'static,
     {
         let aws_spec = Self::build_aws_spec(spec)?;
-        let http_client = TlsClient::new(&aws_spec.common)?;
+        let http_client = match spec.dns_resolver {
+            OssDnsResolver::System => TlsClient::new(&aws_spec.common)?,
+            OssDnsResolver::Hickory => TlsClient::new_with_hickory(&aws_spec.common)?,
+        };
         Self::new_with_http_client(spec, http_client, now_fn)
     }
 

@@ -28,6 +28,7 @@ pub mod filesystem_store;
 pub mod gcs_client;
 pub mod gcs_store;
 pub mod grpc_store;
+pub mod hickory_dns;
 pub mod memory_store;
 pub mod mongo_store;
 pub mod noop_store;
