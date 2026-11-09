@@ -3,15 +3,101 @@
 
 All notable changes to this project will be documented in this file.
 
-## [unreleased]
+## [1.8.4](https://github.com/TraceMachina/nativelink/compare/v1.8.3..v1.8.4) - 2026-11-09
 
 ### Upgrade and rollback
 
-- `listener.http.tcp_nodelay` is opt-in and defaults to `false`. Older binaries
-  without this option, including v1.8.3, reject configs containing the field,
-  even when it is `false`. Config and chart templates must omit the field until
-  all consuming binaries support it. Before rolling back to an older binary,
-  remove the field entirely from its config.
+- Every configuration field new in this release defaults to the previous
+  behaviour, so an existing config runs unchanged: `listener.http.tcp_nodelay`
+  (false), `execute_stream_heartbeat_s` (0, no heartbeats), `fetch.downloader`
+  (omitted, lookup-only), `recover_unknown_uuid_resumes` (true),
+  `max_timeout_retries` (1), `worker_outcome_tripwire` (unset, off),
+  `has_slow_write_wait_timeout_s` and `leader_inactivity_timeout_s` (0, wait
+  indefinitely) and `migrate_temporary_indexes` (false).
+- Older binaries, including v1.8.3, reject a config that names any of these
+  fields, even at its default. Keep them out of shared config and chart
+  templates until every consuming binary runs v1.8.4, and remove them before
+  rolling back.
+- `max_timeout_retries` defaults to 1: a command timeout is queued once more
+  for another worker before it is final, and for 30 s the retry stays off the
+  worker (and, with `node_name` advertised, the node) that failed it. Set it to
+  0 for the v1.8.3 behaviour.
+- An action marked `do_not_cache` is no longer answered from the action cache
+  or merged with an identical running action (#3135); a target Bazel tags
+  `no-remote-cache` or `no-cache` now always executes.
+- A Redis deployment upgraded from before v1.8.1 still carries temporary
+  RediSearch indexes that are never garbage collected; set
+  `migrate_temporary_indexes: true` on the Redis store once to replace them
+  without deleting their keys (#3076).
+
+### ⛰️  Features
+
+- *(fetch)* add opt-in HTTP downloads with explicit proxy configuration ([#3071](https://github.com/TraceMachina/nativelink/issues/3071)) - ([c80b44a](https://github.com/TraceMachina/nativelink/commit/c80b44ad2e2d822fded87fba659a33faab47e414))
+- *(server)* add opt-in TCP_NODELAY for accepted connections ([#3131](https://github.com/TraceMachina/nativelink/issues/3131)) - ([03e510e](https://github.com/TraceMachina/nativelink/commit/03e510e78a8cba3a802beddf779a094def56e5be))
+- try a command timeout on another worker, keep a retry off the node that failed it, drain a worker whose attempts keep failing ([#3146](https://github.com/TraceMachina/nativelink/issues/3146)) - ([15c0b8b](https://github.com/TraceMachina/nativelink/commit/15c0b8b3f421c54dbf21321d6c3a6f5651725286))
+- Expose a max upload size for stores ([#2077](https://github.com/TraceMachina/nativelink/issues/2077)) ([#3097](https://github.com/TraceMachina/nativelink/issues/3097)) - ([8e2d88e](https://github.com/TraceMachina/nativelink/commit/8e2d88eae0958e2fce8469d870b439fd8a83d532))
+
+### 🐛 Bug Fixes
+
+- *(linux)* Read PSS only when RSS shows it could matter ([#3141](https://github.com/TraceMachina/nativelink/issues/3141)) - ([47666c5](https://github.com/TraceMachina/nativelink/commit/47666c53ce753f012b288f14ff31c235314e2cc3))
+- Honor Action.do_not_cache when looking up and merging actions ([#3135](https://github.com/TraceMachina/nativelink/issues/3135)) - ([218a8a9](https://github.com/TraceMachina/nativelink/commit/218a8a9935b42214460f7dbc0b88318e137f17dd))
+- retry an operation update after a transient store error, not only a version conflict ([#3148](https://github.com/TraceMachina/nativelink/issues/3148)) - ([1fd8ba0](https://github.com/TraceMachina/nativelink/commit/1fd8ba0ebfdb5d8040cf1c68218838225b83a59f))
+- a cache fill that moves no bytes fails at an inactivity timeout ([#3107](https://github.com/TraceMachina/nativelink/issues/3107)) - ([0139ba4](https://github.com/TraceMachina/nativelink/commit/0139ba44e9ad6d535fc9ede4faed37217844f041))
+- has() stops waiting on an in-flight write at a deadline ([#3102](https://github.com/TraceMachina/nativelink/issues/3102)) - ([0daa9d5](https://github.com/TraceMachina/nativelink/commit/0daa9d53c91ed8e8a47ca39f489d815b2df89bec))
+- recover a resumed upload that lands on the wrong instance ([#3105](https://github.com/TraceMachina/nativelink/issues/3105)) - ([78348c8](https://github.com/TraceMachina/nativelink/commit/78348c8e552ab470840c1b5134306e5e318a28c4))
+- Redis store: replace inherited temporary scheduler indexes without deleting their keys ([#3076](https://github.com/TraceMachina/nativelink/issues/3076)) - ([346a914](https://github.com/TraceMachina/nativelink/commit/346a9142108da3562a46be2638cc7ca2b3e09461))
+- heartbeat idle Execute streams and log client drops ([#3103](https://github.com/TraceMachina/nativelink/issues/3103)) - ([08a4696](https://github.com/TraceMachina/nativelink/commit/08a46965085e8847d2ace1c4fa0c82d5c6768144))
+- share one /proc scan across all action resource samplers ([#3095](https://github.com/TraceMachina/nativelink/issues/3095)) - ([e58637e](https://github.com/TraceMachina/nativelink/commit/e58637ebef00ba3141109ff1e648804a18fb3b57))
+
+### 📚 Documentation
+
+- *(blog)* The Bomb in Your Bill of Materials ([#3114](https://github.com/TraceMachina/nativelink/issues/3114)) - ([9e20269](https://github.com/TraceMachina/nativelink/commit/9e20269b727699c2e5a5494cc1d1f13c8a04382c))
+- Document the two intentional REAPI deviations: priority order and QueryWriteStatus ([#3136](https://github.com/TraceMachina/nativelink/issues/3136)) - ([d737c73](https://github.com/TraceMachina/nativelink/commit/d737c73ac8ea4b665449bec3ab388d86999cf898))
+- Point docs at basic_cas.json5 instead of the missing basic_cas.json ([#3093](https://github.com/TraceMachina/nativelink/issues/3093)) - ([2543cae](https://github.com/TraceMachina/nativelink/commit/2543cae18d974d4ba5af63894629abacd3b9f777))
+- Update README for nativelink version 1.8.3 ([#3092](https://github.com/TraceMachina/nativelink/issues/3092)) - ([3f4ed8b](https://github.com/TraceMachina/nativelink/commit/3f4ed8bbaf4187e21e85da577bf5e027e7a25366))
+
+### 🧪 Testing & CI
+
+- Re-add tracing to sim ([#3152](https://github.com/TraceMachina/nativelink/issues/3152)) - ([c7d1230](https://github.com/TraceMachina/nativelink/commit/c7d1230a2488ec887ea840c20b95b3ba9c5f13cd))
+- Split out main code to lib for testing ([#3150](https://github.com/TraceMachina/nativelink/issues/3150)) - ([810105f](https://github.com/TraceMachina/nativelink/commit/810105faa394d782df024ae3d09c3b4e177aa33f))
+- fix the four failure modes on recent merges to main ([#3147](https://github.com/TraceMachina/nativelink/issues/3147)) - ([e10b8a6](https://github.com/TraceMachina/nativelink/commit/e10b8a6cf30b36a69603cfb212d522cdb422294f))
+- Add fleet-sim, simulated workers against a real scheduler ([#3129](https://github.com/TraceMachina/nativelink/issues/3129)) - ([8029041](https://github.com/TraceMachina/nativelink/commit/8029041f2c6d9a1724efe1d24d6a654b4bb2619c))
+- Add nativelink-sim, an in-process simulation of the scheduler ([#3128](https://github.com/TraceMachina/nativelink/issues/3128)) - ([66dfcf3](https://github.com/TraceMachina/nativelink/commit/66dfcf314f27c62f4a73c2589a2ff27f57bfd639))
+- Add a fault policy and command counts to the fake Redis ([#3127](https://github.com/TraceMachina/nativelink/issues/3127)) - ([0634261](https://github.com/TraceMachina/nativelink/commit/06342613895b79e2129aa00a4375989280d193af))
+- Inject the clocks, worker ids, jitter and operation ids the simulation harness needs ([#3126](https://github.com/TraceMachina/nativelink/issues/3126)) - ([2fb20b2](https://github.com/TraceMachina/nativelink/commit/2fb20b2f48409997a4bd5e738b7503cc186d12cb))
+- persist a Bazel repository cache for the hosted rbe-toolchain lane ([#3133](https://github.com/TraceMachina/nativelink/issues/3133)) - ([bbc6d80](https://github.com/TraceMachina/nativelink/commit/bbc6d8073dbd82ae2958d3c6d2e8438f1cc8cb47))
+- use a dedicated lockfile for Bazel 8 compatibility ([#3132](https://github.com/TraceMachina/nativelink/issues/3132)) - ([ecaa5c3](https://github.com/TraceMachina/nativelink/commit/ecaa5c37c89c0eea18063ed00f31d0b56e9df683))
+- preserve Trivy scan identities and enable PR remote execution ([#3124](https://github.com/TraceMachina/nativelink/issues/3124)) - ([05c4129](https://github.com/TraceMachina/nativelink/commit/05c4129a9c89923bdd80949a2bafc2d4c381df8a))
+- Set new public cluster config ([#3125](https://github.com/TraceMachina/nativelink/issues/3125)) - ([d2547fa](https://github.com/TraceMachina/nativelink/commit/d2547fa1786ff409f7dda4f5991e79440d1fc6e1))
+- Fix test_nix_ci that didn't run on PRs ([#3121](https://github.com/TraceMachina/nativelink/issues/3121)) - ([1c553bd](https://github.com/TraceMachina/nativelink/commit/1c553bd5f8b9b3b78165043c42b87f901c4bbb93))
+- worker tests: gate STORE_UNREACHABLE_ERROR_TIP import to unix ([#3108](https://github.com/TraceMachina/nativelink/issues/3108)) - ([233a511](https://github.com/TraceMachina/nativelink/commit/233a5113385e4a876ff3a99907552f8837f102c7))
+- skip Bazel lanes on web-only pull requests ([#3116](https://github.com/TraceMachina/nativelink/issues/3116)) - ([c71c6ac](https://github.com/TraceMachina/nativelink/commit/c71c6ac43c73e6437751374ed107c8200a1b3b1e))
+- Linting for github action hashes ([#3099](https://github.com/TraceMachina/nativelink/issues/3099)) - ([2c07ca4](https://github.com/TraceMachina/nativelink/commit/2c07ca4f23545d535dc13c124fe656d1072a3b58))
+- Add human-readable fuzz job summaries ([#3062](https://github.com/TraceMachina/nativelink/issues/3062)) - ([1fed667](https://github.com/TraceMachina/nativelink/commit/1fed6673ff28fa8e854594852d5dccdac35f9822))
+
+### ⚙️ Miscellaneous
+
+- Remove bun in favour of pnpm ([#2962](https://github.com/TraceMachina/nativelink/issues/2962)) - ([f2b463d](https://github.com/TraceMachina/nativelink/commit/f2b463d3e18ca7bd92476efb81a22f88a1ffcbfd))
+- let the six security capabilities carry the security section ([#3089](https://github.com/TraceMachina/nativelink/issues/3089)) - ([01bd5a1](https://github.com/TraceMachina/nativelink/commit/01bd5a14ddc75cd909a275d630dfe728ba072ce1))
+- one stat anatomy, one feature card, one copy of each claim ([#3088](https://github.com/TraceMachina/nativelink/issues/3088)) - ([ecac349](https://github.com/TraceMachina/nativelink/commit/ecac349196ee28db7a5fcaf42bebdbc2c7d3c564))
+- Fix all the current build warnings ([#3130](https://github.com/TraceMachina/nativelink/issues/3130)) - ([d03ff6e](https://github.com/TraceMachina/nativelink/commit/d03ff6e16d5ed25f5c72655c7f6ff661d48b4ce1))
+- Log the connection age when a connection dies of ENHANCE_YOUR_CALM ([#3106](https://github.com/TraceMachina/nativelink/issues/3106)) - ([63edefe](https://github.com/TraceMachina/nativelink/commit/63edefeec1f3b550991996e996f3b26d4ada59b7))
+- Add and reformat many things with Prettier ([#3118](https://github.com/TraceMachina/nativelink/issues/3118)) - ([b75b231](https://github.com/TraceMachina/nativelink/commit/b75b23125d220a44bc3cf701987639ec8db62d65))
+- rewrite the agents page for the agent reading it ([#3091](https://github.com/TraceMachina/nativelink/issues/3091)) - ([c711c09](https://github.com/TraceMachina/nativelink/commit/c711c09eb3f395144bb16cc7604f5d3fa09fa953))
+- designed video poster and an MCP demo that invites a click ([#3083](https://github.com/TraceMachina/nativelink/issues/3083)) - ([7c65868](https://github.com/TraceMachina/nativelink/commit/7c6586821001b7bd600afd63669fbd4fba79dc19))
+- an even inset for the active nav pill, and optical padding before the external arrow ([#3112](https://github.com/TraceMachina/nativelink/issues/3112)) - ([662cd23](https://github.com/TraceMachina/nativelink/commit/662cd23923a4224a76db3f07e063accbfbf6761c))
+- a chart that matches its axis, and a Secure card with content ([#3084](https://github.com/TraceMachina/nativelink/issues/3084)) - ([29b76fe](https://github.com/TraceMachina/nativelink/commit/29b76fec58803b6ce905b9e9e4abb5c7d8114967))
+- Change copyright holder to Trace Machina, Inc. ([#3100](https://github.com/TraceMachina/nativelink/issues/3100)) - ([fff012f](https://github.com/TraceMachina/nativelink/commit/fff012fc3a8a780b00ad6352b89d595f2ca17956))
+- make the social proof hard to miss ([#3087](https://github.com/TraceMachina/nativelink/issues/3087)) - ([e53a59b](https://github.com/TraceMachina/nativelink/commit/e53a59bbd2fab2fa52e4621ea4718e2eb475014c))
+- one nav map, marked exits, and breadcrumbs below the top level ([#3082](https://github.com/TraceMachina/nativelink/issues/3082)) - ([d0c1186](https://github.com/TraceMachina/nativelink/commit/d0c1186eb8ff8a34b516b136b7de518155daf488))
+- unify the site's calls to action ([#3078](https://github.com/TraceMachina/nativelink/issues/3078)) - ([4181c85](https://github.com/TraceMachina/nativelink/commit/4181c85563f9a377f6727eccc7566059d4d988b8))
+- web, docs: fix blank Open Graph images ([#3072](https://github.com/TraceMachina/nativelink/issues/3072)) - ([52782d5](https://github.com/TraceMachina/nativelink/commit/52782d5eabf3633ffa7b3e3a284f4a178d8a4c59))
+- replace the Google Form behind "Join Slack" with an on-site form ([#3086](https://github.com/TraceMachina/nativelink/issues/3086)) - ([f5b96ec](https://github.com/TraceMachina/nativelink/commit/f5b96ec836add68adf567aedf38835593d8d8633))
+
+### ⬆️ Bumps & Version Updates
+
+- Fix vulns in pre-commit tools ([#3123](https://github.com/TraceMachina/nativelink/issues/3123)) - ([ba5e377](https://github.com/TraceMachina/nativelink/commit/ba5e37779debe70c1d94836e80305b25ae13f8ed))
+- Update follow-redirects and qs in the Azurite test runner ([#3119](https://github.com/TraceMachina/nativelink/issues/3119)) - ([792f6a7](https://github.com/TraceMachina/nativelink/commit/792f6a737b21ae5e62f964bf4bc9b899322f84d2))
 
 ## [1.8.3](https://github.com/TraceMachina/nativelink/compare/v1.8.2..v1.8.3) - 2026-10-28
 
