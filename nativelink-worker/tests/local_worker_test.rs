@@ -1057,6 +1057,7 @@ async fn cas_not_found_returns_failed_precondition_test() -> Result<(), Error> {
         .with_context(ErrorContext::MissingDigest {
             hash: "0123456789abcdef".to_string(),
             size: 42,
+            digest_function: None,
         });
     running_action
         .expect_prepare_action(Err(missing_input.clone()))

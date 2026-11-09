@@ -793,6 +793,22 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                 // execute response turns it into the
                                                 // PreconditionFailure detail Bazel
                                                 // re-uploads and retries on.
+                                                // Name the action's own digest function
+                                                // in the context: the store only saw the
+                                                // task context, which a spawned fetch can
+                                                // lose.
+                                                let context = match e.context.clone() {
+                                                    ErrorContext::MissingDigest { hash, size, .. } => {
+                                                        ErrorContext::MissingDigest {
+                                                            hash,
+                                                            size,
+                                                            digest_function: digest_hasher
+                                                                .resource_name_segment()
+                                                                .map(str::to_string),
+                                                        }
+                                                    }
+                                                    other @ ErrorContext::None => other,
+                                                };
                                                 let action_result = ActionResult {
                                                     error: Some(
                                                         make_err!(
@@ -800,7 +816,7 @@ impl<'a, T: WorkerApiClientTrait + 'static, U: RunningActionsManager> LocalWorke
                                                             "{}",
                                                             e.message_string()
                                                         )
-                                                        .with_context(e.context.clone()),
+                                                        .with_context(context),
                                                     ),
                                                     ..ActionResult::default()
                                                 };
