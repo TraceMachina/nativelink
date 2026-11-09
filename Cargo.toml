@@ -32,6 +32,10 @@ strip = true
 [[bin]]
 name = "nativelink"
 
+[lib]
+name = "nativelink"
+path = "src/lib.rs"
+
 [features]
 nix = ["nativelink-worker/nix"]
 
@@ -90,6 +94,9 @@ tracing = { version = "0.1.41", default-features = false }
 
 [dev-dependencies]
 nativelink-macro = { path = "nativelink-macro" }
+reqwest = { version = "0.13.5", default-features = false, features = [
+  "rustls",
+] }
 tracing-test = { version = "0.2.5", default-features = false, features = [
   "no-env-filter",
 ] }
