@@ -194,6 +194,7 @@ async fn setup_api_server_with(
         None,
         None,
         None,
+        None, // worker_outcome_tripwire
         tasks_or_worker_change_notify,
         worker_timeout,
         60, // unacknowledged_kill_timeout_s
@@ -1390,6 +1391,7 @@ fn plain_scheduler(
         None,
         None,
         None,
+        None, // worker_outcome_tripwire
         Arc::new(Notify::new()),
         worker_timeout,
         60,

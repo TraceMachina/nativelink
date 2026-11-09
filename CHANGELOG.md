@@ -3,6 +3,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [unreleased]
+
+### Upgrade and rollback
+
+- `listener.http.tcp_nodelay` is opt-in and defaults to `false`. Older binaries
+  without this option, including v1.8.3, reject configs containing the field,
+  even when it is `false`. Config and chart templates must omit the field until
+  all consuming binaries support it. Before rolling back to an older binary,
+  remove the field entirely from its config.
+
 ## [1.8.3](https://github.com/TraceMachina/nativelink/compare/v1.8.2..v1.8.3) - 2026-10-28
 
 

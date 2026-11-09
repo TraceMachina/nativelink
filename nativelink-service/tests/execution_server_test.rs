@@ -592,6 +592,57 @@ async fn buck2_execution_scope_preserves_cache_key_and_isolates_invocations() ->
     Ok(())
 }
 
+// REv2 `Action.do_not_cache`: "the Action's result cannot be cached, and
+// in-flight requests for the same Action may not be merged". The scheduler
+// must therefore receive the action as `Uncacheable`, the qualifier that
+// skips the Action Cache lookup and the in-flight merge. Bazel sets it for
+// targets tagged `no-remote-cache`.
+#[nativelink_test]
+async fn do_not_cache_action_is_scheduled_uncacheable() -> Result<(), Error> {
+    let store_manager = make_store_manager().await?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+    let command_digest = serialize_and_upload_message(
+        &Command::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Sha256.hasher(),
+    )
+    .await?;
+
+    for do_not_cache in [false, true] {
+        let action_digest = upload_action(
+            &cas_store,
+            &Action {
+                command_digest: Some(command_digest.into()),
+                input_root_digest: Some(command_digest.into()),
+                do_not_cache,
+                ..Default::default()
+            },
+        )
+        .await?;
+        let (server, scheduler) = make_execution_server(&store_manager)?;
+        let state = MockActionStateResult {
+            states: vec![Arc::new(ActionState {
+                client_operation_id: OperationId::default(),
+                stage: ActionStage::Queued,
+                action_digest,
+                last_transition_timestamp: SystemTime::now(),
+            })],
+        };
+        let (response, (_, info)) = tokio::join!(
+            server.execute(Request::new(make_execute_request(action_digest))),
+            scheduler.expect_add_action(Ok(Box::new(state))),
+        );
+        assert!(response.is_ok());
+        assert_eq!(
+            matches!(info.unique_qualifier, ActionUniqueQualifier::Uncacheable(_)),
+            do_not_cache,
+            "do_not_cache={do_not_cache} gave {:?}",
+            info.unique_qualifier,
+        );
+    }
+    Ok(())
+}
+
 #[nativelink_test]
 async fn execute_missing_action_returns_precondition_failure()
 -> Result<(), Box<dyn core::error::Error>> {
