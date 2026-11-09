@@ -127,6 +127,60 @@ async fn add_missing_file_to_cache() -> Result<(), Error> {
     Ok(())
 }
 
+// An empty input file that is executable (an empty stub script or wrapper)
+// must keep its +x bit. The zero-digest shortcut used to write the file and
+// return before the executable handling, so it came out as a data file.
+#[cfg(unix)]
+#[nativelink_test]
+async fn empty_executable_input_keeps_its_executable_bit() -> Result<(), Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let slow_store = MemoryStore::new(&MemorySpec::default());
+    let file = |name: &str, is_executable: bool| FileNode {
+        name: name.to_string(),
+        digest: Some(empty_file_digest().into()),
+        is_executable,
+        node_properties: None,
+    };
+    let root = ProtoDirectory {
+        files: vec![file("empty_data", false), file("empty_tool", true)],
+        directories: vec![],
+        symlinks: vec![],
+        node_properties: None,
+    }
+    .encode_to_vec();
+    let root_digest = DigestInfo::new([0x5e; 32], root.len() as u64);
+    slow_store
+        .update_oneshot(root_digest, Bytes::from(root))
+        .await?;
+
+    let config = DirectoryCacheConfig {
+        cache_root: make_temp_path("directory_cache").into(),
+        ..Default::default()
+    };
+    let cache = DirectoryCache::new(config, make_cas_store(slow_store).await).await?;
+    let dest = PathBuf::from(make_temp_path("empty_executable_dest"));
+    cache.get_or_create(root_digest, &dest).await?;
+
+    let mode = |name: &str| {
+        std::fs::metadata(dest.join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+    };
+    assert_ne!(
+        mode("empty_tool") & 0o111,
+        0,
+        "the empty executable lost +x"
+    );
+    assert_eq!(
+        mode("empty_data") & 0o111,
+        0,
+        "the empty data file became executable"
+    );
+    Ok(())
+}
+
 async fn single_insert(config: DirectoryCacheConfig) -> Result<(), Error> {
     let digest1 = DigestInfo::new([1u8; 32], 5);
     let store = MemoryStore::new(&MemorySpec::default());
