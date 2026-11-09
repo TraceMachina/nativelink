@@ -218,6 +218,8 @@ async fn single_put_does_not_enable_aws_chunked_encoding() -> Result<(), Error> 
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
     assert_eq!(request.method(), "PUT");
+    assert_eq!(request.headers().get("content-length"), Some("5"));
+    assert!(request.headers().get("transfer-encoding").is_none());
     assert!(
         request
             .uri()
