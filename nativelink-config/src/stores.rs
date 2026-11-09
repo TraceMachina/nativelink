@@ -948,6 +948,38 @@ pub struct ExperimentalOciSpec {
     pub common: CommonObjectSpec,
 }
 
+/// Alibaba Cloud OSS through its S3-compatible API.
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
+pub struct ExperimentalOssSpec {
+    /// OSS region, for example `cn-hangzhou`. Used for AWS SigV4 signing
+    /// and to derive the default S3-compatible endpoint.
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub region: String,
+
+    /// Bucket name. Credentials come from the AWS SDK credential chain:
+    /// supply the OSS AccessKey using `AWS_ACCESS_KEY_ID` and
+    /// `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary keys).
+    #[serde(deserialize_with = "convert_string_with_shellexpand")]
+    pub bucket: String,
+
+    /// Optional HTTPS S3-compatible service endpoint, without a bucket or path.
+    /// Default: `https://s3.oss-{region}.aliyuncs.com`.
+    /// Native OSS REST endpoints are not interchangeable with this endpoint.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub endpoint: Option<String>,
+
+    /// Prefix prepended verbatim to each object key, for example `cas/`.
+    #[serde(default, deserialize_with = "convert_optional_string_with_shellexpand")]
+    pub key_prefix: Option<String>,
+
+    /// Retry policy for the shared S3 store. SDK retries are disabled to avoid
+    /// multiplying attempts. Default: the standard store retry policy.
+    #[serde(default)]
+    pub retry: Retry,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "dev-schema", derive(JsonSchema))]
@@ -1266,6 +1298,7 @@ pub enum ExperimentalCloudObjectSpec {
     Ontap(ExperimentalOntapS3Spec),
     R2(ExperimentalR2Spec),
     Oci(ExperimentalOciSpec),
+    Oss(ExperimentalOssSpec),
 }
 
 impl Default for ExperimentalCloudObjectSpec {

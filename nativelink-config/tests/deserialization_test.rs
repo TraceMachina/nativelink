@@ -796,3 +796,28 @@ fn http_listener_tcp_nodelay_defaults_and_overrides() {
         assert!(serde_json5::from_str::<HttpListener>(&input).is_err());
     }
 }
+
+#[test]
+fn oss_provider_accepts_minimal_config_and_rejects_unrelated_options() {
+    use nativelink_config::stores::{ExperimentalCloudObjectSpec, StoreSpec};
+    let config = r#"{"experimental_cloud_object_store":{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket"}}"#;
+    let parsed: StoreSpec = serde_json5::from_str(config).unwrap();
+    assert!(matches!(
+        parsed,
+        StoreSpec::ExperimentalCloudObjectStore(ExperimentalCloudObjectSpec::Oss(_))
+    ));
+    for field in [
+        "consider_expired_after_s",
+        "max_retry_buffer_per_request",
+        "max_concurrent_uploads",
+        "upload_queue_timeout_s",
+    ] {
+        let config = format!(
+            r#"{{"provider":"oss","region":"cn-hangzhou","bucket":"test-bucket","{field}":1}}"#
+        );
+        assert!(
+            serde_json5::from_str::<ExperimentalCloudObjectSpec>(&config).is_err(),
+            "unexpected OSS field accepted: {field}"
+        );
+    }
+}

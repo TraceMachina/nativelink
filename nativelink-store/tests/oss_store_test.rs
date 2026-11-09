@@ -1,0 +1,333 @@
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! OSS-specific config and S3 wire behavior. No real bucket or credentials required.
+
+use std::sync::Arc;
+
+use aws_sdk_s3::config::Credentials;
+use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
+use aws_smithy_types::body::SdkBody;
+use http::StatusCode;
+use nativelink_config::stores::{ExperimentalOssSpec, Retry};
+use nativelink_error::{Code, Error};
+use nativelink_macro::nativelink_test;
+use nativelink_store::oss_store::OssStore;
+use nativelink_store::s3_store::S3Store;
+use nativelink_util::buf_channel::make_buf_channel_pair;
+use nativelink_util::instant_wrapper::MockInstantWrapped;
+use nativelink_util::store_trait::{StoreKey, StoreLike, UploadSizeInfo};
+
+const HOST: &str = "test-bucket.s3.oss-cn-hangzhou.aliyuncs.com";
+const NOW: fn() -> MockInstantWrapped = MockInstantWrapped::default;
+
+fn spec() -> ExperimentalOssSpec {
+    ExperimentalOssSpec {
+        region: "cn-hangzhou".into(),
+        bucket: "test-bucket".into(),
+        key_prefix: Some("cas/".into()),
+        retry: Retry {
+            max_retries: 1,
+            delay: 0.0,
+            jitter: 0.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn store(mock: StaticReplayClient) -> Result<Arc<S3Store<fn() -> MockInstantWrapped>>, Error> {
+    OssStore::new_with_http_client(
+        &spec(),
+        mock,
+        Credentials::new("TESTKEY", "TESTSECRET", None, None, "test"),
+        NOW,
+    )
+}
+
+fn event(status: StatusCode, body: &'static str) -> ReplayEvent {
+    ReplayEvent::new(
+        http::Request::builder().body(SdkBody::empty()).unwrap(),
+        http::Response::builder()
+            .status(status)
+            .body(SdkBody::from(body))
+            .unwrap(),
+    )
+}
+
+#[test]
+fn endpoint_and_minimal_settings() -> Result<(), Error> {
+    assert_eq!(
+        OssStore::endpoint(&spec())?,
+        "https://s3.oss-cn-hangzhou.aliyuncs.com"
+    );
+    let aws = OssStore::build_aws_spec(&spec())?;
+    assert_eq!(aws.region, "cn-hangzhou");
+    assert_eq!(aws.bucket, "test-bucket");
+    assert_eq!(aws.common.key_prefix.as_deref(), Some("cas/"));
+    assert_eq!(aws.common.retry.max_retries, 1);
+    assert_eq!(aws.common.consider_expired_after_s, 0);
+    Ok(())
+}
+
+#[test]
+fn rejects_invalid_config_without_echoing_endpoint_credentials() {
+    for endpoint in [
+        "http://example.com",
+        "https://user:secret@example.com",
+        "https://example.com/bucket",
+        "https://example.com/?secret=hidden",
+        "https://example.com/#fragment",
+        "not a url",
+    ] {
+        let err = OssStore::build_aws_spec(&ExperimentalOssSpec {
+            endpoint: Some(endpoint.into()),
+            ..spec()
+        })
+        .unwrap_err();
+        assert_eq!(err.code, Code::InvalidArgument);
+        assert!(!err.to_string().contains("hidden"));
+        assert!(!err.to_string().contains("secret@example"));
+    }
+    for bucket in [
+        "",
+        "ab",
+        "Uppercase",
+        "with.dot",
+        "with/slash",
+        "-leading",
+        "trailing-",
+    ] {
+        assert_eq!(
+            OssStore::build_aws_spec(&ExperimentalOssSpec {
+                bucket: bucket.into(),
+                ..spec()
+            })
+            .unwrap_err()
+            .code,
+            Code::InvalidArgument
+        );
+    }
+    for region in ["", "../region", "region/", "region?token=hidden"] {
+        assert_eq!(
+            OssStore::build_aws_spec(&ExperimentalOssSpec {
+                region: region.into(),
+                ..spec()
+            })
+            .unwrap_err()
+            .code,
+            Code::InvalidArgument
+        );
+    }
+}
+
+#[nativelink_test]
+async fn head_uses_virtual_host_prefix_and_signing_region() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![ReplayEvent::new(
+        http::Request::builder().body(SdkBody::empty()).unwrap(),
+        http::Response::builder()
+            .status(StatusCode::OK)
+            .header("content-length", "17")
+            .body(SdkBody::empty())
+            .unwrap(),
+    )]);
+    assert_eq!(
+        store(mock.clone())?.has(StoreKey::new_str("key")).await?,
+        Some(17)
+    );
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method(), "HEAD");
+    assert_eq!(requests[0].uri(), format!("https://{HOST}/cas/key"));
+    assert!(
+        requests[0]
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .contains("/cn-hangzhou/s3/aws4_request")
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn head_missing_is_a_cache_miss() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![event(StatusCode::NOT_FOUND, "")]);
+    assert_eq!(store(mock)?.has(StoreKey::new_str("missing")).await?, None);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn get_missing_reports_not_found() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![event(
+        StatusCode::NOT_FOUND,
+        "<Error><Code>NoSuchKey</Code></Error>",
+    )]);
+    let err = store(mock)?
+        .get_part_unchunked(StoreKey::new_str("missing"), 0, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, Code::NotFound);
+    Ok(())
+}
+
+#[nativelink_test]
+async fn ranged_get_and_encoded_key_use_oss_endpoint() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![event(StatusCode::PARTIAL_CONTENT, "bcd")]);
+    let bytes = store(mock.clone())?
+        .get_part_unchunked(StoreKey::new_str("a b?c"), 1, Some(3))
+        .await?;
+    assert_eq!(bytes, "bcd");
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert!(
+        requests[0]
+            .uri()
+            .starts_with(&format!("https://{HOST}/cas/a%20b%3Fc"))
+    );
+    // The shared S3 store requests an inclusive extra byte then caps delivery.
+    assert_eq!(requests[0].headers().get("range"), Some("bytes=1-4"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn single_put_does_not_enable_aws_chunked_encoding() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![event(StatusCode::OK, "")]);
+    store(mock.clone())?
+        .update_oneshot(StoreKey::new_str("key"), "hello".into())
+        .await?;
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.method(), "PUT");
+    assert!(
+        request
+            .uri()
+            .starts_with(&format!("https://{HOST}/cas/key"))
+    );
+    assert_ne!(
+        request.headers().get("content-encoding"),
+        Some("aws-chunked")
+    );
+    assert!(
+        !request
+            .headers()
+            .get("x-amz-content-sha256")
+            .unwrap_or_default()
+            .contains("STREAMING")
+    );
+    assert!(
+        request
+            .headers()
+            .get("x-amz-sdk-checksum-algorithm")
+            .is_none()
+    );
+    Ok(())
+}
+
+#[nativelink_test]
+async fn multipart_upload_initiates_uploads_and_completes() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![
+        event(
+            StatusCode::OK,
+            "<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+        ),
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .header("etag", "part-etag")
+                .body(SdkBody::empty())
+                .unwrap(),
+        ),
+        event(
+            StatusCode::OK,
+            "<CompleteMultipartUploadResult><ETag>object-etag</ETag></CompleteMultipartUploadResult>",
+        ),
+    ]);
+    let store = store(mock.clone())?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    let upload = store.update(StoreKey::new_str("key"), rx, UploadSizeInfo::MaxSize(10));
+    let send = async {
+        tx.send("hello".into()).await?;
+        tx.send_eof()
+    };
+    let (written, ()) = futures::try_join!(upload, send)?;
+    assert_eq!(written, 5);
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].method(), "POST");
+    assert!(requests[0].uri().contains("uploads"));
+    assert_eq!(requests[1].method(), "PUT");
+    assert!(requests[1].uri().contains("partNumber=1"));
+    assert!(requests[1].uri().contains("uploadId=upload-1"));
+    assert_eq!(requests[2].method(), "POST");
+    assert!(requests[2].uri().contains("uploadId=upload-1"));
+    Ok(())
+}
+
+#[nativelink_test]
+async fn multipart_size_error_aborts_without_publishing() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![
+        event(
+            StatusCode::OK,
+            "<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>",
+        ),
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .header("etag", "part-etag")
+                .body(SdkBody::empty())
+                .unwrap(),
+        ),
+        event(StatusCode::NO_CONTENT, ""),
+    ]);
+    let store = store(mock.clone())?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    let upload = store.update(StoreKey::new_str("key"), rx, UploadSizeInfo::MaxSize(2));
+    let send = async {
+        tx.send("hello".into()).await?;
+        tx.send_eof()
+    };
+    let (written, sent) = tokio::join!(upload, send);
+    sent?;
+    assert_eq!(written.unwrap_err().code, Code::InvalidArgument);
+    let requests: Vec<_> = mock.actual_requests().collect();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[2].method(), "DELETE");
+    Ok(())
+}
+
+#[nativelink_test]
+async fn transient_head_retries_through_shared_store() -> Result<(), Error> {
+    let mock = StaticReplayClient::new(vec![
+        event(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "<Error><Code>ServiceUnavailable</Code></Error>",
+        ),
+        ReplayEvent::new(
+            http::Request::builder().body(SdkBody::empty()).unwrap(),
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .header("content-length", "5")
+                .body(SdkBody::empty())
+                .unwrap(),
+        ),
+    ]);
+    assert_eq!(
+        store(mock.clone())?.has(StoreKey::new_str("key")).await?,
+        Some(5)
+    );
+    assert_eq!(mock.actual_requests().count(), 2);
+    Ok(())
+}
