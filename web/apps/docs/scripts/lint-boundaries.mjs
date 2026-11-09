@@ -26,7 +26,7 @@
 // call to action with extra steps.
 //
 // Usage, from web/:
-//   bun --filter @nativelink/docs lint:boundaries
+//   pnpm run --filter @nativelink/docs lint:boundaries
 // or directly:
 //   node scripts/lint-boundaries.mjs
 //

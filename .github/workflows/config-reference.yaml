@@ -85,7 +85,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun install && bun --filter @nativelink/docs gen:config-reference ${{ steps.resolve.outputs.tag }}
+            pnpm install && pnpm run --filter @nativelink/docs gen:config-reference ${{ steps.resolve.outputs.tag }}
           "
 
       - name: Lint generated docs

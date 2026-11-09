@@ -8,6 +8,7 @@
     "forceConsistentCasingInFileNames": true,
     "incremental": true,
     "isolatedModules": true,
+    "jsx": "react-jsx",
     "lib": [
       "ES2022"
     ],
