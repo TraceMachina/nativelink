@@ -124,6 +124,12 @@ the advertised limit send anything larger through ByteStream.
 
 ## Wire-level details worth knowing [#wire-level-details-worth-knowing]
 
+**Batch RPCs report errors per blob.** In `BatchUpdateBlobs` and
+`BatchReadBlobs`, a malformed digest, a size mismatch or a failed
+decompression becomes that entry's status, and the other blobs in the batch
+are processed normally. An unsupported compressor still fails the whole
+request.
+
 **ByteStream resource names are parsed right to left.** A resource name is
 `{instance_name}/blobs/{hash}/{size}`, and the instance name may itself
 contain slashes, so left-to-right parsing cannot find the boundary, while

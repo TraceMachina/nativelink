@@ -636,6 +636,99 @@ async fn get_tree_read_directories_with_paging() -> Result<(), Box<dyn core::err
     Ok(())
 }
 
+// REv2 BatchUpdateBlobs lists `INVALID_ARGUMENT` ("The Digest does not match
+// the provided data") among the errors of *individual* requests, and
+// BatchReadBlobs says "Every error on individual read will be returned in the
+// corresponding digest status". A bad entry must therefore get its own status
+// and leave the other entries in the batch alone.
+#[nativelink_test]
+async fn batch_errors_are_reported_per_blob() -> Result<(), Box<dyn core::error::Error>> {
+    const VALUE1: &str = "1";
+
+    let store_manager = make_store_manager().await?;
+    let cas_server = make_cas_server(&store_manager)?;
+    let good = Digest {
+        hash: HASH1.to_string(),
+        size_bytes: 1,
+    };
+    // The data is one byte, but the digest claims five.
+    let size_mismatch = Digest {
+        hash: HASH2.to_string(),
+        size_bytes: 5,
+    };
+    let malformed = Digest {
+        hash: "not-a-hash".to_string(),
+        size_bytes: 1,
+    };
+
+    let mut update = cas_server
+        .batch_update_blobs(Request::new(BatchUpdateBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            requests: vec![
+                batch_update_blobs_request::Request {
+                    digest: Some(good.clone()),
+                    data: VALUE1.into(),
+                    compressor: compressor::Value::Identity.into(),
+                },
+                batch_update_blobs_request::Request {
+                    digest: Some(size_mismatch.clone()),
+                    data: VALUE1.into(),
+                    compressor: compressor::Value::Identity.into(),
+                },
+            ],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner()
+        .responses;
+    update.sort_by_key(|r| r.digest.as_ref().map(|d| d.size_bytes));
+    let codes: Vec<_> = update
+        .iter()
+        .map(|r| (r.digest.clone(), r.status.as_ref().map(|s| s.code)))
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            (Some(good.clone()), Some(Code::Ok as i32)),
+            (Some(size_mismatch), Some(Code::InvalidArgument as i32)),
+        ]
+    );
+
+    let mut read = cas_server
+        .batch_read_blobs(Request::new(BatchReadBlobsRequest {
+            instance_name: INSTANCE_NAME.to_string(),
+            digests: vec![good.clone(), malformed.clone()],
+            acceptable_compressors: vec![],
+            digest_function: digest_function::Value::Sha256.into(),
+        }))
+        .await?
+        .into_inner()
+        .responses;
+    read.sort_by_key(|r| r.digest.as_ref().map(|d| d.hash.clone()));
+    let codes: Vec<_> = read
+        .iter()
+        .map(|r| {
+            (
+                r.digest.clone(),
+                r.status.as_ref().map(|s| s.code),
+                r.data.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        codes,
+        vec![
+            (Some(good), Some(Code::Ok as i32), Bytes::from(VALUE1)),
+            (
+                Some(malformed),
+                Some(Code::InvalidArgument as i32),
+                Bytes::new()
+            ),
+        ]
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 async fn batch_update_blobs_two_items_existence_with_third_missing()
 -> Result<(), Box<dyn core::error::Error>> {
