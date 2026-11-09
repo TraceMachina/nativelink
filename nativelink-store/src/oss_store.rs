@@ -145,6 +145,13 @@ impl OssStore {
         {
             return Err(make_err!(Code::InvalidArgument, "Invalid OSS bucket name"));
         }
+        let concurrency = spec.multipart_max_concurrent_uploads.unwrap_or(2);
+        if concurrency == 0 || concurrency > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "Invalid OSS multipart concurrency"
+            ));
+        }
         Self::endpoint(spec)?;
         Ok(ExperimentalAwsSpec {
             region: spec.region.clone(),
@@ -152,6 +159,7 @@ impl OssStore {
             common: CommonObjectSpec {
                 key_prefix: spec.key_prefix.clone(),
                 retry: spec.retry.clone(),
+                multipart_max_concurrent_uploads: Some(concurrency),
                 ..Default::default()
             },
             ..Default::default()

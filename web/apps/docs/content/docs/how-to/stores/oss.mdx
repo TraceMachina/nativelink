@@ -59,8 +59,10 @@ These timeouts do not impose an overall upload or download deadline.
 
 Uploads and downloads use the existing S3 transfer implementation, including
 multipart uploads and transfer size validation. Its buffering and concurrency
-behavior is inherited; this adapter does not provide a global byte budget or
-upload admission queue. There are no OSS-specific spool, TTL, or read-proxy
+behavior is inherited. `multipart_max_concurrent_uploads` bounds both queued
+parts and concurrent part requests per upload (default: 2). Part sizes depend
+on the declared upload size. This adapter does not provide a global byte budget
+or upload admission queue. There are no OSS-specific spool, TTL, or read-proxy
 settings. To expire cached objects, configure bucket lifecycle rules separately.
 
 ## Verify [#verify]

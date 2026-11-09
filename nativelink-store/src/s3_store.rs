@@ -480,8 +480,8 @@ where
         }
 
         let upload_parts = move || async move {
-            // This will ensure we only have `multipart_max_concurrent_uploads` * `bytes_per_upload_part`
-            // bytes in memory at any given time waiting to be uploaded.
+            // Bound both queued parts and in-flight requests so a fast source
+            // cannot buffer an entire object behind a slow backend.
             let (tx, mut rx) = mpsc::channel(self.multipart_max_concurrent_uploads);
 
             let read_stream_fut = async move {
@@ -563,7 +563,7 @@ where
                         total_uploaded = result?;
                     }, // Return error or wait for other futures.
                     Some(upload_result) = upload_futures.next() => completed_parts.push(upload_result?),
-                    Some(fut) = rx.recv() => upload_futures.push(fut),
+                    Some(fut) = rx.recv(), if upload_futures.len() < self.multipart_max_concurrent_uploads => upload_futures.push(fut),
                 }
             }
 

@@ -978,6 +978,15 @@ pub struct ExperimentalOssSpec {
     /// multiplying attempts. Default: the standard store retry policy.
     #[serde(default)]
     pub retry: Retry,
+
+    /// Maximum concurrent part requests per upload. Must be positive.
+    /// Default: 2. Queued parts are bounded by the same count; this is not
+    /// a global byte budget. Part size is chosen by the shared S3 store.
+    #[serde(
+        default,
+        deserialize_with = "convert_optional_numeric_with_shellexpand"
+    )]
+    pub multipart_max_concurrent_uploads: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

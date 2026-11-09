@@ -78,6 +78,7 @@ fn endpoint_and_minimal_settings() -> Result<(), Error> {
     assert_eq!(aws.common.key_prefix.as_deref(), Some("cas/"));
     assert_eq!(aws.common.retry.max_retries, 1);
     assert_eq!(aws.common.consider_expired_after_s, 0);
+    assert_eq!(aws.common.multipart_max_concurrent_uploads, Some(2));
     Ok(())
 }
 
@@ -100,6 +101,15 @@ fn rejects_invalid_config_without_echoing_endpoint_credentials() {
         assert!(!err.to_string().contains("hidden"));
         assert!(!err.to_string().contains("secret@example"));
     }
+    assert_eq!(
+        OssStore::build_aws_spec(&ExperimentalOssSpec {
+            multipart_max_concurrent_uploads: Some(0),
+            ..spec()
+        })
+        .unwrap_err()
+        .code,
+        Code::InvalidArgument
+    );
     for bucket in [
         "",
         "ab",
@@ -404,5 +414,105 @@ async fn exact_size_error_does_not_publish_an_object() -> Result<(), Error> {
     sent?;
     assert_eq!(written.unwrap_err().code, Code::InvalidArgument);
     assert_eq!(mock.actual_requests().count(), 0);
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct GatedPartClient {
+    gate: Arc<tokio::sync::Semaphore>,
+    started: Arc<tokio::sync::Notify>,
+    active: Arc<std::sync::atomic::AtomicUsize>,
+    peak: Arc<std::sync::atomic::AtomicUsize>,
+    parts: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl aws_smithy_runtime_api::client::http::HttpConnector for GatedPartClient {
+    fn call(
+        &self,
+        request: aws_smithy_runtime_api::client::orchestrator::HttpRequest,
+    ) -> aws_smithy_runtime_api::client::http::HttpConnectorFuture {
+        use std::sync::atomic::Ordering;
+        let client = self.clone();
+        aws_smithy_runtime_api::client::http::HttpConnectorFuture::new(async move {
+            let response = if request.uri().contains("partNumber=") {
+                client.parts.fetch_add(1, Ordering::SeqCst);
+                let active = client.active.fetch_add(1, Ordering::SeqCst) + 1;
+                client.peak.fetch_max(active, Ordering::SeqCst);
+                client.started.notify_one();
+                client.gate.acquire().await.unwrap().forget();
+                client.active.fetch_sub(1, Ordering::SeqCst);
+                http::Response::builder()
+                    .header("etag", "part-etag")
+                    .body(SdkBody::empty())
+                    .unwrap()
+            } else if request.uri().contains("uploads") {
+                http::Response::builder().body(SdkBody::from("<InitiateMultipartUploadResult><UploadId>upload-1</UploadId></InitiateMultipartUploadResult>")).unwrap()
+            } else {
+                http::Response::builder().body(SdkBody::from("<CompleteMultipartUploadResult><ETag>object-etag</ETag></CompleteMultipartUploadResult>")).unwrap()
+            };
+            Ok(response.try_into().unwrap())
+        })
+    }
+}
+
+impl aws_smithy_runtime_api::client::http::HttpClient for GatedPartClient {
+    fn http_connector(
+        &self,
+        _: &aws_smithy_runtime_api::client::http::HttpConnectorSettings,
+        _: &aws_smithy_runtime_api::client::runtime_components::RuntimeComponents,
+    ) -> aws_smithy_runtime_api::client::http::SharedHttpConnector {
+        aws_smithy_runtime_api::client::http::SharedHttpConnector::new(self.clone())
+    }
+}
+
+#[nativelink_test]
+async fn slow_backend_bounds_in_flight_multipart_requests() -> Result<(), Error> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const PARTS: usize = 12;
+    const PART_BYTES: usize = 5 * 1024 * 1024;
+    let client = GatedPartClient {
+        gate: Arc::new(tokio::sync::Semaphore::new(0)),
+        started: Arc::new(tokio::sync::Notify::new()),
+        active: Arc::new(AtomicUsize::new(0)),
+        peak: Arc::new(AtomicUsize::new(0)),
+        parts: Arc::new(AtomicUsize::new(0)),
+    };
+    let store = OssStore::new_with_http_client(
+        &spec(),
+        client.clone(),
+        Credentials::new("TESTKEY", "TESTSECRET", None, None, "test"),
+        NOW,
+    )?;
+    let (mut tx, rx) = make_buf_channel_pair();
+    let upload = tokio::spawn(async move {
+        store
+            .update(
+                StoreKey::new_str("key"),
+                rx,
+                UploadSizeInfo::ExactSize((PARTS * PART_BYTES) as u64),
+            )
+            .await
+    });
+    let send = tokio::spawn(async move {
+        let chunk = bytes::Bytes::from(vec![1; PART_BYTES]);
+        for _ in 0..PARTS {
+            tx.send(chunk.clone()).await?;
+        }
+        tx.send_eof()
+    });
+    client.started.notified().await;
+    // Give the producer and upload loop opportunities to fill the limit while
+    // the connector deliberately keeps all part requests pending.
+    for _ in 0..1024 {
+        tokio::task::yield_now().await;
+    }
+    let peak_while_blocked = client.peak.load(Ordering::SeqCst);
+    client.gate.add_permits(PARTS);
+    let written = upload.await.unwrap()?;
+    send.await.unwrap()?;
+    assert_eq!(written, (PARTS * PART_BYTES) as u64);
+    assert_eq!(client.parts.load(Ordering::SeqCst), PARTS);
+    assert!(peak_while_blocked > 0 && peak_while_blocked <= 2);
+    assert!(client.peak.load(Ordering::SeqCst) <= 2);
     Ok(())
 }
