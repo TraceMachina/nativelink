@@ -105,6 +105,7 @@ fn make_missing_blob_error(digest: &DigestInfo) -> Error {
     .with_context(ErrorContext::MissingDigest {
         hash: digest.packed_hash().to_string(),
         size: digest.size_bytes().try_into().unwrap_or(i64::MAX),
+        digest_function: None,
     })
 }
 
@@ -243,9 +244,53 @@ fn missing_blob_survives_a_forwarding_hop() {
         ErrorContext::MissingDigest {
             hash: digest.packed_hash().to_string(),
             size: i64::try_from(digest.size_bytes()).unwrap(),
+            digest_function: None,
         },
         "the missing digest must be read back from the PreconditionFailure detail",
     );
     let to_client = to_execute_response(result);
     assert_missing_blob_status(&to_client.status.expect("status must be set"), &digest);
+}
+
+/// REv2 omits the digest function from a `MISSING` subject only for
+/// functions identifiable by hash length (SHA256 among them). BLAKE3 has a
+/// SHA256-length hash, so its subject must say `blobs/blake3/...`. The
+/// segment also has to survive the forwarding hop, or the client would be
+/// told to upload a SHA256 blob that never existed.
+#[nativelink_test]
+fn blake3_missing_blob_subject_names_the_digest_function() {
+    let digest = missing_digest();
+    let mut error = make_missing_blob_error(&digest);
+    error.context = ErrorContext::MissingDigest {
+        hash: digest.packed_hash().to_string(),
+        size: i64::try_from(digest.size_bytes()).unwrap(),
+        digest_function: Some("blake3".to_string()),
+    };
+    let from_scheduler = to_execute_response(action_result_with_error(Some(error)));
+    let status = from_scheduler.status.clone().expect("status must be set");
+    let failure = PreconditionFailure::decode(&*status.details[0].value)
+        .expect("the detail is a PreconditionFailure");
+    assert_eq!(
+        failure.violations[0].subject,
+        format!(
+            "blobs/blake3/{}/{}",
+            digest.packed_hash(),
+            digest.size_bytes()
+        ),
+    );
+
+    let ActionStage::Completed(result) =
+        ActionStage::try_from(from_scheduler).expect("a scheduler response converts")
+    else {
+        panic!("a finished response is a completed stage");
+    };
+    assert_eq!(
+        result.error.expect("the error survives").context,
+        ErrorContext::MissingDigest {
+            hash: digest.packed_hash().to_string(),
+            size: i64::try_from(digest.size_bytes()).unwrap(),
+            digest_function: Some("blake3".to_string()),
+        },
+        "the digest function must be read back from the subject",
+    );
 }

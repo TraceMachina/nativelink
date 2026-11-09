@@ -702,6 +702,57 @@ async fn execute_missing_command_returns_precondition_failure()
     Ok(())
 }
 
+// REv2 (remote_execution.proto, Execution.Execute): the MISSING subject is
+// `blobs/{digest_function/}{hash}/{size}`, and the digest function may only
+// be omitted for MD5, MURMUR3, SHA1, SHA256, SHA384, SHA512 or VSO. A BLAKE3
+// hash has the same length as a SHA256 one, so leaving it out would tell
+// the client to upload a SHA256 blob.
+#[nativelink_test]
+async fn execute_missing_blake3_command_names_the_digest_function()
+-> Result<(), Box<dyn core::error::Error>> {
+    let store_manager = make_store_manager().await?;
+    let (execution_server, _) = make_execution_server(&store_manager)?;
+    let cas_store = store_manager.get_store("main_cas").unwrap();
+
+    let command_digest = make_fake_digest(0xc2, 8);
+    let input_root_digest = serialize_and_upload_message(
+        &Action::default(),
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Blake3.hasher(),
+    )
+    .await?;
+    let action = Action {
+        command_digest: Some(command_digest.into()),
+        input_root_digest: Some(input_root_digest.into()),
+        ..Default::default()
+    };
+    let action_digest = serialize_and_upload_message(
+        &action,
+        cas_store.as_pin(),
+        &mut DigestHasherFunc::Blake3.hasher(),
+    )
+    .await?;
+
+    let mut request = make_execute_request(action_digest);
+    request.digest_function = digest_function::Value::Blake3.into();
+    let Err(status) = execution_server.execute(Request::new(request)).await else {
+        panic!("execute should fail when command_digest is missing");
+    };
+
+    assert_eq!(status.code(), TonicCode::FailedPrecondition);
+    let pf = decode_precondition_failure(&status)?;
+    assert_eq!(pf.violations.len(), 1);
+    assert_eq!(
+        pf.violations[0].subject,
+        format!(
+            "blobs/blake3/{}/{}",
+            command_digest.packed_hash(),
+            command_digest.size_bytes()
+        ),
+    );
+    Ok(())
+}
+
 #[nativelink_test]
 async fn execute_missing_input_root_returns_precondition_failure()
 -> Result<(), Box<dyn core::error::Error>> {
@@ -937,6 +988,7 @@ async fn missing_input_drops_the_blob_from_the_existence_cache()
     error.context = ErrorContext::MissingDigest {
         hash: digest.packed_hash().to_string(),
         size: 3,
+        digest_function: None,
     };
     let failed = Arc::new(ActionState {
         client_operation_id: OperationId::from("some_operation_id"),

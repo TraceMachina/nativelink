@@ -24,7 +24,7 @@ use bytes::Bytes;
 use futures::stream::unfold;
 use futures::{Stream, StreamExt};
 use nativelink_config::cas_server::{ExecutionConfig, InstanceName, WithInstanceName};
-use nativelink_error::{Error, ErrorContext, ResultExt, make_input_err};
+use nativelink_error::{Error, ErrorContext, ResultExt, make_input_err, missing_blob_subject};
 use nativelink_proto::build::bazel::remote::execution::v2::execution_server::{
     Execution, ExecutionServer as Server,
 };
@@ -78,7 +78,7 @@ async fn forget_missing_input(cas_store: &Store, stage: &ActionStage) {
     let ActionStage::Completed(result) = stage else {
         return;
     };
-    let Some(ErrorContext::MissingDigest { hash, size }) =
+    let Some(ErrorContext::MissingDigest { hash, size, .. }) =
         result.error.as_ref().map(|err| &err.context)
     else {
         return;
@@ -116,6 +116,7 @@ enum ExecuteOutcome<S> {
 /// surfacing, so Bazel retries either way.
 fn missing_blobs_failed_precondition(
     missing: &[(DigestInfo, &'static str)],
+    digest_function: DigestHasherFunc,
     summary: &str,
 ) -> Status {
     let pf = PreconditionFailure {
@@ -123,10 +124,13 @@ fn missing_blobs_failed_precondition(
             .iter()
             .map(|(d, ctx)| precondition_failure::Violation {
                 r#type: common::VIOLATION_TYPE_MISSING.to_string(),
-                // Per REv2, the subject for a missing-blob violation is
-                // `blobs/<hash>/<size>` so the client knows exactly
-                // which digest to re-upload.
-                subject: format!("blobs/{}/{}", d.packed_hash(), d.size_bytes()),
+                // Per REv2, the subject is `blobs/{digest_function/}{hash}/{size}`
+                // so the client knows exactly which digest to re-upload.
+                subject: missing_blob_subject(
+                    digest_function.resource_name_segment(),
+                    &d.packed_hash().to_string(),
+                    i64::try_from(d.size_bytes()).unwrap_or(i64::MAX),
+                ),
                 description: (*ctx).to_string(),
             })
             .collect(),
@@ -626,6 +630,11 @@ impl ExecutionServer {
         )
         .err_tip(|| "Failed to unwrap action cache")?;
 
+        let digest_function: DigestHasherFunc = request
+            .digest_function
+            .try_into()
+            .err_tip(|| "Could not convert digest function in inner_execute()")?;
+
         let priority = request
             .execution_policy
             .map_or(DEFAULT_EXECUTION_PRIORITY, |p| p.priority);
@@ -645,6 +654,7 @@ impl ExecutionServer {
                 );
                 return Ok(ExecuteOutcome::Reject(missing_blobs_failed_precondition(
                     &[(digest, "Action")],
+                    digest_function,
                     &summary,
                 )));
             }
@@ -699,7 +709,9 @@ impl ExecutionServer {
                     digest,
                 );
                 return Ok(ExecuteOutcome::Reject(missing_blobs_failed_precondition(
-                    &missing, &summary,
+                    &missing,
+                    digest_function,
+                    &summary,
                 )));
             }
         }
@@ -711,10 +723,7 @@ impl ExecutionServer {
                 action,
                 priority,
                 request.skip_cache_lookup,
-                request
-                    .digest_function
-                    .try_into()
-                    .err_tip(|| "Could not convert digest function in inner_execute()")?,
+                digest_function,
             )
             .await?;
 
