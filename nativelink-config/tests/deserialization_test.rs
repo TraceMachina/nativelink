@@ -778,9 +778,9 @@ mod persistent_worker_tests {
     use nativelink_config::cas_server::PersistentWorkersConfig;
 
     #[test]
-    fn isolate_by_instance_name_defaults_to_true() {
+    fn isolate_by_instance_name_defaults_to_false() {
         let config: PersistentWorkersConfig = serde_json5::from_str("{}").unwrap();
-        assert!(config.isolate_by_instance_name); // isolation by instance name should be the default behavior
+        assert!(!config.isolate_by_instance_name); // default behavior: don't isolation by instance name
     }
 
     #[test]

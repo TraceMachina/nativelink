@@ -169,7 +169,7 @@ impl Default for PoolConfig {
             shutdown_grace: Duration::from_secs(5),
             acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
             namespaced: false,
-            isolate_by_instance_name: true,
+            isolate_by_instance_name: false,
         }
     }
 }

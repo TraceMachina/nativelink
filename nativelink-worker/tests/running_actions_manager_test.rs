@@ -9824,7 +9824,7 @@ done
         assert_eq!(first, "1");
         assert_eq!(
             second, "2",
-            "Action with different instance_name should inherit the state of the already-running persistent worker when isolate_by_instance_name is false)"
+            "Action with different instance_name should inherit the state of the already-running persistent worker when isolate_by_instance_name is false"
         );
         assert_eq!(
             third, "3",
