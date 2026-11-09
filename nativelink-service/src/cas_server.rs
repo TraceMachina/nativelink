@@ -341,16 +341,29 @@ impl CasServer {
         let remote_cache_compression_enabled = self
             .remote_cache_compression_instances
             .enabled_for(instance_name);
+        // An unsupported compressor is about how the client talks to this
+        // instance, not about one blob, so it still fails the whole request.
+        for blob_request in &request.requests {
+            crate::wire_compression::validate_batch_update_compressor(
+                blob_request.compressor,
+                remote_cache_compression_enabled,
+            )?;
+        }
+        // REv2 BatchUpdateBlobs: individual requests return their own status,
+        // `INVALID_ARGUMENT` "The Digest does not match the provided data"
+        // among them, so a malformed or mismatched blob must not fail the
+        // blobs uploaded alongside it.
         let update_futures: FuturesUnordered<_> = request
             .requests
             .into_iter()
-            .map(|request| {
-                async move {
-                    let digest = request
-                        .digest
-                        .clone()
-                        .ok_or_else(|| make_input_err!("Digest not found in request"))?;
-                    let digest_info = DigestInfo::try_from(digest.clone())?;
+            .map(|request| async move {
+                let digest = request.digest.clone();
+                let result = async {
+                    let digest_info = DigestInfo::try_from(
+                        digest
+                            .clone()
+                            .ok_or_else(|| make_input_err!("Digest not found in request"))?,
+                    )?;
                     let size_bytes = usize::try_from(digest_info.size_bytes())
                         .err_tip(|| "Digest size_bytes was not convertible to usize")?;
 
@@ -363,7 +376,7 @@ impl CasServer {
                     .await?;
                     // Apply a per-blob deadline so one slow upload does not
                     // make the whole batch hit the client's overall deadline.
-                    let result = match tokio::time::timeout(
+                    match tokio::time::timeout(
                         BATCH_PER_BLOB_TIMEOUT,
                         store_ref.update_oneshot(digest_info, store_data),
                     )
@@ -376,17 +389,18 @@ impl CasServer {
                             BATCH_PER_BLOB_TIMEOUT.as_secs(),
                             digest_info,
                         )),
-                    };
-                    Ok::<_, Error>(batch_update_blobs_response::Response {
-                        digest: Some(digest),
-                        status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
-                    })
+                    }
+                }
+                .await;
+                batch_update_blobs_response::Response {
+                    digest,
+                    status: Some(result.map_or_else(Into::into, |()| GrpcStatus::default())),
                 }
             })
             .collect();
         let responses = update_futures
-            .try_collect::<Vec<batch_update_blobs_response::Response>>()
-            .await?;
+            .collect::<Vec<batch_update_blobs_response::Response>>()
+            .await;
 
         Ok(Response::new(BatchUpdateBlobsResponse { responses }))
     }
@@ -424,24 +438,30 @@ impl CasServer {
             .into_iter()
             .map(|digest| {
                 async move {
-                    let digest_copy = DigestInfo::try_from(digest.clone())?;
                     // TODO(palfrey) There is a security risk here of someone taking all the memory on the instance.
-                    // Apply a per-blob deadline so one slow read does not
-                    // make the whole batch hit the client's overall deadline.
-                    let result = match tokio::time::timeout(
-                        BATCH_PER_BLOB_TIMEOUT,
-                        store_ref.get_part_unchunked(digest_copy, 0, None),
-                    )
-                    .await
-                    {
-                        Ok(r) => r.err_tip(|| "Error reading from store"),
-                        Err(_elapsed) => Err(make_err!(
-                            Code::DeadlineExceeded,
-                            "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
-                            BATCH_PER_BLOB_TIMEOUT.as_secs(),
-                            digest_copy,
-                        )),
-                    };
+                    // REv2 BatchReadBlobs: "Every error on individual read
+                    // will be returned in the corresponding digest status",
+                    // a malformed digest included.
+                    let result = async {
+                        let digest_copy = DigestInfo::try_from(digest.clone())?;
+                        // Apply a per-blob deadline so one slow read does not
+                        // make the whole batch hit the client's overall deadline.
+                        match tokio::time::timeout(
+                            BATCH_PER_BLOB_TIMEOUT,
+                            store_ref.get_part_unchunked(digest_copy, 0, None),
+                        )
+                        .await
+                        {
+                            Ok(r) => r.err_tip(|| "Error reading from store"),
+                            Err(_elapsed) => Err(make_err!(
+                                Code::DeadlineExceeded,
+                                "BatchReadBlobs per-blob timeout ({} s) elapsed for digest {}",
+                                BATCH_PER_BLOB_TIMEOUT.as_secs(),
+                                digest_copy,
+                            )),
+                        }
+                    }
+                    .await;
                     let (status, data, response_compressor) = match result {
                         Ok(raw_data) => {
                             let (output_data, chosen_compressor) = if client_accepts_zstd {
@@ -475,18 +495,18 @@ impl CasServer {
                             (e.into(), Bytes::new(), compressor::Value::Identity)
                         }
                     };
-                    Ok::<_, Error>(batch_read_blobs_response::Response {
+                    batch_read_blobs_response::Response {
                         status: Some(status),
                         digest: Some(digest),
                         compressor: response_compressor.into(),
                         data,
-                    })
+                    }
                 }
             })
             .collect();
         let responses = read_futures
-            .try_collect::<Vec<batch_read_blobs_response::Response>>()
-            .await?;
+            .collect::<Vec<batch_read_blobs_response::Response>>()
+            .await;
 
         Ok(Response::new(BatchReadBlobsResponse { responses }))
     }
