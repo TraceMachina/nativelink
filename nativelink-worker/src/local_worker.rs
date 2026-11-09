@@ -1267,6 +1267,7 @@ pub async fn new_local_worker(
                 },
                 set_tmpdir: config.set_tmpdir,
                 max_concurrent_input_downloads: config.max_concurrent_input_downloads,
+                private_inode_libraries: config.private_inode_libraries.clone(),
                 persistent_workers: persistent_worker_settings(
                     config.persistent_workers.as_ref(),
                     persistent_workers_namespaced,

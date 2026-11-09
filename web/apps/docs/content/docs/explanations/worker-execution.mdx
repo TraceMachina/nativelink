@@ -71,19 +71,29 @@ very often doing exactly this.
 one per digest, not one per action. This also sidesteps `ETXTBSY`, where
 writing to a file that is currently executing fails.
 
-**On macOS, a main executable costs an inode per action.** `dyld` resolves
-`@executable_path`, through which tools such as `rustc` and a hermetic
-`python3` find their own libraries, from the name the kernel last associated
-with the inode of the executable, not from the path the action ran. A
-hardlinked executable has one name per action using it, so that name can be
-the store's copy or another action's tree: the tool then fails with
-`Library not loaded`, or loads that action's libraries. The worker instead
-clones a Mach-O main executable (`MH_EXECUTE`, alone or in a universal
+**On macOS, a main executable costs an inode per action, and so can a
+library.** `dyld` resolves `@executable_path`, through which tools such as
+`rustc` and a hermetic `python3` find their own libraries, from the name the
+kernel last associated with the inode of the executable, not from the path
+the action ran. A hardlinked executable has one name per action using it, so
+that name can be the store's copy or another action's tree: the tool then
+fails with `Library not loaded`, or loads that action's libraries. The worker
+instead clones a Mach-O main executable (`MH_EXECUTE`, alone or in a universal
 binary) into the input tree with `clonefile(2)`. On APFS a clone is a new
 inode that shares the store copy's data blocks, and costs no copy. Libraries
 stay hardlinked, because `dyld` resolves `@loader_path` from the path it
 opened, and so does every other input: clang treats two paths to one header
 as one file only while they are one inode.
+
+The exception is a library that asks `dyld` where it lives, since `dladdr`
+answers with the same last-recorded name. The JVM derives `java.home` from the
+location of `libjvm.dylib`, so with a shared inode a Java action
+intermittently reads `lib/tzdb.dat` or `conf/security/java.security` from
+another action's tree, deleted by then, and fails. The worker clones the
+libraries named in `private_inode_libraries`, `libjvm.dylib` by default. Name
+one only when it needs this: each clone is a new inode that the kernel pages
+in and checks the signature of again in every action, which costs a few
+hundred milliseconds on a Mac with System Integrity Protection enabled.
 
 **`work_directory` must be on the same filesystem as the CAS content path.**
 Hardlinks cannot cross filesystem boundaries. This is the single most common

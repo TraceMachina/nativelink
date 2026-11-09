@@ -1487,6 +1487,31 @@ pub struct LocalWorkerConfig {
     #[serde(default, deserialize_with = "convert_numeric_with_shellexpand")]
     pub max_concurrent_input_downloads: usize,
 
+    /// macOS only. File names of dynamic libraries that get an inode of
+    /// their own in every action's input tree, as main executables do,
+    /// instead of a hardlink shared with the store and with every other
+    /// action that uses them.
+    ///
+    /// dyld reports where a library lives through whichever name of its
+    /// inode the kernel recorded last. With a shared inode that can be
+    /// another action's directory, deleted by then, and a library that
+    /// acts on the answer is misled: the JVM derives `java.home` from the
+    /// location of `libjvm.dylib`, so a Java action intermittently reads
+    /// `lib/tzdb.dat` or `conf/security/java.security` from a directory
+    /// that no longer exists, and fails.
+    ///
+    /// Name a library only when it does this. A clone is a new inode, which
+    /// the kernel pages in and checks the code signature of again in each
+    /// action, a cost of a few hundred milliseconds on a Mac with System
+    /// Integrity Protection enabled. A shared library keeps both from the
+    /// action before. That is why this is a list and not every library.
+    ///
+    /// Entries are file names, not paths. Other platforms ignore the list.
+    ///
+    /// Default: `["libjvm.dylib"]`
+    #[serde(default = "default_private_inode_libraries")]
+    pub private_inode_libraries: Vec<String>,
+
     /// Maximum time to wait for action directory cleanup before timing out.
     /// Value in seconds.
     ///
@@ -1878,6 +1903,10 @@ pub struct DirectoryCacheConfig {
     pub experimental_get_tree_prefetch: bool,
 }
 
+fn default_private_inode_libraries() -> Vec<String> {
+    vec!["libjvm.dylib".to_string()]
+}
+
 const fn default_directory_cache_max_entries() -> usize {
     1000
 }
@@ -2204,6 +2233,33 @@ mod tests {
         config.validate_single_use_worker().unwrap();
         config.servers[0].services.as_mut().unwrap().cas = Some(vec![]);
         assert!(config.validate_single_use_worker().is_err());
+    }
+
+    #[test]
+    fn private_inode_libraries_default_to_the_jvm_and_can_be_replaced() {
+        let worker = |extra: &str| -> LocalWorkerConfig {
+            serde_json5::from_str(&format!(
+                r#"{{
+                worker_api_endpoint: {{ uri: "grpc://127.0.0.1:50061" }},
+                cas_fast_slow_store: "WORKER_FAST_SLOW_STORE",
+                work_directory: "/tmp/work",
+                platform_properties: {{}},
+                {extra}
+            }}"#
+            ))
+            .unwrap()
+        };
+        assert_eq!(worker("").private_inode_libraries, ["libjvm.dylib"]);
+        assert!(
+            worker("private_inode_libraries: [],")
+                .private_inode_libraries
+                .is_empty()
+        );
+        assert_eq!(
+            worker(r#"private_inode_libraries: ["libjvm.dylib", "libfoo.dylib"],"#)
+                .private_inode_libraries,
+            ["libjvm.dylib", "libfoo.dylib"]
+        );
     }
 
     #[test]

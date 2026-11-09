@@ -1348,8 +1348,9 @@ pub fn download_to_directory<'a>(
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
         // No shared pool, as for a worker without
-        // `max_concurrent_input_downloads`; the worker's own arrives through
-        // `prepare_action_inputs`.
+        // `max_concurrent_input_downloads`, and no library cloned, as for a
+        // worker with an empty `private_inode_libraries`; the worker's own
+        // arrive through `prepare_action_inputs`.
         let downloads = input_download_pool(0);
         download_to_directory_bounded(
             cas_store,
@@ -1357,6 +1358,7 @@ pub fn download_to_directory<'a>(
             digest,
             current_directory,
             &downloads,
+            &[],
         )
         .await
     }
@@ -1364,13 +1366,15 @@ pub fn download_to_directory<'a>(
 }
 
 /// `download_to_directory` drawing its fetches from `downloads`, the pool
-/// the worker shares across the actions it stages.
+/// the worker shares across the actions it stages, and giving the libraries
+/// named in `private_inode_libraries` an inode of their own.
 pub fn download_to_directory_bounded<'a>(
     cas_store: &'a FastSlowStore,
     filesystem_store: Pin<&'a FilesystemStore>,
     digest: &'a DigestInfo,
     current_directory: &'a str,
     downloads: &'a Semaphore,
+    private_inode_libraries: &'a [String],
 ) -> BoxFuture<'a, Result<(), Error>> {
     download_to_directory_with_mounts(
         cas_store,
@@ -1379,8 +1383,20 @@ pub fn download_to_directory_bounded<'a>(
         current_directory,
         None,
         None,
-        downloads,
+        Staging {
+            downloads,
+            private_inode_libraries,
+        },
     )
+}
+
+/// What the inputs of a staged tree are fetched and linked under, shared by
+/// the actions of a worker: the pool their fetches draw from, and the
+/// libraries that are cloned rather than hardlinked.
+#[derive(Clone, Copy)]
+struct Staging<'a> {
+    downloads: &'a Semaphore,
+    private_inode_libraries: &'a [String],
 }
 
 fn download_to_directory_with_mounts<'a>(
@@ -1390,9 +1406,13 @@ fn download_to_directory_with_mounts<'a>(
     current_directory: &'a str,
     input_lease: Option<Arc<ActionInputLease>>,
     input_mounts: Option<Arc<InputMounts>>,
-    downloads: &'a Semaphore,
+    staging: Staging<'a>,
 ) -> BoxFuture<'a, Result<(), Error>> {
     async move {
+        let Staging {
+            downloads,
+            private_inode_libraries,
+        } = staging;
         let (dirs, files, inline_nodes) = collect_download_links(
             cas_store,
             digest,
@@ -1405,9 +1425,24 @@ fn download_to_directory_with_mounts<'a>(
 
         let (exec_files, plain_files): (Vec<_>, Vec<_>) =
             files.into_iter().partition(|file| file.executable);
-        let mut links =
-            resolve_plain_files(cas_store, filesystem_store, plain_files, downloads).await?;
-        links.extend(resolve_exec_files(cas_store, filesystem_store, exec_files, downloads).await?);
+        let mut links = resolve_plain_files(
+            cas_store,
+            filesystem_store,
+            plain_files,
+            private_inode_libraries,
+            downloads,
+        )
+        .await?;
+        links.extend(
+            resolve_exec_files(
+                cas_store,
+                filesystem_store,
+                exec_files,
+                private_inode_libraries,
+                downloads,
+            )
+            .await?,
+        );
 
         // Every directory exists before anything is written into one, so no
         // later pass has to create a parent it happens to need.
@@ -1429,8 +1464,9 @@ struct PendingLink {
     /// time the batch runs can be resolved and made again.
     digest: DigestInfo,
     executable: bool,
-    /// `dst` is made a clone of `src` rather than a hardlink, because `src` is
-    /// an [`ExecutableSource::Private`] variant.
+    /// `dst` is made a clone of `src` rather than a hardlink: `src` is an
+    /// [`ExecutableSource::Private`] variant, or the input is a library named in
+    /// `private_inode_libraries`.
     private_inode: bool,
     /// Keeps the CAS blob's `FileEntry` alive until the link is made, so the
     /// inode cannot be dropped out from under the batch. `None` for an
@@ -1624,7 +1660,8 @@ async fn materialize_links(
     }
     let (clones, hardlinks): (Vec<_>, Vec<_>) = links.iter().partition(|link| link.private_inode);
     let hardlink_results = fs::hard_link_many(paths(&hardlinks)).await?;
-    // Only main executables on macOS are cloned, so most trees have none.
+    // Only main executables and the named libraries on macOS are cloned, so
+    // most trees have few.
     let clone_results = if clones.is_empty() {
         Vec::new()
     } else {
@@ -1748,8 +1785,12 @@ async fn relink_evicted_input(
                         format!("Resolving the executable variant for {} again", link.digest)
                     })?;
                 match source {
-                    ExecutableSource::Shared(src) => fs::hard_link(src, &link.dst).await,
-                    ExecutableSource::Private(src) => fs::clone_file(src, &link.dst).await,
+                    ExecutableSource::Shared(src) if !link.private_inode => {
+                        fs::hard_link(src, &link.dst).await
+                    }
+                    ExecutableSource::Shared(src) | ExecutableSource::Private(src) => {
+                        fs::clone_file(src, &link.dst).await
+                    }
                 }
             },
         )
@@ -1766,8 +1807,15 @@ async fn relink_evicted_input(
                 .await
                 .err_tip(|| "Resolving an evicted hardlink source again")?;
             let dst = link.dst.clone();
+            let private_inode = link.private_inode;
             file_entry
-                .get_file_path_locked(|src| async move { fs::hard_link(src, dst).await })
+                .get_file_path_locked(|src| async move {
+                    if private_inode {
+                        fs::clone_file(src, dst).await
+                    } else {
+                        fs::hard_link(src, dst).await
+                    }
+                })
                 .await
         },
     )
@@ -1786,6 +1834,7 @@ async fn resolve_plain_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    private_inode_libraries: &[String],
     downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let mut tasks = Vec::with_capacity(files.len());
@@ -1816,15 +1865,25 @@ async fn resolve_plain_files(
                 .err_tip(|| format!("for digest {}", file.digest))?;
             Ok::<_, Error>(PendingLink {
                 src: PathBuf::from(src_path),
+                private_inode: is_private_inode_library(&file.dst, private_inode_libraries),
                 dst: PathBuf::from(file.dst),
                 digest: file.digest,
                 executable: false,
-                private_inode: false,
                 _keepalive: Some(file_entry),
             })
         });
     }
     collect_links(tasks).await
+}
+
+/// Whether the input at `dst` is a library that `names` gives an inode of its
+/// own. Only a macOS worker clones one, since only dyld reads an inode's names.
+fn is_private_inode_library(dst: &str, names: &[String]) -> bool {
+    cfg!(target_os = "macos")
+        && Path::new(dst)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| names.iter().any(|library| library == name))
 }
 
 /// Runs the resolution tasks of one input tree, bounded, into the link batch.
@@ -1841,8 +1900,9 @@ async fn collect_links(
 ///
 /// The shared 0o444 CAS blob cannot carry the executable bit, so each of these
 /// digests hardlinks a private variant instead, or clones it when it is a
-/// main executable on macOS, and the batch checks the whole tree's variants for
-/// existence in one dispatch.
+/// main executable or a library named in `private_inode_libraries` on macOS,
+/// and the batch checks the whole tree's variants for existence in one
+/// dispatch.
 ///
 /// A variant cannot be built from a blob that is not resident, and only this
 /// caller can fetch one, so those digests are fetched and resolved here, again
@@ -1851,6 +1911,7 @@ async fn resolve_exec_files(
     cas_store: &FastSlowStore,
     filesystem_store: Pin<&FilesystemStore>,
     files: Vec<PendingFile>,
+    private_inode_libraries: &[String],
     downloads: &Semaphore,
 ) -> Result<Vec<PendingLink>, Error> {
     let digests: Vec<DigestInfo> = files.iter().map(|file| file.digest).collect();
@@ -1875,7 +1936,10 @@ async fn resolve_exec_files(
                 source
             };
             let (src_path, private_inode) = match source {
-                ExecutableSource::Shared(path) => (path, false),
+                ExecutableSource::Shared(path) => (
+                    path,
+                    is_private_inode_library(&file.dst, private_inode_libraries),
+                ),
                 ExecutableSource::Private(path) => (path, true),
             };
             Ok::<_, Error>(PendingLink {
@@ -2199,6 +2263,7 @@ pub async fn prepare_action_inputs(
     digest: &DigestInfo,
     work_directory: &str,
     downloads: &Semaphore,
+    private_inode_libraries: &[String],
 ) -> Result<(), Error> {
     prepare_action_inputs_with_lease(
         directory_cache,
@@ -2207,7 +2272,10 @@ pub async fn prepare_action_inputs(
         digest,
         work_directory,
         None,
-        downloads,
+        Staging {
+            downloads,
+            private_inode_libraries,
+        },
     )
     .await
 }
@@ -2219,7 +2287,7 @@ async fn prepare_action_inputs_with_lease(
     digest: &DigestInfo,
     work_directory: &str,
     input_lease: Option<Arc<ActionInputLease>>,
-    downloads: &Semaphore,
+    staging: Staging<'_>,
 ) -> Result<(), Error> {
     // Try cache first if available. Cache hits are safe while an action lease
     // is active because the directory cache pins its own materialized tree
@@ -2292,7 +2360,7 @@ async fn prepare_action_inputs_with_lease(
         work_directory,
         input_lease,
         None,
-        downloads,
+        staging,
     )
     .await
 }
@@ -3272,7 +3340,10 @@ impl RunningActionImpl {
     /// the fetch then take the ordinary path.
     async fn download_inputs(&self, filesystem_store: Pin<&FilesystemStore>) -> Result<(), Error> {
         let manager = &self.running_actions_manager;
-        let downloads = &manager.input_downloads;
+        let staging = Staging {
+            downloads: &manager.input_downloads,
+            private_inode_libraries: &manager.execution_configuration.private_inode_libraries,
+        };
         let input_mounts = self.state.lock().input_mounts.clone();
         if input_mounts.is_none() {
             return prepare_action_inputs_with_lease(
@@ -3282,7 +3353,7 @@ impl RunningActionImpl {
                 &self.action_info.input_root_digest,
                 &self.work_directory,
                 self.input_lease.clone(),
-                downloads,
+                staging,
             )
             .await;
         }
@@ -3293,7 +3364,7 @@ impl RunningActionImpl {
             &self.work_directory,
             self.input_lease.clone(),
             input_mounts,
-            downloads,
+            staging,
         )
         .await;
         if let Err(error) = result {
@@ -3315,7 +3386,7 @@ impl RunningActionImpl {
                 &self.work_directory,
                 self.input_lease.clone(),
                 None,
-                downloads,
+                staging,
             )
             .await?;
         }
@@ -5264,6 +5335,10 @@ pub struct ExecutionConfiguration {
     /// across every action it is staging; 0 shares no pool, and each action
     /// fetches on its own.
     pub max_concurrent_input_downloads: usize,
+    /// File names of the dynamic libraries a macOS worker clones into each
+    /// action's input tree, as it does main executables, instead of
+    /// hardlinking them; see `LocalWorkerConfig::private_inode_libraries`.
+    pub private_inode_libraries: Vec<String>,
     /// Buck2-only helper, configured for a dedicated execution container.
     pub buck2_file_capture: Option<Buck2FileCaptureConfig>,
     /// If set, will be executed instead of the first argument passed in the
@@ -5703,6 +5778,17 @@ impl RunningActionsManagerImpl {
                     "Read-only input mounts require Linux mount namespaces and a directory cache"
                 ));
             }
+        }
+        if let Some(name) = args
+            .execution_configuration
+            .private_inode_libraries
+            .iter()
+            .find(|name| name.is_empty() || name.contains('/'))
+        {
+            return Err(make_err!(
+                Code::InvalidArgument,
+                "private_inode_libraries takes file names, not paths: {name:?}"
+            ));
         }
         // Sadly because of some limitations of how Any works we need to clone more times than optimal.
         let filesystem_store = args
