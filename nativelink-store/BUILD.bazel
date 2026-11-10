@@ -207,6 +207,7 @@ rust_test_suite(
         "@crates//:azure_storage_blob",
         "@crates//:base64",
         "@crates//:bytes",
+        "@crates//:caps",
         "@crates//:chrono",
         "@crates//:dirs",
         "@crates//:flate2",

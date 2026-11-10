@@ -1,0 +1,1025 @@
+// Copyright 2026 Trace Machina, Inc. All rights reserved.
+//
+// Licensed under the Functional Source License, Version 1.1, Apache 2.0 Future License (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    See LICENSE file for details
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// The worker's action future is a long chain of combinators; proving it
+// Send for the spawn walks the whole chain, and the default limit of 128 is
+// a few steps short of it on the sanitizer toolchain.
+#![recursion_limit = "256"]
+
+use core::net::SocketAddr;
+use core::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use async_lock::Mutex as AsyncMutex;
+use axum::Router;
+use axum::http::Uri;
+use futures::FutureExt;
+use futures::future::{BoxFuture, Either, OptionFuture, TryFutureExt};
+use hyper::StatusCode;
+use hyper_util::rt::TokioTimer;
+use hyper_util::rt::tokio::TokioIo;
+use hyper_util::server::conn::auto;
+use hyper_util::service::TowerToHyperService;
+use nativelink_config::cas_server::{
+    CasConfig, CasStoreConfig, HttpCompressionAlgorithm, ListenerConfig, SchedulerConfig,
+    ServerConfig, StoreConfig, WithInstanceName, WorkerConfig,
+};
+use nativelink_error::{Code, Error, ResultExt, make_err, make_input_err};
+use nativelink_scheduler::default_scheduler_factory::scheduler_factory;
+use nativelink_service::ac_server::AcServer;
+use nativelink_service::bep_server::BepServer;
+use nativelink_service::bytestream_server::ByteStreamServer;
+use nativelink_service::capabilities_server::CapabilitiesServer;
+use nativelink_service::cas_server::CasServer;
+use nativelink_service::execution_server::ExecutionServer;
+use nativelink_service::fetch_server::FetchServer;
+use nativelink_service::health_server::{HealthServer, health_paths};
+use nativelink_service::push_server::PushServer;
+use nativelink_service::wire_compression::RemoteCacheCompressionInstances;
+use nativelink_service::worker_api_server::WorkerApiServer;
+use nativelink_store::default_store_factory::store_factory;
+use nativelink_store::store_manager::StoreManager;
+use nativelink_util::health_utils::HealthRegistryBuilder;
+use nativelink_util::origin_event_publisher::OriginEventPublisher;
+#[cfg(target_family = "unix")]
+use nativelink_util::shutdown_guard::ShutdownGuard;
+use nativelink_util::task::TaskExecutor;
+use nativelink_util::{background_spawn, fs, spawn};
+use nativelink_worker::local_worker::{WorkerRegistration, new_local_worker};
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateRevocationListDer, PrivateKeyDer};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::select;
+use tokio::sync::oneshot::Sender;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::pki_types::CertificateDer;
+use tokio_rustls::rustls::server::WebPkiClientVerifier;
+use tokio_rustls::rustls::{RootCertStore, ServerConfig as TlsServerConfig};
+use tonic::codec::CompressionEncoding;
+use tonic::service::Routes;
+use tracing::{error, error_span, info, trace_span, warn};
+
+// Note: This must be kept in sync with the documentation in
+// `OriginEventsConfig::max_event_queue_size`.
+const DEFAULT_MAX_QUEUE_EVENTS: usize = 0x0001_0000;
+
+/// If this value changes update the documentation in the config definition.
+const DEFAULT_MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+
+/// Note: This must be kept in sync with the documentation in `AdminConfig::path`.
+const DEFAULT_ADMIN_API_PATH: &str = "/admin";
+
+/// Bind a [`TcpListener`] with `IP_FREEBIND` set.
+fn bind_freebind(socket_addr: SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let socket = match socket_addr {
+        SocketAddr::V4(_) => TcpSocket::new_v4(),
+        SocketAddr::V6(_) => TcpSocket::new_v6(),
+    }?;
+    fs::set_freebind(&socket)?;
+    socket.bind(socket_addr)?;
+    socket.listen(1024)
+}
+
+/// Configure accepted sockets before either the TLS handshake or HTTP serving.
+async fn accept_tcp_connection(
+    listener: &TcpListener,
+    tcp_nodelay: bool,
+) -> Result<(TcpStream, SocketAddr), Error> {
+    let (stream, remote_addr) = listener
+        .accept()
+        .await
+        .err_tip(|| "Failed to accept TCP connection")?;
+    stream
+        .set_nodelay(tcp_nodelay)
+        .err_tip(|| format!("Failed to set TCP_NODELAY to {tcp_nodelay} for {remote_addr}"))?;
+    Ok((stream, remote_addr))
+}
+
+/// A JSON body with its content type, for the admin API's listings.
+const fn json_response(
+    body: String,
+) -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+}
+
+macro_rules! service_setup {
+    ($service: expr, $http_config: ident) => {{
+        let mut service = $service;
+        let max_decoding_message_size = if $http_config.max_decoding_message_size == 0 {
+            DEFAULT_MAX_DECODING_MESSAGE_SIZE
+        } else {
+            $http_config.max_decoding_message_size
+        };
+        service = service.max_decoding_message_size(max_decoding_message_size);
+        let send_algo = &$http_config.compression.send_compression_algorithm;
+        if let Some(encoding) = into_encoding(send_algo.unwrap_or(HttpCompressionAlgorithm::None)) {
+            service = service.send_compressed(encoding);
+        }
+        for encoding in $http_config
+            .compression
+            .accepted_compression_algorithms
+            .iter()
+            // Filter None values.
+            .filter_map(|from: &HttpCompressionAlgorithm| into_encoding(*from))
+        {
+            service = service.accept_compressed(encoding);
+        }
+        service
+    }};
+}
+
+trait RoutesExt {
+    fn add_optional_service<S>(self, svc: Option<S>) -> Self
+    where
+        S: tower::Service<
+                axum::http::Request<tonic::body::Body>,
+                Error = core::convert::Infallible,
+            > + tonic::server::NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static;
+}
+
+impl RoutesExt for Routes {
+    fn add_optional_service<S>(mut self, svc: Option<S>) -> Self
+    where
+        S: tower::Service<
+                axum::http::Request<tonic::body::Body>,
+                Error = core::convert::Infallible,
+            > + tonic::server::NamedService
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        S::Response: axum::response::IntoResponse,
+        S::Future: Send + 'static,
+    {
+        if let Some(svc) = svc {
+            self = self.add_service(svc);
+        }
+        self
+    }
+}
+
+const fn into_encoding(from: HttpCompressionAlgorithm) -> Option<CompressionEncoding> {
+    match from {
+        HttpCompressionAlgorithm::Gzip => Some(CompressionEncoding::Gzip),
+        HttpCompressionAlgorithm::None => None,
+    }
+}
+
+pub struct Server {
+    #[allow(clippy::type_complexity)]
+    pub root_futures: Vec<Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>>,
+    pub single_use_enabled: bool,
+    pub single_use_complete_rx: oneshot::Receiver<()>,
+}
+
+impl std::fmt::Debug for Server {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        f.debug_struct("Server")
+            .field("single_use_enabled", &self.single_use_enabled)
+            .field("single_use_complete_rx", &self.single_use_complete_rx)
+            .finish_non_exhaustive()
+    }
+}
+
+pub async fn build_server(
+    cfg: CasConfig,
+    shutdown_tx: broadcast::Sender<ShutdownGuard>,
+    scheduler_shutdown_tx: Sender<()>,
+) -> Result<Server, Error> {
+    let health_registry_builder =
+        Arc::new(AsyncMutex::new(HealthRegistryBuilder::new("nativelink")));
+    let mut worker_registrations: Vec<Arc<WorkerRegistration>> = Vec::new();
+
+    let store_manager = Arc::new(StoreManager::new());
+    {
+        let mut health_registry_lock = health_registry_builder.lock().await;
+
+        for StoreConfig { name, spec } in cfg.stores {
+            let health_component_name = format!("stores/{name}");
+            let mut health_register_store =
+                health_registry_lock.sub_builder(&health_component_name);
+            let store = store_factory(&spec, &store_manager, Some(&mut health_register_store))
+                .await
+                .err_tip(|| format!("Failed to create store '{name}'"))?;
+            store_manager
+                .add_store(&name, store)
+                .err_tip(|| format!("Failed to add store '{name}'"))?;
+        }
+        store_manager.run_post_init().await?;
+
+        // Workers start after the listeners are up, but the health registry
+        // is built with the listeners, so their registration flags are
+        // made and registered here and handed to the workers later.
+        let mut workers_health = health_registry_lock.sub_builder("workers");
+        for (i, worker_cfg) in cfg.workers.iter().flatten().enumerate() {
+            let WorkerConfig::Local(local_worker_cfg) = worker_cfg;
+            let name = if local_worker_cfg.name.is_empty() {
+                format!("worker_{i}")
+            } else {
+                local_worker_cfg.name.clone()
+            };
+            let registration = WorkerRegistration::new(&name);
+            workers_health
+                .sub_builder(&name)
+                .register_indicator(registration.clone());
+            worker_registrations.push(registration);
+        }
+    }
+
+    let mut root_futures: Vec<BoxFuture<Result<(), Error>>> = Vec::new();
+    let (single_use_complete_tx, single_use_complete_rx) = oneshot::channel();
+    let mut single_use_complete_tx = Some(single_use_complete_tx);
+    let single_use_enabled = cfg.workers.as_ref().is_some_and(|workers| {
+        workers.iter().any(|worker| match worker {
+            WorkerConfig::Local(worker) => worker.single_use,
+        })
+    });
+
+    let maybe_origin_event_tx = cfg
+        .experimental_origin_events
+        .as_ref()
+        .map(|origin_events_cfg| {
+            let mut max_queued_events = origin_events_cfg.max_event_queue_size;
+            if max_queued_events == 0 {
+                max_queued_events = DEFAULT_MAX_QUEUE_EVENTS;
+            }
+            let (tx, rx) = mpsc::channel(max_queued_events);
+            let store_name = origin_events_cfg.publisher.store.as_str();
+            let store = store_manager.get_store(store_name).err_tip(|| {
+                format!("Could not get store {store_name} for origin event publisher")
+            })?;
+
+            root_futures.push(Box::pin(
+                OriginEventPublisher::new(store, rx, shutdown_tx.clone())
+                    .run()
+                    .map(Ok),
+            ));
+
+            Ok::<_, Error>(tx)
+        })
+        .transpose()?;
+
+    let mut action_schedulers = HashMap::new();
+    let mut worker_schedulers = HashMap::new();
+    let mut resource_sketches = HashMap::new();
+    for SchedulerConfig { name, spec } in cfg.schedulers.iter().flatten() {
+        let (maybe_action_scheduler, maybe_worker_scheduler, maybe_resource_sketch) =
+            scheduler_factory(spec, &store_manager, maybe_origin_event_tx.as_ref())
+                .await
+                .err_tip(|| format!("Failed to create scheduler '{name}'"))?;
+        if let Some(action_scheduler) = maybe_action_scheduler {
+            action_schedulers.insert(name.clone(), action_scheduler.clone());
+        }
+        if let Some(worker_scheduler) = maybe_worker_scheduler {
+            worker_schedulers.insert(name.clone(), worker_scheduler.clone());
+        }
+        if let Some(resource_sketch) = maybe_resource_sketch {
+            resource_sketches.insert(name.clone(), resource_sketch);
+        }
+    }
+
+    let server_cfgs: Vec<ServerConfig> = cfg.servers.into_iter().collect();
+
+    // The capabilities service advertises chunking support for CAS instances
+    // that may be served from a different server block (e.g. behind an L7
+    // router), so collect the CAS configs across all blocks.
+    let all_cas_configs: Vec<WithInstanceName<CasStoreConfig>> = server_cfgs
+        .iter()
+        .filter_map(|server_cfg| server_cfg.services.as_ref())
+        .filter_map(|services| services.cas.as_deref())
+        .flatten()
+        .cloned()
+        .collect();
+
+    for server_cfg in server_cfgs {
+        let services = server_cfg
+            .services
+            .err_tip(|| "'services' must be configured")?;
+
+        // Currently we only support http as our socket type.
+        let ListenerConfig::Http(http_config) = server_cfg.listener;
+
+        let execution_server = services
+            .execution
+            .as_ref()
+            .map(|cfg| ExecutionServer::new(cfg, &action_schedulers, &store_manager))
+            .transpose()
+            .err_tip(|| "Could not create Execution service")?;
+
+        let capabilities_configs = services.capabilities.as_deref().unwrap_or_default();
+        let remote_cache_compression_instances =
+            RemoteCacheCompressionInstances::from_capabilities_configs(capabilities_configs);
+
+        let tonic_services = Routes::builder()
+            .routes()
+            .add_optional_service(
+                services
+                    .ac
+                    .map_or(Ok(None), |cfg| {
+                        AcServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                    })
+                    .err_tip(|| "Could not create AC service")?,
+            )
+            .add_optional_service(
+                services
+                    .cas
+                    .as_deref()
+                    .map_or(Ok(None), |cfg| {
+                        CasServer::new(cfg, &store_manager, &remote_cache_compression_instances)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                    })
+                    .err_tip(|| "Could not create CAS service")?,
+            )
+            .add_optional_service(
+                execution_server
+                    .clone()
+                    .map(|v| service_setup!(v.into_service(), http_config)),
+            )
+            .add_optional_service(
+                execution_server.map(|v| service_setup!(v.into_operations_service(), http_config)),
+            )
+            .add_optional_service(
+                services
+                    .fetch
+                    .map_or(Ok(None), |cfg| {
+                        FetchServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                    })
+                    .err_tip(|| "Could not create Fetch service")?,
+            )
+            .add_optional_service(
+                services
+                    .push
+                    .map_or(Ok(None), |cfg| {
+                        PushServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                    })
+                    .err_tip(|| "Could not create Push service")?,
+            )
+            .add_optional_service(
+                services
+                    .bytestream
+                    .map_or(Ok(None), |cfg| {
+                        ByteStreamServer::new(
+                            &cfg,
+                            &store_manager,
+                            &remote_cache_compression_instances,
+                        )
+                        .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                    })
+                    .err_tip(|| "Could not create ByteStream service")?,
+            )
+            .add_optional_service(
+                OptionFuture::from(services.capabilities.as_ref().map(|cfg| {
+                    CapabilitiesServer::new(
+                        cfg,
+                        &action_schedulers,
+                        &remote_cache_compression_instances,
+                        &all_cas_configs,
+                    )
+                }))
+                .await
+                .map_or(Ok::<Option<CapabilitiesServer>, Error>(None), |server| {
+                    Ok(Some(server?))
+                })
+                .err_tip(|| "Could not create Capabilities service")?
+                .map(|v| service_setup!(v.into_service(), http_config)),
+            )
+            .add_optional_service(
+                services
+                    .worker_api
+                    .map_or(Ok(None), |cfg| {
+                        WorkerApiServer::new(&cfg, &worker_schedulers)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                    })
+                    .err_tip(|| "Could not create WorkerApi service")?,
+            )
+            .add_optional_service(
+                services
+                    .experimental_bep
+                    .map_or(Ok(None), |cfg| {
+                        BepServer::new(&cfg, &store_manager)
+                            .map(|v| Some(service_setup!(v.into_service(), http_config)))
+                    })
+                    .err_tip(|| "Could not create BEP service")?,
+            );
+
+        let health_registry = health_registry_builder.lock().await.build();
+
+        let mut svc =
+            tonic_services
+                .into_axum_router()
+                .layer(nativelink_util::telemetry::OtlpLayer::new(
+                    server_cfg.experimental_identity_header.required,
+                ));
+
+        if let Some(health_cfg) = services.health {
+            let (path, readiness_path) = health_paths(&health_cfg)?;
+            svc = svc.route_service(
+                &path,
+                HealthServer::new(health_registry.clone(), &health_cfg),
+            );
+            svc = svc.route_service(
+                &readiness_path,
+                HealthServer::readiness(health_registry, &health_cfg),
+            );
+        }
+
+        if let Some(admin_config) = services.admin {
+            let path = if admin_config.path.is_empty() {
+                DEFAULT_ADMIN_API_PATH
+            } else {
+                &admin_config.path
+            };
+            let worker_schedulers = Arc::new(worker_schedulers.clone());
+            let listing_worker_schedulers = worker_schedulers.clone();
+            let listing_action_schedulers = Arc::new(action_schedulers.clone());
+            let listing_resource_sketches = Arc::new(resource_sketches.clone());
+            // Read-only views for the provisioner and operators: what the
+            // scheduler has connected and what it has queued, with the
+            // reservations the queued actions carry.
+            let admin_router = Router::new()
+                .route(
+                    "/scheduler/{instance_name}/workers",
+                    axum::routing::get(move |params: axum::extract::Path<String>| async move {
+                        let instance_name = params.0;
+                        let Some(scheduler) = listing_worker_schedulers.get(&instance_name) else {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                format!("No scheduler named '{instance_name}'"),
+                            ));
+                        };
+                        let workers = scheduler.worker_snapshot().await;
+                        nativelink_scheduler::admin::workers_json(&workers)
+                            .map(json_response)
+                            .map_err(|e| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:?}"))
+                            })
+                    }),
+                )
+                .route(
+                    "/scheduler/{instance_name}/demand",
+                    axum::routing::get(move |params: axum::extract::Path<String>| async move {
+                        let instance_name = params.0;
+                        let Some(scheduler) = listing_action_schedulers.get(&instance_name) else {
+                            return Err((
+                                StatusCode::NOT_FOUND,
+                                format!("No scheduler named '{instance_name}'"),
+                            ));
+                        };
+                        nativelink_scheduler::admin::queued_demand_json(scheduler.as_ref())
+                            .await
+                            .map(json_response)
+                            .map_err(|e| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, format!("Error: {e:?}"))
+                            })
+                    }),
+                )
+                // What the scheduler reserves for each kind of action it has
+                // measured, in the hints-file shape, so the UI shows what the
+                // scheduler uses and a new fleet can be seeded from an old one.
+                // `family=target|mnemonic|command` and `limit=N` narrow it.
+                .route(
+                    "/scheduler/{instance_name}/hints",
+                    axum::routing::get(
+                        move |params: axum::extract::Path<String>,
+                              axum::extract::RawQuery(query): axum::extract::RawQuery| async move {
+                            let instance_name = params.0;
+                            // Two plain parameters; no need for the query feature.
+                            let param = |name: &str| -> Option<String> {
+                                query.as_deref()?.split('&').find_map(|pair| {
+                                    let (key, value) = pair.split_once('=')?;
+                                    (key == name).then(|| value.to_string())
+                                })
+                            };
+                            let Some(sketch) = listing_resource_sketches.get(&instance_name)
+                            else {
+                                return Err((
+                                    StatusCode::NOT_FOUND,
+                                    format!("No historical_resource scheduler named '{instance_name}'"),
+                                ));
+                            };
+                            nativelink_scheduler::admin::hints_json(
+                                sketch,
+                                param("family").as_deref(),
+                                param("limit").and_then(|limit| limit.parse().ok()),
+                            )
+                            .map(json_response)
+                            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Error: {e:?}")))
+                        },
+                    ),
+                );
+            svc = svc.nest_service(
+                path,
+                admin_router.route(
+                    "/scheduler/{instance_name}/set_drain_worker/{worker_id}/{is_draining}",
+                    axum::routing::post(
+                        move |params: axum::extract::Path<(String, String, String)>| async move {
+                            let (instance_name, worker_id, is_draining) = params.0;
+                            (async move {
+                                let is_draining = match is_draining.as_str() {
+                                    "0" => false,
+                                    "1" => true,
+                                    _ => {
+                                        return Err(make_err!(
+                                            Code::Internal,
+                                            "{} is neither 0 nor 1",
+                                            is_draining
+                                        ));
+                                    }
+                                };
+                                worker_schedulers
+                                    .get(&instance_name)
+                                    .err_tip(|| {
+                                        format!(
+                                            "Can not get an instance with the name of '{instance_name}'",
+                                        )
+                                    })?
+                                    .clone()
+                                    .set_drain_worker(&worker_id.clone().into(), is_draining)
+                                    .await?;
+                                Ok::<_, Error>(format!("Draining worker {worker_id}"))
+                            })
+                            .await
+                            .map_err(|e| {
+                                Err::<String, _>((
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!("Error: {e:?}"),
+                                ))
+                            })
+                        },
+                    ),
+                ),
+            );
+        }
+
+        // This is the default service that executes if no other endpoint matches.
+        svc = svc.fallback(|uri: Uri| async move {
+            warn!("No route for {uri}");
+            (StatusCode::NOT_FOUND, format!("No route for {uri}"))
+        });
+
+        // Configure our TLS acceptor if we have TLS configured.
+        let maybe_tls_acceptor = http_config.tls.map_or(Ok(None), |tls_config| {
+            fn read_cert(cert_file: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
+                let mut cert_reader = std::io::BufReader::new(
+                    std::fs::File::open(cert_file)
+                        .err_tip(|| format!("Could not open cert file {cert_file}"))?,
+                );
+                let certs = CertificateDer::pem_reader_iter(&mut cert_reader)
+                    .collect::<Result<Vec<CertificateDer<'_>>, _>>()
+                    .err_tip(|| format!("Could not extract certs from file {cert_file}"))?;
+                Ok(certs)
+            }
+            let certs = read_cert(&tls_config.cert_file)?;
+            let mut key_reader = std::io::BufReader::new(
+                std::fs::File::open(&tls_config.key_file)
+                    .err_tip(|| format!("Could not open key file {}", tls_config.key_file))?,
+            );
+            let key = match PrivateKeyDer::from_pem_reader(&mut key_reader)
+                .err_tip(|| format!("Could not extract key(s) from file {}", tls_config.key_file))?
+            {
+                PrivateKeyDer::Pkcs8(key) => key.into(),
+                PrivateKeyDer::Sec1(key) => key.into(),
+                PrivateKeyDer::Pkcs1(key) => key.into(),
+                _ => {
+                    return Err(make_err!(
+                        Code::Internal,
+                        "No keys found in file {}",
+                        tls_config.key_file
+                    ));
+                }
+            };
+            if PrivateKeyDer::from_pem_reader(&mut key_reader).is_ok() {
+                return Err(make_err!(
+                    Code::InvalidArgument,
+                    "Expected 1 key in file {}",
+                    tls_config.key_file
+                ));
+            }
+            let verifier = if let Some(client_ca_file) = &tls_config.client_ca_file {
+                let mut client_auth_roots = RootCertStore::empty();
+                for cert in read_cert(client_ca_file)? {
+                    client_auth_roots.add(cert).map_err(|e| {
+                        Error::from_std_err(Code::Internal, &e).append("Could not read client CA")
+                    })?;
+                }
+                let crls = if let Some(client_crl_file) = &tls_config.client_crl_file {
+                    let mut crl_reader = std::io::BufReader::new(
+                        std::fs::File::open(client_crl_file)
+                            .err_tip(|| format!("Could not open CRL file {client_crl_file}"))?,
+                    );
+                    CertificateRevocationListDer::pem_reader_iter(&mut crl_reader)
+                        .collect::<Result<_, _>>()
+                        .err_tip(|| format!("Could not extract CRLs from file {client_crl_file}"))?
+                } else {
+                    Vec::new()
+                };
+                WebPkiClientVerifier::builder(Arc::new(client_auth_roots))
+                    .with_crls(crls)
+                    .build()
+                    .map_err(|e| {
+                        Error::from_std_err(Code::Internal, &e)
+                            .append("Could not create WebPkiClientVerifier")
+                    })?
+            } else {
+                WebPkiClientVerifier::no_client_auth()
+            };
+            let mut config = TlsServerConfig::builder()
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(certs, key)
+                .map_err(|e| {
+                    Error::from_std_err(Code::Internal, &e)
+                        .append("Could not create TlsServerConfig")
+                })?;
+
+            config.alpn_protocols.push("h2".into());
+            Ok(Some(TlsAcceptor::from(Arc::new(config))))
+        })?;
+
+        let socket_addr = http_config
+            .socket_address
+            .parse::<SocketAddr>()
+            .map_err(|e| {
+                Error::from_std_err(Code::InvalidArgument, &e)
+                    .append(format!("Invalid address '{}'", http_config.socket_address))
+            })?;
+        let tcp_listener = if http_config.freebind {
+            bind_freebind(socket_addr)
+        } else {
+            TcpListener::bind(&socket_addr).await
+        }
+        .map_err(|e| match e.kind() {
+            ErrorKind::AddrInUse => make_err!(
+                Code::AlreadyExists,
+                "Address '{socket_addr}' is already in use by another process.",
+            ),
+            ErrorKind::PermissionDenied => make_err!(
+                Code::PermissionDenied,
+                "Permission denied. You may need root privileges to bind to address '{socket_addr}'.",
+            ),
+            ErrorKind::InvalidInput => {
+                make_input_err!("The provided address '{socket_addr}' is invalid.")
+            }
+            _ => Error::from_std_err(Code::Internal, &e)
+                .append(format!("Failed to bind to socket address '{socket_addr}'")),
+        })?;
+        let mut http = auto::Builder::new(TaskExecutor::default());
+        http.http2().timer(TokioTimer::new());
+
+        let tcp_nodelay = http_config.tcp_nodelay;
+        let http_config = &http_config.advanced_http;
+        if let Some(value) = http_config.http2_keep_alive_interval {
+            http.http2()
+                .keep_alive_interval(Duration::from_secs(u64::from(value)));
+        }
+
+        if let Some(value) = http_config.experimental_http2_max_pending_accept_reset_streams {
+            http.http2()
+                .max_pending_accept_reset_streams(usize::try_from(value).err_tip(
+                    || "Could not convert experimental_http2_max_pending_accept_reset_streams",
+                )?);
+        }
+        if let Some(value) = http_config.experimental_http2_initial_stream_window_size {
+            http.http2().initial_stream_window_size(value);
+        }
+        if let Some(value) = http_config.experimental_http2_initial_connection_window_size {
+            http.http2().initial_connection_window_size(value);
+        }
+        if let Some(value) = http_config.experimental_http2_adaptive_window {
+            http.http2().adaptive_window(value);
+        }
+        if let Some(value) = http_config.experimental_http2_max_frame_size {
+            http.http2().max_frame_size(value);
+        }
+        if let Some(value) = http_config.experimental_http2_max_concurrent_streams {
+            http.http2().max_concurrent_streams(value);
+        }
+        if let Some(value) = http_config.experimental_http2_keep_alive_timeout_s {
+            http.http2()
+                .keep_alive_timeout(Duration::from_secs(u64::from(value)));
+        }
+        if let Some(value) = http_config.experimental_http2_max_send_buf_size {
+            http.http2().max_send_buf_size(
+                usize::try_from(value).err_tip(|| "Could not convert http2_max_send_buf_size")?,
+            );
+        }
+        if http_config.experimental_http2_enable_connect_protocol == Some(true) {
+            http.http2().enable_connect_protocol();
+        }
+        if let Some(value) = http_config.experimental_http2_max_header_list_size {
+            http.http2().max_header_list_size(value);
+        }
+        info!("Ready, listening on {socket_addr}",);
+        root_futures.push(Box::pin(async move {
+            loop {
+                select! {
+                    accept_result = accept_tcp_connection(&tcp_listener, tcp_nodelay) => {
+                        match accept_result {
+                            Ok((tcp_stream, remote_addr)) => {
+                                info!(
+                                    target: "nativelink::services",
+                                    ?remote_addr,
+                                    ?socket_addr,
+                                    "Client connected"
+                                );
+
+                                let (http, svc, maybe_tls_acceptor) =
+                                    (http.clone(), svc.clone(), maybe_tls_acceptor.clone());
+
+                                background_spawn!(
+                                    name: "http_connection",
+                                    fut: error_span!(
+                                        "http_connection",
+                                        remote_addr = %remote_addr,
+                                        socket_addr = %socket_addr,
+                                    ).in_scope(|| async move {
+                                        let connected_at = std::time::Instant::now();
+                                        let serve_connection = if let Some(tls_acceptor) = maybe_tls_acceptor {
+                                            match tls_acceptor.accept(tcp_stream).await {
+                                                Ok(tls_stream) => Either::Left(http.serve_connection(
+                                                    TokioIo::new(tls_stream),
+                                                    TowerToHyperService::new(svc),
+                                                )),
+                                                Err(err) => {
+                                                    error!(?err, "Failed to accept tls stream");
+                                                    return;
+                                                }
+                                            }
+                                        } else {
+                                            Either::Right(http.serve_connection(
+                                                TokioIo::new(tcp_stream),
+                                                TowerToHyperService::new(svc),
+                                            ))
+                                        };
+
+                                        if let Err(err) = serve_connection.await {
+                                            // The HTTP/2 layer closes a connection with
+                                            // ENHANCE_YOUR_CALM when one of its internal
+                                            // limits trips, taking every multiplexed
+                                            // stream with it. The connection's age tells
+                                            // a load-shaped limit (any age, during load)
+                                            // from a lifetime cap (old connections), which
+                                            // the GOAWAY's debug data alone cannot.
+                                            let local_err: &(dyn core::error::Error + 'static) = err.as_ref();
+                                            let enhance_your_calm = core::iter::successors(
+                                                Some(local_err),
+                                                |err| err.source(),
+                                            )
+                                            .filter_map(|err| err.downcast_ref::<h2::Error>())
+                                            .any(|err| {
+                                                err.is_go_away()
+                                                    && err.reason() == Some(h2::Reason::ENHANCE_YOUR_CALM)
+                                            });
+                                            if enhance_your_calm {
+                                                warn!(
+                                                    target: "nativelink::services",
+                                                    ?err,
+                                                    %remote_addr,
+                                                    connection_age_s = connected_at.elapsed().as_secs(),
+                                                    "Connection closed with an ENHANCE_YOUR_CALM GOAWAY"
+                                                );
+                                            }
+                                            error!(
+                                                target: "nativelink::services",
+                                                ?err,
+                                                "Failed running service"
+                                            );
+                                        }
+                                    }),
+                                    target: "nativelink::services",
+                                    ?remote_addr,
+                                    ?socket_addr,
+                                );
+                            },
+                            Err(err) => {
+                                error!(?err, "Failed to initialize TCP connection");
+                            }
+                        }
+                    },
+                }
+            }
+            // Unreachable
+        }));
+    }
+
+    {
+        // We start workers after our TcpListener is setup so if our worker connects to one
+        // of these services it will be able to connect.
+        let worker_cfgs = cfg.workers.unwrap_or_default();
+        let mut worker_names = HashSet::with_capacity(worker_cfgs.len());
+        for (i, worker_cfg) in worker_cfgs.into_iter().enumerate() {
+            let spawn_fut = match worker_cfg {
+                WorkerConfig::Local(local_worker_cfg) => {
+                    let completion_tx = if local_worker_cfg.single_use {
+                        single_use_complete_tx.take()
+                    } else {
+                        None
+                    };
+                    let fast_slow_store = store_manager
+                        .get_store(&local_worker_cfg.cas_fast_slow_store)
+                        .err_tip(|| {
+                            format!(
+                                "Failed to find store for cas_store_ref in worker config : {}",
+                                local_worker_cfg.cas_fast_slow_store
+                            )
+                        })?;
+
+                    let maybe_ac_store = if let Some(ac_store_ref) =
+                        &local_worker_cfg.upload_action_result.ac_store
+                    {
+                        Some(store_manager.get_store(ac_store_ref).err_tip(|| {
+                            format!("Failed to find store for ac_store in worker config : {ac_store_ref}")
+                        })?)
+                    } else {
+                        None
+                    };
+                    // Note: Defaults to fast_slow_store if not specified. If this ever changes it must
+                    // be updated in config documentation for the `historical_results_store` the field.
+                    let historical_store = if let Some(cas_store_ref) = &local_worker_cfg
+                        .upload_action_result
+                        .historical_results_store
+                    {
+                        store_manager.get_store(cas_store_ref).err_tip(|| {
+                                format!(
+                                "Failed to find store for historical_results_store in worker config : {cas_store_ref}"
+                            )
+                            })?
+                    } else {
+                        fast_slow_store.clone()
+                    };
+                    let local_worker = new_local_worker(
+                        Arc::new(local_worker_cfg),
+                        fast_slow_store,
+                        maybe_ac_store,
+                        historical_store,
+                    )
+                    .await
+                    .err_tip(|| "Could not make LocalWorker")?
+                    .with_registration(worker_registrations[i].clone());
+
+                    let name = if local_worker.name().is_empty() {
+                        format!("worker_{i}")
+                    } else {
+                        local_worker.name().clone()
+                    };
+
+                    if worker_names.contains(&name) {
+                        Err(make_input_err!(
+                            "Duplicate worker name '{}' found in config",
+                            name
+                        ))?;
+                    }
+                    worker_names.insert(name.clone());
+                    let shutdown_rx = shutdown_tx.subscribe();
+                    let fut = trace_span!("worker_ctx", worker_name = %name)
+                        .in_scope(|| local_worker.run(shutdown_rx));
+                    spawn!(
+                        "worker",
+                        async move {
+                            fut.await?;
+                            if let Some(completion_tx) = completion_tx {
+                                let _ = completion_tx.send(());
+                            }
+                            Ok::<(), Error>(())
+                        },
+                        ?name
+                    )
+                }
+            };
+            root_futures.push(Box::pin(spawn_fut.map_ok_or_else(|e| Err(e.into()), |v| v)));
+        }
+    }
+
+    // Set up a shutdown handler for the worker schedulers.
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    root_futures.push(Box::pin(async move {
+        if let Ok(shutdown_guard) = shutdown_rx.recv().await {
+            let _ = scheduler_shutdown_tx.send(());
+            for (_name, scheduler) in worker_schedulers {
+                scheduler.shutdown(shutdown_guard.clone()).await;
+            }
+        }
+        Ok(())
+    }));
+    Ok(Server {
+        root_futures,
+        single_use_enabled,
+        single_use_complete_rx,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::future::try_join_all;
+    use nativelink_config::cas_server::HttpListener;
+    use nativelink_macro::nativelink_test;
+
+    use super::*;
+
+    #[nativelink_test]
+    async fn accepted_connections_honor_tcp_nodelay() -> Result<(), Error> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        for (config, expected) in [
+            (HttpListener::default(), false),
+            (
+                HttpListener {
+                    tcp_nodelay: false,
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                HttpListener {
+                    tcp_nodelay: true,
+                    ..Default::default()
+                },
+                true,
+            ),
+        ] {
+            // Every accepted connection must receive the configured socket option.
+            for _ in 0..2 {
+                let (_client, (server, _)) = tokio::try_join!(
+                    TcpStream::connect(listener.local_addr()?).map_err(Error::from),
+                    accept_tcp_connection(&listener, config.tcp_nodelay),
+                )?;
+                assert_eq!(server.nodelay()?, expected);
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask the OS for a currently-free TCP port.
+    fn get_ephemeral_port() -> Result<u16, Error> {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .err_tip(|| "Binding an ephemeral port for test server")?;
+        Ok(listener
+            .local_addr()
+            .err_tip(|| "Getting ephemeral port for test server")?
+            .port())
+    }
+
+    #[nativelink_test]
+    async fn build_server_boots() -> Result<(), Error> {
+        let (scheduler_shutdown_tx, _scheduler_shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, _) = broadcast::channel::<ShutdownGuard>(1);
+        let port = get_ephemeral_port()?;
+        let config = CasConfig::try_from_json5_str(&format!(
+            r#"{{ stores: [], servers: [
+        {{
+            name: "test_server",
+            listener: {{
+                http: {{
+                    socket_address: "0.0.0.0:{port}",
+                }},
+            }},
+            services: {{
+                health: {{}},
+            }},
+        }},
+        ] }}"#
+        ))
+        .unwrap();
+        let server = build_server(config, shutdown_tx, scheduler_shutdown_tx).await?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()?;
+
+        drop(select! {
+            result = try_join_all(server.root_futures) => result.map(|_| ()),
+            result = client.get(format!("http://localhost:{port}/status")).send() => {
+                let ok_res = result?;
+                assert_eq!(ok_res.status(), 200);
+                assert_eq!(ok_res.text().await?, "[]");
+                Ok(())
+            },
+        });
+
+        Ok(())
+    }
+}

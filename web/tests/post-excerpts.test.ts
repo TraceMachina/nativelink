@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "@jest/globals";
 import { spawnSync } from "node:child_process";
 import {
   mkdirSync,

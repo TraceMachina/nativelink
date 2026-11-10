@@ -65,7 +65,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun install && bun --filter @nativelink/web gen:llms
+            pnpm install && pnpm run --filter @nativelink/web gen:llms
           "
 
       - name: Open auto-merge PR

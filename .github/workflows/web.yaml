@@ -56,7 +56,9 @@ jobs:
           retry_wait_seconds: 10
           command: |
             cd web
-            nix develop --impure --command bun install --frozen-lockfile
+            nix develop --impure --command bash -c "
+              pnpm install --frozen-lockfile && pnpm dedupe
+            "
           shell: bash
 
       - name: Test Build
@@ -64,7 +66,7 @@ jobs:
         working-directory: web
         run: |
           nix develop --impure --command bash -c "
-            bun run test && bun run build
+            pnpm run test && pnpm run build
           "
 
       - name: Teardown Worker

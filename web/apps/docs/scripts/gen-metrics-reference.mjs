@@ -9,7 +9,7 @@
 // milliseconds and no build.
 //
 // Usage, from web/:
-//   bun --filter @nativelink/docs gen:metrics-reference
+//   pnpm run --filter @nativelink/docs gen:metrics-reference
 // or directly:
 //   node scripts/gen-metrics-reference.mjs
 //

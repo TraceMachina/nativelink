@@ -2004,7 +2004,7 @@ impl CasConfig {
         Self::try_from_json5_str(&json_contents)
     }
 
-    fn try_from_json5_str(json_contents: &str) -> Result<Self, Error> {
+    pub fn try_from_json5_str(json_contents: &str) -> Result<Self, Error> {
         let mut config: Self = serde_json5::from_str(json_contents)?;
         for server in &config.servers {
             if let Some(services) = &server.services {

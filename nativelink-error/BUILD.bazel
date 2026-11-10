@@ -17,6 +17,7 @@ rust_library(
         "//nativelink-metric",
         "//nativelink-proto",
         "@crates//:base64",
+        "@crates//:caps",
         "@crates//:mongodb",
         "@crates//:prost",
         "@crates//:prost-types",

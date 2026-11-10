@@ -416,6 +416,10 @@ impl From<&ActionInfo> for ExecuteRequest {
             execution_policy: None,     // Not used in the worker.
             results_cache_policy: None, // Not used in the worker.
             digest_function: unique_qualifier.digest_function.proto_digest_func().into(),
+            // Hints only (REAPI v2.9), and `ActionInfo` does not carry them.
+            inline_stdout: false,
+            inline_stderr: false,
+            inline_output_files: Vec::new(),
         }
     }
 }
@@ -607,6 +611,7 @@ impl From<DirectoryInfo> for OutputDirectory {
             path: val.path,
             tree_digest: Some(val.tree_digest.into()),
             is_topologically_sorted: false,
+            root_directory_digest: None,
         }
     }
 }
@@ -1312,6 +1317,10 @@ impl ActionState {
             stdout_stream_name: String::default(),
             stderr_stream_name: String::default(),
             partial_execution_metadata: None,
+            // Left unset, which REAPI allows for the digest functions we
+            // support: the client infers it from the action digest's length
+            // and the capabilities.
+            digest_function: 0,
         };
 
         Operation {
