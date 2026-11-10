@@ -215,6 +215,7 @@ async fn setup_api_server_full(
         ladder_kb: Vec::new(),
         cpu_property: "cpu_count".to_string(),
         max_steps: 0,
+        escalate_after_worker_losses: 2,
     });
     let tasks_or_worker_change_notify = Arc::new(Notify::new());
     let state_manager = Arc::new(MockWorkerStateManager::new());
