@@ -10882,6 +10882,20 @@ done
         assert_eq!(unlimited.reuse(50_000, at(250)), Some(40_000));
     }
 
+    /// RFC-0018: the peak the keepalive reports only rises; the last figure
+    /// follows every sample.
+    #[test]
+    fn memory_watch_peak_is_monotonic() {
+        use nativelink_worker::running_actions_manager::ActionMemoryWatch;
+        let watch = ActionMemoryWatch::default();
+        assert_eq!(watch.peak_memory_kb(), 0, "nothing sampled yet");
+        for (sample, peak) in [(100, 100), (400, 400), (250, 400), (0, 400), (401, 401)] {
+            watch.observe(sample);
+            assert_eq!(watch.last_memory_kb(), sample);
+            assert_eq!(watch.peak_memory_kb(), peak, "after sampling {sample}");
+        }
+    }
+
     /// The kill lands on the action furthest over its reservation, or the
     /// largest when none is over, never on one without a sample, one
     /// already asked to die, or one that reserves the whole worker;

@@ -41,8 +41,8 @@ use nativelink_proto::build::bazel::remote::execution::v2::Platform;
 use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_worker::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, StartExecute,
-    UpdateForWorker, execute_declined, execute_result,
+    ConnectWorkerRequest, ConnectionResult, ExecuteResult, KillOperationRequest, OperationMemory,
+    StartExecute, UpdateForWorker, execute_declined, execute_result,
 };
 use nativelink_store::fast_slow_store::FastSlowStore;
 use nativelink_store::filesystem_store::FilesystemStore;
@@ -1284,6 +1284,76 @@ async fn keep_alive_fail_logs() -> Result<(), Error> {
         Code::DeadlineExceeded,
         "Timed out looking for KeepAlive logs"
     ))
+}
+
+/// RFC-0018: every keepalive carries each running action's sampled peak, so
+/// a scheduler that loses this worker can tell which action outgrew its
+/// reservation.
+#[nativelink_test]
+async fn keepalive_reports_running_peaks() -> Result<(), Error> {
+    let local_worker_config = LocalWorkerConfig {
+        platform_properties: HashMap::new(),
+        worker_api_endpoint: EndpointConfig {
+            timeout: Some(0.01),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut test_context = setup_local_worker_with_config(local_worker_config).await;
+    *test_context.actions_manager.memory_peaks.lock().unwrap() =
+        vec![("op-a".to_string(), 15_000_000), ("op-b".to_string(), 800)];
+    let streaming_response = test_context.maybe_streaming_response.take().unwrap();
+    test_context
+        .client
+        .expect_connect_worker(Ok(streaming_response))
+        .await;
+    let tx_stream = test_context.maybe_tx_stream.take().unwrap();
+    tx_stream
+        .send(Frame::data(
+            encode_stream_proto(&UpdateForWorker {
+                update: Some(Update::ConnectionResult(ConnectionResult {
+                    worker_id: "foobar".to_string(),
+                    dispatch_ack: false,
+                    memory_property: String::new(),
+                })),
+            })
+            .unwrap(),
+        ))
+        .await
+        .map_err(|e| make_input_err!("Could not send : {:?}", e))?;
+
+    for _ in 0..30 {
+        let first = test_context
+            .client
+            .keep_alive_requests
+            .lock()
+            .unwrap()
+            .first()
+            .cloned();
+        if let Some(request) = first {
+            let mut memory = request
+                .running_operations
+                .expect("the keepalive reports running operations")
+                .memory;
+            memory.sort_by(|a, b| a.operation_id.cmp(&b.operation_id));
+            assert_eq!(
+                memory,
+                vec![
+                    OperationMemory {
+                        operation_id: "op-a".to_string(),
+                        peak_memory_kb: 15_000_000,
+                    },
+                    OperationMemory {
+                        operation_id: "op-b".to_string(),
+                        peak_memory_kb: 800,
+                    },
+                ]
+            );
+            return Ok(());
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    Err(make_err!(Code::DeadlineExceeded, "No keepalive was sent"))
 }
 
 /// A keepalive that never completes does not end the connection by itself:

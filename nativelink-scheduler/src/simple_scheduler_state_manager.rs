@@ -1544,12 +1544,15 @@ where
                         })
                     } else {
                         // A loss that may have been this action's memory
-                        // (RFC-0018): escalate when this is not the first
+                        // (RFC-0018): escalate when the worker saw it over
+                        // its reservation, or when this is not the first
                         // worker it took down, while the escalation budget
                         // lasts. Past it, the loss budget ends the action.
                         if let Some(loss) = loss
-                            && self.escalate_after_worker_losses > 0
-                            && awaited_action.worker_losses >= self.escalate_after_worker_losses
+                            && (loss.sampled_over
+                                || (self.escalate_after_worker_losses > 0
+                                    && awaited_action.worker_losses
+                                        >= self.escalate_after_worker_losses))
                             && (self.max_escalations == 0
                                 || awaited_action.escalations < self.max_escalations)
                         {
@@ -1558,6 +1561,7 @@ where
                                 %operation_id,
                                 ?maybe_worker_id,
                                 worker_losses = awaited_action.worker_losses,
+                                sampled_over = loss.sampled_over,
                                 property = %loss.escalation.property,
                                 escalated = loss.escalation.value,
                                 "Worker lost under this action; requeuing with a larger reservation"

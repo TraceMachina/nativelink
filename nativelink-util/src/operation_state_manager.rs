@@ -194,11 +194,14 @@ pub struct Escalation {
     pub cpu: Option<(String, u64)>,
 }
 
-/// What a lost worker's action could be requeued with.
+/// What a lost worker's action could be requeued with, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LossEscalation {
     /// The next reservation, on the same ladder a memory kill climbs.
     pub escalation: Escalation,
+    /// The worker reported this action above its reservation before it
+    /// was lost; without that, only a repeated loss escalates.
+    pub sampled_over: bool,
 }
 
 #[async_trait]
