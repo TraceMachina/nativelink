@@ -132,6 +132,7 @@ async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
             action_digest: None,
             execution_policy: None,
             results_cache_policy: None,
+            ..Default::default()
         }))
         .await;
 
@@ -516,6 +517,7 @@ fn make_execute_request(action_digest: DigestInfo) -> ExecuteRequest {
         action_digest: Some(action_digest.into()),
         execution_policy: None,
         results_cache_policy: None,
+        ..Default::default()
     }
 }
 

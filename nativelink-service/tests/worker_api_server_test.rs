@@ -748,6 +748,7 @@ pub async fn execution_response_success_test() -> Result<(), Box<dyn core::error
                 path: "some path4".to_string(),
                 tree_digest: Some(DigestInfo::new([12u8; 32], 124).into()),
                 is_topologically_sorted: false,
+                root_directory_digest: None,
             }],
             output_directory_symlinks: Vec::default(), // Bazel deprecated this.
             exit_code: 5,
