@@ -97,6 +97,18 @@ impl DigestHasherFunc {
             Self::Blake3 => ProtoDigestFunction::Blake3,
         }
     }
+
+    /// The `{digest_function/}` segment `REv2` puts in blob resource names
+    /// and `MISSING` violation subjects. It MUST be omitted for SHA256 (and
+    /// the other functions identifiable by hash length), and present for
+    /// the rest, which here means BLAKE3.
+    #[must_use]
+    pub const fn resource_name_segment(&self) -> Option<&'static str> {
+        match self {
+            Self::Sha256 => None,
+            Self::Blake3 => Some("blake3"),
+        }
+    }
 }
 
 impl From<ConfigDigestHashFunction> for DigestHasherFunc {

@@ -2736,6 +2736,7 @@ async fn slow_store_not_found_under_the_read_names_the_digest() -> Result<(), Er
         ErrorContext::MissingDigest {
             hash: digest.packed_hash().to_string(),
             size: 4096,
+            digest_function: None,
         },
         "{err:?}"
     );

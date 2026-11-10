@@ -135,6 +135,11 @@ splitting on `-`. They are neither opaque nor signed. The protocol asks
 clients to treat them as opaque, and clients that do will keep working if the
 format changes.
 
+**Missing-blob errors name the digest function.** A `FAILED_PRECONDITION`
+for missing inputs carries a `PreconditionFailure` whose `MISSING` subject is
+`blobs/{hash}/{size}` for SHA256 and `blobs/blake3/{hash}/{size}` for BLAKE3,
+as the REAPI requires for digest functions not identifiable by hash length.
+
 **The `Execute` pre-flight input check is shallow and racy by design.** It
 does not walk the full input tree, and a blob can be evicted between the
 check and the worker's fetch. It exists to turn the common "inputs were never
