@@ -2422,7 +2422,12 @@ async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error
     entry
         .get_file_path_locked(|path| async move {
             debug!("Locked down {path:?} permissions");
-            fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).await
+            let res = fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).await;
+            debug!(
+                "{path:?} permissions are now {:?}",
+                fs::metadata(&path).await?.permissions()
+            );
+            res
         })
         .await?;
     let result = store.update_oneshot(digest, VALUE1.into()).await;
@@ -2430,7 +2435,12 @@ async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error
     entry
         .get_file_path_locked(|path| async move {
             debug!("Opened up {path:?} permissions");
-            fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).await
+            let res = fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).await;
+            debug!(
+                "{path:?} permissions are now {:?}",
+                fs::metadata(&path).await?.permissions()
+            );
+            res
         })
         .await?;
     assert_eq!(result.unwrap_err().code, Code::PermissionDenied);
