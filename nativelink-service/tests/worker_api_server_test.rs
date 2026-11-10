@@ -21,7 +21,7 @@ use async_lock::Mutex as AsyncMutex;
 use async_trait::async_trait;
 use bytes::Bytes;
 use nativelink_config::cas_server::WorkerApiConfig;
-use nativelink_config::schedulers::WorkerAllocationStrategy;
+use nativelink_config::schedulers::{MemoryEscalationSpec, PropertyType, WorkerAllocationStrategy};
 use nativelink_error::{Error, ResultExt, make_err};
 use nativelink_macro::nativelink_test;
 use nativelink_metric::MetricsComponent;
@@ -29,9 +29,10 @@ use nativelink_proto::build::bazel::remote::execution::v2::{
     ActionResult as ProtoActionResult, ExecuteResponse, ExecutedActionMetadata, LogFile,
     OutputDirectory, OutputFile, OutputSymlink,
 };
+use nativelink_proto::build::bazel::remote::execution::v2::platform::Property;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::update_for_scheduler::Update;
 use nativelink_proto::com::github::trace_machina::nativelink::remote_execution::{
-    execute_declined, execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, UpdateForScheduler, WorkerLoad
+    execute_declined, execute_result, update_for_worker, ConnectWorkerRequest, ExecuteAccepted, ExecuteComplete, ExecuteDeclined, ExecuteResult, GoingAwayRequest, KeepAliveRequest, OperationMemory, RunningOperations, UpdateForScheduler, WorkerLoad
 };
 use nativelink_proto::google::rpc::Status as ProtoStatus;
 use nativelink_scheduler::api_worker_scheduler::ApiWorkerScheduler;
@@ -179,11 +180,42 @@ async fn setup_api_server_with(
     max_worker_tasks: u64,
     dispatch_ack_timeout_s: u64,
 ) -> Result<TestContext, Error> {
+    setup_api_server_full(
+        worker_timeout,
+        now_fn,
+        max_worker_tasks,
+        dispatch_ack_timeout_s,
+        None,
+    )
+    .await
+}
+
+/// With `memory`, the scheduler escalates memory (`memory_kb`, doubling)
+/// and the worker advertises that many KiB of `memory_kb`.
+async fn setup_api_server_full(
+    worker_timeout: u64,
+    now_fn: NowFn,
+    max_worker_tasks: u64,
+    dispatch_ack_timeout_s: u64,
+    memory: Option<u64>,
+) -> Result<TestContext, Error> {
     const SCHEDULER_NAME: &str = "DUMMY_SCHEDULE_NAME";
 
     const UUID_SIZE: usize = 36;
 
-    let platform_property_manager = Arc::new(PlatformPropertyManager::new(HashMap::new()));
+    let platform_property_manager = Arc::new(PlatformPropertyManager::new(
+        memory
+            .map(|_| HashMap::from([("memory_kb".to_string(), PropertyType::Minimum)]))
+            .unwrap_or_default(),
+    ));
+    let memory_escalation = memory.map(|_| MemoryEscalationSpec {
+        property: "memory_kb".to_string(),
+        percent: 200,
+        max_kb: 0,
+        ladder_kb: Vec::new(),
+        cpu_property: "cpu_count".to_string(),
+        max_steps: 0,
+    });
     let tasks_or_worker_change_notify = Arc::new(Notify::new());
     let state_manager = Arc::new(MockWorkerStateManager::new());
     let worker_registry = Arc::new(WorkerRegistry::new());
@@ -192,7 +224,7 @@ async fn setup_api_server_with(
         platform_property_manager,
         WorkerAllocationStrategy::default(),
         None,
-        None,
+        memory_escalation,
         None,
         None, // worker_outcome_tripwire
         tasks_or_worker_change_notify,
@@ -223,6 +255,14 @@ async fn setup_api_server_with(
 
     let connect_worker_request = ConnectWorkerRequest {
         max_inflight_tasks: max_worker_tasks,
+        properties: memory
+            .map(|memory_kb| {
+                vec![Property {
+                    name: "memory_kb".to_string(),
+                    value: memory_kb.to_string(),
+                }]
+            })
+            .unwrap_or_default(),
         ..Default::default()
     };
     let (tx, rx) = mpsc::channel(1);
@@ -505,6 +545,83 @@ pub async fn stream_end_requeues_running_actions_as_disconnect_test()
             .await,
         "worker should be gone once its stream ended"
     );
+    Ok(())
+}
+
+/// RFC-0018 on the wire: a keepalive reports the action's peak above its
+/// reservation, the worker's stream then ends with no result (a pod
+/// OOM-killed whole), and the loss reaching the state manager carries the
+/// next reservation, marked as sampled.
+#[nativelink_test]
+pub async fn keepalive_peak_turns_a_lost_worker_into_an_escalation_test()
+-> Result<(), Box<dyn core::error::Error>> {
+    let test_context = setup_api_server_full(
+        BASE_WORKER_TIMEOUT_S,
+        Box::new(static_now_fn),
+        0,
+        0,
+        Some(1_000_000),
+    )
+    .await?;
+    let action_info = Arc::new(ActionInfo {
+        platform_properties: HashMap::from([("memory_kb".to_string(), "1000".to_string())]),
+        ..(*uncacheable_action(7)).clone()
+    });
+    let platform_properties = test_context
+        .scheduler
+        .get_platform_property_manager()
+        .make_platform_properties(action_info.platform_properties.clone())?;
+    let operation_id = OperationId::default();
+    test_context
+        .scheduler
+        .worker_notify_run_action(
+            test_context.worker_id.clone(),
+            operation_id.clone(),
+            ActionInfoWithProps {
+                inner: action_info,
+                platform_properties,
+                origin_metadata: OriginMetadata::default(),
+                scheduler_start_execute_event_id: None,
+            },
+            BASE_NOW_S,
+        )
+        .await?;
+
+    test_context
+        .worker_stream
+        .send(Update::KeepAliveRequest(KeepAliveRequest {
+            load: Some(WorkerLoad {
+                free_memory_kb: 4_321,
+            }),
+            running_operations: Some(RunningOperations {
+                operation_ids: vec![operation_id.to_string()],
+                memory: vec![OperationMemory {
+                    operation_id: operation_id.to_string(),
+                    peak_memory_kb: 1_500,
+                }],
+            }),
+        }))
+        .await
+        .map_err(|e| make_err!(tonic::Code::Internal, "Error sending keepalive {e}"))?;
+    // The keepalive is handled on another task; its load report is the
+    // sign the memory report beside it was taken in too.
+    summary_after_report(&test_context, 4_321).await;
+
+    drop(test_context.worker_stream);
+    let (evicted_operation_id, _, evicted_update) = test_context
+        .state_manager
+        .expect_update_operation(Ok(()))
+        .await;
+    assert_eq!(evicted_operation_id, operation_id);
+    let UpdateOperationType::UpdateWithDisconnect(Some(loss)) = evicted_update else {
+        panic!("expected a loss carrying an escalation, got {evicted_update:?}");
+    };
+    assert!(
+        loss.sampled_over,
+        "the reported peak was over the reservation"
+    );
+    assert_eq!(loss.escalation.property, "memory_kb");
+    assert_eq!(loss.escalation.value, 3_000, "twice the reported peak");
     Ok(())
 }
 

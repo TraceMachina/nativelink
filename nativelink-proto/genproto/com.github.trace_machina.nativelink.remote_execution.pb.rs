@@ -42,6 +42,21 @@ pub struct KeepAliveRequest {
 pub struct RunningOperations {
     #[prost(string, repeated, tag = "1")]
     pub operation_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// / The most memory the worker has sampled for each running operation
+    /// / so far, in KiB. Lets the scheduler tell, if the worker is lost, which
+    /// / of its actions grew past its reservation. Only sampled operations
+    /// / appear; absent from workers that do not sample or do not report.
+    #[prost(message, repeated, tag = "2")]
+    pub memory: ::prost::alloc::vec::Vec<OperationMemory>,
+}
+/// / One running operation's sampled memory.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OperationMemory {
+    #[prost(string, tag = "1")]
+    pub operation_id: ::prost::alloc::string::String,
+    /// / The highest figure the sampler has read for the operation so far.
+    #[prost(uint64, tag = "2")]
+    pub peak_memory_kb: u64,
 }
 /// / Request object for going away requests.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

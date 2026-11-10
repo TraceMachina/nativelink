@@ -1794,8 +1794,9 @@ impl ApiWorkerSchedulerImpl {
             .unwrap_or((0, None))
     }
 
-    /// The reservation a lost worker's action would be requeued with
-    /// (RFC-0018); the state manager decides whether to apply it. `None`
+    /// The reservation a lost worker's action would be requeued with, and
+    /// whether the worker's own report showed it over its reservation
+    /// (RFC-0018). The state manager decides whether to apply it. `None`
     /// without a policy, for an operation the scheduler had asked the worker
     /// to kill, and for one with nowhere left to grow.
     fn loss_escalation(
@@ -1810,34 +1811,61 @@ impl ApiWorkerSchedulerImpl {
         }
         let properties = &pending.action_info.platform_properties;
         let reserved_kb = reservation_of(properties, &policy.property);
-        let (value, cpu) =
-            match next_reservation(policy, properties, reserved_kb, reserved_kb, fleet) {
-                NextReservation::Step { value, cpu, .. } => (value, cpu),
-                skipped => {
-                    // Nothing to grow from (no reservation), nowhere to grow
-                    // (the whole largest worker), or no fleet to grow into:
-                    // the loss requeues the action as it was.
-                    debug!(
-                        ?worker_id,
-                        property = %policy.property,
-                        reserved_kb,
-                        ?skipped,
-                        "Lost worker's action has no larger reservation to take"
-                    );
-                    return None;
-                }
-            };
+        let peak_kb = pending.reported_peak_memory_kb;
+        // Any amount over its reservation counts, not only past the worker's
+        // kill headroom: headroom spares an action a kill, but an action
+        // using more than it asked for is under-sized whatever the margin,
+        // and a larger reservation is the cheaper mistake than another
+        // lost worker and its co-tenants.
+        let sampled_over = reserved_kb > 0 && peak_kb > reserved_kb;
+        let (value, cpu) = match next_reservation(
+            policy,
+            properties,
+            reserved_kb,
+            reserved_kb.max(peak_kb),
+            fleet,
+        ) {
+            NextReservation::Step { value, cpu, .. } => (value, cpu),
+            skipped => {
+                // Nothing to grow from (no reservation and no report),
+                // nowhere to grow (the whole largest worker), or no fleet
+                // to grow into: the loss requeues the action as it was.
+                debug!(
+                    ?worker_id,
+                    property = %policy.property,
+                    reserved_kb,
+                    peak_kb,
+                    ?skipped,
+                    "Lost worker's action has no larger reservation to take"
+                );
+                return None;
+            }
+        };
         Some(LossEscalation {
             escalation: Escalation {
                 property: policy.property.clone(),
                 value,
                 reason: make_err!(
                     Code::Unavailable,
-                    "Worker {worker_id} was lost while running this action with {reserved_kb} KiB reserved"
+                    "Worker {worker_id} was lost while running this action with {reserved_kb} KiB reserved (highest reported {peak_kb} KiB)"
                 ),
                 cpu,
             },
+            sampled_over,
         })
+    }
+
+    /// Keeps the highest memory a keepalive reported for each operation the
+    /// worker holds; an operation it does not hold is ignored.
+    fn operation_memory_reported(&mut self, worker_id: &WorkerId, peaks: Vec<(OperationId, u64)>) {
+        let Some(worker) = self.workers.peek_mut(worker_id) else {
+            return;
+        };
+        for (operation_id, peak_kb) in peaks {
+            if let Some(pending) = worker.running_action_infos.get_mut(&operation_id) {
+                pending.reported_peak_memory_kb = pending.reported_peak_memory_kb.max(peak_kb);
+            }
+        }
     }
 
     /// Turns a result that the worker's last usage report says was a memory
@@ -3288,6 +3316,21 @@ impl WorkerScheduler for ApiWorkerScheduler {
         inner
             .running_operations_reported(worker_id, &reported)
             .await;
+        Ok(())
+    }
+
+    async fn worker_operation_memory_reported(
+        &self,
+        worker_id: &WorkerId,
+        peaks: Vec<(OperationId, u64)>,
+    ) -> Result<(), Error> {
+        if peaks.is_empty() {
+            return Ok(());
+        }
+        self.inner
+            .lock()
+            .await
+            .operation_memory_reported(worker_id, peaks);
         Ok(())
     }
 
