@@ -1467,8 +1467,8 @@ impl ByteStreamServer {
         let instance = self
             .instance_infos
             .get(resource_info.instance_name.as_ref())
-            .err_tip(|| {
-                format!(
+            .ok_or_else(|| {
+                make_input_err!(
                     "'instance_name' not configured for '{}'",
                     resource_info.instance_name
                 )
@@ -1544,10 +1544,9 @@ impl ByteStream for ByteStreamServer {
         let resource_info = ResourceInfo::new(&resource_name, false)?;
         let instance_name = resource_info.instance_name.as_ref();
         let expected_size = resource_info.expected_size as u64;
-        let instance = self
-            .instance_infos
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let instance = self.instance_infos.get(instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         trace!(
             resource_name,
@@ -1662,10 +1661,9 @@ impl ByteStream for ByteStreamServer {
 
         let instance_name = stream.resource_info.instance_name.as_ref();
         let expected_size = stream.resource_info.expected_size as u64;
-        let instance = self
-            .instance_infos
-            .get(instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let instance = self.instance_infos.get(instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         // Track write request
         instance

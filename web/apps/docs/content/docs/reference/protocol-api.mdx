@@ -159,6 +159,11 @@ writes its result to the Action Cache; that part is tracked in
 **`server_logs` is never populated.** The field exists; the worker does not
 fill it.
 
+**Bad arguments return `INVALID_ARGUMENT`.** An unknown `instance_name`, or a
+request missing a digest it requires, is a client error, so every service
+answers `INVALID_ARGUMENT` rather than `INTERNAL`. Clients such as Bazel retry
+`INTERNAL` with backoff but fail fast on `INVALID_ARGUMENT`.
+
 ## Intentional deviations from the specification [#intentional-deviations]
 
 Two behaviors differ from what the REAPI or ByteStream text suggests. Both are

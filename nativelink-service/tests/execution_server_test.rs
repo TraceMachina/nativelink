@@ -142,6 +142,9 @@ async fn instance_name_fail() -> Result<(), Box<dyn core::error::Error>> {
                 response_err.message(),
                 "'instance_name' not configured for 'foo' : Failed on execute() command"
             );
+            // A bad argument, not a server fault: clients such as Bazel
+            // retry INTERNAL but fail fast on INVALID_ARGUMENT.
+            assert_eq!(response_err.code(), TonicCode::InvalidArgument);
         }
         Ok(_) => {
             panic!("Not expecting ok!");
