@@ -3394,10 +3394,19 @@ impl RunningActionImpl {
                     Result::<(), Error>::Ok(())
                 }
             };
+            // REv2 creates the parents of the legacy `output_directories` too:
+            // "Directories leading up to the output directories (but not the
+            // output directories themselves) are created by the worker prior
+            // to execution". `prepare_output_directories` creates only the
+            // parent, so it serves both fields.
             self.metrics()
                 .prepare_output_files
                 .wrap(try_join_all(
-                    command.output_files.iter().map(prepare_output_directories),
+                    command
+                        .output_files
+                        .iter()
+                        .chain(command.output_directories.iter())
+                        .map(prepare_output_directories),
                 ))
                 .await?;
             self.metrics()
