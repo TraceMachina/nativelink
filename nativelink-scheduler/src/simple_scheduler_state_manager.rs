@@ -36,7 +36,7 @@ use nativelink_util::metrics::{
     ExecutionStage, record_awaited_action_orphan, record_dispatch_requeue, record_queue_retired,
 };
 use nativelink_util::operation_state_manager::{
-    ActionStateResult, ActionStateResultStream, ClientStateManager, DispatchFacts,
+    ActionStateResult, ActionStateResultStream, ClientStateManager, DispatchFacts, Escalation,
     MatchingEngineStateManager, OperationFilter, OperationStageFlags, OrderDirection,
     UpdateOperationType, WorkerStateManager,
 };
@@ -107,6 +107,22 @@ impl core::fmt::Display for TimeoutCause {
 /// Maximum number of times an update to the database
 /// can fail before giving up.
 const MAX_UPDATE_RETRIES: usize = 5;
+
+/// Requeues the same action asking for more: the next dispatch carries the
+/// raised reservation and the worker holds it to that. The last step also
+/// asks for the worker's whole CPU, so it runs alone.
+fn raise_reservation(awaited_action: &mut AwaitedAction, escalation: &Escalation) {
+    let mut action_info = (**awaited_action.action_info()).clone();
+    action_info
+        .platform_properties
+        .insert(escalation.property.clone(), escalation.value.to_string());
+    if let Some((cpu_property, cpu_value)) = &escalation.cpu {
+        action_info
+            .platform_properties
+            .insert(cpu_property.clone(), cpu_value.to_string());
+    }
+    awaited_action.set_action_info(Arc::new(action_info));
+}
 
 /// Base delay for exponential backoff on version conflicts (in ms).
 const BASE_RETRY_DELAY_MS: u64 = 10;
@@ -462,6 +478,9 @@ pub struct RetryLimits {
     pub max_worker_loss_retries: usize,
     /// Memory escalations; 0 leaves only the fleet's ceiling to bound them.
     pub max_escalations: usize,
+    /// The worker loss from which a lost worker escalates the action's
+    /// memory (RFC-0018); 0 never does.
+    pub escalate_after_worker_losses: usize,
     /// Command timeouts queued again for another worker; 0 keeps the
     /// first timeout final.
     pub max_timeout_retries: usize,
@@ -483,6 +502,7 @@ impl From<usize> for RetryLimits {
             max_job_retries,
             max_worker_loss_retries: Self::DEFAULT_WORKER_LOSS_RETRIES,
             max_escalations: 0,
+            escalate_after_worker_losses: 0,
             max_timeout_retries: Self::DEFAULT_TIMEOUT_RETRIES,
         }
     }
@@ -517,6 +537,11 @@ where
         help = "Maximum number of memory escalations for a job; 0 leaves the ceiling to bound them"
     )]
     max_escalations: usize,
+
+    #[metric(
+        help = "Worker losses before a requeue also raises the memory reservation; 0 never does"
+    )]
+    escalate_after_worker_losses: usize,
 
     #[metric(
         help = "Maximum number of times a job is queued again for another worker after its command timed out"
@@ -575,6 +600,7 @@ where
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            escalate_after_worker_losses,
             max_timeout_retries,
         } = retry_limits.into();
         Arc::new_cyclic(|weak_self| Self {
@@ -582,6 +608,7 @@ where
             max_job_retries,
             max_worker_loss_retries,
             max_escalations,
+            escalate_after_worker_losses,
             max_timeout_retries,
             no_event_action_timeout,
             client_action_timeout,
@@ -1249,7 +1276,7 @@ where
                 ActionStage::Unknown => "Stage:Unknown",
             },
             UpdateOperationType::UpdateWithError(_) => "Error",
-            UpdateOperationType::UpdateWithDisconnect => "Disconnect",
+            UpdateOperationType::UpdateWithDisconnect(_) => "Disconnect",
             UpdateOperationType::ExecutionComplete => "ExecutionComplete",
             UpdateOperationType::UpdateWithDecline(_) => "Decline",
             UpdateOperationType::UpdateWithEscalation(_) => "Escalation",
@@ -1330,7 +1357,8 @@ where
             // Make sure we don't update an action that is already completed.
             if awaited_action.state().stage.is_finished() {
                 match &update {
-                    UpdateOperationType::UpdateWithDisconnect | UpdateOperationType::KeepAlive => {
+                    UpdateOperationType::UpdateWithDisconnect(_)
+                    | UpdateOperationType::KeepAlive => {
                         // No need to error a keep-alive when it's completed, it's just
                         // unnecessary log noise.
                         return Ok(());
@@ -1348,7 +1376,7 @@ where
 
             // A disconnect for an operation no worker holds any more (the
             // executing sweep requeued it) must not spend a worker loss.
-            if matches!(update, UpdateOperationType::UpdateWithDisconnect)
+            if matches!(update, UpdateOperationType::UpdateWithDisconnect(_))
                 && awaited_action.worker_id().is_none()
             {
                 return Ok(());
@@ -1487,7 +1515,7 @@ where
                         ActionStage::Queued
                     }
                 }
-                UpdateOperationType::UpdateWithDisconnect => {
+                UpdateOperationType::UpdateWithDisconnect(loss) => {
                     // A lost worker (OOM-killed as a whole, pod evicted,
                     // network drop, timed out) is usually not this action's
                     // doing, so it has its own budget rather than spending
@@ -1515,6 +1543,28 @@ where
                             ..ActionResult::default()
                         })
                     } else {
+                        // A loss that may have been this action's memory
+                        // (RFC-0018): escalate when this is not the first
+                        // worker it took down, while the escalation budget
+                        // lasts. Past it, the loss budget ends the action.
+                        if let Some(loss) = loss
+                            && self.escalate_after_worker_losses > 0
+                            && awaited_action.worker_losses >= self.escalate_after_worker_losses
+                            && (self.max_escalations == 0
+                                || awaited_action.escalations < self.max_escalations)
+                        {
+                            awaited_action.escalations += 1;
+                            warn!(
+                                %operation_id,
+                                ?maybe_worker_id,
+                                worker_losses = awaited_action.worker_losses,
+                                property = %loss.escalation.property,
+                                escalated = loss.escalation.value,
+                                "Worker lost under this action; requeuing with a larger reservation"
+                            );
+                            raise_reservation(&mut awaited_action, &loss.escalation);
+                            record_dispatch_requeue("loss_escalation");
+                        }
                         is_retry = true;
                         ActionStage::Queued
                     }
@@ -1553,16 +1603,7 @@ where
                         // dispatch carries the raised reservation and the
                         // worker holds it to that. The last step also asks
                         // for the worker's whole CPU, so it runs alone.
-                        let mut action_info = (**awaited_action.action_info()).clone();
-                        action_info
-                            .platform_properties
-                            .insert(escalation.property.clone(), escalation.value.to_string());
-                        if let Some((cpu_property, cpu_value)) = &escalation.cpu {
-                            action_info
-                                .platform_properties
-                                .insert(cpu_property.clone(), cpu_value.to_string());
-                        }
-                        awaited_action.set_action_info(Arc::new(action_info));
+                        raise_reservation(&mut awaited_action, escalation);
                         is_retry = true;
                         ActionStage::Queued
                     }

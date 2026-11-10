@@ -1344,6 +1344,9 @@ impl SimpleScheduler {
             max_escalations: spec.memory_escalation.as_ref().map_or(0, |policy| {
                 usize::try_from(policy.max_steps).unwrap_or(usize::MAX)
             }),
+            escalate_after_worker_losses: spec.memory_escalation.as_ref().map_or(0, |policy| {
+                usize::try_from(policy.escalate_after_worker_losses).unwrap_or(usize::MAX)
+            }),
         };
         let state_manager = SimpleSchedulerStateManager::new(
             retry_limits,
