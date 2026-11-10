@@ -1890,6 +1890,8 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
         }
     }
 
+    drop_all_fs_read_caps()?;
+
     let content_path = make_temp_path("content_path_read_only_exec");
     let temp_path = make_temp_path("temp_path_read_only_exec");
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
@@ -2404,10 +2406,31 @@ async fn older_upload_finishing_last_does_not_replace_newer_generation() -> Resu
     Ok(())
 }
 
+// Drop root capabilities to read all files so we can write tests about permissions
+#[cfg(unix)]
+fn drop_all_fs_read_caps() -> Result<(), Error> {
+    use caps::{CapSet, Capability};
+
+    debug!(
+        effective = ?caps::read(None, CapSet::Effective)?,
+        permitted = ?caps::read(None, CapSet::Permitted)?,
+        "Capabilities"
+    );
+    if caps::has_cap(None, CapSet::Permitted, Capability::CAP_DAC_READ_SEARCH)? {
+        caps::drop(None, CapSet::Effective, Capability::CAP_DAC_READ_SEARCH)?;
+    }
+    if caps::has_cap(None, CapSet::Permitted, Capability::CAP_DAC_OVERRIDE)? {
+        caps::drop(None, CapSet::Effective, Capability::CAP_DAC_OVERRIDE)?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[nativelink_test]
 async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
+
+    drop_all_fs_read_caps()?;
 
     let store = FilesystemStore::<FileEntryImpl>::new(&FilesystemSpec {
         content_path: make_temp_path("content_path"),
