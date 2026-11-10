@@ -328,6 +328,7 @@ async fn grpc_scheduler_forwards_the_client_and_resolves_its_operation() -> Resu
             action_digest: Some(action_digest.into()),
             execution_policy: None,
             results_cache_policy: None,
+            ..Default::default()
         }))
         .with_context(client.clone())
         .await?

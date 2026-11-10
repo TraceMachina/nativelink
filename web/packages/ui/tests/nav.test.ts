@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "@jest/globals";
 import { isCurrentNavHref, leavesSite, normalizeNavPath } from "../src/lib/nav";
 
 test("normalizeNavPath strips query, hash, and trailing slashes", () => {

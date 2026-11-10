@@ -8,13 +8,14 @@ autoexamples = false
 autotests = true
 edition = "2024"
 name = "nativelink-error"
-version = "1.8.3"
+version = "1.8.4"
 
 [dependencies]
 nativelink-metric = { path = "../nativelink-metric" }
 nativelink-proto = { path = "../nativelink-proto" }
 
 base64 = { version = "0.22.1", default-features = false, features = ["std"] }
+caps = { version = "0.5.6", default-features = false }
 mongodb = { version = "3", features = [
   "compat-3-0-0",
   "rustls-tls",
