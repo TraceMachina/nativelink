@@ -1919,10 +1919,10 @@ async fn read_only_executable_dir_preserves_cas_reads_without_reusing_variants()
         VALUE1.as_bytes(),
         "read-only executable cleanup must not prevent ordinary CAS reads"
     );
-    let err = store
-        .get_executable_hardlink_source(&digest)
-        .await
-        .expect_err("a surviving executable variant must not be trusted");
+    debug!("Reading executable hardlink source for {digest:?}");
+    let res = store.get_executable_hardlink_source(&digest).await;
+    debug!("Hardlink result is {res:?}");
+    let err = res.expect_err("a surviving executable variant must not be trusted");
     assert_eq!(err.code, Code::FailedPrecondition);
 
     Ok(())
@@ -2417,15 +2417,19 @@ async fn duplicate_comparison_propagates_permission_errors() -> Result<(), Error
     .await?;
     let digest = DigestInfo::try_new(HASH1, VALUE1.len())?;
     store.update_oneshot(digest, VALUE1.into()).await?;
+    debug!("Did first update");
     let entry = store.get_file_entry_for_digest(&digest).await?;
     entry
         .get_file_path_locked(|path| async move {
+            debug!("Locked down {path:?} permissions");
             fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).await
         })
         .await?;
     let result = store.update_oneshot(digest, VALUE1.into()).await;
+    debug!("Checked {digest}, got {result:?}");
     entry
         .get_file_path_locked(|path| async move {
+            debug!("Opened up {path:?} permissions");
             fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).await
         })
         .await?;
