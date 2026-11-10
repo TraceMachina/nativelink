@@ -268,7 +268,7 @@ impl InstanceInfo {
             action
                 .command_digest
                 .clone()
-                .err_tip(|| "Expected command_digest to exist")?,
+                .ok_or_else(|| make_input_err!("Expected command_digest to exist"))?,
         )
         .err_tip(|| "Could not decode command digest")?;
 
@@ -276,7 +276,7 @@ impl InstanceInfo {
             action
                 .clone()
                 .input_root_digest
-                .err_tip(|| "Expected input_digest_root")?,
+                .ok_or_else(|| make_input_err!("Expected input_digest_root"))?,
         )?;
         let timeout = action.timeout.map_or(Duration::MAX, |v| {
             Duration::new(v.seconds as u64, v.nanos as u32)
@@ -614,15 +614,14 @@ impl ExecutionServer {
     {
         let instance_name = request.instance_name;
 
-        let instance_info = self
-            .instance_infos
-            .get(&instance_name)
-            .err_tip(|| format!("'instance_name' not configured for '{instance_name}'"))?;
+        let instance_info = self.instance_infos.get(&instance_name).ok_or_else(|| {
+            make_input_err!("'instance_name' not configured for '{instance_name}'")
+        })?;
 
         let digest = DigestInfo::try_from(
             request
                 .action_digest
-                .err_tip(|| "Expected action_digest to exist")?,
+                .ok_or_else(|| make_input_err!("Expected action_digest to exist"))?,
         )
         .err_tip(|| "Failed to unwrap action cache")?;
 
